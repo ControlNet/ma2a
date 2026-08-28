@@ -7,7 +7,18 @@ use ma2a_store::{
     EndpointRecord, KeyKind, KeyMaterial, KeyReference, KeyStore, Repository, StoreConfig,
     StoreError,
 };
-use support::{TempState, TestResult};
+use support::{TempState, TestResult, TestResultValue};
+
+const RACE_SECRET_BYTES: usize = 8 * 1024 * 1024;
+
+type PublicationOutcome = (Vec<u8>, Result<(), StoreError>);
+
+struct Publication {
+    store: KeyStore,
+    reference: KeyReference,
+    barrier: std::sync::Arc<std::sync::Barrier>,
+    secret: Vec<u8>,
+}
 
 #[test]
 fn key_files_are_separate_atomic_owner_only_files_and_zeroizing_reads() -> TestResult {
@@ -52,6 +63,72 @@ fn key_files_are_separate_atomic_owner_only_files_and_zeroizing_reads() -> TestR
         0o600,
     )?;
     Ok(())
+}
+
+#[test]
+fn concurrent_writers_publish_exactly_one_immutable_key() -> TestResult {
+    use std::sync::{Arc, Barrier};
+
+    // Given
+    let state = TempState::new("key-publication-race")?;
+    let store = KeyStore::open(state.path())?;
+    let reference = KeyReference::parse("endpoint-race")?;
+    let barrier = Arc::new(Barrier::new(3));
+    let first = publish_on_thread(Publication {
+        store: store.clone(),
+        reference: reference.clone(),
+        barrier: Arc::clone(&barrier),
+        secret: vec![0x11; RACE_SECRET_BYTES],
+    });
+    let second = publish_on_thread(Publication {
+        store: store.clone(),
+        reference: reference.clone(),
+        barrier: Arc::clone(&barrier),
+        secret: vec![0x22; RACE_SECRET_BYTES],
+    });
+
+    // When
+    barrier.wait();
+    let outcomes = [join_publication(first)?, join_publication(second)?];
+
+    // Then
+    assert_eq!(
+        outcomes.iter().filter(|(_, result)| result.is_ok()).count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|(_, result)| matches!(result, Err(StoreError::ProtectedKeyAlreadyExists)))
+            .count(),
+        1
+    );
+    let winner = outcomes
+        .iter()
+        .find_map(|(secret, result)| result.is_ok().then_some(secret.as_slice()))
+        .ok_or("concurrent key publication had no winner")?;
+    assert_eq!(store.read(KeyKind::Endpoint, &reference)?.as_ref(), winner);
+    Ok(())
+}
+
+fn publish_on_thread(publication: Publication) -> std::thread::JoinHandle<PublicationOutcome> {
+    std::thread::spawn(move || {
+        publication.barrier.wait();
+        let result = publication.store.write(KeyMaterial::new(
+            KeyKind::Endpoint,
+            &publication.reference,
+            &publication.secret,
+        ));
+        (publication.secret, result)
+    })
+}
+
+fn join_publication(
+    handle: std::thread::JoinHandle<PublicationOutcome>,
+) -> TestResultValue<PublicationOutcome> {
+    handle
+        .join()
+        .map_err(|_| "key publication thread panicked".into())
 }
 
 fn endpoint_id() -> Result<ma2a_core::EndpointId, ma2a_core::ProtocolError> {

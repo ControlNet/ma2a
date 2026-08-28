@@ -153,9 +153,6 @@ impl KeyStore {
     /// owner-only filesystem write cannot be completed.
     pub fn write(&self, material: KeyMaterial<'_>) -> Result<(), StoreError> {
         let destination = self.path_for(material.kind, material.reference);
-        if destination.exists() {
-            return Err(StoreError::ProtectedKeyAlreadyExists);
-        }
         let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let temporary = destination.with_extension(format!("tmp-{}-{serial}", std::process::id()));
         let write_result = Self::write_temporary(&temporary, material.secret);
@@ -163,7 +160,15 @@ impl KeyStore {
             let _cleanup_result = fs::remove_file(&temporary);
             return Err(error);
         }
-        fs::rename(&temporary, &destination)?;
+        if let Err(error) = fs::hard_link(&temporary, &destination) {
+            let _cleanup_result = fs::remove_file(&temporary);
+            return if error.kind() == std::io::ErrorKind::AlreadyExists {
+                Err(StoreError::ProtectedKeyAlreadyExists)
+            } else {
+                Err(error.into())
+            };
+        }
+        fs::remove_file(&temporary)?;
         sync_parent(&destination)?;
         permissions::validate_private_file(&destination, "protected-key file")
     }
