@@ -5,7 +5,11 @@ mod state;
 #[path = "common/support.rs"]
 mod support;
 
-use std::sync::{Arc, Barrier};
+use std::{
+    io::{BufRead as _, BufReader, Write as _},
+    process::{Command, Stdio},
+    sync::{Arc, Barrier},
+};
 
 use ma2a_store::{
     InvitationRecord, ManifestAdvance, ManifestOutcome, Redemption, RedemptionOutcome, Repository,
@@ -13,6 +17,10 @@ use ma2a_store::{
 };
 use rusqlite::Connection;
 use support::{TempState, TestResult, TestResultValue};
+
+const CRASH_CHILD_ENV: &str = "MA2A_STORE_CRASH_CHILD";
+const CRASH_STATE_ENV: &str = "MA2A_STORE_CRASH_STATE";
+const CRASH_READY: &str = "MA2A_STORE_CRASH_READY";
 
 #[test]
 fn manifest_conflict_rolls_back_manifest_and_revision() -> TestResult {
@@ -52,23 +60,48 @@ fn manifest_conflict_rolls_back_manifest_and_revision() -> TestResult {
 }
 
 #[test]
-fn dropped_uncommitted_connection_is_empty_after_reopen() -> TestResult {
+fn forced_termination_rolls_back_uncommitted_transaction() -> TestResult {
+    if std::env::var_os(CRASH_CHILD_ENV).is_some() {
+        return run_crash_child();
+    }
+
     // Given
     let state = TempState::new("crash-reopen")?;
     let config = StoreConfig::new(state.path());
     drop(Repository::open(&config)?);
-    let connection = Connection::open(config.database_path())?;
-    connection.execute_batch("BEGIN IMMEDIATE")?;
-    connection.execute(
-        "INSERT INTO spaces(space_id, genesis_cbor) VALUES (?1, ?2)",
-        (space_id().as_bytes().as_slice(), b"uncommitted".as_slice()),
-    )?;
+    let mut child = Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "forced_termination_rolls_back_uncommitted_transaction",
+            "--nocapture",
+        ])
+        .env(CRASH_CHILD_ENV, "1")
+        .env(CRASH_STATE_ENV, state.path())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("crash child stdout was not captured")?;
+    let mut lines = BufReader::new(stdout).lines();
+    loop {
+        let line = lines
+            .next()
+            .ok_or("crash child exited before readiness")??;
+        if line == CRASH_READY {
+            break;
+        }
+    }
 
     // When
-    drop(connection);
-    drop(Repository::open(&config)?);
+    child.kill()?;
+    let status = child.wait()?;
+    assert!(!status.success());
+    let repository = Repository::open(&config)?;
 
     // Then
+    assert_eq!(repository.revision()?, 0);
+    drop(repository);
     let connection = Connection::open(config.database_path())?;
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM spaces", [], |row| row
@@ -76,6 +109,28 @@ fn dropped_uncommitted_connection_is_empty_after_reopen() -> TestResult {
         0
     );
     Ok(())
+}
+
+fn run_crash_child() -> TestResult {
+    let state_path =
+        std::env::var_os(CRASH_STATE_ENV).ok_or("crash child state path is missing")?;
+    let config = StoreConfig::new(std::path::PathBuf::from(state_path));
+    drop(Repository::open(&config)?);
+    let connection = Connection::open(config.database_path())?;
+    connection.execute_batch("BEGIN IMMEDIATE")?;
+    connection.execute(
+        "INSERT INTO spaces(space_id, genesis_cbor) VALUES (?1, ?2)",
+        (space_id().as_bytes().as_slice(), b"uncommitted".as_slice()),
+    )?;
+    connection.execute(
+        "UPDATE runtime_metadata SET revision = revision + 1 WHERE singleton = 1",
+        [],
+    )?;
+    println!("{CRASH_READY}");
+    std::io::stdout().flush()?;
+    loop {
+        std::thread::park();
+    }
 }
 
 #[test]
