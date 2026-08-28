@@ -25,6 +25,9 @@ requirements. Run `cargo xtask check-pins` after changing any manifest.
 | `axum` | 0.8.9 | Loopback HTTP surface |
 | `rusqlite` | 0.40.2 with `bundled` | Embedded SQLite state |
 | `ed25519-dalek` | 3.0.0 | Space authority signatures |
+| `blake3` | 1.8.7 | Domain-separated `SpaceId` derivation |
+| `getrandom` | 0.4.3 | Operating-system randomness for `RequestId` |
+| `proptest` | 1.11.0 with `std` only | Core wire and ontology property tests |
 | `interprocess` | 2.4.3 | Cross-platform local IPC |
 | `serde_json` | 1.0.151 | `xtask` JSON policy parsing |
 | `toml` | 1.1.4 | `xtask` Cargo manifest parsing |
