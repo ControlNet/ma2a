@@ -1,0 +1,11 @@
+[alias]
+dist = "run --locked -p xtask -- dist"
+test-all = "run --locked -p xtask -- test"
+web-build = "run --locked -p xtask -- web-build"
+xtask = "run --locked -p xtask --"
+
+[build]
+incremental = true
+
+[term]
+color = "always"

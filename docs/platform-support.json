@@ -1,0 +1,156 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-08-29T04:00:00+10:00",
+  "targets": [
+    {
+      "target": "aarch64-apple-darwin",
+      "status": "deferred",
+      "evidence_host": "x86_64-unknown-linux-gnu",
+      "compile": {
+        "command": "cargo check --locked --workspace --all-targets --all-features --target aarch64-apple-darwin",
+        "exit_code": 101,
+        "outcome": "host-limited",
+        "output": "libsqlite3-sys and blake3 C compilation failed: Linux cc rejects Apple flags -arch and -mmacosx-version-min=11.0"
+      },
+      "smoke": {
+        "command": "target/aarch64-apple-darwin/release/ma2a --version",
+        "exit_code": 127,
+        "outcome": "host-limited",
+        "output": "zsh: no such file or directory: target/aarch64-apple-darwin/release/ma2a"
+      },
+      "package": {
+        "command": "cargo build --locked --release -p ma2a-app --target aarch64-apple-darwin",
+        "exit_code": 101,
+        "outcome": "host-limited",
+        "output": "ring C compilation failed: Linux cc rejects Apple -arch, deployment-target, and -gfull options"
+      },
+      "blocker": "The Linux evidence host lacks an Apple SDK and Apple-compatible C cross-toolchain; this does not establish native macOS ARM64 support or failure",
+      "re_evaluate": "Run the same compile, package, and smoke commands on a native Apple ARM64 runner"
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "status": "deferred",
+      "evidence_host": "x86_64-unknown-linux-gnu",
+      "compile": {
+        "command": "cargo check --locked --workspace --all-targets --all-features --target aarch64-pc-windows-msvc",
+        "exit_code": 101,
+        "outcome": "host-limited",
+        "output": "ring build failed: GNU compiler is unsupported for this target and clang was not found"
+      },
+      "smoke": {
+        "command": "target/aarch64-pc-windows-msvc/release/ma2a.exe --version",
+        "exit_code": 127,
+        "outcome": "host-limited",
+        "output": "zsh: no such file or directory: target/aarch64-pc-windows-msvc/release/ma2a.exe"
+      },
+      "package": {
+        "command": "cargo build --locked --release -p ma2a-app --target aarch64-pc-windows-msvc",
+        "exit_code": 101,
+        "outcome": "host-limited",
+        "output": "ring build failed: the Linux host has neither the MSVC toolchain nor a compatible clang cross-compiler"
+      },
+      "blocker": "The Linux evidence host lacks the Windows ARM64 MSVC SDK/toolchain and cannot execute a Windows ARM64 binary; this is not a native support conclusion",
+      "re_evaluate": "Run compile/package on Windows and require a reliable Windows ARM64 smoke runner"
+    },
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "status": "deferred",
+      "evidence_host": "x86_64-unknown-linux-gnu",
+      "compile": {
+        "command": "cargo check --locked --workspace --all-targets --all-features --target aarch64-unknown-linux-gnu",
+        "exit_code": 101,
+        "outcome": "host-limited",
+        "output": "blake3, libsqlite3-sys, and ring failed because aarch64-linux-gnu-gcc was not found"
+      },
+      "smoke": {
+        "command": "qemu-aarch64 target/aarch64-unknown-linux-gnu/release/ma2a --version",
+        "exit_code": 127,
+        "outcome": "host-limited",
+        "output": "zsh: command not found: qemu-aarch64"
+      },
+      "package": {
+        "command": "cargo build --locked --release -p ma2a-app --target aarch64-unknown-linux-gnu",
+        "exit_code": 101,
+        "outcome": "host-limited",
+        "output": "blake3 and bundled libsqlite3-sys failed because aarch64-linux-gnu-gcc was not found"
+      },
+      "blocker": "The Rust target is installed, but the evidence host lacks the ARM64 GNU C cross-compiler and qemu-aarch64 required by native dependencies and smoke execution",
+      "re_evaluate": "Install the ARM64 GNU C toolchain and QEMU, then rerun all three exact commands"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "status": "supported",
+      "evidence_host": "required native macOS CI",
+      "compile": {
+        "command": "cargo check --locked --workspace --all-targets --all-features",
+        "exit_code": null,
+        "outcome": "required-ci",
+        "output": "Not executed on Linux; the blocking macos-15-intel native CI job owns this probe"
+      },
+      "smoke": {
+        "command": "cargo run --locked -p ma2a-app -- --version",
+        "exit_code": null,
+        "outcome": "required-ci",
+        "output": "Not executed on Linux; the blocking macos-15-intel native CI job owns this probe"
+      },
+      "package": {
+        "command": "cargo build --locked --release -p ma2a-app",
+        "exit_code": null,
+        "outcome": "required-ci",
+        "output": "Not executed on Linux; the blocking macos-15-intel native CI job owns this probe"
+      },
+      "blocker": "none",
+      "re_evaluate": "Re-run on every dependency or runner-image change"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "status": "supported",
+      "evidence_host": "required native Windows CI",
+      "compile": {
+        "command": "cargo check --locked --workspace --all-targets --all-features",
+        "exit_code": null,
+        "outcome": "required-ci",
+        "output": "Not executed on Linux; the blocking windows-latest native CI job owns this probe"
+      },
+      "smoke": {
+        "command": "cargo run --locked -p ma2a-app -- --version",
+        "exit_code": null,
+        "outcome": "required-ci",
+        "output": "Not executed on Linux; the blocking windows-latest native CI job owns this probe"
+      },
+      "package": {
+        "command": "cargo build --locked --release -p ma2a-app",
+        "exit_code": null,
+        "outcome": "required-ci",
+        "output": "Not executed on Linux; the blocking windows-latest native CI job owns this probe"
+      },
+      "blocker": "none",
+      "re_evaluate": "Re-run on every dependency or runner-image change"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "status": "supported",
+      "evidence_host": "x86_64-unknown-linux-gnu",
+      "compile": {
+        "command": "cargo check --locked --workspace --all-targets --all-features",
+        "exit_code": 0,
+        "outcome": "passed",
+        "output": "Finished dev profile successfully with Rust 1.91.0"
+      },
+      "smoke": {
+        "command": "target/release/ma2a --version",
+        "exit_code": 0,
+        "outcome": "passed",
+        "output": "ma2a 0.1.0"
+      },
+      "package": {
+        "command": "cargo build --locked --release -p ma2a-app",
+        "exit_code": 0,
+        "outcome": "passed",
+        "output": "Finished release profile successfully and produced target/release/ma2a"
+      },
+      "blocker": "none",
+      "re_evaluate": "Re-run on every dependency or runner-image change"
+    }
+  ]
+}
