@@ -55,6 +55,10 @@
   font-size: 0.75rem;
 }
 
+.route-navigation {
+  min-block-size: 0;
+}
+
 .app-sidebar nav {
   display: grid;
   align-content: start;
@@ -101,22 +105,35 @@
   font-size: 0.75rem;
 }
 
+.sidebar-foot span {
+  color: var(--text-secondary);
+}
+
 .sidebar-foot strong {
   color: var(--text-secondary);
   font-weight: 650;
 }
 
 .workspace {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-block-size: 0;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--surface-primary);
 }
 
 .workspace main {
+  grid-row: 2;
   inline-size: min(100%, 90rem);
-  min-block-size: 100%;
+  min-block-size: 0;
+  block-size: 100%;
   margin-inline: auto;
+  overflow-y: auto;
   padding: clamp(1.5rem, 4vw, 4rem);
+}
+
+.route-scroll-hint {
+  display: none;
 }
 
 .skip-link {
@@ -198,8 +215,11 @@
     display: flex;
     overflow-x: auto;
     padding: var(--space-2) var(--space-3);
-    border-block-start: 1px solid var(--border-default);
+  }
+
+  .route-navigation {
     grid-column: 1 / -1;
+    border-block-start: 1px solid var(--border-default);
   }
 
   .app-sidebar nav a {
@@ -209,6 +229,22 @@
   .sidebar-foot {
     align-self: center;
     border-block-start: 0;
+  }
+
+  .route-scroll-hint {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0 var(--space-4) var(--space-2);
+    color: var(--text-secondary);
+    font-size: 0.6875rem;
+    font-weight: 650;
+    text-align: end;
+  }
+
+  .route-scroll-hint strong {
+    color: var(--accent-hover);
   }
 
   .workspace main {

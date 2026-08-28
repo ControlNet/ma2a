@@ -20,6 +20,8 @@ export const RUNTIME_ROUTES = [
   { path: ROUTE_PATHS.settings, label: "Settings" },
 ] as const
 
+export type RuntimeRoutePath = (typeof RUNTIME_ROUTES)[number]["path"]
+
 export function isRoutePath(path: string): path is RoutePath {
   return Object.values(ROUTE_PATHS).some((routePath) => routePath === path)
 }

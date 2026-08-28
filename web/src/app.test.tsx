@@ -10,6 +10,7 @@ import { EMPTY_RUNTIME_FIXTURE, MANY_RUNTIME_FIXTURE, ONE_RUNTIME_FIXTURE } from
 Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
   configurable: true,
   value: () => undefined,
+  writable: true,
 })
 
 const ROUTES = [
@@ -42,9 +43,38 @@ test("moves keyboard focus to main content through the skip link", async () => {
   render(<App initialPath="/" runtime={MANY_RUNTIME_FIXTURE} />)
 
   await user.tab()
+  expect(screen.getByRole("link", { name: "Skip to content" })).toHaveFocus()
   await user.keyboard("{Enter}")
 
   expect(screen.getByRole("main")).toHaveFocus()
+})
+
+test("keeps the browser sequential focus origin at the document start", () => {
+  let scrollIntoViewCalls = 0
+  HTMLElement.prototype.scrollIntoView = () => {
+    scrollIntoViewCalls += 1
+  }
+
+  render(<App initialPath="/settings" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(scrollIntoViewCalls).toBe(0)
+})
+
+test("makes the named main landmark the keyboard-scrollable content region", () => {
+  render(<App initialPath="/settings" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  const main = screen.getByRole("main", { name: "Runtime content" })
+  expect(main).toHaveAttribute("tabindex", "0")
+})
+
+test("describes the narrow route navigation affordance", () => {
+  render(<App initialPath="/settings" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  const navigation = screen.getByRole("navigation", { name: "Runtime" })
+  expect(navigation).toHaveAttribute("aria-describedby", "route-scroll-hint")
+  expect(navigation).toHaveAccessibleDescription("Current: Settings Scroll for more routes")
+  expect(screen.getByText("Current: Settings")).toBeInTheDocument()
+  expect(screen.getByText("Scroll for more routes")).toBeInTheDocument()
 })
 
 test.each([
