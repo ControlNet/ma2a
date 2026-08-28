@@ -46,14 +46,23 @@ upgrade in the required Iroh 1.1.0 graph, and must be re-evaluated when that pin
 
 | Dependency | Exact version | Purpose |
 | --- | --- | --- |
+| `ky` | 2.1.0 | Same-origin HTTP client boundary |
 | `react` | 19.2.8 | Component runtime |
 | `react-dom` | 19.2.8 | Browser DOM renderer |
+| `zod` | 4.5.1 | Runtime snapshot and event boundary parsing |
 | `@biomejs/biome` | 2.5.11 | Formatter and static analysis |
 | `@tailwindcss/vite` | 4.3.3 | Tailwind integration for Vite |
+| `@testing-library/jest-dom` | 7.0.1 | DOM-specific test assertions |
+| `@testing-library/react` | 16.3.3 | React component test rendering |
+| `@testing-library/user-event` | 14.6.6 | Keyboard and pointer interaction tests |
 | `@types/bun` | 1.3.5 | Bun runtime types |
+| `@types/jsdom` | 30.0.0 | JSDOM TypeScript declarations |
 | `@types/react` | 19.2.18 | React TypeScript declarations |
 | `@types/react-dom` | 19.2.5 | React DOM TypeScript declarations |
 | `@vitejs/plugin-react` | 6.1.1 | React transform and refresh integration |
+| `@vitest/coverage-v8` | 4.1.11 | V8 coverage reporting for Vitest |
+| `axe-core` | 4.13.0 | Automated route accessibility assertions |
+| `jsdom` | 30.0.1 | Browser-like DOM for component tests |
 | `react-doctor` | 0.9.12 | Development-only React diagnostics |
 | `react-grab` | 0.2.0 | Development-only component inspection |
 | `react-scan` | 0.5.7 | Development-only render diagnostics |

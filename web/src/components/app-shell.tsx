@@ -1,0 +1,73 @@
+import type { MouseEvent, ReactNode } from "react"
+
+import { type RoutePath, RUNTIME_ROUTES } from "../routes"
+import type { RuntimeViewData } from "../view-model"
+import { RuntimeBanner } from "./runtime-status"
+
+function focusMainContent(): void {
+  document.getElementById("main-content")?.focus()
+}
+
+function revealActiveRoute(element: HTMLAnchorElement | null): void {
+  element?.scrollIntoView({ block: "nearest", inline: "center" })
+}
+
+export function AppShell({
+  path,
+  runtime,
+  onNavigate,
+  children,
+}: {
+  readonly path: RoutePath
+  readonly runtime: RuntimeViewData | undefined
+  readonly onNavigate: (path: RoutePath) => void
+  readonly children: ReactNode
+}): ReactNode {
+  const navigate = (event: MouseEvent<HTMLAnchorElement>, target: RoutePath): void => {
+    event.preventDefault()
+    onNavigate(target)
+  }
+
+  return (
+    <div className="app-shell">
+      {/* biome-ignore lint/a11y/useValidAnchor: Skip navigation requires anchor semantics. */}
+      <a className="skip-link" href="#main-content" onClick={focusMainContent}>
+        Skip to content
+      </a>
+      <aside className="app-sidebar">
+        <a className="brand" href="/" onClick={(event) => navigate(event, "/")}>
+          <span aria-hidden="true" className="brand-mark">
+            M2
+          </span>
+          <span>
+            <strong>MA2A</strong>
+            <small>Runtime Console</small>
+          </span>
+        </a>
+        <nav aria-label="Runtime">
+          {RUNTIME_ROUTES.map((route) => (
+            <a
+              aria-current={path === route.path ? "page" : undefined}
+              href={route.path}
+              key={route.path}
+              onClick={(event) => navigate(event, route.path)}
+              ref={path === route.path ? revealActiveRoute : undefined}
+            >
+              {route.label}
+            </a>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <span>Local Runtime</span>
+          <strong>{runtime?.connection ?? "waiting"}</strong>
+        </div>
+      </aside>
+      <div className="workspace">
+        {runtime === undefined ? null : <RuntimeBanner runtime={runtime} />}
+        <main id="main-content" tabIndex={-1}>
+          {children}
+        </main>
+      </div>
+    </div>
+  )
+}

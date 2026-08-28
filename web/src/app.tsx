@@ -1,0 +1,79 @@
+import { type ReactNode, useCallback, useEffect, useState } from "react"
+
+import { AppShell } from "./components/app-shell"
+import { isRoutePath, ROUTE_PATHS, type RoutePath } from "./routes"
+import { LoginScreen, SetupScreen } from "./screens/auth"
+import { EchoScreen } from "./screens/echo"
+import { EndpointScreen } from "./screens/endpoint"
+import { OverviewScreen } from "./screens/overview"
+import { RelaysScreen } from "./screens/relays"
+import { SettingsScreen } from "./screens/settings"
+import { SpacesScreen } from "./screens/spaces"
+import type { RuntimeViewData } from "./view-model"
+
+function routeContent(path: RoutePath, runtime?: RuntimeViewData): ReactNode {
+  switch (path) {
+    case ROUTE_PATHS.login:
+      return <LoginScreen />
+    case ROUTE_PATHS.setup:
+      return <SetupScreen />
+    case ROUTE_PATHS.overview:
+      return <OverviewScreen runtime={runtime} />
+    case ROUTE_PATHS.endpoint:
+      return <EndpointScreen runtime={runtime} />
+    case ROUTE_PATHS.spaces:
+      return <SpacesScreen runtime={runtime} />
+    case ROUTE_PATHS.relays:
+      return <RelaysScreen runtime={runtime} />
+    case ROUTE_PATHS.echo:
+      return <EchoScreen runtime={runtime} />
+    case ROUTE_PATHS.settings:
+      return <SettingsScreen />
+  }
+}
+
+function browserPath(): RoutePath {
+  return isRoutePath(window.location.pathname) ? window.location.pathname : ROUTE_PATHS.overview
+}
+
+export function App({
+  initialPath,
+  runtime,
+}: {
+  readonly initialPath?: RoutePath
+  readonly runtime?: RuntimeViewData
+}): ReactNode {
+  const [path, setPath] = useState<RoutePath>(initialPath ?? browserPath)
+  const controlled = initialPath !== undefined
+
+  useEffect(() => {
+    if (controlled) {
+      return
+    }
+    const syncPath = (): void => setPath(browserPath())
+    window.addEventListener("popstate", syncPath)
+    return () => window.removeEventListener("popstate", syncPath)
+  }, [controlled])
+
+  const navigate = useCallback(
+    (target: RoutePath): void => {
+      if (!controlled) {
+        window.history.pushState(null, "", target)
+      }
+      setPath(target)
+    },
+    [controlled],
+  )
+
+  if (path === ROUTE_PATHS.login) {
+    return <LoginScreen />
+  }
+  if (path === ROUTE_PATHS.setup) {
+    return <SetupScreen />
+  }
+  return (
+    <AppShell onNavigate={navigate} path={path} runtime={runtime}>
+      {routeContent(path, runtime)}
+    </AppShell>
+  )
+}

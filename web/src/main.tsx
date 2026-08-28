@@ -1,6 +1,7 @@
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 
+import { App } from "./app"
 import { requireApplicationRoot } from "./bootstrap"
 import "./styles.css"
 
@@ -9,4 +10,8 @@ if (import.meta.env.DEV && import.meta.env["VITE_DISABLE_REACT_DEVTOOLS"] !== "1
   void import("react-scan")
 }
 
-createRoot(requireApplicationRoot(document.getElementById("root"))).render(<StrictMode />)
+createRoot(requireApplicationRoot(document.getElementById("root"))).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
