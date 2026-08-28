@@ -1,0 +1,275 @@
+use rusqlite::OptionalExtension as _;
+
+use crate::{
+    AddressAdvance, InvitationRecord, ManifestAdvance, ManifestOutcome, PasswordReset, Redemption,
+    RedemptionOutcome, RelayAdvertisementAdvance, Repository, SequenceOutcome, SessionRecord,
+    StoreError,
+    repository::increment_revision,
+    repository_sequences::{highest_address_sequence, highest_relay_sequence},
+};
+
+impl Repository {
+    /// Creates a pending invitation and advances the Runtime revision atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the transaction cannot be committed.
+    pub fn create_invitation(&mut self, invitation: &InvitationRecord) -> Result<u64, StoreError> {
+        let transaction = self.immediate()?;
+        transaction.execute(
+            "INSERT INTO invitations(invitation_id, space_id, token_hash, expires_at_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            (
+                invitation.invitation_id.as_slice(),
+                invitation.space_id.as_bytes().as_slice(),
+                invitation.token_hash.as_slice(),
+                invitation.expires_at_ms,
+            ),
+        )?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(revision)
+    }
+
+    /// Consumes one pending invitation exactly once under an immediate transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when invitation state cannot be read or updated.
+    pub fn redeem_invitation(
+        &mut self,
+        redemption: &Redemption,
+    ) -> Result<RedemptionOutcome, StoreError> {
+        let transaction = self.immediate()?;
+        let invitation = transaction
+            .query_row(
+                "SELECT invitation_id, status, expires_at_ms FROM invitations WHERE token_hash = ?1",
+                [redemption.token_hash.as_slice()],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u8>(1)?, row.get::<_, i64>(2)?)),
+            )
+            .optional()?;
+        let Some((invitation_id, status, expires_at_ms)) = invitation else {
+            let consumed = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM consumed_invitation_tokens WHERE token_hash = ?1)",
+                [redemption.token_hash.as_slice()],
+                |row| row.get::<_, bool>(0),
+            )?;
+            return Ok(if consumed {
+                RedemptionOutcome::AlreadyConsumed
+            } else {
+                RedemptionOutcome::NotFound
+            });
+        };
+        match status {
+            1 => return Ok(RedemptionOutcome::AlreadyConsumed),
+            2 => return Ok(RedemptionOutcome::Revoked),
+            3 => return Ok(RedemptionOutcome::Expired),
+            _ if expires_at_ms <= redemption.now_ms => {
+                transaction.execute(
+                    "UPDATE invitations SET status = 3 WHERE invitation_id = ?1 AND status = 0",
+                    [invitation_id.as_slice()],
+                )?;
+                increment_revision(&transaction)?;
+                transaction.commit()?;
+                return Ok(RedemptionOutcome::Expired);
+            }
+            _ => {}
+        }
+        transaction.execute(
+            "UPDATE invitations SET status = 1, consumed_at_ms = ?1, consumed_by_endpoint_id = ?2
+             WHERE invitation_id = ?3 AND status = 0",
+            (
+                redemption.consumed_at_ms,
+                redemption.endpoint_id.as_bytes().as_slice(),
+                invitation_id.as_slice(),
+            ),
+        )?;
+        transaction.execute(
+            "INSERT INTO consumed_invitation_tokens(token_hash, invitation_id, consumed_at_ms)
+             VALUES (?1, ?2, ?3)",
+            (
+                redemption.token_hash.as_slice(),
+                invitation_id.as_slice(),
+                redemption.consumed_at_ms,
+            ),
+        )?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(RedemptionOutcome::Redeemed { revision })
+    }
+
+    /// Appends only the next contiguous signed manifest and updates latest state atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when manifest state cannot be read or committed.
+    pub fn advance_manifest(
+        &mut self,
+        advance: &ManifestAdvance,
+    ) -> Result<ManifestOutcome, StoreError> {
+        let transaction = self.immediate()?;
+        let current = transaction.query_row(
+            "SELECT latest_manifest_generation, latest_manifest_hash FROM spaces WHERE space_id = ?1",
+            [advance.space_id.as_bytes().as_slice()],
+            |row| Ok((row.get::<_, Option<u64>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+        )?;
+        let expected_generation = current.0.map_or(0, |value| value + 1);
+        let previous_matches = match (&advance.previous_hash, current.1.as_deref()) {
+            (None, None) => true,
+            (Some(proposed), Some(stored)) => proposed.as_slice() == stored,
+            (None, Some(_)) | (Some(_), None) => false,
+        };
+        if advance.generation != expected_generation || !previous_matches {
+            return Ok(ManifestOutcome::Conflict {
+                current_generation: current.0,
+            });
+        }
+        transaction.execute(
+            "INSERT INTO manifests(space_id, generation, previous_hash, manifest_hash, signed_manifest)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                advance.space_id.as_bytes().as_slice(),
+                advance.generation,
+                advance.previous_hash.as_ref().map(<[u8; 32]>::as_slice),
+                advance.manifest_hash.as_slice(),
+                advance.signed_manifest.as_slice(),
+            ),
+        )?;
+        transaction.execute(
+            "UPDATE spaces SET latest_manifest_generation = ?1, latest_manifest_hash = ?2
+             WHERE space_id = ?3",
+            (
+                advance.generation,
+                advance.manifest_hash.as_slice(),
+                advance.space_id.as_bytes().as_slice(),
+            ),
+        )?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(ManifestOutcome::Advanced { revision })
+    }
+
+    /// Replaces current address state only when the sequence increases.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when address state cannot be read or committed.
+    pub fn advance_address(
+        &mut self,
+        advance: &AddressAdvance,
+    ) -> Result<SequenceOutcome, StoreError> {
+        let transaction = self.immediate()?;
+        let current = highest_address_sequence(
+            &transaction,
+            advance.space_id.as_bytes(),
+            advance.endpoint_id.as_bytes(),
+        )?;
+        if current.is_some_and(|value| value >= advance.sequence) {
+            return Ok(SequenceOutcome::Stale {
+                current_sequence: current.unwrap_or(advance.sequence),
+            });
+        }
+        transaction.execute(
+            "INSERT INTO address_state(space_id, endpoint_id, sequence, issued_at_ms, expires_at_ms,
+             record_hash, signed_record) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(space_id, endpoint_id) DO UPDATE SET sequence = excluded.sequence,
+             issued_at_ms = excluded.issued_at_ms, expires_at_ms = excluded.expires_at_ms,
+             record_hash = excluded.record_hash, signed_record = excluded.signed_record",
+            (
+                advance.space_id.as_bytes().as_slice(), advance.endpoint_id.as_bytes().as_slice(),
+                advance.sequence, advance.issued_at_ms, advance.expires_at_ms,
+                advance.record_hash.as_slice(), advance.signed_record.as_slice(),
+            ),
+        )?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(SequenceOutcome::Advanced { revision })
+    }
+
+    /// Replaces current relay advertisement only when the sequence increases.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when relay advertisement state cannot be read or committed.
+    pub fn advance_relay_advertisement(
+        &mut self,
+        advance: &RelayAdvertisementAdvance,
+    ) -> Result<SequenceOutcome, StoreError> {
+        let transaction = self.immediate()?;
+        let current = highest_relay_sequence(
+            &transaction,
+            advance.space_id.as_bytes(),
+            advance.relay_endpoint_id.as_bytes(),
+        )?;
+        if let Some(current_sequence) = current.filter(|value| *value >= advance.sequence) {
+            return Ok(SequenceOutcome::Stale { current_sequence });
+        }
+        transaction.execute(
+            "INSERT INTO relay_advertisement_state(space_id, relay_endpoint_id, sequence,
+             expires_at_ms, advertisement_hash, signed_advertisement) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(space_id, relay_endpoint_id) DO UPDATE SET sequence = excluded.sequence,
+             expires_at_ms = excluded.expires_at_ms, advertisement_hash = excluded.advertisement_hash,
+             signed_advertisement = excluded.signed_advertisement",
+            (
+                advance.space_id.as_bytes().as_slice(),
+                advance.relay_endpoint_id.as_bytes().as_slice(), advance.sequence,
+                advance.expires_at_ms, advance.advertisement_hash.as_slice(),
+                advance.signed_advertisement.as_slice(),
+            ),
+        )?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(SequenceOutcome::Advanced { revision })
+    }
+
+    /// Replaces the password verifier and revokes every session atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when credential or session state cannot be committed.
+    pub fn reset_password(&mut self, reset: &PasswordReset) -> Result<u64, StoreError> {
+        let transaction = self.immediate()?;
+        transaction.execute(
+            "INSERT INTO ui_credentials(singleton, password_verifier, verifier_version, updated_at_ms)
+             VALUES (1, ?1, ?2, ?3) ON CONFLICT(singleton) DO UPDATE SET
+             password_verifier = excluded.password_verifier,
+             verifier_version = excluded.verifier_version, updated_at_ms = excluded.updated_at_ms",
+            (reset.verifier.as_slice(), reset.verifier_version, reset.now_ms),
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET revoked_at_ms = ?1 WHERE revoked_at_ms IS NULL",
+            [reset.now_ms],
+        )?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(revision)
+    }
+
+    /// Stores a revocable session by bearer-token hash only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when session state cannot be committed.
+    pub fn create_session(&mut self, session: &SessionRecord) -> Result<u64, StoreError> {
+        let transaction = self.immediate()?;
+        transaction.execute(
+            "INSERT INTO sessions(session_id_hash, created_at_ms, expires_at_ms) VALUES (?1, ?2, ?3)",
+            (session.session_id_hash.as_slice(), session.created_at_ms, session.expires_at_ms),
+        )?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(revision)
+    }
+
+    /// Advances the Runtime revision as its own explicit transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when runtime metadata cannot be committed.
+    pub fn advance_revision(&mut self) -> Result<u64, StoreError> {
+        let transaction = self.immediate()?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(revision)
+    }
+}

@@ -9,9 +9,13 @@ version.workspace = true
 [dependencies]
 ma2a-core.workspace = true
 rusqlite.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
 
 [lints]
 workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["ma2a-core", "rusqlite"]
+ignored = []
