@@ -1,0 +1,118 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - uses: Swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+        working-directory: web
+      - run: cargo check --locked --workspace --all-targets --all-features
+      - run: cargo build --locked --release -p ma2a-app
+      - run: cargo run --locked -p ma2a-app -- --version
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143,cargo-deny@0.20.2,cargo-machete@0.9.2
+      - run: cargo run --locked -p xtask -- check
+
+  architecture-probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          targets: ${{ matrix.target }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - name: Capture architecture evidence
+        shell: bash
+        run: |
+          mkdir -p architecture-evidence
+          set +e
+          {
+            echo "$ cargo check --locked --workspace --all-targets --all-features --target ${{ matrix.target }}"
+            cargo check --locked --workspace --all-targets --all-features --target "${{ matrix.target }}"
+          } > architecture-evidence/compile.log 2>&1
+          compile_exit=$?
+          {
+            echo "$ cargo build --locked --release -p ma2a-app --target ${{ matrix.target }}"
+            cargo build --locked --release -p ma2a-app --target "${{ matrix.target }}"
+          } > architecture-evidence/package.log 2>&1
+          package_exit=$?
+          case "${{ matrix.target }}" in
+            aarch64-unknown-linux-gnu)
+              smoke_command="qemu-aarch64 target/aarch64-unknown-linux-gnu/release/ma2a --version"
+              ;;
+            aarch64-apple-darwin)
+              smoke_command="target/aarch64-apple-darwin/release/ma2a --version"
+              ;;
+            aarch64-pc-windows-msvc)
+              smoke_command="target/aarch64-pc-windows-msvc/release/ma2a.exe --version"
+              ;;
+          esac
+          {
+            echo "$ $smoke_command"
+            bash -c "$smoke_command"
+          } > architecture-evidence/smoke.log 2>&1
+          smoke_exit=$?
+          set -e
+          printf 'target=%s\ncompile_exit=%s\npackage_exit=%s\nsmoke_exit=%s\n' \
+            "${{ matrix.target }}" "$compile_exit" "$package_exit" "$smoke_exit" \
+            > architecture-evidence/results.txt
+          test -s architecture-evidence/compile.log
+          test -s architecture-evidence/package.log
+          test -s architecture-evidence/smoke.log
+          cat architecture-evidence/results.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload architecture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-${{ matrix.target }}
+          path: architecture-evidence/
+          if-no-files-found: error
