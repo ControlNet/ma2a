@@ -23,7 +23,9 @@ requirements. Run `cargo xtask check-pins` after changing any manifest.
 | `irpc`, `irpc-iroh` | 0.17.0 | Typed RPC composition over Iroh |
 | `tokio` | 1.53.1 | Async runtime |
 | `axum` | 0.8.9 | Loopback HTTP surface |
-| `rusqlite` | 0.40.2 with `bundled` | Embedded SQLite state |
+| `rusqlite` | 0.40.2 with `backup`, `bundled`, and `fallible_uint` | Embedded SQLite state, checked counters, and online backup |
+| `rustix` | 1.1.4 with `process` and `std` | Safe current-user ownership checks on Unix |
+| `zeroize` | 1.9.0 with `alloc` | Zeroizing protected-key buffers |
 | `ed25519-dalek` | 3.0.0 | Space authority signatures |
 | `blake3` | 1.8.7 | Domain-separated `SpaceId` derivation |
 | `getrandom` | 0.4.3 | Operating-system randomness for `RequestId` |
