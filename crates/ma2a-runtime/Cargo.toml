@@ -8,14 +8,17 @@ version.workspace = true
 
 [dependencies]
 axum.workspace = true
+blake3.workspace = true
 interprocess.workspace = true
 ma2a-core.workspace = true
 ma2a-net.workspace = true
 ma2a-store.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 
 [lints]
 workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["axum", "interprocess", "ma2a-core", "ma2a-net", "ma2a-store", "tokio"]
+ignored = ["axum", "interprocess", "ma2a-net", "ma2a-store", "tokio"]

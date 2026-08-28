@@ -1,0 +1,293 @@
+//! Closed bounded local API response contract.
+
+use ma2a_core::{ProtocolError, RequestId};
+use serde_json::{Value, json};
+
+use super::{
+    ApiError, LOCAL_API_VERSION, MAX_LOCAL_RESPONSE_BYTES,
+    codec_fields::encode_hex,
+    result_data::{
+        EchoReplyView, HandshakeView, PrivateRelayView, PublicRelayView, RuntimeStatusView,
+        echo_reply_value, handshake_value, private_relay_value, public_relay_value, status_value,
+        ui_auth_result_value,
+    },
+    snapshot::{
+        ControlSyncView, EndpointView, RuntimeSnapshot, SpaceView, UiAuthView, endpoint_value,
+        space_value,
+    },
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResultKind {
+    Handshake(HandshakeView),
+    Status(RuntimeStatusView),
+    EndpointInfo(EndpointView),
+    SpaceCreated(SpaceView),
+    Spaces(Vec<SpaceView>),
+    Space(SpaceView),
+    SpaceInvitationCreated(SpaceView),
+    SpaceRedeemed(SpaceView),
+    SpaceRevoked(SpaceView),
+    ControlSyncStatus(ControlSyncView),
+    ControlSyncTriggered(ControlSyncView),
+    PrivateRelayConfigured(PrivateRelayView),
+    PrivateRelayStatus(PrivateRelayView),
+    PublicRelayConfigured(PublicRelayView),
+    PublicRelayStatus(PublicRelayView),
+    Echo(EchoReplyView),
+    UiPasswordSet(UiAuthView),
+    UiPasswordReset(UiAuthView),
+    SessionsRevoked(UiAuthView),
+    Snapshot(RuntimeSnapshot),
+    ShuttingDown,
+}
+
+/// One member of the exact local API v1 result set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandResult(ResultKind);
+
+impl CommandResult {
+    /// Creates the graceful-shutdown acknowledgement.
+    pub const fn shutting_down() -> Self {
+        Self(ResultKind::ShuttingDown)
+    }
+
+    /// Creates the pre-authorization handshake result.
+    pub const fn handshake(value: HandshakeView) -> Self {
+        Self(ResultKind::Handshake(value))
+    }
+
+    /// Creates the authoritative snapshot result.
+    pub const fn snapshot(value: RuntimeSnapshot) -> Self {
+        Self(ResultKind::Snapshot(value))
+    }
+
+    /// Creates a Runtime status result.
+    pub const fn status(value: RuntimeStatusView) -> Self {
+        Self(ResultKind::Status(value))
+    }
+    /// Creates an Endpoint information result.
+    pub const fn endpoint_info(value: EndpointView) -> Self {
+        Self(ResultKind::EndpointInfo(value))
+    }
+    /// Creates a Space creation result.
+    pub const fn space_created(value: SpaceView) -> Self {
+        Self(ResultKind::SpaceCreated(value))
+    }
+    /// Creates a bounded Space list result.
+    ///
+    /// # Errors
+    /// Returns invalid input when more than 256 Spaces are supplied.
+    pub fn spaces(value: Vec<SpaceView>) -> Result<Self, ApiError> {
+        if value.len() > super::MAX_COLLECTION_ITEMS {
+            Err(ApiError::invalid_input())
+        } else {
+            Ok(Self(ResultKind::Spaces(value)))
+        }
+    }
+    /// Creates a Space detail result.
+    pub const fn space(value: SpaceView) -> Self {
+        Self(ResultKind::Space(value))
+    }
+    /// Creates a Space invitation receipt without invite secret material.
+    pub const fn space_invitation_created(value: SpaceView) -> Self {
+        Self(ResultKind::SpaceInvitationCreated(value))
+    }
+    /// Creates a Space redemption result.
+    pub const fn space_redeemed(value: SpaceView) -> Self {
+        Self(ResultKind::SpaceRedeemed(value))
+    }
+    /// Creates a Space revocation result.
+    pub const fn space_revoked(value: SpaceView) -> Self {
+        Self(ResultKind::SpaceRevoked(value))
+    }
+    /// Creates a control-sync status result.
+    pub const fn control_sync_status(value: ControlSyncView) -> Self {
+        Self(ResultKind::ControlSyncStatus(value))
+    }
+    /// Creates a control-sync trigger result.
+    pub const fn control_sync_triggered(value: ControlSyncView) -> Self {
+        Self(ResultKind::ControlSyncTriggered(value))
+    }
+    /// Creates a Private Relay configuration result.
+    pub const fn private_relay_configured(value: PrivateRelayView) -> Self {
+        Self(ResultKind::PrivateRelayConfigured(value))
+    }
+    /// Creates a Private Relay status result.
+    pub const fn private_relay_status(value: PrivateRelayView) -> Self {
+        Self(ResultKind::PrivateRelayStatus(value))
+    }
+    /// Creates a Public Relay configuration result.
+    pub const fn public_relay_configured(value: PublicRelayView) -> Self {
+        Self(ResultKind::PublicRelayConfigured(value))
+    }
+    /// Creates a Public Relay status result.
+    pub const fn public_relay_status(value: PublicRelayView) -> Self {
+        Self(ResultKind::PublicRelayStatus(value))
+    }
+    /// Creates an Echo result.
+    pub const fn echo(value: EchoReplyView) -> Self {
+        Self(ResultKind::Echo(value))
+    }
+    /// Creates a UI password-set result.
+    pub const fn ui_password_set(value: UiAuthView) -> Self {
+        Self(ResultKind::UiPasswordSet(value))
+    }
+    /// Creates a UI password-reset result.
+    pub const fn ui_password_reset(value: UiAuthView) -> Self {
+        Self(ResultKind::UiPasswordReset(value))
+    }
+    /// Creates a session revoke-all result.
+    pub const fn sessions_revoked(value: UiAuthView) -> Self {
+        Self(ResultKind::SessionsRevoked(value))
+    }
+
+    /// Returns the exact result discriminant.
+    pub const fn result_type(&self) -> &'static str {
+        match self.0 {
+            ResultKind::Handshake(_) => "handshake",
+            ResultKind::Status(_) => "status",
+            ResultKind::EndpointInfo(_) => "endpoint_info",
+            ResultKind::SpaceCreated(_) => "space_created",
+            ResultKind::Spaces(_) => "spaces",
+            ResultKind::Space(_) => "space",
+            ResultKind::SpaceInvitationCreated(_) => "space_invitation_created",
+            ResultKind::SpaceRedeemed(_) => "space_redeemed",
+            ResultKind::SpaceRevoked(_) => "space_revoked",
+            ResultKind::ControlSyncStatus(_) => "control_sync_status",
+            ResultKind::ControlSyncTriggered(_) => "control_sync_triggered",
+            ResultKind::PrivateRelayConfigured(_) => "private_relay_configured",
+            ResultKind::PrivateRelayStatus(_) => "private_relay_status",
+            ResultKind::PublicRelayConfigured(_) => "public_relay_configured",
+            ResultKind::PublicRelayStatus(_) => "public_relay_status",
+            ResultKind::Echo(_) => "echo",
+            ResultKind::UiPasswordSet(_) => "ui_password_set",
+            ResultKind::UiPasswordReset(_) => "ui_password_reset",
+            ResultKind::SessionsRevoked(_) => "sessions_revoked",
+            ResultKind::Snapshot(_) => "snapshot",
+            ResultKind::ShuttingDown => "shutting_down",
+        }
+    }
+}
+
+/// Successful response carrying an authoritative post-command revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiResponse {
+    version: u16,
+    request_id: Option<RequestId>,
+    revision: u64,
+    result: CommandResult,
+}
+
+impl ApiResponse {
+    pub(crate) const fn new(
+        request_id: Option<RequestId>,
+        revision: u64,
+        result: CommandResult,
+    ) -> Self {
+        Self {
+            version: LOCAL_API_VERSION,
+            request_id,
+            revision,
+            result,
+        }
+    }
+
+    /// Returns the authoritative revision after execution or replay.
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the mutation correlation identifier when present.
+    pub const fn request_id(&self) -> Option<RequestId> {
+        self.request_id
+    }
+}
+
+/// Serializes one successful response and enforces the response bound.
+///
+/// # Errors
+/// Returns an internal error when serialization fails or exceeds the response bound.
+pub fn encode_response(response: &ApiResponse) -> Result<Vec<u8>, ApiError> {
+    let value = json!({
+        "version": response.version,
+        "request_id": response.request_id.map(|id| encode_hex(id.as_bytes())),
+        "revision": response.revision,
+        "result": result_value(&response.result),
+    });
+    bounded_json(&value)
+}
+
+/// Serializes one typed error without reading Runtime state.
+///
+/// # Errors
+/// Returns an internal error when serialization fails or exceeds the response bound.
+pub fn encode_error(error: ApiError) -> Result<Vec<u8>, ApiError> {
+    let value = json!({
+        "version": LOCAL_API_VERSION,
+        "error": error_name(error.code()),
+        "remediation": error.remediation(),
+    });
+    bounded_json(&value)
+}
+
+fn bounded_json(value: &Value) -> Result<Vec<u8>, ApiError> {
+    let encoded = serde_json::to_vec(value).map_err(|_| ApiError::new(ProtocolError::INTERNAL))?;
+    if encoded.len() > MAX_LOCAL_RESPONSE_BYTES {
+        Err(ApiError::new(ProtocolError::INTERNAL))
+    } else {
+        Ok(encoded)
+    }
+}
+
+fn result_value(result: &CommandResult) -> Value {
+    let payload = match &result.0 {
+        ResultKind::Handshake(value) => handshake_value(value),
+        ResultKind::Status(value) => status_value(*value),
+        ResultKind::EndpointInfo(value) => endpoint_value(value),
+        ResultKind::SpaceCreated(value)
+        | ResultKind::Space(value)
+        | ResultKind::SpaceInvitationCreated(value)
+        | ResultKind::SpaceRedeemed(value)
+        | ResultKind::SpaceRevoked(value) => space_value(value),
+        ResultKind::Spaces(values) => Value::Array(values.iter().map(space_value).collect()),
+        ResultKind::ControlSyncStatus(value) | ResultKind::ControlSyncTriggered(value) => {
+            json!({"peer_endpoint_ids": value.peers.iter().map(|id| encode_hex(id.as_bytes())).collect::<Vec<_>>(), "synchronized": value.synchronized})
+        }
+        ResultKind::PrivateRelayConfigured(value) | ResultKind::PrivateRelayStatus(value) => {
+            private_relay_value(value)
+        }
+        ResultKind::PublicRelayConfigured(value) | ResultKind::PublicRelayStatus(value) => {
+            public_relay_value(value)
+        }
+        ResultKind::Echo(value) => echo_reply_value(value),
+        ResultKind::UiPasswordSet(value)
+        | ResultKind::UiPasswordReset(value)
+        | ResultKind::SessionsRevoked(value) => ui_auth_result_value(value),
+        ResultKind::Snapshot(value) => value.to_value(),
+        ResultKind::ShuttingDown => json!({}),
+    };
+    json!({"type": result.result_type(), "payload": payload})
+}
+
+fn error_name(error: ProtocolError) -> &'static str {
+    if error == ProtocolError::VERSION_MISMATCH {
+        "version_mismatch"
+    } else if error == ProtocolError::INVALID_INPUT {
+        "invalid_input"
+    } else if error == ProtocolError::UNAUTHORIZED {
+        "unauthorized"
+    } else if error == ProtocolError::NOT_FOUND {
+        "not_found"
+    } else if error == ProtocolError::CONFLICT {
+        "conflict"
+    } else if error == ProtocolError::EXPIRED {
+        "expired"
+    } else if error == ProtocolError::ROLLBACK {
+        "rollback"
+    } else if error == ProtocolError::UNAVAILABLE {
+        "unavailable"
+    } else {
+        "internal"
+    }
+}
