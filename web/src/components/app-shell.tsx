@@ -1,15 +1,11 @@
 import type { MouseEvent, ReactNode } from "react"
 
-import { type RoutePath, RUNTIME_ROUTES } from "../routes"
+import { type RoutePath, RUNTIME_ROUTES, type RuntimeRoutePath } from "../routes"
 import type { RuntimeViewData } from "../view-model"
 import { RuntimeBanner } from "./runtime-status"
 
 function focusMainContent(): void {
   document.getElementById("main-content")?.focus()
-}
-
-function revealActiveRoute(element: HTMLAnchorElement | null): void {
-  element?.scrollIntoView({ block: "nearest", inline: "center" })
 }
 
 export function AppShell({
@@ -18,7 +14,7 @@ export function AppShell({
   onNavigate,
   children,
 }: {
-  readonly path: RoutePath
+  readonly path: RuntimeRoutePath
   readonly runtime: RuntimeViewData | undefined
   readonly onNavigate: (path: RoutePath) => void
   readonly children: ReactNode
@@ -44,19 +40,26 @@ export function AppShell({
             <small>Runtime Console</small>
           </span>
         </a>
-        <nav aria-label="Runtime">
-          {RUNTIME_ROUTES.map((route) => (
-            <a
-              aria-current={path === route.path ? "page" : undefined}
-              href={route.path}
-              key={route.path}
-              onClick={(event) => navigate(event, route.path)}
-              ref={path === route.path ? revealActiveRoute : undefined}
-            >
-              {route.label}
-            </a>
-          ))}
-        </nav>
+        <div className="route-navigation">
+          <nav aria-describedby="route-scroll-hint" aria-label="Runtime">
+            {RUNTIME_ROUTES.map((route) => (
+              <a
+                aria-current={path === route.path ? "page" : undefined}
+                href={route.path}
+                key={route.path}
+                onClick={(event) => navigate(event, route.path)}
+              >
+                {route.label}
+              </a>
+            ))}
+          </nav>
+          <p className="route-scroll-hint" id="route-scroll-hint">
+            {RUNTIME_ROUTES.map((route) =>
+              path === route.path ? <strong key={route.path}>Current: {route.label}</strong> : null,
+            )}{" "}
+            <span>Scroll for more routes</span>
+          </p>
+        </div>
         <div className="sidebar-foot">
           <span>Local Runtime</span>
           <strong>{runtime?.connection ?? "waiting"}</strong>
@@ -64,7 +67,8 @@ export function AppShell({
       </aside>
       <div className="workspace">
         {runtime === undefined ? null : <RuntimeBanner runtime={runtime} />}
-        <main id="main-content" tabIndex={-1}>
+        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: This landmark owns keyboard scrolling. */}
+        <main aria-label="Runtime content" id="main-content" tabIndex={0}>
           {children}
         </main>
       </div>

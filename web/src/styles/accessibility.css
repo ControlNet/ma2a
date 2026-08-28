@@ -1,0 +1,10 @@
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-lines span {
+    animation: none;
+  }
+
+  .app-sidebar nav a,
+  button {
+    transition: none;
+  }
+}
