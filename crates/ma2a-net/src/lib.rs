@@ -2,11 +2,13 @@
 
 #![forbid(unsafe_code)]
 
+mod address_lookup;
 mod address_record;
 mod endpoint;
 mod enrollment;
 mod protocols;
 
+pub use address_lookup::{AddressLookupClock, AddressLookupStateError, SpaceAddressLookup};
 pub use address_record::{
     AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator,
     AddressValidationContext, ValidatedAddressRecord,
