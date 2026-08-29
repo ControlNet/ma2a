@@ -1,3 +1,5 @@
+//! Endpoint-centric independent-Space authorization matrix.
+
 use iroh_base::SecretKey;
 use ma2a_core::{
     AuthorizationDenied, AuthorizationEndpoints, AuthorizationRequest, AuthorizationResource,
@@ -21,15 +23,22 @@ struct SpaceSpec {
     authority: u8,
     caller_echo: bool,
     target_echo: bool,
-    revoke_caller: bool,
+    revocation: Revocation,
+}
+
+#[derive(Clone, Copy)]
+enum Revocation {
+    None,
+    Caller,
+    Target,
 }
 
 #[test]
 fn complete_allow_in_one_space_wins_over_other_space_denial() -> TestResult {
     // Given
     let endpoints = endpoints();
-    let denied = view(endpoints, spec(0x31, (true, false, false)))?;
-    let allowed = view(endpoints, spec(0x32, (true, true, false)))?;
+    let denied = view(endpoints, spec(0x31, (true, false, Revocation::None)))?;
+    let allowed = view(endpoints, spec(0x32, (true, true, Revocation::None)))?;
 
     // When
     let decision = authorize_endpoint(
@@ -46,8 +55,8 @@ fn complete_allow_in_one_space_wins_over_other_space_denial() -> TestResult {
 fn partial_privileges_never_compose_across_spaces() -> TestResult {
     // Given
     let endpoints = endpoints();
-    let caller_only = view(endpoints, spec(0x33, (true, false, false)))?;
-    let target_only = view(endpoints, spec(0x34, (false, true, false)))?;
+    let caller_only = view(endpoints, spec(0x33, (true, false, Revocation::None)))?;
+    let target_only = view(endpoints, spec(0x34, (false, true, Revocation::None)))?;
 
     // When
     let decision = authorize_endpoint(
@@ -64,8 +73,8 @@ fn partial_privileges_never_compose_across_spaces() -> TestResult {
 fn revocation_is_local_to_its_space() -> TestResult {
     // Given
     let endpoints = endpoints();
-    let revoked = view(endpoints, spec(0x35, (true, true, true)))?;
-    let independent = view(endpoints, spec(0x36, (true, true, false)))?;
+    let revoked = view(endpoints, spec(0x35, (true, true, Revocation::Caller)))?;
+    let independent = view(endpoints, spec(0x36, (true, true, Revocation::None)))?;
     let request = request(endpoints, RemoteOperation::ECHO_CALL);
 
     // When
@@ -79,10 +88,27 @@ fn revocation_is_local_to_its_space() -> TestResult {
 }
 
 #[test]
+fn revoked_local_target_cannot_be_authorized() -> TestResult {
+    // Given
+    let endpoints = endpoints();
+    let revoked_target = view(endpoints, spec(0x3c, (true, true, Revocation::Target)))?;
+
+    // When
+    let decision = authorize_endpoint(
+        &request(endpoints, RemoteOperation::ECHO_CALL),
+        &[revoked_target],
+    );
+
+    // Then
+    assert_eq!(decision.err(), Some(AuthorizationDenied::ACCESS_DENIED));
+    Ok(())
+}
+
+#[test]
 fn missing_shared_space_and_unknown_operation_deny_by_default() -> TestResult {
     // Given
     let endpoints = endpoints();
-    let shared = view(endpoints, spec(0x37, (true, true, false)))?;
+    let shared = view(endpoints, spec(0x37, (true, true, Revocation::None)))?;
 
     // When
     let no_spaces = authorize_endpoint(&request(endpoints, RemoteOperation::ECHO_CALL), &[]);
@@ -112,8 +138,8 @@ fn missing_shared_space_and_unknown_operation_deny_by_default() -> TestResult {
 fn control_cursor_only_narrows_an_already_shared_space() -> TestResult {
     // Given
     let endpoints = endpoints();
-    let shared = view(endpoints, spec(0x38, (true, true, false)))?;
-    let unrelated = view(endpoints, spec(0x39, (true, true, false)))?;
+    let shared = view(endpoints, spec(0x38, (true, true, Revocation::None)))?;
+    let unrelated = view(endpoints, spec(0x39, (true, true, Revocation::None)))?;
     let request = AuthorizationRequest::new(
         AuthorizationEndpoints::new(endpoints.caller, endpoints.target),
         RemoteOperation::CONTROL_SYNC,
@@ -134,8 +160,8 @@ fn control_cursor_only_narrows_an_already_shared_space() -> TestResult {
 fn all_denials_are_externally_equal() -> TestResult {
     // Given
     let endpoints = endpoints();
-    let one_partial = view(endpoints, spec(0x3a, (true, false, false)))?;
-    let another_partial = view(endpoints, spec(0x3b, (false, true, false)))?;
+    let one_partial = view(endpoints, spec(0x3a, (true, false, Revocation::None)))?;
+    let another_partial = view(endpoints, spec(0x3b, (false, true, Revocation::None)))?;
     let request = request(endpoints, RemoteOperation::ECHO_CALL);
 
     // When
@@ -158,9 +184,11 @@ proptest! {
         b_caller in any::<bool>(), b_target in any::<bool>(), b_revoked in any::<bool>(),
     ) {
         let endpoints = endpoints();
-        let first = view(endpoints, spec(0x41, (a_caller, a_target, a_revoked)))
+        let first_revocation = if a_revoked { Revocation::Caller } else { Revocation::None };
+        let second_revocation = if b_revoked { Revocation::Caller } else { Revocation::None };
+        let first = view(endpoints, spec(0x41, (a_caller, a_target, first_revocation)))
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let second = view(endpoints, spec(0x42, (b_caller, b_target, b_revoked)))
+        let second = view(endpoints, spec(0x42, (b_caller, b_target, second_revocation)))
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         let expected = (a_caller && a_target && !a_revoked)
             || (b_caller && b_target && !b_revoked);
@@ -174,12 +202,12 @@ proptest! {
     }
 }
 
-const fn spec(authority: u8, access: (bool, bool, bool)) -> SpaceSpec {
+const fn spec(authority: u8, access: (bool, bool, Revocation)) -> SpaceSpec {
     SpaceSpec {
         authority,
         caller_echo: access.0,
         target_echo: access.1,
-        revoke_caller: access.2,
+        revocation: access.2,
     }
 }
 
@@ -190,7 +218,7 @@ fn endpoints() -> Endpoints {
     }
 }
 
-fn request(endpoints: Endpoints, operation: RemoteOperation) -> AuthorizationRequest {
+const fn request(endpoints: Endpoints, operation: RemoteOperation) -> AuthorizationRequest {
     AuthorizationRequest::new(
         AuthorizationEndpoints::new(endpoints.caller, endpoints.target),
         operation,
@@ -221,14 +249,16 @@ fn view(endpoints: Endpoints, spec: SpaceSpec) -> TestResult<SpaceAuthorizationV
     .sign(&authority)?;
     let mut chain = SpaceChain::from_genesis(genesis)?;
     chain.apply(&first)?;
-    if spec.revoke_caller {
+    let revocation = match spec.revocation {
+        Revocation::None => None,
+        Revocation::Caller => Some((vec![target], endpoints.caller)),
+        Revocation::Target => Some((vec![caller], endpoints.target)),
+    };
+    if let Some((members, revoked_endpoint)) = revocation {
         let revoked = SpaceManifestV1::new(
             SpaceManifestLink::new(chain.space_id(), 2, chain.latest_hash()),
             3,
-            SpaceManifestMembership::new(
-                vec![target],
-                vec![SpaceRevocationV1::new(endpoints.caller)],
-            ),
+            SpaceManifestMembership::new(members, vec![SpaceRevocationV1::new(revoked_endpoint)]),
         )?
         .sign(&authority)?;
         chain.apply(&revoked)?;

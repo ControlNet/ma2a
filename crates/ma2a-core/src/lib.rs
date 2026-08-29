@@ -25,7 +25,11 @@ pub use address::{
     MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN, MAX_ADDRESS_RECORD_LEN, MAX_ADDRESS_RECORD_USER_DATA_LEN,
     MAX_ADDRESS_RECORD_VALIDITY_MS, SignedSpaceAddressRecordV1, SpaceAddressRecordV1,
 };
-pub use authorization::{SpaceAuthorizationView, authorize_any};
+pub use authorization::{
+    AuthorizationDenied, AuthorizationEndpoints, AuthorizationPermit, AuthorizationRequest,
+    AuthorizationResource, RemoteOperation, SpaceAuthorizationView, authorize_any,
+    authorize_endpoint,
+};
 pub use codec::{decode_request, decode_response, encode_request, encode_response};
 pub use enrollment_page::{
     EnrollmentPage, MAX_ENROLLMENT_ARTIFACTS_PER_PAGE, MAX_ENROLLMENT_PAGE_BYTES,
