@@ -1,7 +1,7 @@
 use ma2a_store::{
-    AddressAdvance, PasswordReset, RelayAdvertisementAdvance, RelayConfiguration, RelayObservation,
-    Repository, RuntimeMetadataUpdate, SequenceOutcome, SessionDigests, SessionRecord,
-    SessionTimestamps, StoreConfig, derive_password_verifier,
+    AddressAdvance, AddressRecordOutcome, PasswordReset, RelayAdvertisementAdvance,
+    RelayConfiguration, RelayObservation, Repository, RuntimeMetadataUpdate, SequenceOutcome,
+    SessionDigests, SessionRecord, SessionTimestamps, StoreConfig, derive_password_verifier,
 };
 use rusqlite::Connection;
 
@@ -45,14 +45,81 @@ fn address_and_advertisement_reject_stale_sequences() -> TestResult {
     })?;
 
     // Then
-    assert!(matches!(address, SequenceOutcome::Advanced { .. }));
+    assert!(matches!(address, AddressRecordOutcome::Advanced { .. }));
     assert_eq!(
         stale_address,
-        SequenceOutcome::Stale {
+        AddressRecordOutcome::Rollback {
             current_sequence: 4
         }
     );
     assert!(matches!(advertisement, SequenceOutcome::Advanced { .. }));
+    Ok(())
+}
+
+#[test]
+fn address_high_water_rejects_forks_and_rollbacks_after_reopen() -> TestResult {
+    // Given
+    let state = TempState::new("address-high-water-reopen")?;
+    let config = StoreConfig::new(state.path());
+    let endpoint = endpoint_id()?;
+    let first = AddressAdvance {
+        space_id: space_id()?,
+        endpoint_id: endpoint,
+        sequence: 4,
+        issued_at_ms: 10,
+        expires_at_ms: 20,
+        record_hash: [7; 32],
+        signed_record: b"address-four".to_vec(),
+    };
+    let mut repository = Repository::open(&config)?;
+    repository.create_space(&super::space_fixture::space_record()?)?;
+    assert!(matches!(
+        repository.advance_address(&first)?,
+        AddressRecordOutcome::Advanced { .. }
+    ));
+    drop(repository);
+    let mut repository = Repository::open(&config)?;
+
+    // When
+    let replay = repository.advance_address(&first)?;
+    let fork = repository.advance_address(&AddressAdvance {
+        record_hash: [8; 32],
+        signed_record: b"fork-four".to_vec(),
+        ..first.clone()
+    })?;
+    let rollback = repository.advance_address(&AddressAdvance {
+        sequence: 3,
+        record_hash: [9; 32],
+        signed_record: b"rollback-three".to_vec(),
+        ..first.clone()
+    })?;
+
+    // Then
+    assert_eq!(
+        replay,
+        AddressRecordOutcome::Idempotent {
+            current_sequence: 4
+        }
+    );
+    assert_eq!(
+        fork,
+        AddressRecordOutcome::Fork {
+            current_sequence: 4
+        }
+    );
+    assert_eq!(
+        rollback,
+        AddressRecordOutcome::Rollback {
+            current_sequence: 4
+        }
+    );
+    assert_eq!(
+        repository
+            .address_record(first.space_id, endpoint)?
+            .ok_or("persisted address record was missing")?
+            .signed_record(),
+        b"address-four"
+    );
     Ok(())
 }
 

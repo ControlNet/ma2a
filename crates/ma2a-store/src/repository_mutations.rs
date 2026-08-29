@@ -1,10 +1,9 @@
 use rusqlite::OptionalExtension as _;
 
 use crate::{
-    AddressAdvance, InvitationRecord, ManifestAdvance, ManifestOutcome, Redemption,
-    RedemptionOutcome, RelayAdvertisementAdvance, Repository, SequenceOutcome, StoreError,
-    repository::increment_revision,
-    repository_sequences::{highest_address_sequence, highest_relay_sequence},
+    InvitationRecord, ManifestAdvance, ManifestOutcome, PasswordReset, Redemption,
+    RedemptionOutcome, RelayAdvertisementAdvance, Repository, SequenceOutcome, SessionRecord,
+    StoreError, repository::increment_revision, repository_sequences::highest_relay_sequence,
 };
 
 impl Repository {
@@ -169,43 +168,6 @@ impl Repository {
             },
             |revision| ManifestOutcome::Advanced { revision },
         ))
-    }
-
-    /// Replaces current address state only when the sequence increases.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError`] when address state cannot be read or committed.
-    pub fn advance_address(
-        &mut self,
-        advance: &AddressAdvance,
-    ) -> Result<SequenceOutcome, StoreError> {
-        let transaction = self.immediate()?;
-        let current = highest_address_sequence(
-            &transaction,
-            advance.space_id.as_bytes(),
-            advance.endpoint_id.as_bytes(),
-        )?;
-        if current.is_some_and(|value| value >= advance.sequence) {
-            return Ok(SequenceOutcome::Stale {
-                current_sequence: current.unwrap_or(advance.sequence),
-            });
-        }
-        transaction.execute(
-            "INSERT INTO address_state(space_id, endpoint_id, sequence, issued_at_ms, expires_at_ms,
-             record_hash, signed_record) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(space_id, endpoint_id) DO UPDATE SET sequence = excluded.sequence,
-             issued_at_ms = excluded.issued_at_ms, expires_at_ms = excluded.expires_at_ms,
-             record_hash = excluded.record_hash, signed_record = excluded.signed_record",
-            (
-                advance.space_id.as_bytes().as_slice(), advance.endpoint_id.as_bytes().as_slice(),
-                advance.sequence, advance.issued_at_ms, advance.expires_at_ms,
-                advance.record_hash.as_slice(), advance.signed_record.as_slice(),
-            ),
-        )?;
-        let revision = increment_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(SequenceOutcome::Advanced { revision })
     }
 
     /// Replaces current relay advertisement only when the sequence increases.

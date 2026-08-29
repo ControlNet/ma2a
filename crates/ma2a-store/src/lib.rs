@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod address_records;
 mod backup;
 mod config;
 mod enrollment;
@@ -23,6 +24,7 @@ mod space_rows;
 mod spaces;
 mod web_auth;
 
+pub use address_records::{AddressRecordOutcome, PersistedAddressRecord};
 pub use config::StoreConfig;
 pub use enrollment_models::{
     AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption,
