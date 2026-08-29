@@ -202,6 +202,10 @@ impl ApiResponse {
     pub const fn request_id(&self) -> Option<RequestId> {
         self.request_id
     }
+
+    pub(crate) const fn result_type(&self) -> &'static str {
+        self.result.result_type()
+    }
 }
 
 /// Serializes one successful response and enforces the response bound.
