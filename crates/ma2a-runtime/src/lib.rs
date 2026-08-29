@@ -4,3 +4,14 @@
 
 /// Transport-neutral local Runtime API v1.
 pub mod api;
+
+mod actor;
+mod error;
+mod lifecycle;
+mod state;
+mod store;
+
+pub use actor::RuntimeHandle;
+pub use error::{RuntimeError, RuntimeErrorCode};
+pub use lifecycle::Runtime;
+pub use state::{Connectivity, RuntimeEvent, RuntimeStatus, ShutdownReport};
