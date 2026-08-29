@@ -4,18 +4,30 @@ use std::{
     error::Error,
     fs,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicU64, Ordering},
+    },
 };
 
 use ma2a_core::{
     EnrollmentPage, InviteEntropy, MemberCapabilities, RequestId, SpaceManifestMembership,
     SpaceMemberV1, SpacePolicyV1, validate_enrollment_pages,
 };
-use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, Runtime};
+use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock};
 use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct TestClock(AtomicI64);
+
+impl RuntimeClock for TestClock {
+    fn now_ms(&self) -> Result<i64, ma2a_runtime::RuntimeError> {
+        Ok(self.0.load(Ordering::SeqCst))
+    }
+}
 
 struct TempState(PathBuf);
 
@@ -51,7 +63,11 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
     let candidate_state = TempState::new("candidate-57")?;
     let owner_config = StoreConfig::new(&owner_state.0);
     let candidate_config = StoreConfig::new(&candidate_state.0);
-    let owner = Runtime::start(owner_config.clone()).await?;
+    let owner = Runtime::start_with_clock(
+        owner_config.clone(),
+        Arc::new(TestClock(AtomicI64::new(3_000))),
+    )
+    .await?;
     let owner_status = owner.handle().status().await?;
     owner.shutdown().await?;
     let owner_member = member(owner_status.endpoint_id(), "owner")?;
@@ -69,7 +85,11 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
         ))?;
     }
     drop(repository);
-    let owner = Runtime::start(owner_config.clone()).await?;
+    let owner = Runtime::start_with_clock(
+        owner_config.clone(),
+        Arc::new(TestClock(AtomicI64::new(3_000))),
+    )
+    .await?;
     let candidate = Runtime::start(candidate_config.clone()).await?;
     let ticket = owner
         .handle()
@@ -78,7 +98,7 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
             2_000,
             302_000,
             InviteEntropy::from_bytes([0x11; 16], [0x22; 32]),
-        ))
+        )?)
         .await?;
 
     // When
@@ -88,7 +108,6 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
             ticket,
             RequestId::try_from([0x33; 16].as_slice())?,
             "candidate".to_owned(),
-            3_000,
         ))
         .await?;
 
@@ -108,6 +127,11 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
     assert_eq!(chain.latest_generation(), 58);
     assert_eq!(chain.manifests().len(), 58);
     candidate.shutdown().await?;
+    let restarted_candidate = Runtime::start(candidate_config).await?;
+    let restarted_status = restarted_candidate.handle().status().await?;
+    assert_eq!(restarted_status.membership_count(), 1);
+    assert!(restarted_status.normal_protocols_eligible());
+    restarted_candidate.shutdown().await?;
     owner.shutdown().await?;
     Ok(())
 }
@@ -137,9 +161,10 @@ fn missing_intermediate_and_genesis_latest_only_never_validate() -> TestResult {
     let pages = EnrollmentPage::paginate(&chain)?;
 
     // When
+    let latest_page = pages.last().ok_or("latest page missing")?.encode()?;
     let mut missing = pages;
     missing.remove(2);
-    let latest_only = vec![EnrollmentPage::genesis_and_latest(&chain)?];
+    let latest_only = vec![EnrollmentPage::decode(&latest_page)?];
 
     // Then
     assert!(validate_enrollment_pages(&missing).is_err());

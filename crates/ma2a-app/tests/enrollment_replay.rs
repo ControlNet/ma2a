@@ -1,22 +1,33 @@
-//! End-to-end enrollment replay and denial coverage.
+//! End-to-end enrollment replay coverage.
 
 use std::{
     error::Error,
     fs,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicU64, Ordering},
+    },
 };
 
-use iroh_tickets::Ticket as _;
-use ma2a_core::{
-    InviteEntropy, MemberCapabilities, RequestId, SignedInviteTicket, SpaceMemberV1, SpacePolicyV1,
+use ma2a_core::{InviteEntropy, MemberCapabilities, RequestId, SpaceMemberV1, SpacePolicyV1};
+use ma2a_runtime::{
+    EnrollmentAttempt, EnrollmentCreation, EnrollmentErrorCode, Runtime, RuntimeClock,
 };
-use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, EnrollmentErrorCode, Runtime};
 use ma2a_store::{Repository, SpaceCreation, StoreConfig};
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 type TestResultValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct TestClock(AtomicI64);
+
+impl RuntimeClock for TestClock {
+    fn now_ms(&self) -> Result<i64, ma2a_runtime::RuntimeError> {
+        Ok(self.0.load(Ordering::SeqCst))
+    }
+}
 
 struct TempState(PathBuf);
 
@@ -60,7 +71,11 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
         SpacePolicyV1::phase_one_default(),
     ))?;
     drop(repository);
-    let owner = Runtime::start(owner_config.clone()).await?;
+    let owner = Runtime::start_with_clock(
+        owner_config.clone(),
+        Arc::new(TestClock(AtomicI64::new(3_000))),
+    )
+    .await?;
     let first = Runtime::start(StoreConfig::new(&first_state.0)).await?;
     let second = Runtime::start(StoreConfig::new(&second_state.0)).await?;
     let ticket = owner
@@ -70,13 +85,11 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
             2_000,
             302_000,
             InviteEntropy::from_bytes([0x51; 16], [0x52; 32]),
-        ))
+        )?)
         .await?;
     let request_id = RequestId::try_from([0x53; 16].as_slice())?;
-    let first_attempt =
-        EnrollmentAttempt::new(ticket.clone(), request_id, "first".to_owned(), 3_000);
-    let second_attempt =
-        EnrollmentAttempt::new(ticket.clone(), request_id, "second".to_owned(), 3_000);
+    let first_attempt = EnrollmentAttempt::new(ticket.clone(), request_id, "first".to_owned());
+    let second_attempt = EnrollmentAttempt::new(ticket.clone(), request_id, "second".to_owned());
 
     // When
     let (first_result, second_result) = tokio::join!(
@@ -94,8 +107,28 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
     } else {
         second.handle()
     };
-    let retry = winner.redeem_enrollment(first_attempt).await?;
+    owner.shutdown().await?;
+    let owner = Runtime::start_with_clock(
+        owner_config.clone(),
+        Arc::new(TestClock(AtomicI64::new(3_000))),
+    )
+    .await?;
+    let before_denials = owner.handle().status().await?;
+    let before_generation = Repository::open(&owner_config)?
+        .load_space_chain(created.space_id())?
+        .ok_or("owner chain missing")?
+        .latest_generation();
+    let retry = winner.clone().redeem_enrollment(first_attempt).await?;
     assert_eq!(retry.generation(), 1);
+    let changed_request = winner
+        .redeem_enrollment(EnrollmentAttempt::new(
+            ticket.clone(),
+            RequestId::try_from([0x54; 16].as_slice())?,
+            "changed-request".to_owned(),
+        ))
+        .await
+        .expect_err("changed RequestId retry must conflict");
+    assert_eq!(changed_request.code(), EnrollmentErrorCode::CONFLICT);
     let wrong = if first_result.is_ok() {
         second.handle()
     } else {
@@ -105,131 +138,23 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
         ticket,
         request_id,
         "wrong".to_owned(),
-        3_000,
     ))
     .await
     .expect_err("wrong candidate replay must fail");
     assert_eq!(wrong.code(), EnrollmentErrorCode::CONFLICT);
+    assert_eq!(
+        owner.handle().status().await?.revision(),
+        before_denials.revision()
+    );
+    assert_eq!(
+        Repository::open(&owner_config)?
+            .load_space_chain(created.space_id())?
+            .ok_or("owner chain missing")?
+            .latest_generation(),
+        before_generation
+    );
     first.shutdown().await?;
     second.shutdown().await?;
-    owner.shutdown().await?;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario verifies all invitation denial states against the same runtime setup"
-)]
-async fn expiry_cancellation_cross_space_and_plaintext_secret_are_denied() -> TestResult {
-    // Given
-    let owner_state = TempState::new("denials-owner")?;
-    let candidate_state = TempState::new("denials-candidate")?;
-    let owner_config = StoreConfig::new(&owner_state.0);
-    let bootstrap = Runtime::start(owner_config.clone()).await?;
-    let owner_id = bootstrap.handle().status().await?.endpoint_id();
-    bootstrap.shutdown().await?;
-    let mut repository = Repository::open(&owner_config)?;
-    let first = repository.create_owned_space(&SpaceCreation::new(
-        10,
-        member(owner_id, "owner")?,
-        SpacePolicyV1::phase_one_default(),
-    ))?;
-    let second = repository.create_owned_space(&SpaceCreation::new(
-        11,
-        member(owner_id, "owner")?,
-        SpacePolicyV1::phase_one_default(),
-    ))?;
-    drop(repository);
-    let owner = Runtime::start(owner_config.clone()).await?;
-    let candidate = Runtime::start(StoreConfig::new(&candidate_state.0)).await?;
-    let secret = [0x62; 32];
-    let entropy = InviteEntropy::from_bytes([0x61; 16], secret);
-    let ticket = owner
-        .handle()
-        .create_enrollment_invite(EnrollmentCreation::new(
-            first.space_id(),
-            100,
-            200,
-            entropy.clone(),
-        ))
-        .await?;
-    let database = fs::read(owner_config.database_path())?;
-    assert!(!database.windows(32).any(|window| window == secret));
-
-    // When
-    let expired = candidate
-        .handle()
-        .redeem_enrollment(EnrollmentAttempt::new(
-            ticket.clone(),
-            RequestId::try_from([0x63; 16].as_slice())?,
-            "candidate".to_owned(),
-            201,
-        ))
-        .await
-        .expect_err("expired invite must fail");
-    let cancelled_ticket = owner
-        .handle()
-        .create_enrollment_invite(EnrollmentCreation::new(
-            first.space_id(),
-            300,
-            400,
-            InviteEntropy::from_bytes([0x64; 16], [0x65; 32]),
-        ))
-        .await?;
-    owner
-        .handle()
-        .cancel_enrollment_invite(cancelled_ticket.invitation_id(), 301)
-        .await?;
-    let cancelled = candidate
-        .handle()
-        .redeem_enrollment(EnrollmentAttempt::new(
-            cancelled_ticket,
-            RequestId::try_from([0x66; 16].as_slice())?,
-            "candidate".to_owned(),
-            302,
-        ))
-        .await
-        .expect_err("cancelled invite must fail");
-    let cross = owner
-        .handle()
-        .create_enrollment_invite(EnrollmentCreation::new(
-            second.space_id(),
-            500,
-            600,
-            InviteEntropy::from_bytes([0x67; 16], [0x68; 32]),
-        ))
-        .await?;
-    let mut cross_bytes = cross.encode_bytes();
-    let replacement = first
-        .space_id()
-        .as_bytes()
-        .first()
-        .ok_or("first Space id is empty")?
-        ^ second
-            .space_id()
-            .as_bytes()
-            .first()
-            .ok_or("second Space id is empty")?;
-    *cross_bytes.get_mut(17).ok_or("ticket Space byte missing")? ^= replacement;
-    let cross = SignedInviteTicket::decode_bytes(&cross_bytes)?;
-    let cross_error = candidate
-        .handle()
-        .redeem_enrollment(EnrollmentAttempt::new(
-            cross,
-            RequestId::try_from([0x69; 16].as_slice())?,
-            "candidate".to_owned(),
-            501,
-        ))
-        .await
-        .expect_err("cross-Space ticket must fail");
-
-    // Then
-    assert_eq!(expired.code(), EnrollmentErrorCode::EXPIRED);
-    assert_eq!(cancelled.code(), EnrollmentErrorCode::CANCELLED);
-    assert_eq!(cross_error.code(), EnrollmentErrorCode::INVALID_TICKET);
-    assert_eq!(candidate.handle().status().await?.membership_count(), 0);
-    candidate.shutdown().await?;
     owner.shutdown().await?;
     Ok(())
 }

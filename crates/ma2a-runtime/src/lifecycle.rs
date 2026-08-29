@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use ma2a_net::RuntimeEndpoint;
 use ma2a_store::StoreConfig;
@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     actor::{Actor, RuntimeHandle, ShutdownAck},
+    clock::SystemClock,
     error::{RuntimeError, RuntimeErrorKind},
     state::{Connectivity, RuntimeStatus, ShutdownReport},
     store::{STORE_CAPACITY, StoreBackend, StoreClient},
@@ -31,6 +32,17 @@ impl Runtime {
     /// # Errors
     /// Returns [`RuntimeError`] on any fail-closed storage, identity, or Endpoint failure.
     pub async fn start(config: StoreConfig) -> Result<Self, RuntimeError> {
+        Self::start_with_clock(config, Arc::new(SystemClock)).await
+    }
+
+    /// Opens a Runtime with an injected authoritative security clock.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] on storage, identity, clock, or Endpoint failure.
+    pub async fn start_with_clock(
+        config: StoreConfig,
+        clock: Arc<dyn crate::RuntimeClock>,
+    ) -> Result<Self, RuntimeError> {
         let backend = tokio::task::spawn_blocking(move || StoreBackend::open(&config)).await??;
         let (store_sender, store_receiver) = mpsc::channel(STORE_CAPACITY);
         let store = StoreClient::new(store_sender);
@@ -40,24 +52,30 @@ impl Runtime {
             Ok(TaskExit::Store)
         });
         let identity = store.initialize().await?;
-        let boot_id = boot_id()?;
-        let boot_revision = store.begin_boot(boot_id).await?;
         let (enrollment_sender, enrollment_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
-        let endpoint = RuntimeEndpoint::bind(identity.secret, enrollment_sender).await?;
+        let endpoint =
+            RuntimeEndpoint::bind(identity.secret, enrollment_sender, identity.bind_port).await?;
         if endpoint.endpoint_id() != identity.endpoint_id {
             return Err(RuntimeError::new(RuntimeErrorKind::IdentityMismatch));
         }
+        if identity.bind_port.is_none() {
+            let port = endpoint.bind_port()?;
+            store.set_endpoint_bind_port(port).await?;
+        }
+        let boot_id = boot_id()?;
+        let boot_revision = store.begin_boot(boot_id).await?;
         let mut state = RuntimeStatus {
             endpoint_id: identity.endpoint_id,
             endpoint_addr: endpoint.endpoint_addr(),
             boot_id,
             revision: boot_revision,
-            memberships: BTreeSet::default(),
+            memberships: identity.memberships,
             ready: true,
             connectivity: Connectivity::DIRECT_ONLY,
         };
         state.revision = store.observe(&state).await?.max(boot_revision);
-        let (actor, handle, cancellation) = Actor::new(state, endpoint, store, enrollment_calls);
+        let (actor, handle, cancellation) =
+            Actor::new(state, endpoint, store, enrollment_calls, clock);
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
         Ok(Self {
             handle,

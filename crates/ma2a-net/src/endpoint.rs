@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, net::Ipv4Addr};
 
 use iroh::{
     Endpoint, EndpointAddr, RelayMode, SecretKey, address_lookup::memory::MemoryLookup,
@@ -126,13 +126,22 @@ impl RuntimeEndpoint {
     pub async fn bind(
         secret: EndpointSecret,
         enrollment_calls: mpsc::Sender<EnrollmentCall>,
+        bind_port: Option<u16>,
     ) -> Result<Self, NetError> {
-        let endpoint = Endpoint::builder(presets::Minimal)
+        let builder = Endpoint::builder(presets::Minimal)
             .secret_key(secret.0)
             .relay_mode(RelayMode::Disabled)
             .clear_address_lookup()
             .address_lookup(MemoryLookup::with_provenance("ma2a_private"))
-            .alpns(vec![ENROLLMENT_ALPN.to_vec()])
+            .alpns(vec![ENROLLMENT_ALPN.to_vec()]);
+        let builder = if let Some(port) = bind_port {
+            builder
+                .bind_addr((Ipv4Addr::UNSPECIFIED, port))
+                .map_err(|_| NetError(NetErrorKind::Enrollment))?
+        } else {
+            builder
+        };
+        let endpoint = builder
             .bind()
             .await
             .map_err(|error| NetError(NetErrorKind::Bind(error)))?;
@@ -140,6 +149,20 @@ impl RuntimeEndpoint {
             .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
             .spawn();
         Ok(Self { router })
+    }
+
+    /// Returns the local UDP port advertised for direct enrollment.
+    ///
+    /// # Errors
+    /// Returns [`NetError`] when the bound Endpoint has no direct address.
+    pub fn bind_port(&self) -> Result<u16, NetError> {
+        self.router
+            .endpoint()
+            .addr()
+            .ip_addrs()
+            .next()
+            .map(std::net::SocketAddr::port)
+            .ok_or_else(NetError::enrollment)
     }
 
     /// Returns the public Endpoint identity.
@@ -161,7 +184,7 @@ impl RuntimeEndpoint {
         &self,
         owner: EndpointAddr,
         request: &[u8],
-    ) -> Result<(u8, Vec<u8>), NetError> {
+    ) -> Result<(u8, Vec<Vec<u8>>), NetError> {
         exchange(self.router.endpoint(), owner, request).await
     }
 
