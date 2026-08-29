@@ -3,6 +3,8 @@ use std::{error::Error, fmt};
 use ma2a_core::{EndpointId, SignedSpaceAddressRecordV1, SpaceAuthorizationView, SpaceId};
 use ma2a_store::{AddressAdvance, AddressRecordOutcome, Repository, StoreError};
 
+use crate::{AddressMetrics, AddressPersistenceOutcome, AddressValidationOutcome};
+
 /// Exact Space and Endpoint requested by a private address lookup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AddressRecordTarget {
@@ -29,6 +31,7 @@ impl AddressRecordTarget {
             target: self,
             authorization,
             now_ms,
+            metrics: None,
         }
     }
 }
@@ -39,6 +42,16 @@ pub struct AddressValidationContext<'a> {
     target: AddressRecordTarget,
     authorization: &'a SpaceAuthorizationView,
     now_ms: u64,
+    metrics: Option<&'a AddressMetrics>,
+}
+
+impl<'a> AddressValidationContext<'a> {
+    /// Attaches privacy-safe outcome counters to this validation decision.
+    #[must_use]
+    pub const fn with_metrics(mut self, metrics: &'a AddressMetrics) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
 }
 
 /// A canonical, authorized, current, signed, and persistently accepted address record.
@@ -134,36 +147,50 @@ impl AddressRecordValidator {
         bytes: &[u8],
         context: AddressValidationContext<'_>,
     ) -> Result<ValidatedAddressRecord, AddressRecordValidationError> {
-        let signed = SignedSpaceAddressRecordV1::parse_canonical_bytes(bytes)
-            .map_err(|_| AddressRecordValidationError::InvalidEncoding)?;
+        let default_metrics = AddressMetrics::default();
+        let metrics = context.metrics.unwrap_or(&default_metrics);
+        let signed = SignedSpaceAddressRecordV1::parse_canonical_bytes(bytes).map_err(|_| {
+            metrics.record_validation(AddressValidationOutcome::InvalidEncoding);
+            AddressRecordValidationError::InvalidEncoding
+        })?;
         let record = signed.record();
         if record.endpoint_id() != context.target.endpoint_id {
+            metrics.record_validation(AddressValidationOutcome::WrongEndpoint);
             return Err(AddressRecordValidationError::WrongEndpoint);
         }
         if context.authorization.space_id() != context.target.space_id
             || record.space_id() != context.target.space_id
         {
+            metrics.record_validation(AddressValidationOutcome::WrongSpace);
             return Err(AddressRecordValidationError::WrongSpace);
         }
         if !context
             .authorization
             .contains_member(context.target.endpoint_id)
         {
+            metrics.record_validation(AddressValidationOutcome::UnauthorizedMember);
             return Err(AddressRecordValidationError::UnauthorizedMember);
         }
         if record.issued_at_ms() > context.now_ms {
+            metrics.record_validation(AddressValidationOutcome::FutureRecord);
             return Err(AddressRecordValidationError::FutureRecord);
         }
         if record.expires_at_ms() <= context.now_ms {
+            metrics.record_validation(AddressValidationOutcome::ExpiredRecord);
             return Err(AddressRecordValidationError::ExpiredRecord);
         }
-        signed
-            .verify_signature()
-            .map_err(|_| AddressRecordValidationError::InvalidSignature)?;
-        let issued_at_ms = i64::try_from(record.issued_at_ms())
-            .map_err(|_| AddressRecordValidationError::InvalidEncoding)?;
-        let expires_at_ms = i64::try_from(record.expires_at_ms())
-            .map_err(|_| AddressRecordValidationError::InvalidEncoding)?;
+        signed.verify_signature().map_err(|_| {
+            metrics.record_validation(AddressValidationOutcome::InvalidSignature);
+            AddressRecordValidationError::InvalidSignature
+        })?;
+        let issued_at_ms = i64::try_from(record.issued_at_ms()).map_err(|_| {
+            metrics.record_validation(AddressValidationOutcome::InvalidEncoding);
+            AddressRecordValidationError::InvalidEncoding
+        })?;
+        let expires_at_ms = i64::try_from(record.expires_at_ms()).map_err(|_| {
+            metrics.record_validation(AddressValidationOutcome::InvalidEncoding);
+            AddressRecordValidationError::InvalidEncoding
+        })?;
         let outcome = repository
             .advance_address(&AddressAdvance {
                 space_id: record.space_id(),
@@ -174,13 +201,31 @@ impl AddressRecordValidator {
                 record_hash: signed.record_hash(),
                 signed_record: signed.canonical_bytes().to_vec(),
             })
-            .map_err(AddressRecordValidationError::Store)?;
+            .map_err(|error| {
+                metrics.record_validation(AddressValidationOutcome::StoreError);
+                AddressRecordValidationError::Store(error)
+            })?;
         match outcome {
-            AddressRecordOutcome::Advanced { .. } | AddressRecordOutcome::Idempotent { .. } => {
+            AddressRecordOutcome::Advanced { .. } => {
+                metrics.record_persistence(AddressPersistenceOutcome::Advanced);
+                metrics.record_validation(AddressValidationOutcome::Accepted);
                 Ok(ValidatedAddressRecord(signed))
             }
-            AddressRecordOutcome::Rollback { .. } => Err(AddressRecordValidationError::Rollback),
-            AddressRecordOutcome::Fork { .. } => Err(AddressRecordValidationError::Fork),
+            AddressRecordOutcome::Idempotent { .. } => {
+                metrics.record_persistence(AddressPersistenceOutcome::Idempotent);
+                metrics.record_validation(AddressValidationOutcome::Accepted);
+                Ok(ValidatedAddressRecord(signed))
+            }
+            AddressRecordOutcome::Rollback { .. } => {
+                metrics.record_persistence(AddressPersistenceOutcome::Rollback);
+                metrics.record_validation(AddressValidationOutcome::Rollback);
+                Err(AddressRecordValidationError::Rollback)
+            }
+            AddressRecordOutcome::Fork { .. } => {
+                metrics.record_persistence(AddressPersistenceOutcome::Fork);
+                metrics.record_validation(AddressValidationOutcome::Fork);
+                Err(AddressRecordValidationError::Fork)
+            }
         }
     }
 }
