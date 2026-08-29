@@ -38,7 +38,10 @@ impl RuntimeHandle {
     ) -> Result<EstablishedEnrollment, EnrollmentError> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(Command::RedeemEnrollment { attempt, reply })
+            .send(Command::RedeemEnrollment {
+                attempt: Box::new(attempt),
+                reply,
+            })
             .await
             .map_err(|_| EnrollmentError::internal())?;
         response.await.map_err(|_| EnrollmentError::internal())?
@@ -52,7 +55,6 @@ impl RuntimeHandle {
     pub async fn cancel_enrollment_invite(
         &self,
         invitation_id: [u8; 16],
-        _now_ms: u64,
     ) -> Result<(), EnrollmentError> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -88,11 +90,6 @@ impl Actor {
             .map_err(|_| EnrollmentError::from_status(1))?;
         let chain = ma2a_core::validate_enrollment_pages(&pages)
             .map_err(|_| EnrollmentError::from_status(1))?;
-        let (revision, chain) = self
-            .store
-            .persist_enrollment(chain)
-            .await
-            .map_err(|_| EnrollmentError::internal())?;
         if chain.space_id() != expected_space
             || chain
                 .members()
@@ -104,6 +101,11 @@ impl Actor {
         {
             return Err(EnrollmentError::from_status(1));
         }
+        let (revision, chain) = self
+            .store
+            .persist_enrollment(chain)
+            .await
+            .map_err(|_| EnrollmentError::internal())?;
         self.state.memberships.insert(chain.space_id());
         self.state.revision = revision;
         let _receiver_count = self

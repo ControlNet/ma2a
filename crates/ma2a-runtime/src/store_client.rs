@@ -75,7 +75,7 @@ impl StoreClient {
     )]
     pub(crate) async fn create_enrollment_invite(
         &self,
-        creation: crate::EnrollmentCreation,
+        creation: crate::enrollment::IssuedEnrollmentCreation,
         creator: ma2a_core::EndpointId,
         owner_addr: ma2a_net::EndpointAddr,
     ) -> Result<ma2a_core::SignedInviteTicket, RuntimeError> {

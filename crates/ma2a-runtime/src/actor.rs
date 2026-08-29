@@ -26,7 +26,7 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<SignedInviteTicket, EnrollmentError>>,
     },
     RedeemEnrollment {
-        attempt: EnrollmentAttempt,
+        attempt: Box<EnrollmentAttempt>,
         reply: oneshot::Sender<Result<EstablishedEnrollment, EnrollmentError>>,
     },
     CancelEnrollmentInvite {
@@ -162,13 +162,20 @@ impl Actor {
                         let _unsent = reply.send(result);
                     }
                     Some(Command::CreateEnrollmentInvite { creation, reply }) => {
-                        let result = self.store.create_enrollment_invite(
-                            creation, self.state.endpoint_id, self.state.endpoint_addr.clone(),
-                        ).await.map_err(|_| EnrollmentError::internal());
+                        let result = match self.clock.now_ms()
+                            .ok()
+                            .and_then(|value| u64::try_from(value).ok())
+                            .and_then(|now_ms| creation.issue_at(now_ms).ok())
+                        {
+                            Some(creation) => self.store.create_enrollment_invite(
+                                creation, self.state.endpoint_id, self.state.endpoint_addr.clone(),
+                            ).await.map_err(|_| EnrollmentError::internal()),
+                            None => Err(EnrollmentError::internal()),
+                        };
                         let _unsent = reply.send(result);
                     }
                     Some(Command::RedeemEnrollment { attempt, reply }) => {
-                        let result = self.redeem_enrollment(attempt).await;
+                        let result = self.redeem_enrollment(*attempt).await;
                         let _unsent = reply.send(result);
                     }
                     Some(Command::CancelEnrollmentInvite { invitation_id, reply }) => {
