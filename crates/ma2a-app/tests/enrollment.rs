@@ -12,7 +12,7 @@ use std::{
 
 use ma2a_core::{
     EnrollmentPage, InviteEntropy, MemberCapabilities, RequestId, SpaceManifestMembership,
-    SpaceMemberV1, SpacePolicyV1, validate_enrollment_pages,
+    SpaceMemberV1, SpacePolicyV1, SpaceRevocationV1, validate_enrollment_pages,
 };
 use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock};
 use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
@@ -77,11 +77,30 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
         owner_member.clone(),
         SpacePolicyV1::phase_one_default(),
     ))?;
-    for generation in 1..=57 {
+    let revoked = member(endpoint(0x42)?, "revoked")?;
+    let mut first_members = vec![owner_member.clone(), revoked.clone()];
+    first_members.sort_by_key(SpaceMemberV1::endpoint_id);
+    repository.advance_owned_space(&OwnedSpaceUpdate::new(
+        created.space_id(),
+        1_700_000_000_001,
+        SpaceManifestMembership::new(first_members, vec![]),
+    ))?;
+    repository.advance_owned_space(&OwnedSpaceUpdate::new(
+        created.space_id(),
+        1_700_000_000_002,
+        SpaceManifestMembership::new(
+            vec![owner_member.clone()],
+            vec![SpaceRevocationV1::new(revoked.endpoint_id())],
+        ),
+    ))?;
+    for generation in 3..=57 {
         repository.advance_owned_space(&OwnedSpaceUpdate::new(
             created.space_id(),
             1_700_000_000_000 + generation,
-            SpaceManifestMembership::new(vec![owner_member.clone()], vec![]),
+            SpaceManifestMembership::new(
+                vec![owner_member.clone()],
+                vec![SpaceRevocationV1::new(revoked.endpoint_id())],
+            ),
         ))?;
     }
     drop(repository);
@@ -95,8 +114,7 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
         .handle()
         .create_enrollment_invite(EnrollmentCreation::new(
             created.space_id(),
-            2_000,
-            302_000,
+            300_000,
             InviteEntropy::from_bytes([0x11; 16], [0x22; 32]),
         )?)
         .await?;
@@ -126,6 +144,14 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
         .ok_or("candidate chain missing")?;
     assert_eq!(chain.latest_generation(), 58);
     assert_eq!(chain.manifests().len(), 58);
+    assert_eq!(
+        chain
+            .manifests()
+            .last()
+            .ok_or("latest manifest missing")?
+            .revocations(),
+        [SpaceRevocationV1::new(revoked.endpoint_id())]
+    );
     candidate.shutdown().await?;
     let restarted_candidate = Runtime::start(candidate_config).await?;
     let restarted_status = restarted_candidate.handle().status().await?;

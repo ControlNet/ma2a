@@ -1,83 +1,17 @@
 use iroh_base::EndpointAddr;
 use ma2a_core::{
-    EndpointId, InviteEntropy, InviteValidity, MemberCapabilities, RequestId, SignedInviteTicket,
+    EndpointId, InviteEntropy, InviteValidity, MemberCapabilities, SignedInviteTicket,
     SpaceAuthoritySecret, SpaceId, SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1,
     SpaceMemberV1,
 };
 use rusqlite::OptionalExtension as _;
 
 use crate::{
-    KeyKind, KeyReference, Repository, StoreError,
+    AuthorizedEnrollmentRedemption, EnrollmentOutcome, KeyKind, KeyReference, Repository,
+    StoreError,
     repository::increment_revision,
     space_rows::{load_chain, replace_chain},
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Authenticated candidate data used for atomic invitation redemption.
-#[allow(
-    clippy::exhaustive_structs,
-    reason = "runtime and store exchange this closed internal protocol record"
-)]
-pub struct EnrollmentRedemption {
-    /// Candidate identity authenticated by the transport.
-    pub endpoint_id: EndpointId,
-    /// Stable request identifier used for exact retry detection.
-    pub request_id: RequestId,
-    /// Candidate display name added to the next manifest generation.
-    pub display_name: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Verified ticket, authenticated candidate, and owner-authoritative redemption time.
-pub struct AuthorizedEnrollmentRedemption {
-    ticket: SignedInviteTicket,
-    candidate: EnrollmentRedemption,
-    owner_now_ms: i64,
-}
-
-impl AuthorizedEnrollmentRedemption {
-    /// Binds candidate data to a verified ticket and owner clock value.
-    pub const fn new(
-        ticket: SignedInviteTicket,
-        candidate: EnrollmentRedemption,
-        owner_now_ms: i64,
-    ) -> Self {
-        Self {
-            ticket,
-            candidate,
-            owner_now_ms,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Durable result of attempting to redeem an enrollment invitation.
-#[allow(
-    clippy::exhaustive_enums,
-    reason = "runtime exhaustively maps the closed store outcome protocol"
-)]
-pub enum EnrollmentOutcome {
-    /// The invitation was consumed and a new authority chain was committed.
-    Redeemed {
-        /// Repository revision after the atomic commit.
-        revision: u64,
-        /// Canonical complete Space chain returned to the candidate.
-        chain: Vec<u8>,
-    },
-    /// The same candidate and request repeated a previously committed redemption.
-    Retry {
-        /// Original canonical complete Space chain stored with the commit.
-        chain: Vec<u8>,
-    },
-    /// No valid invitation matched the supplied identifier and digest.
-    NotFound,
-    /// The invitation expired before redemption.
-    Expired,
-    /// The owner cancelled the invitation before redemption.
-    Cancelled,
-    /// The invitation was already consumed by a different candidate or request.
-    Conflict,
-}
 
 impl Repository {
     /// Signs and durably records a single-use enrollment invitation.
@@ -122,32 +56,16 @@ impl Repository {
             ticket.invitation_id(),
             space_id,
             ticket.secret_digest(),
+            ticket.creator(),
+            i64::try_from(ticket.created_at_ms()).map_err(|_| StoreError::SchemaMismatch {
+                detail: "invitation creation exceeds SQLite range",
+            })?,
             i64::try_from(ticket.expires_at_ms()).map_err(|_| StoreError::SchemaMismatch {
                 detail: "invitation expiry exceeds SQLite range",
             })?,
+            ticket.encoded_owner_addr().to_vec(),
         ))?;
         Ok(ticket)
-    }
-
-    /// Cancels a pending invitation and advances the repository revision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the invitation is not pending or the transaction cannot commit.
-    pub fn cancel_invitation(&mut self, invitation_id: [u8; 16]) -> Result<u64, StoreError> {
-        let transaction = self.immediate()?;
-        let changed = transaction.execute(
-            "UPDATE invitations SET status = 2 WHERE invitation_id = ?1 AND status = 0",
-            [invitation_id.as_slice()],
-        )?;
-        if changed != 1 {
-            return Err(StoreError::SchemaMismatch {
-                detail: "pending invitation not found",
-            });
-        }
-        let revision = increment_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(revision)
     }
 
     /// Atomically consumes an invitation and commits the candidate's authority generation.
@@ -167,11 +85,28 @@ impl Repository {
         let input = &authorized.candidate;
         let now_ms = authorized.owner_now_ms;
         let row = self.connection.query_row(
-            "SELECT space_id, authority_key_ref FROM invitations JOIN spaces USING(space_id) WHERE invitation_id = ?1 AND token_hash = ?2",
+            "SELECT space_id, authority_key_ref, creator_endpoint_id, created_at_ms, expires_at_ms, owner_bootstrap
+             FROM invitations JOIN spaces USING(space_id)
+             WHERE invitation_id = ?1 AND token_hash = ?2",
             (ticket.invitation_id().as_slice(), ticket.secret_digest().as_slice()),
-            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+            )),
         ).optional()?;
-        let Some((space_bytes, reference)) = row else {
+        let Some((
+            space_bytes,
+            reference,
+            creator_bytes,
+            created_at_ms,
+            expires_at_ms,
+            owner_bootstrap,
+        )) = row
+        else {
             return Ok(EnrollmentOutcome::NotFound);
         };
         let space_id = ma2a_core::SpaceId::try_from(space_bytes.as_slice()).map_err(|_| {
@@ -179,6 +114,18 @@ impl Repository {
                 detail: "invitation Space id is invalid",
             }
         })?;
+        let creator = EndpointId::try_from(creator_bytes.as_slice()).map_err(|_| {
+            StoreError::SchemaMismatch {
+                detail: "invitation creator Endpoint id is invalid",
+            }
+        })?;
+        if ticket.creator() != creator
+            || i64::try_from(ticket.created_at_ms()).ok() != Some(created_at_ms)
+            || i64::try_from(ticket.expires_at_ms()).ok() != Some(expires_at_ms)
+            || ticket.encoded_owner_addr() != owner_bootstrap
+        {
+            return Ok(EnrollmentOutcome::NotFound);
+        }
         let reference = reference
             .ok_or(StoreError::SpaceAuthorityUnavailable)
             .and_then(|value| KeyReference::parse(&value))?;
@@ -220,10 +167,21 @@ impl Repository {
                 detail: "Space authority does not match genesis",
             });
         }
-        let mut members = chain.manifests().last().map_or_else(
-            || vec![chain.genesis().genesis().initial_member().clone()],
-            |manifest| manifest.members().to_vec(),
+        let (mut members, revocations) = chain.manifests().last().map_or_else(
+            || {
+                (
+                    vec![chain.genesis().genesis().initial_member().clone()],
+                    Vec::new(),
+                )
+            },
+            |manifest| (manifest.members().to_vec(), manifest.revocations().to_vec()),
         );
+        if members
+            .binary_search_by_key(&input.endpoint_id, SpaceMemberV1::endpoint_id)
+            .is_ok()
+        {
+            return Ok(EnrollmentOutcome::Conflict);
+        }
         let candidate = SpaceMemberV1::new(
             input.endpoint_id,
             input.display_name.clone(),
@@ -244,7 +202,7 @@ impl Repository {
             u64::try_from(now_ms).map_err(|_| StoreError::SchemaMismatch {
                 detail: "negative enrollment timestamp",
             })?,
-            SpaceManifestMembership::new(members, vec![]),
+            SpaceManifestMembership::new(members, revocations),
         )?
         .sign(&secret)?;
         chain.apply(&manifest)?;
