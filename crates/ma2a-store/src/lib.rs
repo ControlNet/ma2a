@@ -20,7 +20,7 @@ mod space_rows;
 mod spaces;
 
 pub use config::StoreConfig;
-pub use enrollment::{EnrollmentOutcome, EnrollmentRedemption};
+pub use enrollment::{AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption};
 pub use error::StoreError;
 pub use key_store::{KeyKind, KeyMaterial, KeyReference, KeyStore, ProtectedSecret};
 pub use migrations::SCHEMA_VERSION;

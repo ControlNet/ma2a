@@ -1986,8 +1986,8 @@ dependencies = [
 name = "ma2a-store"
 version = "0.1.0"
 dependencies = [
+ "iroh-base",
  "ma2a-core",
- "ma2a-net",
  "rusqlite",
  "rustix",
  "zeroize",

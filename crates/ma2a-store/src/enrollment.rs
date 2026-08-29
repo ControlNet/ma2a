@@ -1,9 +1,9 @@
+use iroh_base::EndpointAddr;
 use ma2a_core::{
     EndpointId, InviteEntropy, InviteValidity, MemberCapabilities, RequestId, SignedInviteTicket,
     SpaceAuthoritySecret, SpaceId, SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1,
     SpaceMemberV1,
 };
-use ma2a_net::EndpointAddr;
 use rusqlite::OptionalExtension as _;
 
 use crate::{
@@ -25,12 +25,29 @@ pub struct EnrollmentRedemption {
     pub request_id: RequestId,
     /// Candidate display name added to the next manifest generation.
     pub display_name: String,
-    /// Public invitation identifier.
-    pub invitation_id: [u8; 16],
-    /// Digest of the invitation secret presented by the candidate.
-    pub token_hash: [u8; 32],
-    /// Owner-evaluated redemption time in Unix milliseconds.
-    pub now_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Verified ticket, authenticated candidate, and owner-authoritative redemption time.
+pub struct AuthorizedEnrollmentRedemption {
+    ticket: SignedInviteTicket,
+    candidate: EnrollmentRedemption,
+    owner_now_ms: i64,
+}
+
+impl AuthorizedEnrollmentRedemption {
+    /// Binds candidate data to a verified ticket and owner clock value.
+    pub const fn new(
+        ticket: SignedInviteTicket,
+        candidate: EnrollmentRedemption,
+        owner_now_ms: i64,
+    ) -> Self {
+        Self {
+            ticket,
+            candidate,
+            owner_now_ms,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,12 +161,14 @@ impl Repository {
     )]
     pub fn redeem_enrollment(
         &mut self,
-        ticket: &SignedInviteTicket,
-        input: &EnrollmentRedemption,
+        authorized: &AuthorizedEnrollmentRedemption,
     ) -> Result<EnrollmentOutcome, StoreError> {
+        let ticket = &authorized.ticket;
+        let input = &authorized.candidate;
+        let now_ms = authorized.owner_now_ms;
         let row = self.connection.query_row(
             "SELECT space_id, authority_key_ref FROM invitations JOIN spaces USING(space_id) WHERE invitation_id = ?1 AND token_hash = ?2",
-            (input.invitation_id.as_slice(), input.token_hash.as_slice()),
+            (ticket.invitation_id().as_slice(), ticket.secret_digest().as_slice()),
             |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?)),
         ).optional()?;
         let Some((space_bytes, reference)) = row else {
@@ -174,7 +193,7 @@ impl Repository {
         let transaction = self.immediate()?;
         let state = transaction.query_row(
             "SELECT status, expires_at_ms, consumed_by_endpoint_id, consumed_request_id, response_chain FROM invitations WHERE invitation_id = ?1 AND token_hash = ?2",
-            (input.invitation_id.as_slice(), input.token_hash.as_slice()),
+            (ticket.invitation_id().as_slice(), ticket.secret_digest().as_slice()),
             |row| Ok((row.get::<_, u8>(0)?, row.get::<_, i64>(1)?, row.get::<_, Option<Vec<u8>>>(2)?, row.get::<_, Option<Vec<u8>>>(3)?, row.get::<_, Option<Vec<u8>>>(4)?)),
         )?;
         match state.0 {
@@ -192,15 +211,7 @@ impl Repository {
             }
             2 => return Ok(EnrollmentOutcome::Cancelled),
             3 => return Ok(EnrollmentOutcome::Expired),
-            _ if state.1 <= input.now_ms => {
-                transaction.execute(
-                    "UPDATE invitations SET status = 3 WHERE invitation_id = ?1",
-                    [input.invitation_id.as_slice()],
-                )?;
-                increment_revision(&transaction)?;
-                transaction.commit()?;
-                return Ok(EnrollmentOutcome::Expired);
-            }
+            _ if state.1 <= now_ms => return Ok(EnrollmentOutcome::Expired),
             _ => {}
         }
         let mut chain = load_chain(&transaction, space_id)?.ok_or(StoreError::SpaceNotFound)?;
@@ -230,7 +241,7 @@ impl Repository {
                 })?;
         let manifest = SpaceManifestV1::new(
             SpaceManifestLink::new(space_id, generation, chain.latest_hash()),
-            u64::try_from(input.now_ms).map_err(|_| StoreError::SchemaMismatch {
+            u64::try_from(now_ms).map_err(|_| StoreError::SchemaMismatch {
                 detail: "negative enrollment timestamp",
             })?,
             SpaceManifestMembership::new(members, vec![]),
@@ -245,7 +256,7 @@ impl Repository {
         replace_chain(&transaction, &chain, Some(&reference))?;
         transaction.execute(
             "UPDATE invitations SET status = 1, consumed_at_ms = ?1, consumed_by_endpoint_id = ?2, consumed_request_id = ?3, response_chain = ?4 WHERE invitation_id = ?5 AND status = 0",
-            (input.now_ms, input.endpoint_id.as_bytes().as_slice(), input.request_id.as_bytes().as_slice(), response.as_slice(), input.invitation_id.as_slice()),
+            (now_ms, input.endpoint_id.as_bytes().as_slice(), input.request_id.as_bytes().as_slice(), response.as_slice(), ticket.invitation_id().as_slice()),
         )?;
         let revision = increment_revision(&transaction)?;
         transaction.commit()?;
