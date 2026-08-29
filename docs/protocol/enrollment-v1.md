@@ -18,13 +18,15 @@ The candidate request contains the signed ticket, RequestId, and display name. I
 
 Pending invitations transition atomically with the new signed Space generation. The transaction binds the verified ticket invitation ID, ticket Space ID, domain-separated secret digest, TLS-authenticated candidate Endpoint ID, and RequestId.
 
-The first valid redemption commits the complete canonical chain and the retry identity. The same Endpoint and RequestId may retrieve that committed chain after process restart. A changed RequestId or different Endpoint conflicts. Cancelled, expired, replay-conflict, invalid, and cross-Space requests return only a status byte, disclose no chain page, and do not advance Runtime revision or Space generation.
+The first valid redemption commits the complete canonical chain and the retry identity. The same Endpoint and RequestId may retrieve that committed chain after process restart. A changed RequestId or different Endpoint conflicts. Cancelled, expired, not-yet-valid, replay-conflict, invalid, and cross-Space requests return only a nonzero status with a zero page count, disclose no chain page, and do not advance Runtime revision or Space generation.
 
 Redemption preserves the latest manifest's outstanding revocations when signing generation N+1. A candidate that is already a current member conflicts without consuming the invitation or creating a redundant generation.
 
-## Page stream
+## Response framing
 
-A successful response is a sequence of length-prefixed `EnrollmentPage` frames after status zero. Each encoded page is at most 300,000 bytes and carries a zero-based index, total page count, final generation, Genesis only on page zero, and at most eight ordered canonical manifests. Page count is explicitly limited to 32 and is checked before allocation. There is no whole-chain response frame or 4 MiB aggregate response limit.
+The response wire format is exactly `status:u8 || page_count:u16 big-endian || page_count * (page_len:u32 big-endian || page_bytes)`. Status zero requires `page_count` in `1..=32`; every nonzero status requires `page_count` zero. The candidate validates this count before reserving page storage or allocating any page buffer, reads exactly the declared frames, bounds each nonzero page length before allocation, and rejects bytes after the declared final frame.
+
+Each encoded `EnrollmentPage` is at most 300,000 bytes and carries a zero-based index, total page count, final generation, Genesis only on page zero, and at most eight ordered canonical manifests. There is no whole-chain response frame or 4 MiB aggregate response limit. The owner validates status/count semantics and every page length before writing the response header or body.
 
 Core v1 permits at most 255 manifests, 64 active members, 64 disjoint revocations, and 64 UTF-8 bytes per member label. Those schema bounds keep every valid v1 chain below 4 MiB even though the generic signed-object ceiling is larger. The paging boundary is therefore the maximum valid 255-manifest chain, which streams as 32 independently bounded pages; implementations must not reintroduce an aggregate frame or buffer limit.
 
