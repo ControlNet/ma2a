@@ -3,8 +3,10 @@
 #![forbid(unsafe_code)]
 
 mod endpoint;
+mod enrollment;
 mod protocols;
 
 pub use endpoint::{EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpoint};
+pub use enrollment::{EnrollmentCall, MAX_ENROLLMENT_MESSAGE_BYTES};
 pub use iroh::EndpointAddr;
 pub use protocols::{ENROLLMENT_ALPN, NORMAL_PROTOCOL_ALPNS, ProtocolRole};

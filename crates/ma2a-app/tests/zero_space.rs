@@ -74,6 +74,7 @@ async fn zero_space_runtime_is_ready_rejects_normal_alpns_and_joins_shutdown() -
         client.connect(status.endpoint_addr(), ENROLLMENT_ALPN),
     )
     .await??;
+    enrollment.close(0_u8.into(), b"");
     let _close_reason = enrollment.closed().await;
     client.close().await;
     let shutdown = runtime.shutdown().await?;

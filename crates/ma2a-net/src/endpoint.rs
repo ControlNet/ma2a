@@ -7,7 +7,12 @@ use iroh::{
 use ma2a_core::EndpointId;
 use zeroize::Zeroizing;
 
-use crate::protocols::{ENROLLMENT_ALPN, EnrollmentReservation};
+use tokio::sync::mpsc;
+
+use crate::{
+    enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
+    protocols::ENROLLMENT_ALPN,
+};
 
 /// A zeroizing Iroh Endpoint secret that never reveals private bytes through `Debug`.
 #[derive(Clone)]
@@ -79,6 +84,7 @@ pub struct NetError(NetErrorKind);
 enum NetErrorKind {
     Bind(iroh::endpoint::BindError),
     Shutdown,
+    Enrollment,
 }
 
 impl fmt::Display for NetError {
@@ -86,7 +92,14 @@ impl fmt::Display for NetError {
         match &self.0 {
             NetErrorKind::Bind(error) => write!(formatter, "Iroh Endpoint bind failed: {error}"),
             NetErrorKind::Shutdown => formatter.write_str("Iroh Endpoint shutdown task failed"),
+            NetErrorKind::Enrollment => formatter.write_str("Iroh enrollment exchange failed"),
         }
+    }
+}
+
+impl NetError {
+    pub(crate) const fn enrollment() -> Self {
+        Self(NetErrorKind::Enrollment)
     }
 }
 
@@ -94,7 +107,7 @@ impl Error for NetError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.0 {
             NetErrorKind::Bind(error) => Some(error),
-            NetErrorKind::Shutdown => None,
+            NetErrorKind::Shutdown | NetErrorKind::Enrollment => None,
         }
     }
 }
@@ -110,7 +123,10 @@ impl RuntimeEndpoint {
     ///
     /// # Errors
     /// Returns [`NetError`] when Iroh cannot bind the Endpoint.
-    pub async fn bind(secret: EndpointSecret) -> Result<Self, NetError> {
+    pub async fn bind(
+        secret: EndpointSecret,
+        enrollment_calls: mpsc::Sender<EnrollmentCall>,
+    ) -> Result<Self, NetError> {
         let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(secret.0)
             .relay_mode(RelayMode::Disabled)
@@ -121,7 +137,7 @@ impl RuntimeEndpoint {
             .await
             .map_err(|error| NetError(NetErrorKind::Bind(error)))?;
         let router = Router::builder(endpoint)
-            .accept(ENROLLMENT_ALPN, EnrollmentReservation)
+            .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
             .spawn();
         Ok(Self { router })
     }
@@ -134,6 +150,19 @@ impl RuntimeEndpoint {
     /// Returns current direct and relay addressing observations.
     pub fn endpoint_addr(&self) -> EndpointAddr {
         self.router.endpoint().addr()
+    }
+
+    /// Exchanges one bounded enrollment request over the reserved ALPN.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError`] when connection, stream, framing, or response validation fails.
+    pub async fn exchange_enrollment(
+        &self,
+        owner: EndpointAddr,
+        request: &[u8],
+    ) -> Result<(u8, Vec<u8>), NetError> {
+        exchange(self.router.endpoint(), owner, request).await
     }
 
     /// Closes the Endpoint and joins the protocol router.
