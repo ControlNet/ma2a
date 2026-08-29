@@ -9,6 +9,26 @@ use crate::{
 };
 
 impl Repository {
+    /// Cancels a pending invitation and advances the repository revision.
+    ///
+    /// # Errors
+    /// Returns an error when the invitation is not pending or the transaction cannot commit.
+    pub fn cancel_invitation(&mut self, invitation_id: [u8; 16]) -> Result<u64, StoreError> {
+        let transaction = self.immediate()?;
+        let changed = transaction.execute(
+            "UPDATE invitations SET status = 2 WHERE invitation_id = ?1 AND status = 0",
+            [invitation_id.as_slice()],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::SchemaMismatch {
+                detail: "pending invitation not found",
+            });
+        }
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(revision)
+    }
+
     /// Creates a pending invitation and advances the Runtime revision atomically.
     ///
     /// # Errors
@@ -17,13 +37,18 @@ impl Repository {
     pub fn create_invitation(&mut self, invitation: &InvitationRecord) -> Result<u64, StoreError> {
         let transaction = self.immediate()?;
         transaction.execute(
-            "INSERT INTO invitations(invitation_id, space_id, token_hash, expires_at_ms)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO invitations(
+                invitation_id, space_id, token_hash, creator_endpoint_id,
+                created_at_ms, expires_at_ms, owner_bootstrap
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             (
                 invitation.invitation_id.as_slice(),
                 invitation.space_id.as_bytes().as_slice(),
                 invitation.token_hash.as_slice(),
+                invitation.creator_endpoint_id.as_bytes().as_slice(),
+                invitation.created_at_ms,
                 invitation.expires_at_ms,
+                invitation.owner_bootstrap.as_slice(),
             ),
         )?;
         let revision = increment_revision(&transaction)?;

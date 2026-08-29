@@ -90,8 +90,11 @@ CREATE TABLE invitations (
     invitation_id BLOB PRIMARY KEY CHECK (length(invitation_id) = 16),
     space_id BLOB NOT NULL,
     token_hash BLOB NOT NULL UNIQUE CHECK (length(token_hash) = 32),
+    creator_endpoint_id BLOB NOT NULL CHECK (length(creator_endpoint_id) = 32),
+    created_at_ms INTEGER NOT NULL,
     status INTEGER NOT NULL DEFAULT 0 CHECK (status BETWEEN 0 AND 3),
-    expires_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms > created_at_ms),
+    owner_bootstrap BLOB NOT NULL CHECK (length(owner_bootstrap) BETWEEN 1 AND 1024),
     consumed_at_ms INTEGER,
     consumed_by_endpoint_id BLOB CHECK (
         consumed_by_endpoint_id IS NULL OR length(consumed_by_endpoint_id) = 32
