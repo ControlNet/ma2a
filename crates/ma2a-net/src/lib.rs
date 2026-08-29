@@ -27,5 +27,5 @@ pub use metrics::{
     AddressCacheOutcome, AddressLookupExclusion, AddressMetrics, AddressMetricsSnapshot,
     AddressPersistenceOutcome, AddressValidationOutcome,
 };
-pub use protocols::{ENROLLMENT_ALPN, NORMAL_PROTOCOL_ALPNS, ProtocolRole};
+pub use protocols::{ENROLLMENT_ALPN, NORMAL_PROTOCOL_ALPNS, ProtocolRole, ZERO_SPACE_ALPNS};
 pub use publisher::{AddressPublishRequest, AddressPublisher, AddressPublisherError};

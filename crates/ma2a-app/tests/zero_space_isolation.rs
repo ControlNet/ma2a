@@ -1,3 +1,5 @@
+//! Real-Iroh zero-Space protocol isolation regression.
+
 use std::{
     error::Error,
     fs,
