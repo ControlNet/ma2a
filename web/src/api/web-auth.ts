@@ -7,6 +7,9 @@ const LoginResponseSchema = z
   })
   .readonly()
 
+const CsrfTokenSchema = z.string().regex(/^[0-9a-f]{64}$/)
+const CSRF_COOKIE = "ma2a_csrf"
+
 const http = ky.create({
   credentials: "same-origin",
   retry: 0,
@@ -23,6 +26,19 @@ export class WebAuthenticationError extends Error {
 
 export type WebSession = {
   readonly csrfToken: string
+}
+
+export function currentWebSession(): WebSession | undefined {
+  const tokens = document.cookie
+    .split(";")
+    .map((part) => part.trim().split("=", 2))
+    .filter(([name]) => name === CSRF_COOKIE)
+    .map(([, value]) => CsrfTokenSchema.safeParse(value))
+  if (tokens.length !== 1) {
+    return undefined
+  }
+  const token = tokens[0]
+  return token?.success === true ? { csrfToken: token.data } : undefined
 }
 
 export async function loginAndTouchSession(passphrase: string): Promise<WebSession> {
