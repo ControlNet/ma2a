@@ -1,7 +1,10 @@
 use std::{
     fs,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use ma2a_core::{ProtocolError, RequestId};
@@ -12,7 +15,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     Runtime,
     api::{self, CommandResult, RuntimeStatusView},
+    current_user::CurrentUserRuntime,
     ipc::{IpcError, IpcPaths, LocalApiClient, ServerExit},
+    web::{SystemClock, WebAuthConfig},
 };
 
 use super::{LocalApiServer, ReplayEntry};
@@ -85,14 +90,17 @@ async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResul
     // Given
     let state = TempState::new()?;
     let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
     let paths = IpcPaths::new(&state.0)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle())?;
+    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
     let request_id = RequestId::try_from(&[1_u8; 16][..])?;
     {
-        let mut replay = match server.replay.lock() {
-            Ok(replay) => replay,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let mut replay = server.replay.lock().await;
         replay.insert(
             request_id,
             ReplayEntry {

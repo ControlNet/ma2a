@@ -1,11 +1,8 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use ma2a_core::{ProtocolError, RequestId};
 use tokio::{
-    sync::{Semaphore, TryAcquireError, mpsc},
+    sync::{Mutex, Semaphore, TryAcquireError, mpsc},
     task::JoinSet,
 };
 use tokio_util::sync::CancellationToken;
@@ -15,8 +12,9 @@ use crate::{
     api::{
         self, CapabilityFlags, Command, CommandResult, EndpointView, HandshakeAuth, HandshakeState,
         HandshakeView, InteractionCapabilities, ManagementCapabilities, RelayCapabilities,
-        ReplayDecision, RuntimeApiBoundary, RuntimeStatusView,
+        RuntimeStatusView,
     },
+    current_user::CurrentUserRuntime,
 };
 
 use super::{
@@ -41,6 +39,7 @@ pub struct LocalApiServer {
     listener: platform::PlatformListener,
     paths: IpcPaths,
     handle: RuntimeHandle,
+    control: CurrentUserRuntime,
     replay: Arc<Mutex<BTreeMap<RequestId, ReplayEntry>>>,
 }
 
@@ -49,12 +48,17 @@ impl LocalApiServer {
     ///
     /// # Errors
     /// Returns a platform transport or authorization error when binding fails.
-    pub fn bind(paths: IpcPaths, handle: RuntimeHandle) -> Result<Self, IpcError> {
+    pub fn bind(
+        paths: IpcPaths,
+        handle: RuntimeHandle,
+        control: CurrentUserRuntime,
+    ) -> Result<Self, IpcError> {
         let listener = platform::bind(&paths)?;
         Ok(Self {
             listener,
             paths,
             handle,
+            control,
             replay: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
@@ -83,6 +87,7 @@ impl LocalApiServer {
                     let context = ConnectionContext {
                         paths: self.paths.clone(),
                         handle: self.handle.clone(),
+                        control: self.control.clone(),
                         replay: Arc::clone(&self.replay),
                         shutdown_sender: shutdown_sender.clone(),
                     };
@@ -112,6 +117,7 @@ impl LocalApiServer {
 struct ConnectionContext {
     paths: IpcPaths,
     handle: RuntimeHandle,
+    control: CurrentUserRuntime,
     replay: Arc<Mutex<BTreeMap<RequestId, ReplayEntry>>>,
     shutdown_sender: mpsc::Sender<()>,
 }
@@ -124,7 +130,7 @@ async fn handle_connection(
     let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
     let preflight = api::decode_command(&frame.payload);
     let (encoded, requests_shutdown) = match preflight {
-        Ok(_) => dispatch(&frame.payload, context.handle, &context.replay).await?,
+        Ok(_) => dispatch(&frame.payload, &context).await?,
         Err(error) => (api::encode_error(error)?, false),
     };
     write_frame(
@@ -142,35 +148,51 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn dispatch(
-    input: &[u8],
-    handle: RuntimeHandle,
-    replay: &Mutex<BTreeMap<RequestId, ReplayEntry>>,
-) -> Result<(Vec<u8>, bool), IpcError> {
-    let status = handle.status().await?;
-    dispatch_locked(
-        input,
-        status,
-        match replay.lock() {
-            Ok(replay) => replay,
-            Err(poisoned) => poisoned.into_inner(),
+async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>, bool), IpcError> {
+    let command = api::decode_command(input)?;
+    let status = context.handle.status().await?;
+    let mut replay = context.replay.lock().await;
+    let fingerprint = match command.request_id() {
+        Some(request_id) => Some((request_id, api::command_fingerprint(&command)?)),
+        None => None,
+    };
+    let result = match fingerprint {
+        Some((request_id, fingerprint)) => match replay.get(&request_id) {
+            Some(entry) if entry.fingerprint == fingerprint => entry.result.clone(),
+            Some(_) => {
+                return Ok((
+                    api::encode_error(api::ApiError::new(ProtocolError::CONFLICT))?,
+                    false,
+                ));
+            }
+            None => {
+                let result = match execute(&command, &status, &context.control).await {
+                    Ok(result) => result,
+                    Err(error) => {
+                        return Ok((api::encode_error(api::ApiError::new(error))?, false));
+                    }
+                };
+                replay.insert(
+                    request_id,
+                    ReplayEntry {
+                        fingerprint,
+                        result: result.clone(),
+                    },
+                );
+                result
+            }
         },
-    )
-}
-
-fn dispatch_locked(
-    input: &[u8],
-    status: RuntimeStatus,
-    replay: MutexGuard<'_, BTreeMap<RequestId, ReplayEntry>>,
-) -> Result<(Vec<u8>, bool), IpcError> {
-    let mut boundary = RuntimeBoundary::new(status, replay);
-    match api::dispatch_request(input, &mut boundary) {
-        Ok(response) => Ok((
-            api::encode_response(&response)?,
-            response.result_type() == "shutting_down",
-        )),
-        Err(error) => Ok((api::encode_error(error)?, false)),
-    }
+        None => match execute(&command, &status, &context.control).await {
+            Ok(result) => result,
+            Err(error) => return Ok((api::encode_error(api::ApiError::new(error))?, false)),
+        },
+    };
+    drop(replay);
+    let response = api::ApiResponse::new(command.request_id(), status.revision(), result);
+    Ok((
+        api::encode_response(&response)?,
+        response.result_type() == "shutting_down",
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -179,101 +201,48 @@ struct ReplayEntry {
     result: CommandResult,
 }
 
-struct RuntimeBoundary<'a> {
-    status: RuntimeStatus,
-    replay: MutexGuard<'a, BTreeMap<RequestId, ReplayEntry>>,
-    fresh_fingerprint: Option<(RequestId, [u8; 32])>,
+const fn capabilities() -> CapabilityFlags {
+    CapabilityFlags::new(
+        ManagementCapabilities::new(false, false),
+        RelayCapabilities::new(false, false),
+        InteractionCapabilities::new(false, false),
+    )
 }
 
-impl<'a> RuntimeBoundary<'a> {
-    const fn new(
-        status: RuntimeStatus,
-        replay: MutexGuard<'a, BTreeMap<RequestId, ReplayEntry>>,
-    ) -> Self {
-        Self {
-            status,
-            replay,
-            fresh_fingerprint: None,
-        }
-    }
-
-    const fn capabilities() -> CapabilityFlags {
-        CapabilityFlags::new(
-            ManagementCapabilities::new(false, false),
-            RelayCapabilities::new(false, false),
-            InteractionCapabilities::new(false, false),
-        )
-    }
-}
-
-impl RuntimeApiBoundary for RuntimeBoundary<'_> {
-    fn state_revision(&mut self) -> u64 {
-        self.status.revision()
-    }
-
-    fn replay_decision(&mut self, request_id: RequestId, fingerprint: [u8; 32]) -> ReplayDecision {
-        match self.replay.get(&request_id) {
-            Some(entry) if entry.fingerprint == fingerprint => ReplayDecision::REPLAY,
-            Some(_) => ReplayDecision::CONFLICT,
-            None => {
-                self.fresh_fingerprint = Some((request_id, fingerprint));
-                ReplayDecision::FRESH
-            }
-        }
-    }
-
-    fn replay_result(&mut self, request_id: RequestId) -> Result<CommandResult, ProtocolError> {
-        self.replay
-            .get(&request_id)
-            .map(|entry| entry.result.clone())
-            .ok_or(ProtocolError::CONFLICT)
-    }
-
-    fn execute(&mut self, command: &Command) -> Result<CommandResult, ProtocolError> {
-        let result = match command.operation() {
-            "handshake" => CommandResult::handshake(
-                HandshakeView::new(
-                    env!("CARGO_PKG_VERSION"),
-                    self.status.endpoint_id(),
-                    HandshakeState::new(
-                        self.status.revision(),
-                        HandshakeAuth::new(true, false),
-                        Self::capabilities(),
-                    ),
-                )
-                .map_err(|_| ProtocolError::INTERNAL)?,
-            ),
-            "status" => {
-                CommandResult::status(RuntimeStatusView::new(self.status.revision(), true, false))
-            }
-            "endpoint_info" => CommandResult::endpoint_info(
-                EndpointView::new(
-                    self.status.endpoint_id(),
-                    env!("CARGO_PKG_VERSION"),
-                    self.status.is_ready(),
-                )
-                .map_err(|_| ProtocolError::INTERNAL)?,
-            ),
-            "graceful_shutdown" => CommandResult::shutting_down(),
-            _ => return Err(ProtocolError::UNAVAILABLE),
-        };
-        if let Some(request_id) = command.request_id() {
-            let fingerprint = self
-                .fresh_fingerprint
-                .take()
-                .filter(|(fresh_id, _fingerprint)| *fresh_id == request_id)
-                .map(|(_fresh_id, fingerprint)| fingerprint)
-                .ok_or(ProtocolError::CONFLICT)?;
-            self.replay.insert(
-                request_id,
-                ReplayEntry {
-                    fingerprint,
-                    result: result.clone(),
-                },
-            );
-        }
-        Ok(result)
-    }
+async fn execute(
+    command: &Command,
+    status: &RuntimeStatus,
+    control: &CurrentUserRuntime,
+) -> Result<CommandResult, ProtocolError> {
+    Ok(match command.operation() {
+        "handshake" => CommandResult::handshake(
+            HandshakeView::new(
+                env!("CARGO_PKG_VERSION"),
+                status.endpoint_id(),
+                HandshakeState::new(
+                    status.revision(),
+                    HandshakeAuth::new(true, false),
+                    capabilities(),
+                ),
+            )
+            .map_err(|_| ProtocolError::INTERNAL)?,
+        ),
+        "status" => CommandResult::status(RuntimeStatusView::new(status.revision(), true, false)),
+        "endpoint_info" => CommandResult::endpoint_info(
+            EndpointView::new(
+                status.endpoint_id(),
+                env!("CARGO_PKG_VERSION"),
+                status.is_ready(),
+            )
+            .map_err(|_| ProtocolError::INTERNAL)?,
+        ),
+        "graceful_shutdown" => CommandResult::shutting_down(),
+        "ui_password_set" | "ui_password_reset" | "session_revoke_all" => control
+            .send(command.clone())
+            .await
+            .map_err(|_| ProtocolError::INTERNAL)?,
+        _ => return Err(ProtocolError::UNAVAILABLE),
+    })
 }
 
 #[cfg(test)]
