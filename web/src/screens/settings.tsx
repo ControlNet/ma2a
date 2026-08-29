@@ -1,8 +1,29 @@
-import type { ReactNode } from "react"
+import { type ReactNode, useState } from "react"
 
 import { CodeValue, PageHeader, Section } from "../components/primitives"
 
-export function SettingsScreen(): ReactNode {
+export function SettingsScreen({
+  onLogout,
+}: {
+  readonly onLogout?: (() => Promise<void>) | undefined
+}): ReactNode {
+  const [logoutPending, setLogoutPending] = useState(false)
+  const [logoutFailed, setLogoutFailed] = useState(false)
+  const logout = (): void => {
+    if (onLogout === undefined) {
+      return
+    }
+    setLogoutPending(true)
+    setLogoutFailed(false)
+    void onLogout().then(
+      () => undefined,
+      () => {
+        setLogoutPending(false)
+        setLogoutFailed(true)
+      },
+    )
+  }
+
   return (
     <div className="page-stack">
       <PageHeader
@@ -17,13 +38,18 @@ export function SettingsScreen(): ReactNode {
               <p>Authentication uses a host-only, HttpOnly, SameSite=Strict cookie.</p>
             </div>
             <div className="action-cluster">
-              <button disabled type="button">
-                Log out
+              <button
+                disabled={onLogout === undefined || logoutPending}
+                onClick={logout}
+                type="button"
+              >
+                {logoutPending ? "Logging out..." : "Log out"}
               </button>
               <button className="button-secondary" disabled type="button">
                 Revoke all
               </button>
             </div>
+            {logoutFailed ? <p role="alert">The current session could not be logged out.</p> : null}
           </div>
         </Section>
         <Section title="Password recovery">
