@@ -18,8 +18,10 @@ iroh-tickets.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+subtle.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
@@ -36,6 +38,7 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tower = { version = "=0.5.3", features = ["util"] }
 
 [lints]
 workspace = true
