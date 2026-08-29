@@ -23,6 +23,7 @@ iroh-tickets.workspace = true
 iroh.workspace = true
 ma2a-net.workspace = true
 ma2a-store.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
