@@ -7,7 +7,8 @@ use std::sync::{Arc, Barrier};
 
 use ma2a_store::{
     PasswordReset, PasswordTransition, Repository, SessionAdmission, SessionCreate, SessionDigests,
-    SessionRecord, SessionTimestamps, StoreConfig, StoreError, derive_password_verifier,
+    SessionRecord, SessionTimestamps, SessionTouch, StoreConfig, StoreError,
+    derive_password_verifier,
 };
 use support::{TempState, TestResult};
 
@@ -120,5 +121,49 @@ fn password_change_rejects_nonconforming_verifier_state() -> TestResult {
     assert!(matches!(wrong_version, Err(StoreError::PasswordHash)));
     assert!(matches!(malformed, Err(StoreError::PasswordHash)));
     assert!(repository.credential()?.is_none());
+    Ok(())
+}
+
+#[test]
+fn wrong_csrf_digest_does_not_touch_a_valid_session() -> TestResult {
+    // Given
+    let state = TempState::new("csrf-touch")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let verifier = derive_password_verifier(b"csrf-touch-passphrase-9!")?;
+    let credential = repository
+        .change_password(
+            PasswordTransition::Set,
+            &PasswordReset {
+                verifier,
+                verifier_version: 1,
+                now_ms: 1,
+            },
+        )?
+        .ok_or("password setup did not commit")?;
+    let bearer = [3; 32];
+    let csrf = [4; 32];
+    repository.create_session(&SessionRecord::new(
+        SessionDigests::new(bearer, csrf),
+        credential.auth_epoch(),
+        SessionTimestamps::new([2, 2], [100, 200]),
+    ))?;
+
+    // When
+    let denied = repository.authenticate_and_touch_session_with_csrf(
+        &SessionDigests::new(bearer, [5; 32]),
+        SessionTouch::new(50, 75),
+    )?;
+    let persisted = repository.session(&bearer)?.ok_or("session missing")?;
+
+    // Then
+    assert!(denied.is_none());
+    assert_eq!(
+        persisted,
+        SessionRecord::new(
+            SessionDigests::new(bearer, csrf),
+            credential.auth_epoch(),
+            SessionTimestamps::new([2, 2], [100, 200]),
+        )
+    );
     Ok(())
 }

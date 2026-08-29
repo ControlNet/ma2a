@@ -35,6 +35,16 @@ impl SessionDigests {
     pub const fn new(bearer: [u8; 32], csrf: [u8; 32]) -> Self {
         Self { bearer, csrf }
     }
+
+    /// Returns the bearer digest.
+    pub const fn bearer_digest(&self) -> &[u8; 32] {
+        &self.bearer
+    }
+
+    /// Returns the CSRF digest.
+    pub const fn csrf_digest(&self) -> &[u8; 32] {
+        &self.csrf
+    }
 }
 
 /// Creation, activity, and expiry timestamps for one session.

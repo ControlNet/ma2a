@@ -2020,6 +2020,7 @@ dependencies = [
  "ma2a-core",
  "rusqlite",
  "rustix",
+ "subtle",
  "zeroize",
 ]
 
