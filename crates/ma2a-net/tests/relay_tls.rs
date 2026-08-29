@@ -189,3 +189,24 @@ fn mismatched_and_insecure_key_material_fail_closed() -> TestResult {
     assert!(insecure_result.is_err());
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn private_key_with_special_permission_bits_fails_closed() -> TestResult {
+    // Given
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let state = TempState::new("relay-tls-special-bits")?;
+    let (cert_path, key_path) = write_certificate_fixture(&state, "special-bits")?;
+    fs::set_permissions(&key_path, fs::Permissions::from_mode(0o1600))?;
+
+    // When
+    let result = NativeRelayTlsConfig::new(cert_path, key_path).load_server_config();
+
+    // Then
+    assert!(matches!(
+        result,
+        Err(RelayTlsError::InsecurePrivateKeyPermissions)
+    ));
+    Ok(())
+}
