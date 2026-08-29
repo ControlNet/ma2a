@@ -12,6 +12,7 @@ pub mod ipc;
 pub mod web;
 
 mod actor;
+mod authz;
 mod clock;
 mod enrollment;
 mod enrollment_actor;
@@ -22,6 +23,7 @@ mod store;
 mod store_client;
 
 pub use actor::RuntimeHandle;
+pub use authz::authorize_remote;
 pub use clock::RuntimeClock;
 pub use enrollment::{
     EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EnrollmentErrorCode,
