@@ -1,10 +1,18 @@
 use rusqlite::OptionalExtension as _;
+use subtle::ConstantTimeEq as _;
 
 use crate::{
-    Repository, SessionAdmission, SessionCreate, SessionRecord, SessionTouch, StoreError,
+    Repository, SessionAdmission, SessionCreate, SessionDigests, SessionRecord, SessionTouch,
+    StoreError,
     repository::increment_revision,
     sessions::{insert_session, read_session},
 };
+
+#[derive(Clone, Copy)]
+enum SessionAuthentication<'a> {
+    Bearer(&'a [u8; 32]),
+    BearerAndCsrf(&'a SessionDigests),
+}
 
 impl Repository {
     /// Inserts a session only while its credential epoch is current and capacity remains.
@@ -57,6 +65,38 @@ impl Repository {
         session_id_hash: &[u8; 32],
         touch: SessionTouch,
     ) -> Result<Option<SessionRecord>, StoreError> {
+        self.authenticate_and_touch_session_inner(
+            SessionAuthentication::Bearer(session_id_hash),
+            touch,
+        )
+    }
+
+    /// Validates a bearer and CSRF digest before monotonically touching one session.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when authentication state cannot be read or committed.
+    pub fn authenticate_and_touch_session_with_csrf(
+        &mut self,
+        digests: &SessionDigests,
+        touch: SessionTouch,
+    ) -> Result<Option<SessionRecord>, StoreError> {
+        self.authenticate_and_touch_session_inner(
+            SessionAuthentication::BearerAndCsrf(digests),
+            touch,
+        )
+    }
+
+    fn authenticate_and_touch_session_inner(
+        &mut self,
+        authentication: SessionAuthentication<'_>,
+        touch: SessionTouch,
+    ) -> Result<Option<SessionRecord>, StoreError> {
+        let (session_id_hash, csrf_token_hash) = match authentication {
+            SessionAuthentication::Bearer(session_id_hash) => (session_id_hash, None),
+            SessionAuthentication::BearerAndCsrf(digests) => {
+                (digests.bearer_digest(), Some(digests.csrf_digest()))
+            }
+        };
         let transaction = self.immediate()?;
         let Some(mut session) = read_session(&transaction, session_id_hash)? else {
             return Ok(None);
@@ -72,6 +112,8 @@ impl Repository {
             || auth_epoch != Some(session.auth_epoch)
             || touch.now_ms >= session.idle_expires_at_ms
             || touch.now_ms >= session.absolute_expires_at_ms
+            || csrf_token_hash
+                .is_some_and(|provided| !bool::from(session.csrf_token_hash.ct_eq(provided)))
         {
             return Ok(None);
         }
