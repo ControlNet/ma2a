@@ -1,7 +1,9 @@
-use std::{future::Future, io, pin::Pin};
+use std::{future::Future, io, path::PathBuf, pin::Pin};
 
-use ma2a_runtime::api::{Command, CommandResult};
-use ma2a_runtime::current_user::CurrentUserRuntime;
+use ma2a_runtime::{
+    api::{Command, CommandResult, decode_ui_control_response},
+    ipc::{IpcPaths, LocalApiClient},
+};
 
 pub(crate) type ControlFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CommandResult, CurrentUserControlError>> + Send + 'a>>;
@@ -12,21 +14,33 @@ pub(crate) trait CurrentUserControlClient: Send {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RuntimeControlClient {
-    runtime: CurrentUserRuntime,
+    state_dir: PathBuf,
+    paths: IpcPaths,
+    client: LocalApiClient,
 }
 
 impl RuntimeControlClient {
-    pub(crate) const fn new(runtime: CurrentUserRuntime) -> Self {
-        Self { runtime }
+    pub(crate) fn new(state_dir: PathBuf, paths: IpcPaths) -> Self {
+        Self {
+            state_dir,
+            client: LocalApiClient::new(paths.clone()),
+            paths,
+        }
     }
 }
 
 impl CurrentUserControlClient for RuntimeControlClient {
     fn send(&mut self, command: Command) -> ControlFuture<'_> {
         Box::pin(async move {
-            self.runtime
-                .send(command)
+            crate::autostart::ensure_daemon(&self.state_dir, &self.paths)
                 .await
+                .map_err(|error| CurrentUserControlError::from(io::Error::other(error)))?;
+            let response = self
+                .client
+                .call(&command)
+                .await
+                .map_err(|error| CurrentUserControlError::from(io::Error::other(error)))?;
+            decode_ui_control_response(&command, &response)
                 .map_err(|error| CurrentUserControlError::from(io::Error::other(error)))
         })
     }
