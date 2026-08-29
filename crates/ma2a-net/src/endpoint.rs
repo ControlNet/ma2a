@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 use tokio::sync::mpsc;
 
 use crate::{
-    AddressPublisher, AddressPublisherError, SpaceAddressLookup,
+    AddressPublisher, AddressPublisherError, PublicRelayFallbackConfig, SpaceAddressLookup,
     address_lookup::RuntimeAddressLookup,
     address_observation::AddressObservationWaitError,
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
@@ -47,6 +47,10 @@ impl EndpointSecret {
     /// Copies private bytes into a zeroizing short-lived persistence buffer.
     pub fn protected_bytes(&self) -> Zeroizing<[u8; 32]> {
         Zeroizing::new(self.0.to_bytes())
+    }
+
+    pub(crate) const fn iroh_secret(&self) -> &SecretKey {
+        &self.0
     }
 }
 
@@ -134,6 +138,7 @@ pub struct RuntimeEndpoint {
 pub struct EndpointBindOptions {
     enrollment_calls: mpsc::Sender<EnrollmentCall>,
     bind_port: Option<u16>,
+    public_relay_fallback: Option<PublicRelayFallbackConfig>,
 }
 
 impl EndpointBindOptions {
@@ -145,7 +150,18 @@ impl EndpointBindOptions {
         Self {
             enrollment_calls,
             bind_port,
+            public_relay_fallback: None,
         }
+    }
+
+    /// Enables explicit operator-supplied public relay transport fallback.
+    #[must_use]
+    pub fn with_public_relay_fallback(
+        mut self,
+        public_relay_fallback: PublicRelayFallbackConfig,
+    ) -> Self {
+        self.public_relay_fallback = Some(public_relay_fallback);
+        self
     }
 }
 
@@ -181,12 +197,15 @@ impl RuntimeEndpoint {
         let EndpointBindOptions {
             enrollment_calls,
             bind_port,
+            public_relay_fallback,
         } = options;
         let runtime_lookup = RuntimeAddressLookup::new(lookup);
         let observation = runtime_lookup.observation();
+        let relay_mode =
+            public_relay_fallback.map_or(RelayMode::Disabled, |fallback| fallback.relay_mode());
         let builder = Endpoint::builder(presets::Minimal)
             .secret_key(secret.0)
-            .relay_mode(RelayMode::Disabled)
+            .relay_mode(relay_mode)
             .clear_address_lookup()
             .address_lookup(runtime_lookup)
             .alpns(vec![ENROLLMENT_ALPN.to_vec()]);
