@@ -24,8 +24,14 @@ async fn runtime_publisher_ignores_callbacks_injected_through_the_public_lookup(
     let mut repository = repository(&state, &fixture)?;
     let lookup = SpaceAddressLookup::default();
     let retained_lookup = lookup.clone();
-    let endpoint =
-        RuntimeEndpoint::bind_with_lookup(EndpointSecret::parse(&secret_bytes)?, lookup).await?;
+    let (enrollment_sender, _enrollment_receiver) = tokio::sync::mpsc::channel(1);
+    let endpoint = RuntimeEndpoint::bind_with_lookup(
+        EndpointSecret::parse(&secret_bytes)?,
+        enrollment_sender,
+        None,
+        lookup,
+    )
+    .await?;
     let injected = TransportAddr::Ip("127.0.0.1:4812".parse()?);
     retained_lookup.publish(&EndpointData::new(vec![injected.clone()]));
     let publisher = endpoint.address_publisher()?;
@@ -59,7 +65,13 @@ async fn runtime_publisher_uses_the_running_endpoint_observation() -> TestResult
     let fixture = space_fixture(&signer, 0x69)?;
     let state = TempState::new("live-publisher-observation")?;
     let mut repository = repository(&state, &fixture)?;
-    let endpoint = RuntimeEndpoint::bind(EndpointSecret::parse(&secret_bytes)?).await?;
+    let (enrollment_sender, _enrollment_receiver) = tokio::sync::mpsc::channel(1);
+    let endpoint = RuntimeEndpoint::bind(
+        EndpointSecret::parse(&secret_bytes)?,
+        enrollment_sender,
+        None,
+    )
+    .await?;
     let observed = endpoint.endpoint_addr();
     let publisher = endpoint.address_publisher()?;
 
@@ -87,7 +99,9 @@ async fn live_publisher_signs_user_data_from_the_iroh_observation() -> TestResul
     let fixture = space_fixture(&signer, 0x6b)?;
     let state = TempState::new("live-publisher-user-data")?;
     let mut repository = repository(&state, &fixture)?;
-    let endpoint = RuntimeEndpoint::bind(EndpointSecret::parse(&[0x59; 32])?).await?;
+    let (enrollment_sender, _enrollment_receiver) = tokio::sync::mpsc::channel(1);
+    let endpoint =
+        RuntimeEndpoint::bind(EndpointSecret::parse(&[0x59; 32])?, enrollment_sender, None).await?;
     endpoint
         .set_user_data_for_address_lookup(Some(UserData::try_from("live-metadata".to_owned())?));
     let publisher = endpoint.address_publisher()?;
@@ -117,7 +131,13 @@ async fn live_publisher_advances_for_user_data_and_distinguishes_empty_from_abse
     let fixture = space_fixture(&signer, 0x6c)?;
     let state = TempState::new("live-publisher-user-data-sequence")?;
     let mut repository = repository(&state, &fixture)?;
-    let endpoint = RuntimeEndpoint::bind(EndpointSecret::parse(&secret_bytes)?).await?;
+    let (enrollment_sender, _enrollment_receiver) = tokio::sync::mpsc::channel(1);
+    let endpoint = RuntimeEndpoint::bind(
+        EndpointSecret::parse(&secret_bytes)?,
+        enrollment_sender,
+        None,
+    )
+    .await?;
     let publisher = endpoint.address_publisher()?;
     let initial = publisher
         .publish(
