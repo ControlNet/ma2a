@@ -1,53 +1,137 @@
-use std::{collections::BTreeMap, fs, sync::Mutex};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-use ma2a_core::RequestId;
+use ma2a_core::{ProtocolError, RequestId};
 use ma2a_store::StoreConfig;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
-use crate::{Runtime, api::CommandResult};
+use crate::{
+    Runtime,
+    api::{self, CommandResult, RuntimeStatusView},
+    ipc::{IpcError, IpcPaths, LocalApiClient, ServerExit},
+};
 
-use super::{ReplayEntry, dispatch};
+use super::{LocalApiServer, ReplayEntry};
 
-#[tokio::test]
-async fn conflicting_shutdown_dispatch_does_not_request_server_shutdown() {
-    // Given
-    let state_dir =
-        std::env::temp_dir().join(format!("ma2a-shutdown-dispatch-{}", std::process::id()));
-    fs::create_dir_all(&state_dir).expect("create state directory");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700))
-            .expect("secure state directory");
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+
+struct TempState(PathBuf);
+
+impl TempState {
+    fn new() -> TestResult<Self> {
+        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "ma2a-shutdown-server-{}-{serial}",
+            std::process::id()
+        ));
+        fs::create_dir(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(Self(path))
     }
-    let runtime = Runtime::start(StoreConfig::new(&state_dir))
-        .await
-        .expect("start runtime");
-    let replay = Mutex::new(BTreeMap::new());
-    let request_id = RequestId::try_from(&[1_u8; 16][..]).expect("request identifier");
-    replay.lock().expect("lock replay state").insert(
-        request_id,
-        ReplayEntry {
-            fingerprint: [0_u8; 32],
-            result: CommandResult::shutting_down(),
-        },
-    );
-    let conflicting = br#"{"version":1,"operation":"graceful_shutdown","request_id":"01010101010101010101010101010101"}"#;
+}
+
+impl Drop for TempState {
+    fn drop(&mut self) {
+        let _cleanup_result = fs::remove_dir_all(&self.0);
+    }
+}
+
+struct LiveServer {
+    cancellation: CancellationToken,
+    task: Option<JoinHandle<Result<ServerExit, IpcError>>>,
+}
+
+impl LiveServer {
+    fn spawn(server: LocalApiServer) -> Self {
+        let cancellation = CancellationToken::new();
+        let task = tokio::spawn(server.serve(cancellation.child_token()));
+        Self {
+            cancellation,
+            task: Some(task),
+        }
+    }
+
+    async fn cancel(mut self) -> TestResult<ServerExit> {
+        self.cancellation.cancel();
+        let task = self
+            .task
+            .take()
+            .ok_or_else(|| std::io::Error::other("live server task missing"))?;
+        Ok(task.await??)
+    }
+}
+
+impl Drop for LiveServer {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResult {
+    // Given
+    let state = TempState::new()?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server = LocalApiServer::bind(paths.clone(), runtime.handle())?;
+    let request_id = RequestId::try_from(&[1_u8; 16][..])?;
+    {
+        let mut replay = match server.replay.lock() {
+            Ok(replay) => replay,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        replay.insert(
+            request_id,
+            ReplayEntry {
+                fingerprint: [0_u8; 32],
+                result: CommandResult::shutting_down(),
+            },
+        );
+    }
+    let live_server = LiveServer::spawn(server);
+    let client = LocalApiClient::new(paths);
+    client.probe().await?;
+    let conflicting = api::decode_command(
+        br#"{"version":1,"operation":"graceful_shutdown","request_id":"01010101010101010101010101010101"}"#,
+    )?;
 
     // When
-    let rejected = dispatch(conflicting, runtime.handle(), &replay)
-        .await
-        .expect("dispatch conflicting shutdown");
+    let rejected = client.call(&conflicting).await?;
 
     // Then
-    assert!(!rejected.1);
-    let rejected_value: serde_json::Value =
-        serde_json::from_slice(&rejected.0).expect("decode conflicting response");
+    let rejected_value: serde_json::Value = serde_json::from_slice(&rejected)?;
     assert_eq!(
         rejected_value
             .get("error")
             .and_then(serde_json::Value::as_str),
-        Some("conflict")
+        Some(ProtocolError::CONFLICT.name())
     );
-    runtime.shutdown().await.expect("shutdown runtime");
-    fs::remove_dir_all(state_dir).expect("remove state directory");
+    let status = api::decode_command(br#"{"version":1,"operation":"status"}"#)?;
+    let status_response = client.call(&status).await?;
+    let status_value: serde_json::Value = serde_json::from_slice(&status_response)?;
+    let expected_status_type = CommandResult::status(RuntimeStatusView::new(0, true, false));
+    assert_eq!(
+        status_value
+            .pointer("/result/type")
+            .and_then(serde_json::Value::as_str),
+        Some(expected_status_type.result_type())
+    );
+    assert_eq!(live_server.cancel().await?, ServerExit::Cancelled);
+    let shutdown = runtime.shutdown().await?;
+    assert_eq!(shutdown.joined_tasks(), 2);
+    assert!(shutdown.endpoint_closed());
+    Ok(())
 }
