@@ -1,9 +1,8 @@
 use rusqlite::OptionalExtension as _;
 
 use crate::{
-    AddressAdvance, InvitationRecord, ManifestAdvance, ManifestOutcome, PasswordReset, Redemption,
-    RedemptionOutcome, RelayAdvertisementAdvance, Repository, SequenceOutcome, SessionRecord,
-    StoreError,
+    AddressAdvance, InvitationRecord, ManifestAdvance, ManifestOutcome, Redemption,
+    RedemptionOutcome, RelayAdvertisementAdvance, Repository, SequenceOutcome, StoreError,
     repository::increment_revision,
     repository_sequences::{highest_address_sequence, highest_relay_sequence},
 };
@@ -243,45 +242,6 @@ impl Repository {
         let revision = increment_revision(&transaction)?;
         transaction.commit()?;
         Ok(SequenceOutcome::Advanced { revision })
-    }
-
-    /// Replaces the password verifier and revokes every session atomically.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError`] when credential or session state cannot be committed.
-    pub fn reset_password(&mut self, reset: &PasswordReset) -> Result<u64, StoreError> {
-        let transaction = self.immediate()?;
-        transaction.execute(
-            "INSERT INTO ui_credentials(singleton, password_verifier, verifier_version, updated_at_ms)
-             VALUES (1, ?1, ?2, ?3) ON CONFLICT(singleton) DO UPDATE SET
-             password_verifier = excluded.password_verifier,
-             verifier_version = excluded.verifier_version, updated_at_ms = excluded.updated_at_ms",
-            (reset.verifier.as_slice(), reset.verifier_version, reset.now_ms),
-        )?;
-        transaction.execute(
-            "UPDATE sessions SET revoked_at_ms = ?1 WHERE revoked_at_ms IS NULL",
-            [reset.now_ms],
-        )?;
-        let revision = increment_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(revision)
-    }
-
-    /// Stores a revocable session by bearer-token hash only.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError`] when session state cannot be committed.
-    pub fn create_session(&mut self, session: &SessionRecord) -> Result<u64, StoreError> {
-        let transaction = self.immediate()?;
-        transaction.execute(
-            "INSERT INTO sessions(session_id_hash, created_at_ms, expires_at_ms) VALUES (?1, ?2, ?3)",
-            (session.session_id_hash.as_slice(), session.created_at_ms, session.expires_at_ms),
-        )?;
-        let revision = increment_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(revision)
     }
 
     /// Advances the Runtime revision as its own explicit transaction.

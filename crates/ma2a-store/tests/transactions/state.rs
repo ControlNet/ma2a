@@ -1,6 +1,7 @@
 use ma2a_store::{
     AddressAdvance, PasswordReset, RelayAdvertisementAdvance, RelayConfiguration, RelayObservation,
-    Repository, RuntimeMetadataUpdate, SequenceOutcome, SessionRecord, StoreConfig,
+    Repository, RuntimeMetadataUpdate, SequenceOutcome, SessionDigests, SessionRecord,
+    SessionTimestamps, StoreConfig, derive_password_verifier,
 };
 use rusqlite::Connection;
 
@@ -61,18 +62,21 @@ fn password_reset_revokes_existing_sessions_in_one_revision() -> TestResult {
     let state = TempState::new("password-reset")?;
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
-    repository.create_session(&SessionRecord {
-        session_id_hash: [10; 32],
-        created_at_ms: 1,
-        expires_at_ms: 100,
-    })?;
+    repository.create_session(&SessionRecord::new(
+        SessionDigests::new([10; 32], [11; 32]),
+        1,
+        SessionTimestamps::new([1, 1], [100, 100]),
+    ))?;
 
     // When
-    repository.reset_password(&PasswordReset {
-        verifier: b"argon2id verifier".to_vec(),
-        verifier_version: 1,
-        now_ms: 50,
-    })?;
+    repository.change_password(
+        ma2a_store::PasswordTransition::Set,
+        &PasswordReset {
+            verifier: derive_password_verifier(b"atomic-reset-passphrase-9!")?,
+            verifier_version: 1,
+            now_ms: 50,
+        },
+    )?;
     drop(repository);
 
     // Then
@@ -85,11 +89,12 @@ fn password_reset_revokes_existing_sessions_in_one_revision() -> TestResult {
         )?,
         1
     );
-    assert_eq!(
-        connection.query_row("SELECT password_verifier FROM ui_credentials", [], |row| {
-            row.get::<_, Vec<u8>>(0)
-        })?,
-        b"argon2id verifier"
+    assert!(
+        connection
+            .query_row("SELECT password_verifier FROM ui_credentials", [], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .starts_with(b"$argon2id$v=19$m=19456,t=2,p=1$")
     );
     Ok(())
 }
