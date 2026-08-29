@@ -12,6 +12,7 @@ mod key_store;
 mod migrations;
 mod owned_spaces;
 mod permissions;
+mod relay_advertisement;
 mod relay_config;
 mod relay_settings;
 mod repository;
@@ -35,6 +36,7 @@ pub use error::StoreError;
 pub use key_store::{KeyKind, KeyMaterial, KeyReference, KeyStore, ProtectedSecret};
 pub use migrations::SCHEMA_VERSION;
 pub use owned_spaces::{AdvancedOwnedSpace, CreatedSpace, OwnedSpaceUpdate, SpaceCreation};
+pub use relay_advertisement::{RelayAdvertisementBoundaryError, ValidatedRelayAdvertisement};
 pub use relay_config::{PersistedRelayAdvertisement, RelayAdvertisementOutcome};
 pub use repository::Repository;
 pub use repository_models::{
