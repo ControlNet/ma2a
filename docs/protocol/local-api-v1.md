@@ -14,11 +14,13 @@ Every command carries `version: 1`. The Runtime reads and validates that field b
 - General text: 4,096 UTF-8 bytes, with narrower field-specific limits
 - Collection: 256 entities
 
-Unknown fields and operations are rejected as `invalid_input`. Endpoint, Space, and Request identifiers use validated lowercase hexadecimal encodings of 32, 32, and 16 bytes respectively.
+Unknown fields, duplicate JSON object members, and unknown operations are rejected as `invalid_input`. A single numeric incompatible `version` still returns `version_mismatch` before other command validation. Duplicate `version` members are ambiguous and return `invalid_input`. Endpoint, Space, and Request identifiers use validated lowercase hexadecimal encodings of 32, 32, and 16 bytes respectively; uppercase encodings are noncanonical and rejected.
 
 ## Commands And Results
 
-The canonical closed inventories are embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `6703648a604f92cf5011b449ca42d4242fa9c6453b5ecf3a94c98ef98009dcf6`. Rust and TypeScript consumers exhaustively match every command, result, error, and event discriminant.
+The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `05989fefdb0ddc90db12b89c2f20c63d21b47c19edb5dd04e84d9775d9bc31ac`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 21 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
+
+Successful responses contain required `version`, nullable `request_id`, `revision`, and discriminated `result` fields. Error responses contain required `version`, `error`, and nullable `remediation` fields. TypeScript exposes `LocalApiSuccessResponse`, `LocalApiErrorResponse`, and their `LocalApiResponse` union.
 
 The pre-authorization `handshake` result exposes only Runtime version, Endpoint ID, revision, initialization/password status, and capability flags. It contains no Space details. Client-visible values never contain key material, invitation secrets, session bearers, password verifiers, or `authorized_via` diagnostics.
 
