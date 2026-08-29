@@ -7,9 +7,10 @@ use std::fmt::Write as _;
 
 use ma2a_core::{
     EnrollmentPage, MAX_ENROLLMENT_ARTIFACTS_PER_PAGE, MAX_ENROLLMENT_PAGE_BYTES,
-    ManifestApplyOutcome, SignedSpaceGenesisV1, SignedSpaceManifestV1, SpaceAuthoritySecret,
-    SpaceChain, SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1,
-    validate_enrollment_pages,
+    MAX_ENROLLMENT_PAGES, MAX_MEMBER_LABEL_LEN, MAX_SPACE_MEMBERS, ManifestApplyOutcome,
+    MemberCapabilities, SignedSpaceGenesisV1, SignedSpaceManifestV1, SpaceAuthoritySecret,
+    SpaceChain, SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1, SpaceMemberV1,
+    SpaceRevocationV1, validate_enrollment_pages,
 };
 
 use space_vectors::{signed_genesis, signed_manifest};
@@ -127,11 +128,37 @@ fn maximum_generation_chain_paginates_without_an_aggregate_frame()
 -> Result<(), Box<dyn std::error::Error>> {
     let secret = SpaceAuthoritySecret::from_bytes(space_vectors::AUTHORITY_SECRET);
     let mut chain = SpaceChain::from_genesis(signed_genesis()?)?;
-    for generation in 1..=255 {
+    let initial = chain.genesis().genesis().initial_member().clone();
+    let mut first_members = vec![initial];
+    for seed in 1..MAX_SPACE_MEMBERS {
+        first_members.push(maximum_label_member(u8::try_from(seed)?)?);
+    }
+    first_members.sort_by_key(SpaceMemberV1::endpoint_id);
+    first_members.dedup_by_key(|member| member.endpoint_id());
+    assert_eq!(first_members.len(), MAX_SPACE_MEMBERS);
+    let mut second_members = Vec::with_capacity(MAX_SPACE_MEMBERS);
+    for seed in (MAX_SPACE_MEMBERS * 2)..(MAX_SPACE_MEMBERS * 3) {
+        second_members.push(maximum_label_member(u8::try_from(seed)?)?);
+    }
+    second_members.sort_by_key(SpaceMemberV1::endpoint_id);
+    second_members.dedup_by_key(|member| member.endpoint_id());
+    assert_eq!(second_members.len(), MAX_SPACE_MEMBERS);
+    let revocations = first_members
+        .iter()
+        .map(|member| SpaceRevocationV1::new(member.endpoint_id()))
+        .collect::<Vec<_>>();
+    let first = SpaceManifestV1::new(
+        SpaceManifestLink::new(chain.space_id(), 1, chain.latest_hash()),
+        1,
+        SpaceManifestMembership::new(first_members, vec![]),
+    )?
+    .sign(&secret)?;
+    chain.apply(&first)?;
+    for generation in 2..=255 {
         let manifest = SpaceManifestV1::new(
             SpaceManifestLink::new(chain.space_id(), generation, chain.latest_hash()),
             generation,
-            SpaceManifestMembership::new(vec![space_vectors::member(0x66, true)?], vec![]),
+            SpaceManifestMembership::new(second_members.clone(), revocations.clone()),
         )?
         .sign(&secret)?;
         chain.apply(&manifest)?;
@@ -143,11 +170,48 @@ fn maximum_generation_chain_paginates_without_an_aggregate_frame()
         pages.len(),
         255_usize.div_ceil(MAX_ENROLLMENT_ARTIFACTS_PER_PAGE)
     );
+    assert_eq!(pages.len(), MAX_ENROLLMENT_PAGES);
     assert!(pages.iter().all(|page| {
         page.encode()
             .is_ok_and(|bytes| bytes.len() <= MAX_ENROLLMENT_PAGE_BYTES)
     }));
+    let aggregate_bytes = pages.iter().try_fold(0_usize, |total, page| {
+        page.encode().map(|bytes| total + bytes.len())
+    })?;
+    assert!(aggregate_bytes < 4 * 1024 * 1024);
     assert_eq!(validate_enrollment_pages(&pages)?, chain);
+    Ok(())
+}
+
+fn maximum_label_member(seed: u8) -> Result<SpaceMemberV1, Box<dyn std::error::Error>> {
+    let verifying_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key();
+    Ok(SpaceMemberV1::new(
+        ma2a_core::EndpointId::try_from(verifying_key.to_bytes().as_slice())?,
+        "m".repeat(MAX_MEMBER_LABEL_LEN),
+        MemberCapabilities::new(true, true),
+    )?)
+}
+
+#[test]
+fn enrollment_page_count_above_protocol_maximum_is_rejected()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Given
+    let chain = SpaceChain::from_genesis(signed_genesis()?)?;
+    let mut encoded = EnrollmentPage::paginate(&chain)?
+        .into_iter()
+        .next()
+        .ok_or("page missing")?
+        .encode()?;
+    encoded
+        .get_mut(3..5)
+        .ok_or("page count field missing")?
+        .copy_from_slice(&33_u16.to_be_bytes());
+
+    // When
+    let decoded = EnrollmentPage::decode(&encoded);
+
+    // Then
+    assert!(decoded.is_err());
     Ok(())
 }
 

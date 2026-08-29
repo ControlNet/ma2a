@@ -4,6 +4,8 @@ use crate::{ProtocolError, SignedSpaceGenesisV1, SignedSpaceManifestV1, SpaceCha
 pub const MAX_ENROLLMENT_ARTIFACTS_PER_PAGE: usize = 8;
 /// Maximum encoded enrollment page size.
 pub const MAX_ENROLLMENT_PAGE_BYTES: usize = 300_000;
+/// Maximum pages in one complete enrollment response.
+pub const MAX_ENROLLMENT_PAGES: usize = 32;
 const ENROLLMENT_PAGE_VERSION: u8 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +30,9 @@ impl EnrollmentPage {
             .len()
             .div_ceil(MAX_ENROLLMENT_ARTIFACTS_PER_PAGE)
             .max(1);
+        if count > MAX_ENROLLMENT_PAGES {
+            return Err(ProtocolError::INVALID_INPUT);
+        }
         let page_count = u16::try_from(count).map_err(|_| ProtocolError::INVALID_INPUT)?;
         let mut pages = Vec::with_capacity(usize::from(page_count));
         for page_index in 0..page_count {
@@ -97,6 +102,9 @@ impl EnrollmentPage {
         }
         let page_index = u16::from_be_bytes(take::<2>(bytes, &mut cursor)?);
         let page_count = u16::from_be_bytes(take::<2>(bytes, &mut cursor)?);
+        if page_count == 0 || usize::from(page_count) > MAX_ENROLLMENT_PAGES {
+            return Err(ProtocolError::INVALID_INPUT);
+        }
         let final_generation = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
         let genesis = read_bytes(bytes, &mut cursor)?;
         let count = usize::from(u16::from_be_bytes(take::<2>(bytes, &mut cursor)?));
@@ -190,6 +198,9 @@ fn take<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], Pro
 ///
 /// Returns an error unless every page and signed artifact forms one complete canonical chain.
 pub fn validate_enrollment_pages(pages: &[EnrollmentPage]) -> Result<SpaceChain, ProtocolError> {
+    if pages.len() > MAX_ENROLLMENT_PAGES {
+        return Err(ProtocolError::INVALID_INPUT);
+    }
     let first = pages.first().ok_or(ProtocolError::INVALID_INPUT)?;
     if usize::from(first.page_count) != pages.len() || first.page_index != 0 {
         return Err(ProtocolError::INVALID_INPUT);

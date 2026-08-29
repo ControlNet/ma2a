@@ -22,7 +22,7 @@ pub use authorization::{SpaceAuthorizationView, authorize_any};
 pub use codec::{decode_request, decode_response, encode_request, encode_response};
 pub use enrollment_page::{
     EnrollmentPage, MAX_ENROLLMENT_ARTIFACTS_PER_PAGE, MAX_ENROLLMENT_PAGE_BYTES,
-    validate_enrollment_pages,
+    MAX_ENROLLMENT_PAGES, validate_enrollment_pages,
 };
 pub use error::ProtocolError;
 pub use ids::{EndpointId, RequestId, SpaceId};
