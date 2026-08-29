@@ -2,7 +2,8 @@ use std::{error::Error, fmt};
 
 use crate::manifest::endpoint_set;
 use crate::space_codec::{
-    Decoder, MAX_SPACE_OBJECT_LEN, buffer, write_array, write_bytes, write_map, write_uint,
+    Decoder, MAX_SPACE_CHAIN_LEN, MAX_SPACE_CHAIN_MANIFESTS, MAX_SPACE_OBJECT_LEN, buffer,
+    write_array, write_bytes, write_map, write_uint,
 };
 use crate::{
     EndpointId, ProtocolError, SignedSpaceGenesisV1, SignedSpaceManifestV1, SpaceId, SpaceMemberV1,
@@ -154,6 +155,9 @@ impl SpaceChain {
     /// # Errors
     /// Returns [`ProtocolError`] when canonical encoding cannot be allocated or produced.
     pub fn export_public(&self) -> Result<Vec<u8>, ProtocolError> {
+        if self.manifests.len() > MAX_SPACE_CHAIN_MANIFESTS {
+            return Err(ProtocolError::INVALID_INPUT);
+        }
         let mut output = buffer()?;
         write_map(&mut output, 2)?;
         write_uint(&mut output, 0);
@@ -171,7 +175,7 @@ impl SpaceChain {
     /// # Errors
     /// Returns [`ManifestError`] when encoding, signatures, or transitions are invalid.
     pub fn import_public(bytes: &[u8]) -> Result<Self, ManifestError> {
-        if bytes.len() > MAX_SPACE_OBJECT_LEN {
+        if bytes.len() > MAX_SPACE_CHAIN_LEN {
             return Err(ManifestError::INVALID_ENCODING);
         }
         let mut decoder = Decoder::new(bytes);
@@ -183,7 +187,9 @@ impl SpaceChain {
         let genesis = SignedSpaceGenesisV1::from_canonical_bytes(genesis_bytes)
             .map_err(|_| ManifestError::INVALID_SIGNATURE)?;
         decoder.key(1).map_err(invalid_encoding)?;
-        let count = decoder.array(255).map_err(invalid_encoding)?;
+        let count = decoder
+            .array(MAX_SPACE_CHAIN_MANIFESTS)
+            .map_err(invalid_encoding)?;
         let mut manifest_bytes = Vec::new();
         manifest_bytes
             .try_reserve(count)

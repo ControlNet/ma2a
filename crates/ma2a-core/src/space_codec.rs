@@ -1,6 +1,9 @@
 use crate::ProtocolError;
 
 pub(crate) const MAX_SPACE_OBJECT_LEN: usize = 32_768;
+pub(crate) const MAX_SPACE_CHAIN_MANIFESTS: usize = 255;
+pub(crate) const MAX_SPACE_CHAIN_LEN: usize =
+    (MAX_SPACE_CHAIN_MANIFESTS + 1) * (MAX_SPACE_OBJECT_LEN + 3) + 5;
 
 pub(crate) fn buffer() -> Result<Vec<u8>, ProtocolError> {
     let mut bytes = Vec::new();
