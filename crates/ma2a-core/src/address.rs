@@ -1,4 +1,4 @@
-use iroh_base::{SecretKey, Signature, TransportAddr};
+use iroh_base::{SecretKey, Signature};
 
 use crate::space::domain_hash;
 use crate::space_codec::{Decoder, buffer, write_array, write_bytes, write_map, write_uint};
@@ -12,58 +12,14 @@ pub const ADDRESS_RECORD_HASH_DOMAIN: &[u8] = b"ma2a-space-address-record-hash-v
 pub const MAX_ADDRESS_RECORD_LEN: usize = 16_384;
 /// Maximum number of transport addresses in one record.
 pub const MAX_ADDRESS_RECORD_ADDRESSES: usize = 16;
+/// Maximum opaque byte length of one custom transport address.
+pub const MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN: usize = 1_024;
+/// Maximum UTF-8 byte length of Iroh address lookup user data.
+pub const MAX_ADDRESS_RECORD_USER_DATA_LEN: usize = 245;
 /// Maximum lifetime of one address record.
 pub const MAX_ADDRESS_RECORD_VALIDITY_MS: u64 = 600_000;
 
-/// Bounded identity-free Iroh endpoint addressing data.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AddressEndpointDataV1 {
-    pub(crate) addresses: Vec<TransportAddr>,
-}
-
-impl AddressEndpointDataV1 {
-    /// Builds canonical endpoint data from relay and IP transport addresses.
-    ///
-    /// # Errors
-    /// Returns [`ProtocolError::INVALID_INPUT`] for empty, duplicate, custom, or oversized data.
-    pub fn new(mut addresses: Vec<TransportAddr>) -> Result<Self, ProtocolError> {
-        if addresses.is_empty() || addresses.len() > MAX_ADDRESS_RECORD_ADDRESSES {
-            return Err(ProtocolError::INVALID_INPUT);
-        }
-        addresses.sort_unstable();
-        if addresses
-            .windows(2)
-            .any(|pair| matches!(pair, [left, right] if left == right))
-        {
-            return Err(ProtocolError::INVALID_INPUT);
-        }
-        let mut relays = 0usize;
-        for address in &addresses {
-            match address {
-                TransportAddr::Relay(url) => {
-                    relays += 1;
-                    if url.to_string().len() > address_codec::MAX_RELAY_URL_LEN {
-                        return Err(ProtocolError::INVALID_INPUT);
-                    }
-                }
-                TransportAddr::Ip(socket) if socket.port() != 0 => {}
-                TransportAddr::Ip(_) | TransportAddr::Custom(_) => {
-                    return Err(ProtocolError::INVALID_INPUT);
-                }
-                _ => return Err(ProtocolError::INVALID_INPUT),
-            }
-        }
-        if relays > 1 {
-            return Err(ProtocolError::INVALID_INPUT);
-        }
-        Ok(Self { addresses })
-    }
-
-    /// Returns canonical relay and IP transport addresses.
-    pub fn addresses(&self) -> &[TransportAddr] {
-        &self.addresses
-    }
-}
+pub use endpoint_data::AddressEndpointDataV1;
 
 /// Space and Endpoint identity bound by one address record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,3 +274,4 @@ fn signature_message(body: &[u8]) -> Vec<u8> {
 }
 
 mod address_codec;
+mod endpoint_data;

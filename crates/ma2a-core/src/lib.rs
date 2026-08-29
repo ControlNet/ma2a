@@ -22,8 +22,8 @@ mod wire;
 pub use address::{
     ADDRESS_RECORD_HASH_DOMAIN, ADDRESS_SIGNATURE_DOMAIN, AddressEndpointDataV1,
     AddressRecordScope, AddressRecordValidity, MAX_ADDRESS_RECORD_ADDRESSES,
-    MAX_ADDRESS_RECORD_LEN, MAX_ADDRESS_RECORD_VALIDITY_MS, SignedSpaceAddressRecordV1,
-    SpaceAddressRecordV1,
+    MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN, MAX_ADDRESS_RECORD_LEN, MAX_ADDRESS_RECORD_USER_DATA_LEN,
+    MAX_ADDRESS_RECORD_VALIDITY_MS, SignedSpaceAddressRecordV1, SpaceAddressRecordV1,
 };
 pub use authorization::{SpaceAuthorizationView, authorize_any};
 pub use codec::{decode_request, decode_response, encode_request, encode_response};
