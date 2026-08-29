@@ -34,7 +34,7 @@ pub(crate) enum StoreCommand {
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
     CreateEnrollmentInvite {
-        creation: crate::EnrollmentCreation,
+        creation: crate::enrollment::IssuedEnrollmentCreation,
         creator: ma2a_core::EndpointId,
         owner_addr: ma2a_net::EndpointAddr,
         reply: oneshot::Sender<Result<ma2a_core::SignedInviteTicket, RuntimeError>>,
@@ -131,11 +131,11 @@ impl StoreBackend {
                     reply,
                 } => {
                     let result = self.repository.create_enrollment_invite(
-                        creation.space_id(),
+                        creation.space_id,
                         creator,
                         owner_addr,
-                        creation.validity(),
-                        &creation.into_entropy(),
+                        creation.validity,
+                        &creation.entropy,
                     );
                     let _unsent = reply.send(result.map_err(Into::into));
                 }

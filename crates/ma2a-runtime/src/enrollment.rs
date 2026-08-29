@@ -2,38 +2,37 @@ use std::{error::Error, fmt};
 
 use iroh_tickets::Ticket as _;
 use ma2a_core::{
-    EndpointId, InviteEntropy, InviteValidity, RequestId, SignedInviteTicket, SpaceId,
+    EndpointId, InviteEntropy, InviteValidity, MAX_MEMBER_LABEL_LEN, RequestId, SignedInviteTicket,
+    SpaceId,
 };
 use ma2a_store::EnrollmentRedemption;
 
-const MAX_DISPLAY_NAME_BYTES: usize = 256;
+#[cfg(test)]
+#[path = "enrollment/tests.rs"]
+mod tests;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Parameters for issuing a single-use enrollment invitation.
 pub struct EnrollmentCreation {
     space_id: SpaceId,
-    validity: InviteValidity,
+    lifetime_ms: u64,
     entropy: InviteEntropy,
 }
 
 impl EnrollmentCreation {
-    /// Creates invitation parameters for a Space and validity window.
+    /// Creates invitation parameters for a Space and bounded lifetime.
     ///
     /// # Errors
     /// Returns an error unless the invitation lifetime is positive and at most five minutes.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the creation boundary keeps validity timestamps and injected entropy explicit"
-    )]
     pub fn new(
         space_id: SpaceId,
-        created_at_ms: u64,
-        expires_at_ms: u64,
+        lifetime_ms: u64,
         entropy: InviteEntropy,
     ) -> Result<Self, ma2a_core::ProtocolError> {
+        let _validity = InviteValidity::for_lifetime(0, lifetime_ms)?;
         Ok(Self {
             space_id,
-            validity: InviteValidity::new(created_at_ms, expires_at_ms)?,
+            lifetime_ms,
             entropy,
         })
     }
@@ -42,13 +41,22 @@ impl EnrollmentCreation {
     pub const fn space_id(&self) -> SpaceId {
         self.space_id
     }
-    /// Returns the invitation validity window.
-    pub const fn validity(&self) -> InviteValidity {
-        self.validity
+    pub(crate) fn issue_at(
+        self,
+        created_at_ms: u64,
+    ) -> Result<IssuedEnrollmentCreation, ma2a_core::ProtocolError> {
+        Ok(IssuedEnrollmentCreation {
+            space_id: self.space_id,
+            validity: InviteValidity::for_lifetime(created_at_ms, self.lifetime_ms)?,
+            entropy: self.entropy,
+        })
     }
-    pub(crate) fn into_entropy(self) -> InviteEntropy {
-        self.entropy
-    }
+}
+
+pub(crate) struct IssuedEnrollmentCreation {
+    pub(crate) space_id: SpaceId,
+    pub(crate) validity: InviteValidity,
+    pub(crate) entropy: InviteEntropy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,9 +176,7 @@ pub(crate) fn encode_attempt(attempt: &EnrollmentAttempt) -> Result<Vec<u8>, Enr
     let ticket = attempt.ticket.encode_bytes();
     let ticket_len = u16::try_from(ticket.len()).map_err(|_| EnrollmentError::internal())?;
     let name = attempt.display_name.as_bytes();
-    if name.is_empty() || name.len() > MAX_DISPLAY_NAME_BYTES {
-        return Err(EnrollmentError::internal());
-    }
+    validate_display_name(&attempt.display_name)?;
     let name_len = u16::try_from(name.len()).map_err(|_| EnrollmentError::internal())?;
     let mut bytes = Vec::with_capacity(2 + ticket.len() + 16 + 2 + name.len());
     bytes.extend_from_slice(&ticket_len.to_be_bytes());
@@ -203,7 +209,7 @@ pub(crate) fn decode_attempt(
     let name_end = cursor
         .checked_add(name_len)
         .ok_or_else(EnrollmentError::internal)?;
-    if name_len == 0 || name_len > MAX_DISPLAY_NAME_BYTES || name_end != bytes.len() {
+    if name_end != bytes.len() {
         return Err(EnrollmentError::internal());
     }
     let display_name = std::str::from_utf8(
@@ -213,12 +219,23 @@ pub(crate) fn decode_attempt(
     )
     .map_err(|_| EnrollmentError::internal())?
     .to_owned();
+    validate_display_name(&display_name)?;
     let redemption = EnrollmentRedemption {
         endpoint_id,
         request_id,
         display_name,
     };
     Ok((ticket, redemption))
+}
+
+fn validate_display_name(display_name: &str) -> Result<(), EnrollmentError> {
+    if display_name.is_empty()
+        || display_name.len() > MAX_MEMBER_LABEL_LEN
+        || display_name.chars().any(char::is_control)
+    {
+        return Err(EnrollmentError::internal());
+    }
+    Ok(())
 }
 
 fn take<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], EnrollmentError> {

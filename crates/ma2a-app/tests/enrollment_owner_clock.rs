@@ -15,12 +15,19 @@ use ma2a_runtime::{
     EnrollmentAttempt, EnrollmentCreation, EnrollmentErrorCode, Runtime, RuntimeClock,
 };
 use ma2a_store::{Repository, SpaceCreation, StoreConfig};
+use rusqlite::Connection;
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 struct TestClock(AtomicI64);
+
+impl TestClock {
+    fn set(&self, now_ms: i64) {
+        self.0.store(now_ms, Ordering::SeqCst);
+    }
+}
 
 impl RuntimeClock for TestClock {
     fn now_ms(&self) -> Result<i64, ma2a_runtime::RuntimeError> {
@@ -71,21 +78,39 @@ async fn owner_clock_rejects_expired_ticket_without_state_change() -> TestResult
         SpacePolicyV1::phase_one_default(),
     ))?;
     drop(repository);
-    let owner = Runtime::start_with_clock(
-        owner_config.clone(),
-        Arc::new(TestClock(AtomicI64::new(201))),
-    )
-    .await?;
+    let clock = Arc::new(TestClock(AtomicI64::new(201)));
+    let owner_clock = Arc::clone(&clock);
+    let owner_clock: Arc<dyn RuntimeClock> = owner_clock;
+    let owner = Runtime::start_with_clock(owner_config.clone(), owner_clock).await?;
     let candidate = Runtime::start(StoreConfig::new(&candidate_state.0)).await?;
     let ticket = owner
         .handle()
         .create_enrollment_invite(EnrollmentCreation::new(
             created.space_id(),
             100,
-            200,
             InviteEntropy::from_bytes([0x71; 16], [0x72; 32]),
         )?)
         .await?;
+    assert_eq!(ticket.created_at_ms(), 201);
+    assert_eq!(ticket.expires_at_ms(), 301);
+    let persisted = Connection::open(owner_config.database_path())?.query_row(
+        "SELECT creator_endpoint_id, created_at_ms, expires_at_ms, owner_bootstrap
+         FROM invitations WHERE invitation_id = ?1",
+        [ticket.invitation_id().as_slice()],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        },
+    )?;
+    assert_eq!(persisted.0, owner_id.as_bytes());
+    assert_eq!(persisted.1, 201);
+    assert_eq!(persisted.2, 301);
+    assert_eq!(persisted.3, ticket.encoded_owner_addr());
+    clock.set(301);
     let before = owner.handle().status().await?;
     let generation = Repository::open(&owner_config)?
         .load_space_chain(created.space_id())?
