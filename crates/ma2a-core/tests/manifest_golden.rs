@@ -6,8 +6,10 @@ mod space_vectors;
 use std::fmt::Write as _;
 
 use ma2a_core::{
+    EnrollmentPage, MAX_ENROLLMENT_ARTIFACTS_PER_PAGE, MAX_ENROLLMENT_PAGE_BYTES,
     ManifestApplyOutcome, SignedSpaceGenesisV1, SignedSpaceManifestV1, SpaceAuthoritySecret,
     SpaceChain, SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1,
+    validate_enrollment_pages,
 };
 
 use space_vectors::{signed_genesis, signed_manifest};
@@ -117,6 +119,35 @@ fn public_chain_round_trips_beyond_single_object_bound() -> Result<(), Box<dyn s
         chain.export_public(),
         Err(ma2a_core::ProtocolError::INVALID_INPUT)
     );
+    Ok(())
+}
+
+#[test]
+fn maximum_generation_chain_paginates_without_an_aggregate_frame()
+-> Result<(), Box<dyn std::error::Error>> {
+    let secret = SpaceAuthoritySecret::from_bytes(space_vectors::AUTHORITY_SECRET);
+    let mut chain = SpaceChain::from_genesis(signed_genesis()?)?;
+    for generation in 1..=255 {
+        let manifest = SpaceManifestV1::new(
+            SpaceManifestLink::new(chain.space_id(), generation, chain.latest_hash()),
+            generation,
+            SpaceManifestMembership::new(vec![space_vectors::member(0x66, true)?], vec![]),
+        )?
+        .sign(&secret)?;
+        chain.apply(&manifest)?;
+    }
+
+    let pages = EnrollmentPage::paginate(&chain)?;
+
+    assert_eq!(
+        pages.len(),
+        255_usize.div_ceil(MAX_ENROLLMENT_ARTIFACTS_PER_PAGE)
+    );
+    assert!(pages.iter().all(|page| {
+        page.encode()
+            .is_ok_and(|bytes| bytes.len() <= MAX_ENROLLMENT_PAGE_BYTES)
+    }));
+    assert_eq!(validate_enrollment_pages(&pages)?, chain);
     Ok(())
 }
 
