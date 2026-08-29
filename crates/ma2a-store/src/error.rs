@@ -48,6 +48,12 @@ pub enum StoreError {
     SpaceAuthorityUnavailable,
     /// A protected-key reference already has immutable material.
     ProtectedKeyAlreadyExists,
+    /// A password is outside the bounded accepted byte length.
+    InvalidPasswordLength,
+    /// Password hashing or verifier parsing failed closed.
+    PasswordHash,
+    /// Stored credential or session bytes violate the schema contract.
+    InvalidAuthState,
     /// The Windows permission helper failed closed.
     WindowsAcl {
         /// Whether DACL application or validation failed.
@@ -90,6 +96,13 @@ impl fmt::Display for StoreError {
             Self::ProtectedKeyAlreadyExists => formatter.write_str(
                 "protected-key material already exists; rotate by writing a new opaque reference",
             ),
+            Self::InvalidPasswordLength => {
+                formatter.write_str("password length is outside the accepted bounds")
+            }
+            Self::PasswordHash => formatter.write_str("password verifier operation failed"),
+            Self::InvalidAuthState => {
+                formatter.write_str("stored Web authentication state is invalid")
+            }
             Self::WindowsAcl { operation } => write!(
                 formatter,
                 "Windows current-user-and-SYSTEM DACL {operation} failed; state remains unavailable"
@@ -114,6 +127,9 @@ impl Error for StoreError {
             | Self::SpaceNotFound
             | Self::SpaceAuthorityUnavailable
             | Self::ProtectedKeyAlreadyExists
+            | Self::InvalidPasswordLength
+            | Self::PasswordHash
+            | Self::InvalidAuthState
             | Self::WindowsAcl { .. } => None,
         }
     }
