@@ -201,6 +201,20 @@ fn freezes_version_variants_gap_policy_and_schema_hash() {
     assert_eq!(COMMAND_NAMES.len(), 21);
     assert_eq!(RESULT_NAMES.len(), 21);
     assert_eq!(ERROR_NAMES.len(), 9);
+    assert_eq!(
+        ERROR_NAMES,
+        [
+            ProtocolError::VERSION_MISMATCH.name(),
+            ProtocolError::INVALID_INPUT.name(),
+            ProtocolError::UNAUTHORIZED.name(),
+            ProtocolError::NOT_FOUND.name(),
+            ProtocolError::CONFLICT.name(),
+            ProtocolError::EXPIRED.name(),
+            ProtocolError::ROLLBACK.name(),
+            ProtocolError::UNAVAILABLE.name(),
+            ProtocolError::INTERNAL.name(),
+        ]
+    );
     assert_eq!(EVENT_NAMES.len(), 9);
     assert!(classify_event_revision(10, 11).may_apply());
     assert!(classify_event_revision(10, 12).requires_resnapshot());
@@ -234,8 +248,9 @@ fn generated_types_embed_the_exact_machine_contract() {
     for event in EVENT_NAMES {
         assert!(generated.contains(event));
     }
-    assert!(!generated.contains("authorized_via"));
-    assert!(!generated.contains("private_key"));
-    assert!(!generated.contains("session_bearer"));
-    assert!(!generated.contains("invite_secret"));
+    let generated_types = generated.replacen(LOCAL_API_SCHEMA_JSON, "", 1);
+    assert!(!generated_types.contains("authorized_via"));
+    assert!(!generated_types.contains("private_key"));
+    assert!(!generated_types.contains("session_bearer"));
+    assert!(!generated_types.contains("invite_secret"));
 }

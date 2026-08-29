@@ -225,7 +225,7 @@ pub fn encode_response(response: &ApiResponse) -> Result<Vec<u8>, ApiError> {
 pub fn encode_error(error: ApiError) -> Result<Vec<u8>, ApiError> {
     let value = json!({
         "version": LOCAL_API_VERSION,
-        "error": error_name(error.code()),
+        "error": error.code().name(),
         "remediation": error.remediation(),
     });
     bounded_json(&value)
@@ -268,26 +268,4 @@ fn result_value(result: &CommandResult) -> Value {
         ResultKind::ShuttingDown => json!({}),
     };
     json!({"type": result.result_type(), "payload": payload})
-}
-
-fn error_name(error: ProtocolError) -> &'static str {
-    if error == ProtocolError::VERSION_MISMATCH {
-        "version_mismatch"
-    } else if error == ProtocolError::INVALID_INPUT {
-        "invalid_input"
-    } else if error == ProtocolError::UNAUTHORIZED {
-        "unauthorized"
-    } else if error == ProtocolError::NOT_FOUND {
-        "not_found"
-    } else if error == ProtocolError::CONFLICT {
-        "conflict"
-    } else if error == ProtocolError::EXPIRED {
-        "expired"
-    } else if error == ProtocolError::ROLLBACK {
-        "rollback"
-    } else if error == ProtocolError::UNAVAILABLE {
-        "unavailable"
-    } else {
-        "internal"
-    }
 }

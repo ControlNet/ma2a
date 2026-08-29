@@ -39,6 +39,21 @@ impl ProtocolError {
     /// The receiver encountered an internal failure.
     pub const INTERNAL: Self = Self(ErrorKind::Internal);
 
+    /// Returns the stable snake-case wire name.
+    pub const fn name(self) -> &'static str {
+        match self.0 {
+            ErrorKind::VersionMismatch => "version_mismatch",
+            ErrorKind::InvalidInput => "invalid_input",
+            ErrorKind::Unauthorized => "unauthorized",
+            ErrorKind::NotFound => "not_found",
+            ErrorKind::Conflict => "conflict",
+            ErrorKind::Expired => "expired",
+            ErrorKind::Rollback => "rollback",
+            ErrorKind::Unavailable => "unavailable",
+            ErrorKind::Internal => "internal",
+        }
+    }
+
     pub(crate) const fn code(self) -> u8 {
         match self.0 {
             ErrorKind::VersionMismatch => 0,
