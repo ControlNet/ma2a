@@ -6,13 +6,14 @@ use crate::{
     DatabaseSettings, EndpointRecord, KeyKind, KeyReference, KeyStore, SpaceRecord, StoreConfig,
     StoreError, migrations, permissions,
 };
+use ma2a_core::{SignedSpaceGenesisV1, SpaceChain};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Synchronous `SQLite` repository intended for a dedicated blocking owner.
 pub struct Repository {
     pub(crate) connection: Connection,
-    key_store: KeyStore,
+    pub(crate) key_store: KeyStore,
 }
 
 impl Repository {
@@ -65,6 +66,7 @@ impl Repository {
             key_store,
         };
         repository.validate_key_references()?;
+        repository.validate_space_chains()?;
         Ok(repository)
     }
 
@@ -152,32 +154,24 @@ impl Repository {
         Ok(revision)
     }
 
-    /// Stores Space genesis and an optional protected authority-key reference atomically.
+    /// Stores imported public Space genesis without local authority material.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the protected authority key is unavailable or
-    /// the transaction cannot be committed.
+    /// Returns [`StoreError`] when the transaction cannot be committed.
     pub fn create_space(&mut self, space: &SpaceRecord) -> Result<u64, StoreError> {
-        if let Some(reference) = &space.authority_key_reference {
-            self.key_store
-                .validate_reference(KeyKind::SpaceAuthority, reference)?;
+        let genesis = SignedSpaceGenesisV1::from_canonical_bytes(&space.genesis_cbor)?;
+        if genesis.space_id() != space.space_id {
+            return Err(StoreError::SchemaMismatch {
+                detail: "Space record identifier does not match signed genesis",
+            });
         }
-        let transaction = self.immediate()?;
-        transaction.execute(
-            "INSERT INTO spaces(space_id, genesis_cbor, authority_key_ref) VALUES (?1, ?2, ?3)",
-            (
-                space.space_id.as_bytes().as_slice(),
-                space.genesis_cbor.as_slice(),
-                space
-                    .authority_key_reference
-                    .as_ref()
-                    .map(KeyReference::as_str),
-            ),
-        )?;
-        let revision = increment_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(revision)
+        let chain = SpaceChain::from_genesis(genesis)?;
+        self.persist_space_chain(&chain)?
+            .revision()
+            .ok_or(StoreError::SchemaMismatch {
+                detail: "Space genesis was already present",
+            })
     }
 
     pub(crate) fn immediate(&mut self) -> Result<Transaction<'_>, StoreError> {

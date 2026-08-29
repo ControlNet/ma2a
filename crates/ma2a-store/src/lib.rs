@@ -7,6 +7,7 @@ mod config;
 mod error;
 mod key_store;
 mod migrations;
+mod owned_spaces;
 mod permissions;
 mod repository;
 mod repository_models;
@@ -14,11 +15,14 @@ mod repository_mutations;
 mod repository_sequences;
 mod repository_state;
 mod repository_state_models;
+mod space_rows;
+mod spaces;
 
 pub use config::StoreConfig;
 pub use error::StoreError;
 pub use key_store::{KeyKind, KeyMaterial, KeyReference, KeyStore, ProtectedSecret};
 pub use migrations::SCHEMA_VERSION;
+pub use owned_spaces::{AdvancedOwnedSpace, CreatedSpace, OwnedSpaceUpdate, SpaceCreation};
 pub use repository::Repository;
 pub use repository_models::{
     AddressAdvance, DatabaseSettings, EndpointRecord, InvitationRecord, ManifestAdvance,
@@ -26,6 +30,7 @@ pub use repository_models::{
     SequenceOutcome, SessionRecord, SpaceRecord,
 };
 pub use repository_state_models::{
-    EndpointObservationUpdate, MemberRecord, MemberRevocation, MemberRole, RelayConfiguration,
-    RelayObservation, RuntimeMetadata, RuntimeMetadataUpdate,
+    EndpointObservationUpdate, RelayConfiguration, RelayObservation, RuntimeMetadata,
+    RuntimeMetadataUpdate,
 };
+pub use spaces::SpaceChainPersistence;

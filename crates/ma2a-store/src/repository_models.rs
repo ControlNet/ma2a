@@ -29,25 +29,19 @@ impl EndpointRecord {
     }
 }
 
-/// Space genesis and an optional local authority-key reference.
+/// Public Space genesis persistence record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpaceRecord {
     pub(crate) space_id: SpaceId,
     pub(crate) genesis_cbor: Vec<u8>,
-    pub(crate) authority_key_reference: Option<KeyReference>,
 }
 
 impl SpaceRecord {
     /// Creates one Space persistence record.
-    pub const fn new(
-        space_id: SpaceId,
-        genesis_cbor: Vec<u8>,
-        authority_key_reference: Option<KeyReference>,
-    ) -> Self {
+    pub const fn new(space_id: SpaceId, genesis_cbor: Vec<u8>) -> Self {
         Self {
             space_id,
             genesis_cbor,
-            authority_key_reference,
         }
     }
 }
