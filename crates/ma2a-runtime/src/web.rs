@@ -32,6 +32,7 @@ pub use types::{
 };
 
 const SESSION_COOKIE: &str = "ma2a_session";
+const CSRF_COOKIE: &str = "ma2a_csrf";
 
 /// Bounded loopback HTTP server settings.
 #[derive(Clone, Copy, Debug)]
@@ -141,9 +142,16 @@ async fn login(State(state): State<WebState>, headers: HeaderMap, body: Bytes) -
                 "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}",
                 session.bearer()
             );
+            let csrf_cookie = format!(
+                "{CSRF_COOKIE}={}; Path=/; SameSite=Strict; Max-Age={max_age}",
+                session.csrf_token()
+            );
             let mut response = Json(json!({ "csrf_token": session.csrf_token() })).into_response();
+            if let Ok(value) = csrf_cookie.parse() {
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
             if let Ok(value) = cookie.parse() {
-                response.headers_mut().insert(header::SET_COOKIE, value);
+                response.headers_mut().append(header::SET_COOKIE, value);
             }
             response
         }
@@ -165,7 +173,11 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Response {
     match state.auth.logout(session).await {
         Ok(()) => {
             let mut response = StatusCode::NO_CONTENT.into_response();
-            response.headers_mut().insert(
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                header::HeaderValue::from_static("ma2a_csrf=; Path=/; SameSite=Strict; Max-Age=0"),
+            );
+            response.headers_mut().append(
                 header::SET_COOKIE,
                 header::HeaderValue::from_static(
                     "ma2a_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
@@ -192,18 +204,14 @@ async fn authenticated_mutation(
     headers: &HeaderMap,
 ) -> Result<AuthenticatedSession, Response> {
     let bearer = cookie(headers).ok_or_else(|| StatusCode::UNAUTHORIZED.into_response())?;
-    let session = state
-        .auth
-        .authenticate(bearer)
-        .await
-        .map_err(|_| StatusCode::UNAUTHORIZED.into_response())?;
     let csrf =
         headers::single_header_value(headers, &header::HeaderName::from_static("x-csrf-token"))
             .ok_or_else(|| StatusCode::FORBIDDEN.into_response())?;
-    if !session.csrf_matches(csrf) {
-        return Err(StatusCode::FORBIDDEN.into_response());
-    }
-    Ok(session)
+    state
+        .auth
+        .authenticate_mutation(bearer, csrf)
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN.into_response())
 }
 
 async fn asset(State(state): State<WebState>, request: axum::extract::Request) -> Response {
