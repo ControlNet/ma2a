@@ -58,7 +58,7 @@ export function SettingsScreen({
               <strong>Reset from the local terminal</strong>
               <p>A password reset revokes all existing Web sessions.</p>
             </div>
-            <CodeValue>ma2a ui password set</CodeValue>
+            <CodeValue>ma2a ui password reset</CodeValue>
           </div>
         </Section>
         <Section title="Browser storage">
