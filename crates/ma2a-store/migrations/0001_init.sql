@@ -95,11 +95,17 @@ CREATE TABLE invitations (
     consumed_by_endpoint_id BLOB CHECK (
         consumed_by_endpoint_id IS NULL OR length(consumed_by_endpoint_id) = 32
     ),
+    consumed_request_id BLOB CHECK (consumed_request_id IS NULL OR length(consumed_request_id) = 16),
+    response_chain BLOB,
     FOREIGN KEY (space_id) REFERENCES spaces(space_id) ON DELETE CASCADE,
     CHECK (
-        (status = 0 AND consumed_at_ms IS NULL AND consumed_by_endpoint_id IS NULL)
-        OR (status = 1 AND consumed_at_ms IS NOT NULL AND consumed_by_endpoint_id IS NOT NULL)
-        OR (status IN (2, 3) AND consumed_at_ms IS NULL AND consumed_by_endpoint_id IS NULL)
+        (status = 0 AND consumed_at_ms IS NULL AND consumed_by_endpoint_id IS NULL
+            AND consumed_request_id IS NULL AND response_chain IS NULL)
+        OR (status = 1 AND consumed_at_ms IS NOT NULL AND consumed_by_endpoint_id IS NOT NULL
+            AND ((consumed_request_id IS NULL AND response_chain IS NULL)
+                OR (consumed_request_id IS NOT NULL AND response_chain IS NOT NULL)))
+        OR (status IN (2, 3) AND consumed_at_ms IS NULL AND consumed_by_endpoint_id IS NULL
+            AND consumed_request_id IS NULL AND response_chain IS NULL)
     )
 ) STRICT, WITHOUT ROWID;
 
