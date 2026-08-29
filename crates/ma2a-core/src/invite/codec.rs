@@ -32,11 +32,13 @@ pub(super) fn decode_ticket(bytes: &[u8]) -> Result<SignedInviteTicket, Protocol
         .map_err(|_| ProtocolError::INVALID_INPUT)?
         .endpoint_addr()
         .clone();
-    let secret = take::<32>(bytes, &mut cursor)?;
-    let signature = take::<64>(bytes, &mut cursor)?;
+    let secret = take_slice(bytes, &mut cursor, 32)?;
+    let signature = take_slice(bytes, &mut cursor, 64)?;
     if cursor != bytes.len() {
         return Err(ProtocolError::INVALID_INPUT);
     }
+    let secret = <[u8; 32]>::try_from(secret).map_err(|_| ProtocolError::INVALID_INPUT)?;
+    let signature = <[u8; 64]>::try_from(signature).map_err(|_| ProtocolError::INVALID_INPUT)?;
     Ok(SignedInviteTicket {
         invitation_id,
         space_id,
@@ -52,13 +54,57 @@ pub(super) fn decode_ticket(bytes: &[u8]) -> Result<SignedInviteTicket, Protocol
 }
 
 fn take<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], ProtocolError> {
-    let end = cursor.checked_add(N).ok_or(ProtocolError::INVALID_INPUT)?;
-    let value = <[u8; N]>::try_from(
-        bytes
-            .get(*cursor..end)
-            .ok_or(ProtocolError::INVALID_INPUT)?,
-    )
-    .map_err(|_| ProtocolError::INVALID_INPUT)?;
+    <[u8; N]>::try_from(take_slice(bytes, cursor, N)?).map_err(|_| ProtocolError::INVALID_INPUT)
+}
+
+fn take_slice<'a>(
+    bytes: &'a [u8],
+    cursor: &mut usize,
+    length: usize,
+) -> Result<&'a [u8], ProtocolError> {
+    let end = cursor
+        .checked_add(length)
+        .ok_or(ProtocolError::INVALID_INPUT)?;
+    let value = bytes
+        .get(*cursor..end)
+        .ok_or(ProtocolError::INVALID_INPUT)?;
     *cursor = end;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh_base::{EndpointAddr, SecretKey};
+    use iroh_tickets::Ticket as _;
+
+    use super::decode_ticket;
+    use crate::{
+        EndpointId, InviteEntropy, InviteValidity, SignedInviteTicket, SpaceAuthoritySecret,
+        SpaceId,
+    };
+
+    #[test]
+    fn trailing_bytes_after_signature_are_rejected() {
+        // Given
+        let endpoint_secret = SecretKey::generate();
+        let endpoint_id = EndpointId::from(endpoint_secret.public());
+        let authority = SpaceAuthoritySecret::from_bytes([0x91; 32]);
+        let ticket = SignedInviteTicket::sign(
+            SpaceId::derive(b"codec-test-space"),
+            endpoint_id,
+            EndpointAddr::new(endpoint_secret.public()),
+            InviteValidity::new(100, 200).expect("valid test interval"),
+            &InviteEntropy::from_bytes([0x92; 16], [0x93; 32]),
+            &authority,
+        )
+        .expect("valid test ticket");
+        let mut malformed = ticket.encode_bytes();
+        malformed.push(0);
+
+        // When
+        let result = decode_ticket(&malformed);
+
+        // Then
+        assert!(result.is_err());
+    }
 }
