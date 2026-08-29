@@ -26,6 +26,6 @@ pub use repository_models::{
     SequenceOutcome, SessionRecord, SpaceRecord,
 };
 pub use repository_state_models::{
-    MemberRecord, MemberRevocation, MemberRole, RelayConfiguration, RelayObservation,
-    RuntimeMetadataUpdate,
+    EndpointObservationUpdate, MemberRecord, MemberRevocation, MemberRole, RelayConfiguration,
+    RelayObservation, RuntimeMetadata, RuntimeMetadataUpdate,
 };

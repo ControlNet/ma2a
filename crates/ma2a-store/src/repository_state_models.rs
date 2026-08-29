@@ -92,6 +92,62 @@ pub struct RuntimeMetadataUpdate {
     pub observed_at_ms: i64,
 }
 
+/// Current persisted Endpoint observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the complete schema-v1 Endpoint observation is written atomically"
+)]
+pub struct EndpointObservationUpdate {
+    /// Observation timestamp.
+    pub observed_at_ms: i64,
+    /// Whether the Runtime has completed Endpoint startup.
+    pub ready: bool,
+    /// Number of observed direct addresses.
+    pub direct_address_count: u64,
+    /// Number of observed relay addresses.
+    pub relay_address_count: u64,
+    /// Number of locally valid Space memberships.
+    pub membership_count: u64,
+}
+
+/// Persisted Runtime boot, shutdown, and Endpoint observation state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeMetadata {
+    pub(crate) revision: u64,
+    pub(crate) boot_id: Option<[u8; 16]>,
+    pub(crate) last_shutdown_clean: Option<bool>,
+    pub(crate) last_shutdown_at_ms: Option<i64>,
+    pub(crate) endpoint_observation: Option<EndpointObservationUpdate>,
+}
+
+impl RuntimeMetadata {
+    /// Returns the monotonic Runtime state revision.
+    pub const fn revision(self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the current boot identifier when startup has begun.
+    pub const fn boot_id(self) -> Option<[u8; 16]> {
+        self.boot_id
+    }
+
+    /// Returns whether the current boot completed a clean shutdown.
+    pub const fn last_shutdown_clean(self) -> Option<bool> {
+        self.last_shutdown_clean
+    }
+
+    /// Returns the shutdown observation timestamp.
+    pub const fn last_shutdown_at_ms(self) -> Option<i64> {
+        self.last_shutdown_at_ms
+    }
+
+    /// Returns the latest Endpoint observation.
+    pub const fn endpoint_observation(self) -> Option<EndpointObservationUpdate> {
+        self.endpoint_observation
+    }
+}
+
 /// Desired local public/private relay configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
