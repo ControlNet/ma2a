@@ -11,6 +11,7 @@ use ma2a_core::{EndpointId, SpaceId};
 use ma2a_runtime::{Runtime, RuntimeErrorCode};
 use ma2a_store::{KeyKind, KeyStore, Repository, StoreConfig};
 use rusqlite::Connection;
+use tokio::sync::broadcast::error::TryRecvError;
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 
@@ -97,6 +98,42 @@ async fn membership_observations_never_rotate_or_rebuild_identity() -> TestResul
     assert_eq!(initial.endpoint_id(), joined.endpoint_id());
     assert_eq!(joined.endpoint_id(), removed.endpoint_id());
     assert!(removed.revision() > initial.revision());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_membership_observation_keeps_authoritative_state_unchanged() -> TestResult {
+    // Given
+    let state = TempState::new("membership-store-failure")?;
+    let config = StoreConfig::new(state.path());
+    let runtime = Runtime::start(config.clone()).await?;
+    let handle = runtime.handle();
+    let initial = handle.status().await?;
+    let initial_metadata = Repository::open(&config)?.runtime_metadata()?;
+    let mut events = handle.subscribe();
+    let connection = Connection::open(config.database_path())?;
+    connection.execute_batch(
+        "CREATE TRIGGER reject_endpoint_observation
+         BEFORE UPDATE OF endpoint_observed_at_ms ON runtime_metadata
+         BEGIN SELECT RAISE(ABORT, 'injected endpoint observation failure'); END;",
+    )?;
+
+    // When
+    let error = handle
+        .observe_memberships(vec![SpaceId::derive(b"uncommitted membership")])
+        .await
+        .expect_err("injected store failure unexpectedly succeeded");
+    let after_failure = handle.status().await?;
+    let after_failure_metadata = Repository::open(&config)?.runtime_metadata()?;
+
+    // Then
+    assert_eq!(error.code(), RuntimeErrorCode::STORE);
+    assert_eq!(after_failure.membership_count(), initial.membership_count());
+    assert_eq!(after_failure.revision(), initial.revision());
+    assert_eq!(after_failure_metadata, initial_metadata);
+    assert_eq!(events.try_recv(), Err(TryRecvError::Empty));
+    connection.execute_batch("DROP TRIGGER reject_endpoint_observation;")?;
+    runtime.shutdown().await?;
     Ok(())
 }
 
