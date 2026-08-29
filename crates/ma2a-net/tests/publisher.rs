@@ -6,7 +6,7 @@
 
 mod support;
 
-use iroh::EndpointAddr;
+use iroh::{EndpointAddr, address_lookup::UserData};
 use iroh_base::{SecretKey, TransportAddr};
 use ma2a_net::{
     AddressPublishRequest, AddressPublisher, AddressPublisherError, EndpointSecret, RuntimeEndpoint,
@@ -74,6 +74,45 @@ fn publisher_advances_sequence_for_a_material_address_change() -> TestResult {
             .record()
             .sequence(),
         1
+    );
+    Ok(())
+}
+
+#[test]
+fn publisher_preserves_custom_addresses_and_user_data() -> TestResult {
+    // Given
+    let signer = SecretKey::from_bytes(&[0x58; 32]);
+    let fixture = space_fixture(&signer, 0x6a)?;
+    let state = TempState::new("publisher-complete-data")?;
+    let mut repository = repository(&state, &fixture)?;
+    let addresses = [
+        TransportAddr::Custom(iroh_base::CustomAddr::from_parts(11, b"opaque")),
+        TransportAddr::Ip("127.0.0.1:4111".parse()?),
+    ];
+    let endpoint_addr = EndpointAddr::from_parts(signer.public(), addresses);
+    let expected_addresses = endpoint_addr.addrs.iter().cloned().collect::<Vec<_>>();
+    let publisher = AddressPublisher::new_with_user_data(
+        signer,
+        endpoint_addr,
+        Some(UserData::try_from("metadata".to_owned())?),
+    )?;
+
+    // When
+    let publication = publisher
+        .publish(
+            &mut repository,
+            AddressPublishRequest::new(&fixture.authorization, NOW_MS),
+        )?
+        .ok_or("complete publication was skipped")?;
+
+    // Then
+    assert_eq!(
+        publication.record().record().endpoint_data().addresses(),
+        expected_addresses
+    );
+    assert_eq!(
+        publication.record().record().endpoint_data().user_data(),
+        Some("metadata")
     );
     Ok(())
 }
