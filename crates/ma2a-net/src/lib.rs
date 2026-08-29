@@ -4,6 +4,7 @@
 
 mod address_data;
 mod address_lookup;
+mod address_observation;
 mod address_record;
 mod endpoint;
 mod enrollment;
