@@ -190,14 +190,19 @@ impl Repository {
         }
         transaction.execute(
             "INSERT INTO relay_advertisement_state(space_id, relay_endpoint_id, sequence,
-             expires_at_ms, advertisement_hash, signed_advertisement) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             issued_at_ms, expires_at_ms, advertisement_hash, signed_advertisement)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(space_id, relay_endpoint_id) DO UPDATE SET sequence = excluded.sequence,
-             expires_at_ms = excluded.expires_at_ms, advertisement_hash = excluded.advertisement_hash,
+             issued_at_ms = excluded.issued_at_ms, expires_at_ms = excluded.expires_at_ms,
+             advertisement_hash = excluded.advertisement_hash,
              signed_advertisement = excluded.signed_advertisement",
             (
                 advance.space_id.as_bytes().as_slice(),
-                advance.relay_endpoint_id.as_bytes().as_slice(), advance.sequence,
-                advance.expires_at_ms, advance.advertisement_hash.as_slice(),
+                advance.relay_endpoint_id.as_bytes().as_slice(),
+                advance.sequence,
+                advance.issued_at_ms,
+                advance.expires_at_ms,
+                advance.advertisement_hash.as_slice(),
                 advance.signed_advertisement.as_slice(),
             ),
         )?;
