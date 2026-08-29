@@ -132,10 +132,10 @@ async fn assert_expired(context: &DenialContext<'_>) -> TestResult {
         .create_enrollment_invite(EnrollmentCreation::new(
             context.first_space,
             100,
-            200,
             InviteEntropy::from_bytes([0x61; 16], secret),
         )?)
         .await?;
+    context.clock.set(302);
     assert!(
         !fs::read(context.owner_config.database_path())?
             .windows(32)
@@ -165,15 +165,14 @@ async fn assert_cancelled(context: &DenialContext<'_>) -> TestResult {
         .handle()
         .create_enrollment_invite(EnrollmentCreation::new(
             context.first_space,
-            300,
-            400,
+            100,
             InviteEntropy::from_bytes([0x64; 16], [0x65; 32]),
         )?)
         .await?;
     context
         .owner
         .handle()
-        .cancel_enrollment_invite(ticket.invitation_id(), 301)
+        .cancel_enrollment_invite(ticket.invitation_id())
         .await?;
     let before = context.owner.handle().status().await?;
     let result = context
@@ -199,8 +198,7 @@ async fn assert_cross_space(context: &DenialContext<'_>) -> TestResult {
         .handle()
         .create_enrollment_invite(EnrollmentCreation::new(
             context.second_space,
-            500,
-            600,
+            100,
             InviteEntropy::from_bytes([0x67; 16], [0x68; 32]),
         )?)
         .await?;
