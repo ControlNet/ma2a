@@ -41,26 +41,34 @@ export type HandshakeView = {
   readonly capabilities: CapabilityFlags
 }
 
+export type RelayCandidateView = {
+  readonly endpoint_id: EndpointId
+  readonly relay_kind: string
+  readonly eligible: boolean
+}
+
+export type ObservedRelayStateView = {
+  readonly private_relay_online: boolean
+  readonly public_relay_online: boolean
+}
+
+export type ReachabilityView = { readonly direct: boolean; readonly relayed: boolean }
+
+export type EchoSummaryView = { readonly successes: number; readonly failures: number }
+
 export type RuntimeSnapshot = {
   readonly revision: number
   readonly endpoint: EndpointView
   readonly spaces: readonly SpaceView[]
   readonly control_sync: ControlSyncView
-  readonly relay_candidates: readonly {
-    readonly endpoint_id: EndpointId
-    readonly relay_kind: string
-    readonly eligible: boolean
-  }[]
-  readonly observed_relay_state: {
-    readonly private_relay_online: boolean
-    readonly public_relay_online: boolean
-  }
-  readonly reachability: { readonly direct: boolean; readonly relayed: boolean }
-  readonly recent_echo_summary: { readonly successes: number; readonly failures: number }
+  readonly relay_candidates: readonly RelayCandidateView[]
+  readonly observed_relay_state: ObservedRelayStateView
+  readonly reachability: ReachabilityView
+  readonly recent_echo_summary: EchoSummaryView
   readonly ui_auth: UiAuthView
 }
 
-type PrivateRelayView = {
+export type PrivateRelayView = {
   readonly configured: boolean
   readonly mode: "native_tls" | "external_termination"
   readonly host: string
@@ -68,22 +76,26 @@ type PrivateRelayView = {
   readonly online: boolean
 }
 
-type PublicRelayView = {
+export type PublicRelayView = {
   readonly configured: boolean
   readonly url: string | null
   readonly online: boolean
 }
 
+export type RuntimeStatusView = {
+  readonly revision: number
+  readonly initialized: boolean
+  readonly shutting_down: boolean
+}
+
+export type EchoReplyView = {
+  readonly target_endpoint_id: EndpointId
+  readonly payload: string
+}
+
 export type CommandResult =
   | { readonly type: "handshake"; readonly payload: HandshakeView }
-  | {
-      readonly type: "status"
-      readonly payload: {
-        readonly revision: number
-        readonly initialized: boolean
-        readonly shutting_down: boolean
-      }
-    }
+  | { readonly type: "status"; readonly payload: RuntimeStatusView }
   | { readonly type: "endpoint_info"; readonly payload: EndpointView }
   | { readonly type: "space_created"; readonly payload: SpaceView }
   | { readonly type: "spaces"; readonly payload: readonly SpaceView[] }
@@ -97,10 +109,7 @@ export type CommandResult =
   | { readonly type: "private_relay_status"; readonly payload: PrivateRelayView }
   | { readonly type: "public_relay_configured"; readonly payload: PublicRelayView }
   | { readonly type: "public_relay_status"; readonly payload: PublicRelayView }
-  | {
-      readonly type: "echo"
-      readonly payload: { readonly target_endpoint_id: EndpointId; readonly payload: string }
-    }
+  | { readonly type: "echo"; readonly payload: EchoReplyView }
   | { readonly type: "ui_password_set"; readonly payload: UiAuthView }
   | { readonly type: "ui_password_reset"; readonly payload: UiAuthView }
   | { readonly type: "sessions_revoked"; readonly payload: UiAuthView }
