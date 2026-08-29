@@ -5,7 +5,6 @@ members = [
     "crates/ma2a-net",
     "crates/ma2a-runtime",
     "crates/ma2a-store",
-    "crates/ma2a-windows-security",
     "xtask",
 ]
 default-members = [
@@ -42,7 +41,6 @@ ma2a-core = { path = "crates/ma2a-core", version = "=0.1.0" }
 ma2a-net = { path = "crates/ma2a-net", version = "=0.1.0" }
 ma2a-runtime = { path = "crates/ma2a-runtime", version = "=0.1.0" }
 ma2a-store = { path = "crates/ma2a-store", version = "=0.1.0" }
-ma2a-windows-security = { path = "crates/ma2a-windows-security", version = "=0.1.0" }
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["backup", "bundled", "fallible_uint"] }
 rustix = { version = "=1.1.4", default-features = false, features = ["process", "std"] }
@@ -64,7 +62,7 @@ non_ascii_idents = "deny"
 single_use_lifetimes = "warn"
 trivial_numeric_casts = "warn"
 unreachable_pub = "warn"
-unsafe_code = "forbid"
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 unused_lifetimes = "warn"
 unused_must_use = "deny"

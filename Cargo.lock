@@ -1968,7 +1968,6 @@ dependencies = [
  "ma2a-core",
  "ma2a-net",
  "ma2a-store",
- "ma2a-windows-security",
  "rusqlite",
  "rustix",
  "serde",
@@ -1977,6 +1976,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1987,13 +1987,6 @@ dependencies = [
  "rusqlite",
  "rustix",
  "zeroize",
-]
-
-[[package]]
-name = "ma2a-windows-security"
-version = "0.1.0"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]

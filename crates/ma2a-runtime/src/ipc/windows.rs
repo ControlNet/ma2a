@@ -9,9 +9,10 @@ use interprocess::{
 };
 use widestring::U16CString;
 
-use ma2a_windows_security::{current_user_sid, process_user_sid};
-
-use super::{IpcError, IpcPaths};
+use super::{
+    IpcError, IpcPaths,
+    windows_security::{current_process_user_sid, impersonated_client_user_sid},
+};
 
 pub(crate) type PlatformListener = Listener;
 pub(crate) type PlatformStream = Stream;
@@ -35,7 +36,7 @@ fn name(paths: &IpcPaths) -> Result<interprocess::local_socket::Name<'static>, I
 
 pub(crate) fn bind(paths: &IpcPaths) -> Result<PlatformListener, IpcError> {
     prepare(paths)?;
-    let current_user = current_user_sid()?;
+    let current_user = current_process_user_sid()?;
     let sddl = U16CString::from_str(current_user.private_pipe_sddl()?)
         .map_err(|_| IpcError::InvalidPath)?;
     let descriptor = SecurityDescriptor::deserialize(&sddl)?;
@@ -57,11 +58,9 @@ pub(crate) async fn accept(listener: &PlatformListener) -> Result<PlatformStream
 }
 
 pub(crate) fn authorize(stream: &PlatformStream, _paths: &IpcPaths) -> Result<(), IpcError> {
-    let peer_pid = stream
-        .peer_creds()?
-        .pid()
-        .ok_or(IpcError::UnauthorizedPeer)?;
-    if peer_pid != 0 && process_user_sid(peer_pid)? == current_user_sid()? {
+    let daemon_user = current_process_user_sid()?;
+    let caller_user = impersonated_client_user_sid(stream)?;
+    if caller_user == daemon_user {
         Ok(())
     } else {
         Err(IpcError::UnauthorizedPeer)
