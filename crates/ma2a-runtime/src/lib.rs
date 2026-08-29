@@ -4,8 +4,12 @@
 
 /// Transport-neutral local Runtime API v1.
 pub mod api;
+/// Current-user Runtime composition and typed CLI control.
+pub mod current_user;
 /// Current-user private local IPC transport.
 pub mod ipc;
+/// Loopback-only browser authentication and HTTP serving.
+pub mod web;
 
 mod actor;
 mod clock;
