@@ -54,6 +54,9 @@ fn current_schema_is_idempotent_configured_and_contains_only_key_references() ->
         "address_state",
         "relay_advertisement_state",
         "relay_configuration",
+        "relay_public_fallback_urls",
+        "relay_served_spaces",
+        "relay_publication_state",
         "relay_observations",
         "ui_credentials",
         "sessions",
@@ -69,6 +72,10 @@ fn current_schema_is_idempotent_configured_and_contains_only_key_references() ->
         key_columns,
         BTreeMap::from([
             ("endpoints.endpoint_key_ref".to_owned(), "TEXT".to_owned()),
+            (
+                "relay_configuration.private_key_path".to_owned(),
+                "TEXT".to_owned()
+            ),
             ("spaces.authority_key_ref".to_owned(), "TEXT".to_owned()),
         ])
     );
