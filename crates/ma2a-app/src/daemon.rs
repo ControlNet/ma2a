@@ -12,7 +12,15 @@ use crate::{
     autostart::{open_lock, wait_until_live},
 };
 
-pub(crate) async fn run(state_dir: PathBuf, paths: IpcPaths) -> Result<(), AppError> {
+pub(crate) async fn run(
+    state_dir: PathBuf,
+    paths: IpcPaths,
+    detach_session: bool,
+) -> Result<(), AppError> {
+    #[cfg(unix)]
+    if detach_session {
+        rustix::process::setsid().map_err(std::io::Error::from)?;
+    }
     paths.prepare()?;
     let lock = open_lock(&paths.lock_path())?;
     match lock.try_lock() {

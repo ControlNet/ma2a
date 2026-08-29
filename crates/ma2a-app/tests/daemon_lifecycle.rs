@@ -137,7 +137,7 @@ fn status_autostarts_one_private_daemon() -> TestResult {
 fn concurrent_status_calls_converge_on_one_daemon() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
-    let children = (0..12)
+    let children = (0..20)
         .map(|_| fixture.command("status").spawn())
         .collect::<Result<Vec<_>, _>>()?;
 

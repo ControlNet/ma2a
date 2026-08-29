@@ -67,6 +67,7 @@ impl From<RuntimeError> for AppError {
 
 enum Command {
     Daemon,
+    DaemonDetached,
     Status,
     Shutdown,
     Help,
@@ -84,7 +85,8 @@ async fn main() -> Result<(), AppError> {
     let cli = parse_args(std::env::args_os().skip(1))?;
     let paths = IpcPaths::new(&cli.state_dir)?;
     match cli.command {
-        Command::Daemon => daemon::run(cli.state_dir, paths).await,
+        Command::Daemon => daemon::run(cli.state_dir, paths, false).await,
+        Command::DaemonDetached => daemon::run(cli.state_dir, paths, true).await,
         Command::Status => {
             call(
                 &cli.state_dir,
@@ -155,6 +157,7 @@ fn parse_args(mut arguments: impl Iterator<Item = OsString>) -> Result<Cli, AppE
     }
     let command = match command.as_deref() {
         Some(value) if value == OsStr::new("daemon") => Command::Daemon,
+        Some(value) if value == OsStr::new("daemon-detached") => Command::DaemonDetached,
         Some(value) if value == OsStr::new("status") => Command::Status,
         Some(value) if value == OsStr::new("shutdown") => Command::Shutdown,
         Some(value) if value == OsStr::new("--help") || value == OsStr::new("-h") => Command::Help,
