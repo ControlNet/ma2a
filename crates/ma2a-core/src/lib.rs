@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod address;
 mod authorization;
 mod codec;
 mod enrollment_page;
@@ -18,6 +19,12 @@ mod space_codec;
 mod space_inputs;
 mod wire;
 
+pub use address::{
+    ADDRESS_RECORD_HASH_DOMAIN, ADDRESS_SIGNATURE_DOMAIN, AddressEndpointDataV1,
+    AddressRecordScope, AddressRecordValidity, MAX_ADDRESS_RECORD_ADDRESSES,
+    MAX_ADDRESS_RECORD_LEN, MAX_ADDRESS_RECORD_VALIDITY_MS, SignedSpaceAddressRecordV1,
+    SpaceAddressRecordV1,
+};
 pub use authorization::{SpaceAuthorizationView, authorize_any};
 pub use codec::{decode_request, decode_response, encode_request, encode_response};
 pub use enrollment_page::{
