@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc};
+use std::{io, sync::Arc};
 
 use iroh::{
     Endpoint, RelayMode,
@@ -11,8 +11,7 @@ use tokio::time::{Duration, timeout};
 use super::exchange;
 use crate::{ENROLLMENT_ALPN, EndpointSecret, RuntimeEndpoint};
 
-type TestError = Box<dyn Error + Send + Sync>;
-type TestResult<T = ()> = Result<T, TestError>;
+type TestResult<T = ()> = Result<T, io::Error>;
 
 #[derive(Clone, Debug)]
 struct RawResponseHandler {
@@ -22,14 +21,11 @@ struct RawResponseHandler {
 impl ProtocolHandler for RawResponseHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let (mut send, mut receive) = connection.accept_bi().await?;
-        receive
-            .read_to_end(4_096)
-            .await
-            .map_err(std::io::Error::other)?;
+        receive.read_to_end(4_096).await.map_err(io::Error::other)?;
         send.write_all(&self.response)
             .await
-            .map_err(std::io::Error::other)?;
-        send.finish().map_err(std::io::Error::other)?;
+            .map_err(io::Error::other)?;
+        send.finish().map_err(io::Error::other)?;
         let _closed = timeout(Duration::from_secs(5), connection.closed()).await;
         Ok(())
     }
@@ -126,7 +122,8 @@ async fn exchange_raw_response(
         .address_lookup(MemoryLookup::with_provenance("ma2a_enrollment_test_server"))
         .alpns(vec![ENROLLMENT_ALPN.to_vec()])
         .bind()
-        .await?;
+        .await
+        .map_err(io::Error::other)?;
     let server_addr = server.addr();
     let router = Router::builder(server)
         .accept(
@@ -141,40 +138,54 @@ async fn exchange_raw_response(
         .clear_address_lookup()
         .address_lookup(MemoryLookup::with_provenance("ma2a_enrollment_test_client"))
         .bind()
-        .await?;
+        .await
+        .map_err(io::Error::other)?;
     let result = timeout(
         Duration::from_secs(5),
         exchange(&client, server_addr, b"request"),
     )
-    .await?;
+    .await
+    .map_err(io::Error::other)?;
     client.close().await;
-    router.shutdown().await?;
+    router.shutdown().await.map_err(io::Error::other)?;
     Ok(result)
 }
 
 async fn raw_handler_response(status: u8, pages: Vec<Vec<u8>>) -> TestResult<Vec<u8>> {
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-    let server = RuntimeEndpoint::bind(EndpointSecret::generate(), sender, None).await?;
+    let server = RuntimeEndpoint::bind(EndpointSecret::generate(), sender, None)
+        .await
+        .map_err(io::Error::other)?;
     let server_addr = server.endpoint_addr();
     let responder = tokio::spawn(async move {
-        let call = receiver.recv().await.ok_or("enrollment call missing")?;
+        let call = receiver
+            .recv()
+            .await
+            .ok_or_else(|| io::Error::other("enrollment call missing"))?;
         call.respond(status, pages);
-        Ok::<(), TestError>(())
+        Ok::<(), io::Error>(())
     });
     let client = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
         .clear_address_lookup()
         .address_lookup(MemoryLookup::with_provenance("ma2a_enrollment_raw_client"))
         .bind()
-        .await?;
-    let connection = client.connect(server_addr, ENROLLMENT_ALPN).await?;
-    let (mut send, mut receive) = connection.open_bi().await?;
-    send.write_all(b"request").await?;
-    send.finish()?;
-    let response = receive.read_to_end(1_000_000).await?;
+        .await
+        .map_err(io::Error::other)?;
+    let connection = client
+        .connect(server_addr, ENROLLMENT_ALPN)
+        .await
+        .map_err(io::Error::other)?;
+    let (mut send, mut receive) = connection.open_bi().await.map_err(io::Error::other)?;
+    send.write_all(b"request").await.map_err(io::Error::other)?;
+    send.finish().map_err(io::Error::other)?;
+    let response = receive
+        .read_to_end(1_000_000)
+        .await
+        .map_err(io::Error::other)?;
     connection.close(0_u8.into(), b"");
-    responder.await??;
+    responder.await.map_err(io::Error::other)??;
     client.close().await;
-    server.shutdown().await?;
+    server.shutdown().await.map_err(io::Error::other)?;
     Ok(response)
 }
