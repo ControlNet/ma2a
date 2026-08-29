@@ -1,8 +1,10 @@
-use std::{fs::TryLockError, path::PathBuf};
+use std::{fs::TryLockError, path::PathBuf, sync::Arc};
 
 use ma2a_runtime::{
     Runtime,
+    current_user::CurrentUserRuntime,
     ipc::{IpcPaths, LocalApiClient, LocalApiServer},
+    web::{SystemClock, WebAuthConfig},
 };
 use ma2a_store::StoreConfig;
 use tokio_util::sync::CancellationToken;
@@ -33,7 +35,14 @@ pub(crate) async fn run(
     }
     paths.remove_stale_endpoint()?;
     let runtime = Runtime::start(StoreConfig::new(&state_dir)).await?;
-    let serve_result = match LocalApiServer::bind(paths.clone(), runtime.handle()) {
+    let control = CurrentUserRuntime::open_at(
+        &state_dir,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await
+    .map_err(AppError::CurrentUser)?;
+    let serve_result = match LocalApiServer::bind(paths.clone(), runtime.handle(), control) {
         Ok(server) => {
             let cancellation = CancellationToken::new();
             let serving = server.serve(cancellation.child_token());
