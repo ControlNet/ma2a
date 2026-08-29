@@ -84,11 +84,33 @@ impl CurrentUserRuntime {
                     .revoke_all_sessions()
                     .await
                     .map_err(CurrentUserError::Authentication)?;
+                let password_set = !self
+                    .auth
+                    .setup_required()
+                    .await
+                    .map_err(CurrentUserError::Authentication)?;
                 Ok(CommandResult::sessions_revoked(UiAuthView::new(
-                    true, true, 0,
+                    true,
+                    password_set,
+                    0,
                 )))
             }
         }
+    }
+
+    pub(crate) async fn password_is_set(&self) -> Result<bool, CurrentUserError> {
+        self.auth
+            .setup_required()
+            .await
+            .map(|required| !required)
+            .map_err(CurrentUserError::Authentication)
+    }
+
+    pub(crate) async fn state_revision(&self) -> Result<u64, CurrentUserError> {
+        self.auth
+            .state_revision()
+            .await
+            .map_err(CurrentUserError::Authentication)
     }
 
     /// Returns the shared Web authentication service owned by this Runtime.

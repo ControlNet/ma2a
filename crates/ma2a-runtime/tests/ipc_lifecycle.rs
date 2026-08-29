@@ -19,6 +19,7 @@ use ma2a_runtime::{
 };
 use ma2a_store::StoreConfig;
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -117,6 +118,59 @@ async fn ui_session_control_executes_through_the_live_daemon() -> TestResult {
             .pointer("/result/type")
             .and_then(serde_json::Value::as_str),
         Some("sessions_revoked")
+    );
+    cancellation.cancel();
+    server_task.await??;
+    runtime.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn password_set_updates_daemon_handshake_and_authoritative_revision() -> TestResult {
+    // Given
+    let state = TempState::new()?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let initial_revision = runtime.handle().status().await?.revision();
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let cancellation = CancellationToken::new();
+    let server_task = tokio::spawn(server.serve(cancellation.child_token()));
+    let client = LocalApiClient::new(paths);
+
+    // When
+    let set_response = client
+        .call(&Command::ui_password_set(Zeroizing::new(
+            "daemon-handshake-passphrase-9!".to_owned(),
+        ))?)
+        .await?;
+    let handshake = decode_command(br#"{"version":1,"operation":"handshake"}"#)?;
+    let handshake_response = client.call(&handshake).await?;
+
+    // Then
+    let set_response: serde_json::Value = serde_json::from_slice(&set_response)?;
+    let handshake_response: serde_json::Value = serde_json::from_slice(&handshake_response)?;
+    let mutation_revision = set_response
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("password response revision missing")?;
+    assert!(mutation_revision > initial_revision);
+    assert_eq!(
+        handshake_response
+            .pointer("/result/payload/password_set")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        handshake_response
+            .get("revision")
+            .and_then(serde_json::Value::as_u64),
+        Some(mutation_revision)
     );
     cancellation.cancel();
     server_task.await??;

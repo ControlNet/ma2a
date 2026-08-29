@@ -156,9 +156,11 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
         Some(request_id) => Some((request_id, api::command_fingerprint(&command)?)),
         None => None,
     };
-    let result = match fingerprint {
+    let (result, response_revision) = match fingerprint {
         Some((request_id, fingerprint)) => match replay.get(&request_id) {
-            Some(entry) if entry.fingerprint == fingerprint => entry.result.clone(),
+            Some(entry) if entry.fingerprint == fingerprint => {
+                (entry.result.clone(), entry.revision)
+            }
             Some(_) => {
                 return Ok((
                     api::encode_error(api::ApiError::new(ProtocolError::CONFLICT))?,
@@ -172,23 +174,25 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                         return Ok((api::encode_error(api::ApiError::new(error))?, false));
                     }
                 };
+                let revision = authoritative_revision(&command, status.revision(), context).await?;
                 replay.insert(
                     request_id,
                     ReplayEntry {
                         fingerprint,
                         result: result.clone(),
+                        revision,
                     },
                 );
-                result
+                (result, revision)
             }
         },
         None => match execute(&command, &status, &context.control).await {
-            Ok(result) => result,
+            Ok(result) => (result, status.revision()),
             Err(error) => return Ok((api::encode_error(api::ApiError::new(error))?, false)),
         },
     };
     drop(replay);
-    let response = api::ApiResponse::new(command.request_id(), status.revision(), result);
+    let response = api::ApiResponse::new(command.request_id(), response_revision, result);
     Ok((
         api::encode_response(&response)?,
         response.result_type() == "shutting_down",
@@ -199,6 +203,29 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
 struct ReplayEntry {
     fingerprint: [u8; 32],
     result: CommandResult,
+    revision: u64,
+}
+
+async fn authoritative_revision(
+    command: &Command,
+    current_revision: u64,
+    context: &ConnectionContext,
+) -> Result<u64, IpcError> {
+    match command.operation() {
+        "ui_password_set" | "ui_password_reset" | "session_revoke_all" => {
+            let persisted = context
+                .control
+                .state_revision()
+                .await
+                .map_err(|_| IpcError::InvalidFrame)?;
+            context
+                .handle
+                .adopt_revision(persisted)
+                .await
+                .map_err(IpcError::from)
+        }
+        _ => Ok(current_revision),
+    }
 }
 
 const fn capabilities() -> CapabilityFlags {
@@ -221,7 +248,13 @@ async fn execute(
                 status.endpoint_id(),
                 HandshakeState::new(
                     status.revision(),
-                    HandshakeAuth::new(true, false),
+                    HandshakeAuth::new(
+                        true,
+                        control
+                            .password_is_set()
+                            .await
+                            .map_err(|_| ProtocolError::INTERNAL)?,
+                    ),
                     capabilities(),
                 ),
             )

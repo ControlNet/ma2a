@@ -33,6 +33,10 @@ pub(crate) enum Command {
         invitation_id: [u8; 16],
         reply: oneshot::Sender<Result<(), EnrollmentError>>,
     },
+    AdoptRevision {
+        revision: u64,
+        reply: oneshot::Sender<u64>,
+    },
     Shutdown(oneshot::Sender<ShutdownAck>),
 }
 
@@ -82,6 +86,17 @@ impl RuntimeHandle {
         response
             .await
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
+    }
+
+    pub(crate) async fn adopt_revision(&self, revision: u64) -> Result<u64, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::AdoptRevision { revision, reply })
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
+        response
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))
     }
 
     /// Subscribes to bounded best-effort Runtime events.
@@ -183,6 +198,10 @@ impl Actor {
                             .map(|revision| { self.state.revision = revision; })
                             .map_err(|_| EnrollmentError::internal());
                         let _unsent = reply.send(result);
+                    }
+                    Some(Command::AdoptRevision { revision, reply }) => {
+                        self.state.revision = self.state.revision.max(revision);
+                        let _unsent = reply.send(self.state.revision);
                     }
                     Some(Command::Shutdown(reply)) => {
                         let result = self.finish(true).await;
