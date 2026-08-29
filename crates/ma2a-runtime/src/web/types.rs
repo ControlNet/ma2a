@@ -2,8 +2,6 @@ use std::fmt;
 
 use zeroize::Zeroizing;
 
-use super::csrf;
-
 /// Current-time source used for deterministic session expiry.
 pub trait Clock: fmt::Debug + Send + Sync {
     /// Returns Unix time in milliseconds.
@@ -131,15 +129,10 @@ impl fmt::Debug for LoginSession {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AuthenticatedSession {
     pub(super) bearer_digest: [u8; 32],
-    pub(super) csrf_digest: [u8; 32],
 }
 
 impl AuthenticatedSession {
     pub(super) const fn bearer_digest(&self) -> &[u8; 32] {
         &self.bearer_digest
-    }
-
-    pub(super) fn csrf_matches(&self, token: &str) -> bool {
-        csrf::csrf_matches(token, &self.csrf_digest)
     }
 }

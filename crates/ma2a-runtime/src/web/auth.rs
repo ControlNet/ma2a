@@ -71,6 +71,14 @@ impl WebAuthService {
             .map_err(|_| AuthFailure::Internal)
     }
 
+    pub(crate) async fn state_revision(&self) -> Result<u64, AuthFailure> {
+        let config = self.inner.store.clone();
+        tokio::task::spawn_blocking(move || Repository::open(&config)?.revision())
+            .await
+            .map_err(|_| AuthFailure::Internal)?
+            .map_err(|_| AuthFailure::Internal)
+    }
+
     /// Performs a CLI-authorized password lifecycle transition.
     ///
     /// # Errors
@@ -160,23 +168,44 @@ impl WebAuthService {
     ///
     /// Returns [`AuthFailure::Unauthorized`] for malformed, expired, revoked, or stale sessions.
     pub async fn authenticate(&self, bearer: &str) -> Result<AuthenticatedSession, AuthFailure> {
+        self.authenticate_session(bearer, None).await
+    }
+
+    pub(super) async fn authenticate_mutation(
+        &self,
+        bearer: &str,
+        csrf_token: &str,
+    ) -> Result<AuthenticatedSession, AuthFailure> {
+        self.authenticate_session(bearer, Some(csrf::csrf_digest(csrf_token)?))
+            .await
+    }
+
+    async fn authenticate_session(
+        &self,
+        bearer: &str,
+        csrf_digest: Option<[u8; 32]>,
+    ) -> Result<AuthenticatedSession, AuthFailure> {
         let digest = csrf::bearer_digest(bearer)?;
         let config = self.inner.store.clone();
         let now_ms = self.inner.clock.now_ms();
         tokio::task::spawn_blocking(move || {
             let mut repository = Repository::open(&config)?;
-            let session = repository
-                .authenticate_and_touch_session(
+            let session = match csrf_digest {
+                Some(csrf_digest) => repository.authenticate_and_touch_session_with_csrf(
+                    &SessionDigests::new(digest, csrf_digest),
+                    SessionTouch::new(now_ms, WebAuthConfig::IDLE_TIMEOUT_MS),
+                )?,
+                None => repository.authenticate_and_touch_session(
                     &digest,
                     SessionTouch::new(now_ms, WebAuthConfig::IDLE_TIMEOUT_MS),
-                )?
-                .ok_or(AuthFailure::Unauthorized)?;
+                )?,
+            }
+            .ok_or(AuthFailure::Unauthorized)?;
             if !bool::from(session.bearer_digest().ct_eq(&digest)) {
                 return Err(AuthFailure::Unauthorized);
             }
             Ok(AuthenticatedSession {
                 bearer_digest: digest,
-                csrf_digest: *session.csrf_digest(),
             })
         })
         .await

@@ -1,7 +1,6 @@
 use std::fmt::Write as _;
 
 use blake3::Hasher;
-use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
 use super::AuthFailure;
@@ -35,10 +34,8 @@ pub(super) fn bearer_digest(encoded: &str) -> Result<[u8; 32], AuthFailure> {
     decode_hex(encoded).map(|token| digest(BEARER_DOMAIN, &token))
 }
 
-pub(super) fn csrf_matches(encoded: &str, expected: &[u8; 32]) -> bool {
-    decode_hex(encoded)
-        .map(|token| bool::from(digest(CSRF_DOMAIN, &token).ct_eq(expected)))
-        .unwrap_or(false)
+pub(super) fn csrf_digest(encoded: &str) -> Result<[u8; 32], AuthFailure> {
+    decode_hex(encoded).map(|token| digest(CSRF_DOMAIN, &token))
 }
 
 fn digest(domain: &[u8], token: &[u8; TOKEN_BYTES]) -> [u8; 32] {
