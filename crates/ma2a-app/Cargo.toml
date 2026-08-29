@@ -14,6 +14,13 @@ path = "src/main.rs"
 [dependencies]
 ma2a-runtime.workspace = true
 
+[dev-dependencies]
+iroh.workspace = true
+ma2a-core.workspace = true
+ma2a-net.workspace = true
+ma2a-store.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
 [lints]
 workspace = true
 
