@@ -229,7 +229,7 @@ fn validate_private_key(
 ) -> Result<(), RelayTlsError> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-    let mode = metadata.permissions().mode() & 0o777;
+    let mode = metadata.permissions().mode() & 0o7777;
     let current_user = rustix::process::geteuid().as_raw();
     if !metadata.is_file() || metadata.uid() != current_user || mode != 0o600 {
         return Err(RelayTlsError::InsecurePrivateKeyPermissions);
