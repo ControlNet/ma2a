@@ -9,15 +9,16 @@ use ma2a_core::{
 use ma2a_store::{Repository, StoreError};
 
 use crate::{
-    AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator,
+    AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator, SpaceAddressLookup,
     ValidatedAddressRecord,
+    address_observation::{AddressObservation, AddressObservationError},
 };
 
 const ADDRESS_REFRESH_INTERVAL_MS: u64 = 300_000;
 
 #[derive(Clone)]
 enum PublisherSource {
-    Live(Endpoint),
+    Live(AddressObservation),
     Snapshot {
         endpoint_addr: EndpointAddr,
         user_data: Option<UserData>,
@@ -69,15 +70,19 @@ impl AddressPublisher {
         })
     }
 
-    /// Creates a publisher that reads the current address from a running Iroh Endpoint.
+    /// Creates a live publisher from an Endpoint and its installed Space lookup.
     ///
     /// # Errors
-    /// Returns [`AddressPublisherError`] when the Endpoint observation is not publishable.
-    pub fn from_endpoint(endpoint: &Endpoint) -> Result<Self, AddressPublisherError> {
-        validate_observation(endpoint.secret_key(), &endpoint.addr())?;
+    /// Returns [`AddressPublisherError`] unless a valid callback observation is available.
+    pub fn from_endpoint(
+        endpoint: &Endpoint,
+        lookup: &SpaceAddressLookup,
+    ) -> Result<Self, AddressPublisherError> {
+        let observation = lookup.observation();
+        observation.current().map_err(AddressPublisherError::from)?;
         Ok(Self {
             secret: endpoint.secret_key().clone(),
-            source: PublisherSource::Live(endpoint.clone()),
+            source: PublisherSource::Live(observation),
         })
     }
 
@@ -90,19 +95,23 @@ impl AddressPublisher {
         repository: &mut Repository,
         request: AddressPublishRequest<'_>,
     ) -> Result<Option<ValidatedAddressRecord>, AddressPublisherError> {
-        let (endpoint_addr, user_data) = match &self.source {
-            PublisherSource::Live(endpoint) => (endpoint.addr(), None),
+        let endpoint_data = match &self.source {
+            PublisherSource::Live(observation) => observation
+                .current()
+                .map(|(_, data)| data)
+                .map_err(AddressPublisherError::from)?,
             PublisherSource::Snapshot {
                 endpoint_addr,
                 user_data,
-            } => (endpoint_addr.clone(), user_data.clone()),
+            } => {
+                validate_observation(&self.secret, endpoint_addr)?;
+                AddressEndpointDataV1::from_parts(
+                    endpoint_addr.addrs.iter().cloned().collect(),
+                    user_data.as_ref().map(ToString::to_string),
+                )
+                .map_err(AddressPublisherError::Protocol)?
+            }
         };
-        validate_observation(&self.secret, &endpoint_addr)?;
-        let endpoint_data = AddressEndpointDataV1::from_parts(
-            endpoint_addr.addrs.iter().cloned().collect(),
-            user_data.map(|value| value.to_string()),
-        )
-        .map_err(AddressPublisherError::Protocol)?;
         let endpoint_id = self.secret.public().into();
         let space_id = request.authorization.space_id();
         let current = repository
@@ -179,6 +188,14 @@ impl<'a> AddressPublishRequest<'a> {
 pub enum AddressPublisherError {
     /// The observed Endpoint identity differs from the signer.
     IdentityMismatch,
+    /// Iroh has not supplied a live endpoint observation.
+    ObservationUnavailable,
+    /// Iroh supplied a live endpoint observation outside protocol bounds.
+    ObservationInvalid(ProtocolError),
+    /// Shared live endpoint observation state is poisoned.
+    ObservationPoisoned,
+    /// Live endpoint observation notification closed before initialization.
+    ObservationClosed,
     /// The observed transport data violates protocol bounds.
     Protocol(ProtocolError),
     /// Persistent address state could not be read.
@@ -199,6 +216,18 @@ impl fmt::Display for AddressPublisherError {
             Self::IdentityMismatch => {
                 formatter.write_str("Endpoint address identity differs from signer")
             }
+            Self::ObservationUnavailable => {
+                formatter.write_str("live Endpoint observation is unavailable")
+            }
+            Self::ObservationInvalid(error) => {
+                write!(formatter, "live Endpoint observation is invalid: {error}")
+            }
+            Self::ObservationPoisoned => {
+                formatter.write_str("live Endpoint observation state is poisoned")
+            }
+            Self::ObservationClosed => {
+                formatter.write_str("live Endpoint observation notification closed")
+            }
             Self::Protocol(error) => write!(formatter, "address observation is invalid: {error}"),
             Self::Store(error) => write!(formatter, "address state read failed: {error}"),
             Self::Validation(error) => {
@@ -214,13 +243,27 @@ impl fmt::Display for AddressPublisherError {
 impl Error for AddressPublisherError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Protocol(error) => Some(error),
+            Self::ObservationInvalid(error) | Self::Protocol(error) => Some(error),
             Self::Store(error) => Some(error),
             Self::Validation(error) => Some(error),
             Self::IdentityMismatch
+            | Self::ObservationUnavailable
+            | Self::ObservationPoisoned
+            | Self::ObservationClosed
             | Self::ClockRollback
             | Self::ClockOverflow
             | Self::SequenceExhausted => None,
+        }
+    }
+}
+
+impl From<AddressObservationError> for AddressPublisherError {
+    fn from(error: AddressObservationError) -> Self {
+        match error {
+            AddressObservationError::Unavailable => Self::ObservationUnavailable,
+            AddressObservationError::Invalid(error) => Self::ObservationInvalid(error),
+            AddressObservationError::Poisoned => Self::ObservationPoisoned,
+            AddressObservationError::Closed => Self::ObservationClosed,
         }
     }
 }
