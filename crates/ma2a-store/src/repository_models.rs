@@ -165,13 +165,18 @@ impl ManifestAdvance {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     clippy::exhaustive_enums,
-    reason = "callers must handle both closed schema-v1 manifest outcomes"
+    reason = "callers must handle every closed schema-v1 manifest outcome"
 )]
 pub enum ManifestOutcome {
     /// The next contiguous generation was committed.
     Advanced {
         /// Revision committed with the manifest.
         revision: u64,
+    },
+    /// The identical signed generation and hash were already committed.
+    Idempotent {
+        /// Highest generation that already contains the signed manifest.
+        current_generation: u64,
     },
     /// The generation or previous hash did not extend current state.
     Conflict {
