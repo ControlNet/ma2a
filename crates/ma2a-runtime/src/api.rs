@@ -9,6 +9,7 @@ mod result_data;
 mod schema;
 mod snapshot;
 mod snapshot_state;
+mod strict_json;
 
 use ma2a_core::{ProtocolError, RequestId};
 
