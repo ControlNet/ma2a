@@ -36,7 +36,7 @@ fn endpoint_data_conversion_preserves_order_custom_and_user_data() -> TestResult
 }
 
 #[test]
-fn endpoint_data_conversion_rejects_seventeen_addresses() -> TestResult {
+fn endpoint_data_conversion_rejects_seventeen_addresses() {
     // Given
     let addresses = (0_u16..17)
         .map(|offset| {
@@ -53,5 +53,4 @@ fn endpoint_data_conversion_rejects_seventeen_addresses() -> TestResult {
 
     // Then
     assert_eq!(result, Err(ProtocolError::INVALID_INPUT));
-    Ok(())
 }
