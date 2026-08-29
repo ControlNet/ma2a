@@ -4,6 +4,8 @@
 
 /// Transport-neutral local Runtime API v1.
 pub mod api;
+/// Current-user private local IPC transport.
+pub mod ipc;
 
 mod actor;
 mod error;
