@@ -13,6 +13,7 @@ mod manifest;
 mod manifest_inputs;
 mod ontology;
 mod policy;
+mod relay;
 mod space;
 mod space_chain;
 mod space_codec;
@@ -49,6 +50,13 @@ pub use ontology::{RuntimeIdentity, ServiceKind, SpaceMembership};
 pub use policy::{
     Capability, MAX_MEMBER_LABEL_LEN, MAX_SPACE_MEMBERS, MemberCapabilities, SpaceMemberV1,
     SpacePolicyV1, SpaceRevocationV1,
+};
+pub use relay::{
+    MAX_PRIVATE_RELAY_ADVERTISEMENT_LEN, MAX_PRIVATE_RELAY_ADVERTISEMENT_VALIDITY_MS,
+    MAX_PRIVATE_RELAY_URL_LEN, PRIVATE_RELAY_ADVERTISEMENT_HASH_DOMAIN,
+    PRIVATE_RELAY_ADVERTISEMENT_SIGNATURE_DOMAIN, PrivateRelayAdvertisementScope,
+    PrivateRelayAdvertisementV1, PrivateRelayAdvertisementValidity,
+    SignedPrivateRelayAdvertisementV1,
 };
 pub use space::{
     GENESIS_CHAIN_HASH_DOMAIN, GENESIS_SIGNATURE_DOMAIN, SignedSpaceGenesisV1,

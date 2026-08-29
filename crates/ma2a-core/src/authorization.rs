@@ -44,6 +44,11 @@ impl SpaceAuthorizationView {
             .is_ok()
     }
 
+    /// Returns current unrevoked member Endpoint identities in canonical order.
+    pub fn member_endpoint_ids(&self) -> impl Iterator<Item = EndpointId> + '_ {
+        self.members.iter().map(SpaceMemberV1::endpoint_id)
+    }
+
     /// Returns the Space identifier represented by this view.
     pub const fn space_id(&self) -> SpaceId {
         self.space_id
