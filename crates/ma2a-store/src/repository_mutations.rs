@@ -1,9 +1,9 @@
 use rusqlite::OptionalExtension as _;
 
 use crate::{
-    InvitationRecord, ManifestAdvance, ManifestOutcome, PasswordReset, Redemption,
-    RedemptionOutcome, RelayAdvertisementAdvance, Repository, SequenceOutcome, SessionRecord,
-    StoreError, repository::increment_revision, repository_sequences::highest_relay_sequence,
+    InvitationRecord, ManifestAdvance, ManifestOutcome, Redemption, RedemptionOutcome,
+    RelayAdvertisementAdvance, Repository, SequenceOutcome, StoreError,
+    repository::increment_revision, repository_sequences::highest_relay_sequence,
 };
 
 impl Repository {
