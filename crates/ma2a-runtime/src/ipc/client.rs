@@ -1,0 +1,90 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use serde_json::Value;
+
+use crate::api::{self, Command};
+
+use super::{
+    IpcError, IpcPaths,
+    framing::{FrameRef, read_frame, write_frame},
+    platform,
+};
+
+static NEXT_CORRELATION: AtomicU64 = AtomicU64::new(1);
+
+/// Exact-version client for the current user's local daemon.
+#[derive(Clone, Debug)]
+pub struct LocalApiClient {
+    paths: IpcPaths,
+}
+
+impl LocalApiClient {
+    /// Creates a client for the supplied private transport paths.
+    pub const fn new(paths: IpcPaths) -> Self {
+        Self { paths }
+    }
+
+    /// Performs a handshake when required and sends one typed command.
+    ///
+    /// # Errors
+    /// Returns a transport, version, correlation, or local API error.
+    pub async fn call(&self, command: &Command) -> Result<Vec<u8>, IpcError> {
+        if command.operation() != "handshake" {
+            let handshake = api::decode_command(br#"{"version":1,"operation":"handshake"}"#)?;
+            let response = self.roundtrip(&handshake).await?;
+            validate_handshake(&response)?;
+        }
+        self.roundtrip(command).await
+    }
+
+    /// Reports whether an exact-version daemon answers the private handshake.
+    pub async fn is_live(&self) -> bool {
+        self.probe().await.is_ok()
+    }
+
+    /// Verifies that an exact-version daemon answers the private handshake.
+    ///
+    /// # Errors
+    /// Returns a transport error or [`IpcError::VersionMismatch`].
+    pub async fn probe(&self) -> Result<(), IpcError> {
+        let command = api::decode_command(br#"{"version":1,"operation":"handshake"}"#);
+        match command {
+            Ok(command) => self
+                .roundtrip(&command)
+                .await
+                .and_then(|response| validate_handshake(&response)),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn roundtrip(&self, command: &Command) -> Result<Vec<u8>, IpcError> {
+        let correlation = NEXT_CORRELATION.fetch_add(1, Ordering::Relaxed);
+        let payload = api::encode_command(command)?;
+        let mut stream = platform::connect(&self.paths).await?;
+        write_frame(
+            &mut stream,
+            FrameRef {
+                correlation,
+                payload: &payload,
+                maximum: api::MAX_LOCAL_REQUEST_BYTES,
+            },
+        )
+        .await?;
+        let response = read_frame(&mut stream, api::MAX_LOCAL_RESPONSE_BYTES).await?;
+        if response.correlation != correlation {
+            return Err(IpcError::CorrelationMismatch);
+        }
+        Ok(response.payload)
+    }
+}
+
+fn validate_handshake(response: &[u8]) -> Result<(), IpcError> {
+    let value: Value = serde_json::from_slice(response).map_err(|_| IpcError::VersionMismatch)?;
+    let version = value.get("version").and_then(Value::as_u64);
+    let result_type = value.pointer("/result/type").and_then(Value::as_str);
+    if version == Some(u64::from(api::LOCAL_API_VERSION)) && result_type == Some("handshake") {
+        Ok(())
+    } else {
+        Err(IpcError::VersionMismatch)
+    }
+}
