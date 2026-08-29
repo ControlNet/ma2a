@@ -1,10 +1,11 @@
 use std::{collections::BTreeMap, fs, sync::Mutex};
 
+use ma2a_core::RequestId;
 use ma2a_store::StoreConfig;
 
-use crate::Runtime;
+use crate::{Runtime, api::CommandResult};
 
-use super::dispatch;
+use super::{ReplayEntry, dispatch};
 
 #[tokio::test]
 async fn conflicting_shutdown_dispatch_does_not_request_server_shutdown() {
@@ -22,11 +23,15 @@ async fn conflicting_shutdown_dispatch_does_not_request_server_shutdown() {
         .await
         .expect("start runtime");
     let replay = Mutex::new(BTreeMap::new());
-    let first = br#"{"version":1,"operation":"graceful_shutdown","request_id":"00000000000000000000000000000001"}"#;
-    let conflicting = br#"{"version":1,"operation":"session_revoke_all","request_id":"00000000000000000000000000000001"}"#;
-    let accepted = dispatch(first, runtime.handle(), &replay)
-        .await
-        .expect("dispatch accepted shutdown");
+    let request_id = RequestId::try_from(&[1_u8; 16][..]).expect("request identifier");
+    replay.lock().expect("lock replay state").insert(
+        request_id,
+        ReplayEntry {
+            fingerprint: [0_u8; 32],
+            result: CommandResult::shutting_down(),
+        },
+    );
+    let conflicting = br#"{"version":1,"operation":"graceful_shutdown","request_id":"01010101010101010101010101010101"}"#;
 
     // When
     let rejected = dispatch(conflicting, runtime.handle(), &replay)
@@ -34,7 +39,6 @@ async fn conflicting_shutdown_dispatch_does_not_request_server_shutdown() {
         .expect("dispatch conflicting shutdown");
 
     // Then
-    assert!(accepted.1);
     assert!(!rejected.1);
     let rejected_value: serde_json::Value =
         serde_json::from_slice(&rejected.0).expect("decode conflicting response");
