@@ -13,6 +13,8 @@ const INVITE_VERSION: u8 = 1;
 const FIXED_INVITE_BODY_LEN: usize = 1 + 16 + 32 + 32 + 8 + 8 + 2 + 32;
 /// Maximum encoded invitation ticket bytes before base32 wrapping.
 pub const MAX_INVITE_TICKET_BYTES: usize = 1_024;
+/// Maximum invitation validity interval in milliseconds.
+pub const MAX_INVITE_LIFETIME_MS: u64 = 5 * 60 * 1_000;
 
 #[derive(Clone, PartialEq, Eq)]
 /// Caller-supplied entropy for deterministic invitation creation boundaries.
@@ -89,9 +91,7 @@ impl SignedInviteTicket {
         entropy: &InviteEntropy,
         authority: &SpaceAuthoritySecret,
     ) -> Result<Self, ProtocolError> {
-        if validity.expires_at_ms <= validity.created_at_ms
-            || owner_addr.id != creator.to_public_key()?
-        {
+        if owner_addr.id != creator.to_public_key()? {
             return Err(ProtocolError::INVALID_INPUT);
         }
         let mut ticket = Self {
@@ -118,7 +118,7 @@ impl SignedInviteTicket {
     /// Returns an error when any signed field or the authority signature is invalid.
     pub fn verify(&self, authority: SpaceAuthorityPublicKey) -> Result<(), ProtocolError> {
         if self.owner_addr.id != self.creator.to_public_key()?
-            || self.expires_at_ms <= self.created_at_ms
+            || InviteValidity::new(self.created_at_ms, self.expires_at_ms).is_err()
         {
             return Err(ProtocolError::INVALID_INPUT);
         }
@@ -220,11 +220,20 @@ pub struct InviteValidity {
 
 impl InviteValidity {
     /// Creates an issuance and expiry interval.
-    pub const fn new(created_at_ms: u64, expires_at_ms: u64) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns an error unless the interval is positive and at most five minutes.
+    pub const fn new(created_at_ms: u64, expires_at_ms: u64) -> Result<Self, ProtocolError> {
+        let Some(lifetime_ms) = expires_at_ms.checked_sub(created_at_ms) else {
+            return Err(ProtocolError::INVALID_INPUT);
+        };
+        if lifetime_ms == 0 || lifetime_ms > MAX_INVITE_LIFETIME_MS {
+            return Err(ProtocolError::INVALID_INPUT);
+        }
+        Ok(Self {
             created_at_ms,
             expires_at_ms,
-        }
+        })
     }
 }
 
@@ -241,6 +250,7 @@ fn decode_ticket(bytes: &[u8]) -> Result<SignedInviteTicket, ProtocolError> {
     let creator = EndpointId::try_from(take::<32>(bytes, &mut cursor)?.as_slice())?;
     let created_at_ms = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
     let expires_at_ms = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
+    let _validity = InviteValidity::new(created_at_ms, expires_at_ms)?;
     let endpoint_len = usize::from(u16::from_be_bytes(take::<2>(bytes, &mut cursor)?));
     let endpoint_end = cursor
         .checked_add(endpoint_len)
