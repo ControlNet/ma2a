@@ -101,5 +101,6 @@ test("keeps password setup on trusted CLI only", () => {
   render(<App initialPath="/setup" runtime={EMPTY_RUNTIME_FIXTURE} />)
 
   expect(screen.getByText("ma2a ui password set")).toBeVisible()
+  expect(screen.getByText("ma2a ui password reset")).toBeVisible()
   expect(screen.queryByLabelText("New password")).not.toBeInTheDocument()
 })
