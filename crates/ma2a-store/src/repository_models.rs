@@ -47,31 +47,40 @@ impl SpaceRecord {
 }
 
 /// One pending invitation containing only a non-recoverable token hash.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvitationRecord {
     pub(crate) invitation_id: [u8; 16],
     pub(crate) space_id: SpaceId,
     pub(crate) token_hash: [u8; 32],
+    pub(crate) creator_endpoint_id: EndpointId,
+    pub(crate) created_at_ms: i64,
     pub(crate) expires_at_ms: i64,
+    pub(crate) owner_bootstrap: Vec<u8>,
 }
 
 impl InvitationRecord {
     /// Creates a pending invitation record.
     #[expect(
         clippy::too_many_arguments,
-        reason = "the fixed invitation record requires four independent persisted fields"
+        reason = "the fixed invitation record persists every authenticated ticket metadata field"
     )]
     pub const fn new(
         invitation_id: [u8; 16],
         space_id: SpaceId,
         token_hash: [u8; 32],
+        creator_endpoint_id: EndpointId,
+        created_at_ms: i64,
         expires_at_ms: i64,
+        owner_bootstrap: Vec<u8>,
     ) -> Self {
         Self {
             invitation_id,
             space_id,
             token_hash,
+            creator_endpoint_id,
+            created_at_ms,
             expires_at_ms,
+            owner_bootstrap,
         }
     }
 }

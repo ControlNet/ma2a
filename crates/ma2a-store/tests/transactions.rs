@@ -161,7 +161,10 @@ fn two_concurrent_redemptions_have_exactly_one_winner() -> TestResult {
         [3; 16],
         space_id()?,
         [4; 32],
+        endpoint_id()?,
+        1,
         10_000,
+        vec![1],
     ))?;
     drop(repository);
     let barrier = Arc::new(Barrier::new(3));
@@ -197,7 +200,15 @@ fn expired_invitation_is_persistently_invalidated() -> TestResult {
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
     repository.create_space(&space_fixture::space_record()?)?;
-    repository.create_invitation(&InvitationRecord::new([5; 16], space_id()?, [6; 32], 10))?;
+    repository.create_invitation(&InvitationRecord::new(
+        [5; 16],
+        space_id()?,
+        [6; 32],
+        endpoint_id()?,
+        1,
+        10,
+        vec![1],
+    ))?;
     let redemption = Redemption::new([6; 32], endpoint_id()?, 10, 10);
 
     // When
