@@ -1,4 +1,6 @@
-use ma2a_core::{ManifestError, SpaceAuthoritySecret, SpaceChain, SpaceId};
+use std::collections::BTreeSet;
+
+use ma2a_core::{EndpointId, ManifestError, SpaceAuthoritySecret, SpaceChain, SpaceId};
 use rusqlite::OptionalExtension as _;
 
 use crate::{
@@ -53,6 +55,29 @@ impl SpaceChainPersistence {
 }
 
 impl Repository {
+    /// Loads every verified Space in which the Endpoint is currently a member.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when persisted membership rows are malformed.
+    pub fn memberships_for(
+        &self,
+        endpoint_id: EndpointId,
+    ) -> Result<BTreeSet<SpaceId>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT space_id FROM members WHERE endpoint_id = ?1 ORDER BY space_id")?;
+        statement
+            .query_map([endpoint_id.as_bytes().as_slice()], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .map(|row| {
+                let bytes = row?;
+                SpaceId::try_from(bytes.as_slice()).map_err(|_| StoreError::SchemaMismatch {
+                    detail: "persisted membership Space identifier is invalid",
+                })
+            })
+            .collect()
+    }
     pub(crate) fn validate_space_chains(&self) -> Result<(), StoreError> {
         let mut statement = self
             .connection
