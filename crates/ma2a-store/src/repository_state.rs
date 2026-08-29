@@ -4,6 +4,33 @@ use crate::{
 };
 
 impl Repository {
+    /// Loads the stable local UDP port used by the Runtime Endpoint.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the persisted port is invalid or inaccessible.
+    pub fn endpoint_bind_port(&self) -> Result<Option<u16>, StoreError> {
+        Ok(self.connection.query_row(
+            "SELECT endpoint_bind_port FROM runtime_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Persists the stable local UDP port used by the Runtime Endpoint.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the port cannot be committed.
+    pub fn set_endpoint_bind_port(&mut self, port: u16) -> Result<u64, StoreError> {
+        let transaction = self.immediate()?;
+        transaction.execute(
+            "UPDATE runtime_metadata SET endpoint_bind_port = ?1 WHERE singleton = 1",
+            [port],
+        )?;
+        let revision = increment_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(revision)
+    }
+
     /// Loads persisted Runtime lifecycle and Endpoint observation state.
     ///
     /// # Errors
