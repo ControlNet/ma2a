@@ -18,8 +18,8 @@ use ma2a_core::{
     SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1, SpaceMemberV1, SpaceRevocationV1,
 };
 use ma2a_net::{
-    AddressLookupClock, AddressRecordTarget, AddressRecordValidator, SpaceAddressLookup,
-    ValidatedAddressRecord,
+    AddressCacheOutcome, AddressLookupClock, AddressLookupExclusion, AddressMetrics,
+    AddressRecordTarget, AddressRecordValidator, SpaceAddressLookup, ValidatedAddressRecord,
 };
 use ma2a_store::{Repository, SpaceRecord, StoreConfig};
 use support::{TempState, TestResult, space_fixture};
@@ -70,8 +70,13 @@ fn lookup_does_not_regress_when_an_older_validated_record_arrives_late() -> Test
             address: "127.0.0.1:4302",
         },
     )?;
-    let lookup = SpaceAddressLookup::with_clock(Arc::new(ReviewClock::new(NOW_MS)));
+    let metrics = AddressMetrics::default();
+    let lookup = SpaceAddressLookup::with_clock_and_metrics(
+        Arc::new(ReviewClock::new(NOW_MS)),
+        metrics.clone(),
+    );
     lookup.replace_authorizations(vec![fixture.authorization.clone()])?;
+    lookup.cache(newer.clone())?;
     lookup.cache(newer)?;
 
     // When
@@ -87,6 +92,10 @@ fn lookup_does_not_regress_when_an_older_validated_record_arrives_late() -> Test
 
     // Then
     assert_eq!(addresses, vec!["ip:127.0.0.1:4302"]);
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.cache(AddressCacheOutcome::Inserted), 1);
+    assert_eq!(snapshot.cache(AddressCacheOutcome::Stale), 1);
+    assert_eq!(snapshot.cache(AddressCacheOutcome::Equal), 1);
     Ok(())
 }
 
@@ -108,7 +117,8 @@ fn lookup_returns_empty_when_clock_rollback_makes_a_record_future_dated() -> Tes
     )?;
     let clock = Arc::new(ReviewClock::new(NOW_MS));
     let lookup_clock = Arc::clone(&clock);
-    let lookup = SpaceAddressLookup::with_clock(lookup_clock);
+    let metrics = AddressMetrics::default();
+    let lookup = SpaceAddressLookup::with_clock_and_metrics(lookup_clock, metrics.clone());
     lookup.replace_authorizations(vec![fixture.authorization.clone()])?;
     lookup.cache(record)?;
 
@@ -118,6 +128,43 @@ fn lookup_returns_empty_when_clock_rollback_makes_a_record_future_dated() -> Tes
 
     // Then
     assert!(resolved.is_none());
+    assert_eq!(metrics.snapshot().lookup(AddressLookupExclusion::Future), 1);
+    Ok(())
+}
+
+#[test]
+fn lookup_metrics_count_expired_records() -> TestResult {
+    // Given
+    let signer = SecretKey::from_bytes(&[0x88; 32]);
+    let fixture = space_fixture(&signer, 0x89)?;
+    let state = TempState::new("lookup-expired-metric")?;
+    let mut repository = repository(&state, &fixture)?;
+    let record = validate(
+        &mut repository,
+        &RecordInput {
+            signer: &signer,
+            fixture: &fixture,
+            sequence: 1,
+            address: "127.0.0.1:4304",
+        },
+    )?;
+    let metrics = AddressMetrics::default();
+    let lookup = SpaceAddressLookup::with_clock_and_metrics(
+        Arc::new(ReviewClock::new(NOW_MS + 600_000)),
+        metrics.clone(),
+    );
+    lookup.replace_authorizations(vec![fixture.authorization.clone()])?;
+    lookup.cache(record)?;
+
+    // When
+    let resolved = lookup.resolve_endpoint(signer.public());
+
+    // Then
+    assert!(resolved.is_none());
+    assert_eq!(
+        metrics.snapshot().lookup(AddressLookupExclusion::Expired),
+        1
+    );
     Ok(())
 }
 
