@@ -16,6 +16,7 @@ CREATE TABLE runtime_metadata (
     direct_address_count INTEGER CHECK (direct_address_count >= 0),
     relay_address_count INTEGER CHECK (relay_address_count >= 0),
     membership_count INTEGER CHECK (membership_count >= 0),
+    endpoint_bind_port INTEGER CHECK (endpoint_bind_port BETWEEN 1 AND 65535),
     CHECK (
         (endpoint_observed_at_ms IS NULL AND endpoint_ready IS NULL
             AND direct_address_count IS NULL AND relay_address_count IS NULL
