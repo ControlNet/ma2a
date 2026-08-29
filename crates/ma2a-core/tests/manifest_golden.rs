@@ -5,7 +5,10 @@ mod space_vectors;
 
 use std::fmt::Write as _;
 
-use ma2a_core::{ManifestApplyOutcome, SignedSpaceGenesisV1, SignedSpaceManifestV1, SpaceChain};
+use ma2a_core::{
+    ManifestApplyOutcome, SignedSpaceGenesisV1, SignedSpaceManifestV1, SpaceAuthoritySecret,
+    SpaceChain, SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1,
+};
 
 use space_vectors::{signed_genesis, signed_manifest};
 
@@ -79,6 +82,40 @@ fn public_chain_round_trips_generation_zero_through_one() -> Result<(), Box<dyn 
         !exported
             .windows(32)
             .any(|window| window == space_vectors::AUTHORITY_SECRET)
+    );
+    Ok(())
+}
+
+#[test]
+fn public_chain_round_trips_beyond_single_object_bound() -> Result<(), Box<dyn std::error::Error>> {
+    let genesis = signed_genesis()?;
+    let secret = SpaceAuthoritySecret::from_bytes(space_vectors::AUTHORITY_SECRET);
+    let mut chain = SpaceChain::from_genesis(genesis)?;
+    for generation in 1..=180 {
+        let manifest = SpaceManifestV1::new(
+            SpaceManifestLink::new(chain.space_id(), generation, chain.latest_hash()),
+            generation,
+            SpaceManifestMembership::new(vec![space_vectors::member(0x66, true)?], vec![]),
+        )?
+        .sign(&secret)?;
+        chain.apply(&manifest)?;
+    }
+
+    let exported = chain.export_public()?;
+    assert!(exported.len() > 32_768);
+    assert_eq!(SpaceChain::import_public(&exported)?, chain);
+    for generation in 181..=256 {
+        let manifest = SpaceManifestV1::new(
+            SpaceManifestLink::new(chain.space_id(), generation, chain.latest_hash()),
+            generation,
+            SpaceManifestMembership::new(vec![space_vectors::member(0x66, true)?], vec![]),
+        )?
+        .sign(&secret)?;
+        chain.apply(&manifest)?;
+    }
+    assert_eq!(
+        chain.export_public(),
+        Err(ma2a_core::ProtocolError::INVALID_INPUT)
     );
     Ok(())
 }
