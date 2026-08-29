@@ -1,6 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react"
 
-import { loginAndTouchSession } from "./api/web-auth"
+import { loginAndTouchSession, logoutSession, type WebSession } from "./api/web-auth"
 import { AppShell } from "./components/app-shell"
 import { isRoutePath, ROUTE_PATHS, type RoutePath } from "./routes"
 import { LoginScreen, SetupScreen } from "./screens/auth"
@@ -45,6 +45,7 @@ export function App({
   readonly runtime?: RuntimeViewData
 }): ReactNode {
   const [path, setPath] = useState<RoutePath>(initialPath ?? browserPath)
+  const [session, setSession] = useState<WebSession>()
   const controlled = initialPath !== undefined
 
   useEffect(() => {
@@ -66,10 +67,23 @@ export function App({
     [controlled],
   )
 
-  const login = useCallback(async (passphrase: string): Promise<void> => {
-    await loginAndTouchSession(passphrase)
-    window.location.replace("/")
-  }, [])
+  const login = useCallback(
+    async (passphrase: string): Promise<void> => {
+      const authenticatedSession = await loginAndTouchSession(passphrase)
+      setSession(authenticatedSession)
+      navigate(ROUTE_PATHS.overview)
+    },
+    [navigate],
+  )
+
+  const logout =
+    session === undefined
+      ? undefined
+      : async (): Promise<void> => {
+          await logoutSession(session)
+          setSession(undefined)
+          navigate(ROUTE_PATHS.login)
+        }
 
   if (path === ROUTE_PATHS.login) {
     return <LoginScreen onLogin={login} />
@@ -79,7 +93,11 @@ export function App({
   }
   return (
     <AppShell onNavigate={navigate} path={path} runtime={runtime}>
-      {routeContent(path, runtime)}
+      {path === ROUTE_PATHS.settings ? (
+        <SettingsScreen onLogout={logout} />
+      ) : (
+        routeContent(path, runtime)
+      )}
     </AppShell>
   )
 }
