@@ -22,6 +22,7 @@ requirements. Run `cargo xtask check-pins` after changing any manifest.
 | `iroh-metrics` | 1.0.1 | Transport metrics types |
 | `irpc`, `irpc-iroh` | 0.17.0 | Typed RPC composition over Iroh |
 | `tokio` | 1.53.1 | Async runtime |
+| `tokio-util` | 0.7.19 | Structured Runtime cancellation tokens |
 | `axum` | 0.8.9 | Loopback HTTP surface |
 | `rusqlite` | 0.40.2 with `backup`, `bundled`, and `fallible_uint` | Embedded SQLite state, checked counters, and online backup |
 | `rustix` | 1.1.4 with `process` and `std` | Safe current-user ownership checks on Unix |

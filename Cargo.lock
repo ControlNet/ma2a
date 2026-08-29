@@ -1915,7 +1915,12 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 name = "ma2a-app"
 version = "0.1.0"
 dependencies = [
+ "iroh",
+ "ma2a-core",
+ "ma2a-net",
  "ma2a-runtime",
+ "ma2a-store",
+ "tokio",
 ]
 
 [[package]]
@@ -1944,6 +1949,7 @@ dependencies = [
  "irpc-iroh",
  "ma2a-core",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -1952,14 +1958,17 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "blake3",
+ "getrandom 0.4.3",
  "interprocess",
  "ma2a-core",
  "ma2a-net",
  "ma2a-store",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
