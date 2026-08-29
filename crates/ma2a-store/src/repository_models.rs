@@ -257,23 +257,8 @@ pub enum SequenceOutcome {
     },
 }
 
-/// A revocable session represented only by its bearer-token hash.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "this schema-v1 transaction DTO is intentionally constructible as a complete record"
-)]
-pub struct SessionRecord {
-    /// Non-recoverable hash of the bearer token.
-    pub session_id_hash: [u8; 32],
-    /// Session creation time.
-    pub created_at_ms: i64,
-    /// Absolute session expiry time.
-    pub expires_at_ms: i64,
-}
-
 /// Password verifier replacement and session-revocation timestamp.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[expect(
     clippy::exhaustive_structs,
     reason = "this schema-v1 transaction DTO is intentionally constructible as a complete record"
@@ -285,6 +270,17 @@ pub struct PasswordReset {
     pub verifier_version: u32,
     /// Reset and revocation timestamp.
     pub now_ms: i64,
+}
+
+impl std::fmt::Debug for PasswordReset {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PasswordReset")
+            .field("verifier", &"[REDACTED]")
+            .field("verifier_version", &self.verifier_version)
+            .field("now_ms", &self.now_ms)
+            .finish()
+    }
 }
 
 /// Effective per-connection `SQLite` safety settings.
