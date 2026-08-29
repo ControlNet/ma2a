@@ -5,12 +5,12 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use ma2a_store::{Repository, SCHEMA_VERSION, StoreConfig, StoreError};
+use ma2a_store::{Repository, SCHEMA_VERSION, StoreConfig, StoreError, derive_password_verifier};
 use rusqlite::Connection;
 use support::{TempState, TestResult};
 
 #[test]
-fn schema_v1_is_idempotent_configured_and_contains_only_key_references() -> TestResult {
+fn current_schema_is_idempotent_configured_and_contains_only_key_references() -> TestResult {
     // Given
     let state = TempState::new("migration")?;
     let config = StoreConfig::new(state.path());
@@ -33,7 +33,7 @@ fn schema_v1_is_idempotent_configured_and_contains_only_key_references() -> Test
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
             .get::<_, u32>(0))?,
-        1
+        SCHEMA_VERSION
     );
 
     let mut tables = connection.prepare(
@@ -103,6 +103,39 @@ fn future_schema_is_rejected_without_switching_journal_mode() -> TestResult {
         connection.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))?,
         "delete"
     );
+    Ok(())
+}
+
+#[test]
+fn version_one_credentials_migrate_to_a_valid_session_epoch() -> TestResult {
+    // Given
+    let state = TempState::new("v1-web-auth")?;
+    let config = StoreConfig::new(state.path());
+    let connection = Connection::open(config.database_path())?;
+    connection.execute_batch(include_str!("../migrations/0001_init.sql"))?;
+    connection.pragma_update(None, "user_version", 1_u32)?;
+    let verifier = derive_password_verifier(b"legacy-test-passphrase-9!")?;
+    connection.execute(
+        "INSERT INTO ui_credentials(singleton, password_verifier, verifier_version, updated_at_ms)
+         VALUES (1, ?1, 1, 10)",
+        [verifier.as_slice()],
+    )?;
+    drop(connection);
+    #[cfg(unix)]
+    {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+        fs::set_permissions(config.database_path(), fs::Permissions::from_mode(0o600))?;
+    }
+
+    // When
+    let repository = Repository::open(&config)?;
+    let credential = repository
+        .credential()?
+        .ok_or("missing migrated credential")?;
+
+    // Then
+    assert_eq!(credential.auth_epoch(), 1);
+    assert_eq!(credential.verifier(), verifier);
     Ok(())
 }
 

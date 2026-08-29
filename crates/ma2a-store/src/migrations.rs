@@ -2,16 +2,18 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::StoreError;
 
-/// The only schema version this Phase 1 store can read or write.
-pub const SCHEMA_VERSION: u32 = 1;
+/// The newest schema version this Phase 1 store can read or write.
+pub const SCHEMA_VERSION: u32 = 2;
 const MIGRATION_V1: &str = include_str!("../migrations/0001_init.sql");
+const MIGRATION_V2: &str = include_str!("../migrations/0002_web_auth.sql");
 
 pub(crate) fn current_version(connection: &Connection) -> Result<u32, StoreError> {
     Ok(connection.query_row("PRAGMA user_version", [], |row| row.get(0))?)
 }
 
 pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
-    let version = current_version(connection)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let version = current_version(&transaction)?;
     if version > SCHEMA_VERSION {
         return Err(StoreError::FutureSchema {
             found: version,
@@ -19,26 +21,31 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         });
     }
     if version == 0 {
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch(MIGRATION_V1)?;
-        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        transaction.commit()?;
+        transaction.pragma_update(None, "user_version", 1_u32)?;
     }
-    validate(connection)
+    if current_version(&transaction)? == 1 {
+        transaction.execute_batch(MIGRATION_V2)?;
+        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    }
+    validate(&transaction)?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn validate(connection: &Connection) -> Result<(), StoreError> {
     if current_version(connection)? != SCHEMA_VERSION {
         return Err(StoreError::SchemaMismatch {
-            detail: "user_version does not equal schema v1",
+            detail: "user_version does not equal the current schema",
         });
     }
     let migration_count = connection.query_row(
-        "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1 AND name = 'initial'",
-        [SCHEMA_VERSION],
+        "SELECT COUNT(*) FROM schema_migrations WHERE (version = 1 AND name = 'initial')
+         OR (version = 2 AND name = 'web_auth')",
+        [],
         |row| row.get::<_, u32>(0),
     )?;
-    if migration_count != 1 {
+    if migration_count != SCHEMA_VERSION {
         return Err(StoreError::SchemaMismatch {
             detail: "schema migration record is missing",
         });
