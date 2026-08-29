@@ -82,8 +82,7 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
         .handle()
         .create_enrollment_invite(EnrollmentCreation::new(
             created.space_id(),
-            2_000,
-            302_000,
+            300_000,
             InviteEntropy::from_bytes([0x51; 16], [0x52; 32]),
         )?)
         .await?;
