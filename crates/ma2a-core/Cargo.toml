@@ -12,12 +12,13 @@ ed25519-dalek.workspace = true
 getrandom.workspace = true
 iroh-base.workspace = true
 iroh-tickets.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["ed25519-dalek", "iroh-tickets"]
+ignored = ["ed25519-dalek"]
 
 [lints]
 workspace = true

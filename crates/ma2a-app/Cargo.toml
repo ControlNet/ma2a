@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", 
 tokio-util = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
+iroh-tickets.workspace = true
 iroh.workspace = true
 ma2a-net.workspace = true
 ma2a-store.workspace = true
