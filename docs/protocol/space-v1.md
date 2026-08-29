@@ -3,7 +3,8 @@
 Phase 1 Spaces have one Ed25519 authority. The creating Repository generates a fresh authority seed
 and genesis nonce, publishes the seed through the protected `KeyStore`, and stores only an opaque
 reference in SQLite. Endpoint keys are never reused as Space authority keys. Imported Spaces contain
-no local authority reference.
+no local authority reference. Genesis is invalid when its authority public key equals the initial
+member Endpoint public key.
 
 ## Canonical Encoding
 
@@ -110,6 +111,12 @@ reference. Repository reopen verifies the complete signed chain, every stored ge
 row, the genesis-derived `SpaceId`, materialized member/revocation state, highest generation/hash,
 and any local protected authority seed against the genesis public authority. Legacy raw Space and
 manifest persistence entry points parse and verify their signed bytes before they can mutate state.
+
+The portable public-chain envelope is `{0: signed_genesis_bytes, 1: [signed_manifest_bytes...]}`.
+Each signed object is at most 32,768 bytes. A portable chain contains at most 255 manifests and is at
+most 8,389,381 bytes including canonical CBOR framing. Export rejects a chain beyond those bounds;
+every successfully exported chain is accepted by the same-version importer when its signatures and
+transitions remain valid.
 
 ## Golden Vector
 
