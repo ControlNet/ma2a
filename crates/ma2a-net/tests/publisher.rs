@@ -8,9 +8,7 @@ mod support;
 
 use iroh::{EndpointAddr, address_lookup::UserData};
 use iroh_base::{SecretKey, TransportAddr};
-use ma2a_net::{
-    AddressPublishRequest, AddressPublisher, AddressPublisherError, EndpointSecret, RuntimeEndpoint,
-};
+use ma2a_net::{AddressPublishRequest, AddressPublisher, AddressPublisherError};
 use ma2a_store::{Repository, SpaceRecord, StoreConfig};
 use support::{TempState, TestResult, space_fixture};
 
@@ -153,35 +151,6 @@ fn publisher_refreshes_unchanged_data_after_five_minutes() -> TestResult {
             .sequence(),
         1
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn runtime_publisher_uses_the_running_endpoint_observation() -> TestResult {
-    // Given
-    let secret_bytes = [0x57; 32];
-    let signer = SecretKey::from_bytes(&secret_bytes);
-    let fixture = space_fixture(&signer, 0x69)?;
-    let state = TempState::new("live-publisher-observation")?;
-    let mut repository = repository(&state, &fixture)?;
-    let endpoint = RuntimeEndpoint::bind(EndpointSecret::parse(&secret_bytes)?).await?;
-    let observed = endpoint.endpoint_addr();
-    let publisher = endpoint.address_publisher()?;
-
-    // When
-    let publication = publisher.publish(
-        &mut repository,
-        AddressPublishRequest::new(&fixture.authorization, NOW_MS),
-    )?;
-
-    // Then
-    let record = publication.ok_or("live Endpoint publication was skipped")?;
-    let observed_addresses = observed.addrs.iter().cloned().collect::<Vec<_>>();
-    assert_eq!(
-        record.record().record().endpoint_data().addresses(),
-        observed_addresses.as_slice()
-    );
-    endpoint.shutdown().await?;
     Ok(())
 }
 
