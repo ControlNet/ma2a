@@ -164,7 +164,7 @@ fn read_bounded(path: &std::path::Path, kind: TlsFileKind) -> Result<Vec<u8>, Re
         return Err(error);
     }
     if matches!(kind, TlsFileKind::PrivateKey) {
-        validate_private_key(path, &metadata)?;
+        validate_private_key(&file, &metadata)?;
     }
     let mut bytes = Vec::new();
     file.by_ref()
@@ -223,10 +223,7 @@ fn open_without_following_links(
 }
 
 #[cfg(unix)]
-fn validate_private_key(
-    _path: &std::path::Path,
-    metadata: &fs::Metadata,
-) -> Result<(), RelayTlsError> {
+fn validate_private_key(_file: &File, metadata: &fs::Metadata) -> Result<(), RelayTlsError> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     let mode = metadata.permissions().mode() & 0o7777;
@@ -238,31 +235,16 @@ fn validate_private_key(
 }
 
 #[cfg(windows)]
-fn validate_private_key(
-    path: &std::path::Path,
-    metadata: &fs::Metadata,
-) -> Result<(), RelayTlsError> {
+fn validate_private_key(file: &File, metadata: &fs::Metadata) -> Result<(), RelayTlsError> {
     if !metadata.is_file() {
         return Err(RelayTlsError::InsecurePrivateKeyPermissions);
     }
-    let script = "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$a=Get-Acl -LiteralPath $args[0];$o=$a.Owner;$os=(New-Object Security.Principal.NTAccount($o)).Translate([Security.Principal.SecurityIdentifier]).Value;if($os-ne $u){exit 2};if(!$a.AreAccessRulesProtected){exit 3};$r=@($a.Access|Where-Object {!$_.IsInherited});if($r.Count-ne 2){exit 4};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 5};if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band [Security.AccessControl.FileSystemRights]::FullControl)-eq 0)){exit 6}}";
-    let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .arg(path)
-        .status()
-        .map_err(|_| RelayTlsError::InsecurePrivateKeyPermissions)?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(RelayTlsError::InsecurePrivateKeyPermissions)
-    }
+    crate::relay_tls_windows::validate_private_key_acl(file)
+        .map_err(|()| RelayTlsError::InsecurePrivateKeyPermissions)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn validate_private_key(
-    _path: &std::path::Path,
-    metadata: &fs::Metadata,
-) -> Result<(), RelayTlsError> {
+fn validate_private_key(_file: &File, metadata: &fs::Metadata) -> Result<(), RelayTlsError> {
     metadata
         .is_file()
         .then_some(())

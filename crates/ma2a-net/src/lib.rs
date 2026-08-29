@@ -1,6 +1,7 @@
 //! Iroh transport adapter boundary for MA2A.
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 
 mod address_data;
 mod address_lookup;
@@ -16,6 +17,8 @@ mod relay_access;
 mod relay_advertisement;
 mod relay_config;
 mod relay_tls;
+#[cfg(windows)]
+mod relay_tls_windows;
 
 pub use address_data::{address_endpoint_data_from_iroh, address_endpoint_data_to_iroh};
 pub use address_lookup::{AddressLookupClock, AddressLookupStateError, SpaceAddressLookup};
