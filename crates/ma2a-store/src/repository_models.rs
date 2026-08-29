@@ -17,6 +17,16 @@ impl EndpointRecord {
             key_reference,
         }
     }
+
+    /// Returns the persisted public Endpoint identity.
+    pub const fn endpoint_id(&self) -> EndpointId {
+        self.endpoint_id
+    }
+
+    /// Returns the opaque protected-key reference.
+    pub const fn key_reference(&self) -> &KeyReference {
+        &self.key_reference
+    }
 }
 
 /// Space genesis and an optional local authority-key reference.
