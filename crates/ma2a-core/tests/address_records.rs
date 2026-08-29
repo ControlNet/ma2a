@@ -85,7 +85,7 @@ fn parser_rejects_non_canonical_and_legacy_inner_identity_bytes() -> TestResult 
 }
 
 #[test]
-fn endpoint_data_rejects_empty_duplicate_and_custom_addresses() -> TestResult {
+fn endpoint_data_accepts_empty_and_custom_but_rejects_duplicate_addresses() -> TestResult {
     // Given
     let address = TransportAddr::Ip("127.0.0.1:4242".parse()?);
     let custom = TransportAddr::Custom(iroh_base::CustomAddr::from_parts(1, b"opaque"));
@@ -96,9 +96,9 @@ fn endpoint_data_rejects_empty_duplicate_and_custom_addresses() -> TestResult {
     let custom = AddressEndpointDataV1::new(vec![custom]);
 
     // Then
-    assert_eq!(empty, Err(ProtocolError::INVALID_INPUT));
+    assert!(empty.is_ok());
     assert_eq!(duplicate, Err(ProtocolError::INVALID_INPUT));
-    assert_eq!(custom, Err(ProtocolError::INVALID_INPUT));
+    assert!(custom.is_ok());
     Ok(())
 }
 
