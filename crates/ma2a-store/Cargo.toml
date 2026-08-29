@@ -7,6 +7,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+argon2.workspace = true
 ma2a-core.workspace = true
 iroh-base.workspace = true
 rusqlite.workspace = true

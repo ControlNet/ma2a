@@ -15,8 +15,10 @@ path = "src/main.rs"
 ma2a-core.workspace = true
 ma2a-runtime.workspace = true
 ma2a-store.workspace = true
+rpassword.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
+zeroize.workspace = true
 
 [dev-dependencies]
 iroh-tickets.workspace = true
