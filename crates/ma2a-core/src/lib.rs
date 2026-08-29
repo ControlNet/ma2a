@@ -26,7 +26,10 @@ pub use enrollment_page::{
 };
 pub use error::ProtocolError;
 pub use ids::{EndpointId, RequestId, SpaceId};
-pub use invite::{InviteEntropy, InviteValidity, MAX_INVITE_TICKET_BYTES, SignedInviteTicket};
+pub use invite::{
+    InviteEntropy, InviteValidity, MAX_INVITE_LIFETIME_MS, MAX_INVITE_TICKET_BYTES,
+    SignedInviteTicket,
+};
 pub use manifest::{
     MANIFEST_HASH_DOMAIN, MANIFEST_SIGNATURE_DOMAIN, SignedSpaceManifestV1, SpaceManifestV1,
 };
