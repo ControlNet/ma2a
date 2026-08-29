@@ -4,7 +4,10 @@ use ma2a_core::{
     Capability, PrivateRelayAdvertisementScope, PrivateRelayAdvertisementV1,
     PrivateRelayAdvertisementValidity, SignedPrivateRelayAdvertisementV1, SpaceAuthorizationView,
 };
-use ma2a_store::{RelayAdvertisementAdvance, RelayAdvertisementOutcome, Repository, StoreError};
+use ma2a_store::{
+    RelayAdvertisementBoundaryError, RelayAdvertisementOutcome, Repository, StoreError,
+    ValidatedRelayAdvertisement,
+};
 
 use crate::{EndpointSecret, PrivateRelayProviderConfig};
 
@@ -175,40 +178,9 @@ impl PrivateRelayAdvertisementValidator {
         bytes: &[u8],
         context: AdvertisementValidationContext<'_>,
     ) -> Result<ValidatedPrivateRelayAdvertisement, PrivateRelayAdvertisementValidationError> {
-        let signed = SignedPrivateRelayAdvertisementV1::parse_canonical_bytes(bytes)
-            .map_err(|_| PrivateRelayAdvertisementValidationError::Malformed)?;
-        let advertisement = signed.advertisement();
-        if advertisement.space_id() != context.authorization.space_id() {
-            return Err(PrivateRelayAdvertisementValidationError::WrongSpace);
-        }
-        if !context.authorization.allows(
-            advertisement.provider_endpoint_id(),
-            Capability::PRIVATE_RELAY_PROVIDER,
-        ) {
-            return Err(PrivateRelayAdvertisementValidationError::UnauthorizedProvider);
-        }
-        if advertisement.issued_at_ms() > context.now_ms {
-            return Err(PrivateRelayAdvertisementValidationError::FutureAdvertisement);
-        }
-        if advertisement.expires_at_ms() <= context.now_ms {
-            return Err(PrivateRelayAdvertisementValidationError::ExpiredAdvertisement);
-        }
-        signed
-            .verify_signature()
-            .map_err(|_| PrivateRelayAdvertisementValidationError::InvalidSignature)?;
-        let expires_at_ms = i64::try_from(advertisement.expires_at_ms())
-            .map_err(|_| PrivateRelayAdvertisementValidationError::Malformed)?;
-        let issued_at_ms = i64::try_from(advertisement.issued_at_ms())
-            .map_err(|_| PrivateRelayAdvertisementValidationError::Malformed)?;
-        let advance = RelayAdvertisementAdvance {
-            space_id: advertisement.space_id(),
-            relay_endpoint_id: advertisement.provider_endpoint_id(),
-            sequence: advertisement.sequence(),
-            issued_at_ms,
-            expires_at_ms,
-            advertisement_hash: signed.advertisement_hash(),
-            signed_advertisement: signed.canonical_bytes().to_vec(),
-        };
+        let advance =
+            ValidatedRelayAdvertisement::parse(bytes, context.authorization, context.now_ms)?;
+        let signed = advance.signed().clone();
         match repository.advance_private_relay_advertisement(&advance)? {
             RelayAdvertisementOutcome::Advanced { .. }
             | RelayAdvertisementOutcome::Idempotent { .. } => {
@@ -308,5 +280,18 @@ impl Error for PrivateRelayAdvertisementValidationError {
 impl From<StoreError> for PrivateRelayAdvertisementValidationError {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+impl From<RelayAdvertisementBoundaryError> for PrivateRelayAdvertisementValidationError {
+    fn from(error: RelayAdvertisementBoundaryError) -> Self {
+        match error {
+            RelayAdvertisementBoundaryError::Malformed => Self::Malformed,
+            RelayAdvertisementBoundaryError::WrongSpace => Self::WrongSpace,
+            RelayAdvertisementBoundaryError::UnauthorizedProvider => Self::UnauthorizedProvider,
+            RelayAdvertisementBoundaryError::FutureAdvertisement => Self::FutureAdvertisement,
+            RelayAdvertisementBoundaryError::ExpiredAdvertisement => Self::ExpiredAdvertisement,
+            RelayAdvertisementBoundaryError::InvalidSignature => Self::InvalidSignature,
+        }
     }
 }

@@ -2,7 +2,7 @@ use ma2a_core::{EndpointId, SpaceId};
 use rusqlite::OptionalExtension as _;
 
 use crate::repository::increment_revision;
-use crate::{RelayAdvertisementAdvance, Repository, StoreError};
+use crate::{Repository, StoreError, ValidatedRelayAdvertisement};
 
 /// Persisted signed private relay advertisement for one Space and provider Endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,7 +89,7 @@ impl Repository {
     /// Returns [`StoreError`] when advertisement state cannot be read or committed.
     pub fn advance_private_relay_advertisement(
         &mut self,
-        advance: &RelayAdvertisementAdvance,
+        advance: &ValidatedRelayAdvertisement,
     ) -> Result<RelayAdvertisementOutcome, StoreError> {
         let transaction = self.immediate()?;
         let current = transaction
@@ -98,8 +98,8 @@ impl Repository {
                  FROM relay_advertisement_state
                  WHERE space_id = ?1 AND relay_endpoint_id = ?2",
                 (
-                    advance.space_id.as_bytes().as_slice(),
-                    advance.relay_endpoint_id.as_bytes().as_slice(),
+                    advance.space_id().as_bytes().as_slice(),
+                    advance.provider_endpoint_id().as_bytes().as_slice(),
                 ),
                 |row| {
                     Ok((
@@ -111,13 +111,13 @@ impl Repository {
             )
             .optional()?;
         if let Some((sequence, hash, signed)) = current {
-            let outcome = match advance.sequence.cmp(&sequence) {
+            let outcome = match advance.sequence().cmp(&sequence) {
                 std::cmp::Ordering::Less => RelayAdvertisementOutcome::Rollback {
                     current_sequence: sequence,
                 },
                 std::cmp::Ordering::Equal
-                    if hash.as_slice() == advance.advertisement_hash
-                        && signed == advance.signed_advertisement =>
+                    if hash.as_slice() == advance.advertisement_hash()
+                        && signed == advance.signed_advertisement() =>
                 {
                     RelayAdvertisementOutcome::Idempotent {
                         current_sequence: sequence,
@@ -188,7 +188,7 @@ impl Repository {
 
 fn commit_advertisement(
     transaction: rusqlite::Transaction<'_>,
-    advance: &RelayAdvertisementAdvance,
+    advance: &ValidatedRelayAdvertisement,
 ) -> Result<RelayAdvertisementOutcome, StoreError> {
     transaction.execute(
         "INSERT INTO relay_advertisement_state(space_id, relay_endpoint_id, sequence,
@@ -199,13 +199,13 @@ fn commit_advertisement(
          advertisement_hash = excluded.advertisement_hash,
          signed_advertisement = excluded.signed_advertisement",
         (
-            advance.space_id.as_bytes().as_slice(),
-            advance.relay_endpoint_id.as_bytes().as_slice(),
-            advance.sequence,
-            advance.issued_at_ms,
-            advance.expires_at_ms,
-            advance.advertisement_hash.as_slice(),
-            advance.signed_advertisement.as_slice(),
+            advance.space_id().as_bytes().as_slice(),
+            advance.provider_endpoint_id().as_bytes().as_slice(),
+            advance.sequence(),
+            advance.issued_at_ms(),
+            advance.expires_at_ms(),
+            advance.advertisement_hash().as_slice(),
+            advance.signed_advertisement(),
         ),
     )?;
     let revision = increment_revision(&transaction)?;

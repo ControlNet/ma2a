@@ -217,48 +217,6 @@ pub struct AddressAdvance {
     pub signed_record: Vec<u8>,
 }
 
-/// Current highest private-relay advertisement for one Space relay Endpoint.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "this schema-v1 transaction DTO is intentionally constructible as a complete record"
-)]
-pub struct RelayAdvertisementAdvance {
-    /// Space in which this private relay is advertised.
-    pub space_id: SpaceId,
-    /// Hosting Endpoint identity.
-    pub relay_endpoint_id: EndpointId,
-    /// Monotonic advertisement sequence.
-    pub sequence: u64,
-    /// Advertisement issue time.
-    pub issued_at_ms: i64,
-    /// Advertisement expiry time.
-    pub expires_at_ms: i64,
-    /// Hash of the signed canonical advertisement.
-    pub advertisement_hash: [u8; 32],
-    /// Exact signed advertisement bytes retained for forwarding.
-    pub signed_advertisement: Vec<u8>,
-}
-
-/// Typed result of highest-sequence state advancement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "callers must handle both closed schema-v1 sequence outcomes"
-)]
-pub enum SequenceOutcome {
-    /// The higher sequence was committed.
-    Advanced {
-        /// Revision committed with the higher sequence.
-        revision: u64,
-    },
-    /// The supplied sequence was not higher than current state.
-    Stale {
-        /// Highest sequence already accepted.
-        current_sequence: u64,
-    },
-}
-
 /// Password verifier replacement and session-revocation timestamp.
 #[derive(Clone, PartialEq, Eq)]
 #[expect(

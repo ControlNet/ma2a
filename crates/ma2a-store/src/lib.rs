@@ -1,4 +1,9 @@
 //! Persistent-state adapter boundary for MA2A.
+//!
+//! Raw relay advertisement persistence is intentionally not public:
+//! ```compile_fail
+//! use ma2a_store::RelayAdvertisementAdvance;
+//! ```
 
 #![forbid(unsafe_code)]
 
@@ -18,7 +23,6 @@ mod relay_settings;
 mod repository;
 mod repository_models;
 mod repository_mutations;
-mod repository_sequences;
 mod repository_state;
 mod repository_state_models;
 mod session_mutations;
@@ -41,8 +45,7 @@ pub use relay_config::{PersistedRelayAdvertisement, RelayAdvertisementOutcome};
 pub use repository::Repository;
 pub use repository_models::{
     AddressAdvance, DatabaseSettings, EndpointRecord, InvitationRecord, ManifestAdvance,
-    ManifestOutcome, PasswordReset, Redemption, RedemptionOutcome, RelayAdvertisementAdvance,
-    SequenceOutcome, SpaceRecord,
+    ManifestOutcome, PasswordReset, Redemption, RedemptionOutcome, SpaceRecord,
 };
 pub use repository_state_models::{
     EndpointObservationUpdate, RelayConfiguration, RelayObservation, RelayTransportConfiguration,
