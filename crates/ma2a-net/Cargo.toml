@@ -16,6 +16,8 @@ iroh-tickets.workspace = true
 irpc.workspace = true
 irpc-iroh.workspace = true
 ma2a-core.workspace = true
+ma2a-store.workspace = true
+n0-future.workspace = true
 tokio.workspace = true
 zeroize.workspace = true
 
