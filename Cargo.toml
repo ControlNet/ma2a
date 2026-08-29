@@ -29,9 +29,11 @@ axum = "=0.8.9"
 blake3 = "=1.8.7"
 ed25519-dalek = "=3.0.0"
 getrandom = "=0.4.3"
+http = "=1.5.0"
 interprocess = { version = "=2.4.3", features = ["tokio"] }
 iroh = "=1.1.0"
 iroh-base = "=1.1.0"
+iroh-dns = "=1.1.0"
 iroh-metrics = "=1.0.1"
 iroh-ping = "=1.0.0"
 iroh-relay = "=1.1.0"
@@ -44,19 +46,24 @@ ma2a-runtime = { path = "crates/ma2a-runtime", version = "=0.1.0" }
 ma2a-store = { path = "crates/ma2a-store", version = "=0.1.0" }
 n0-future = "=0.3.2"
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
+rcgen = "=0.14.9"
 rusqlite = { version = "=0.40.2", default-features = false, features = ["backup", "bundled", "fallible_uint"] }
 rpassword = "=7.5.4"
-rustix = { version = "=1.1.4", default-features = false, features = ["process", "std"] }
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std"] }
+rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = "=1.15.1"
 serde_json = "=1.0.151"
 serde = "=1.0.229"
 sha2 = "=0.11.0"
 subtle = "=2.6.1"
 tokio = "=1.53.1"
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-util = "=0.7.19"
 toml = "=1.1.4"
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 widestring = "=1.2.1"
 windows-sys = "=0.61.2"
+x509-parser = "=0.18.1"
 
 [workspace.lints.rust]
 elided_lifetimes_in_paths = "warn"
