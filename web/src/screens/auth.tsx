@@ -1,4 +1,4 @@
-import type { FormEvent, ReactNode } from "react"
+import { type FormEvent, type ReactNode, useState } from "react"
 
 import { CodeValue } from "../components/primitives"
 
@@ -24,14 +24,24 @@ function AuthFrame({ children }: { readonly children: ReactNode }): ReactNode {
 export function LoginScreen({
   onLogin,
 }: {
-  readonly onLogin?: (passphrase: string) => void
+  readonly onLogin?: (passphrase: string) => Promise<void>
 }): ReactNode {
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState(false)
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
     const passphrase = form.get("passphrase")
-    if (typeof passphrase === "string") {
-      onLogin?.(passphrase)
+    if (typeof passphrase === "string" && onLogin !== undefined) {
+      setPending(true)
+      setError(false)
+      void onLogin(passphrase).then(
+        () => undefined,
+        () => {
+          setPending(false)
+          setError(true)
+        },
+      )
     }
   }
 
@@ -54,8 +64,9 @@ export function LoginScreen({
           type="password"
         />
         <p className="field-help">Sessions use a host-only, HttpOnly, SameSite=Strict cookie.</p>
-        <button disabled={onLogin === undefined} type="submit">
-          Sign in
+        {error ? <p role="alert">The passphrase was not accepted.</p> : null}
+        <button disabled={onLogin === undefined || pending} type="submit">
+          {pending ? "Signing in..." : "Sign in"}
         </button>
       </form>
     </AuthFrame>
@@ -80,8 +91,12 @@ export function SetupScreen(): ReactNode {
           <CodeValue>ma2a init</CodeValue>
         </div>
         <div>
-          <span>Set or reset the UI passphrase</span>
+          <span>Set the UI passphrase</span>
           <CodeValue>ma2a ui password set</CodeValue>
+        </div>
+        <div>
+          <span>Reset the UI passphrase</span>
+          <CodeValue>ma2a ui password reset</CodeValue>
         </div>
       </section>
       <p className="field-help">Return to this page after the trusted local command succeeds.</p>
