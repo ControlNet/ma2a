@@ -1,9 +1,10 @@
 import { afterEach, expect, test, vi } from "vitest"
 
-import { loginAndTouchSession, logoutSession } from "./web-auth"
+import { currentWebSession, loginAndTouchSession, logoutSession } from "./web-auth"
 
 afterEach(() => {
   vi.restoreAllMocks()
+  Reflect.deleteProperty(document, "cookie")
 })
 
 test("uses the login CSRF token through logout without browser storage", async () => {
@@ -34,4 +35,18 @@ test("uses the login CSRF token through logout without browser storage", async (
   expect(session.csrfToken).toBe("ab".repeat(32))
   expect(localStorageWrite).not.toHaveBeenCalled()
   expect(sessionStorageWrite).not.toHaveBeenCalled()
+})
+
+test("restores the current session CSRF token from its strict host cookie", () => {
+  // Given
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+
+  // When
+  const session = currentWebSession()
+
+  // Then
+  expect(session).toEqual({ csrfToken: "cd".repeat(32) })
 })

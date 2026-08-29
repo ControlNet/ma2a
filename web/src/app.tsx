@@ -1,6 +1,11 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react"
 
-import { loginAndTouchSession, logoutSession, type WebSession } from "./api/web-auth"
+import {
+  currentWebSession,
+  loginAndTouchSession,
+  logoutSession,
+  type WebSession,
+} from "./api/web-auth"
 import { AppShell } from "./components/app-shell"
 import { isRoutePath, ROUTE_PATHS, type RoutePath } from "./routes"
 import { LoginScreen, SetupScreen } from "./screens/auth"
@@ -45,7 +50,7 @@ export function App({
   readonly runtime?: RuntimeViewData
 }): ReactNode {
   const [path, setPath] = useState<RoutePath>(initialPath ?? browserPath)
-  const [session, setSession] = useState<WebSession>()
+  const [session, setSession] = useState<WebSession | undefined>(currentWebSession)
   const controlled = initialPath !== undefined
 
   useEffect(() => {
