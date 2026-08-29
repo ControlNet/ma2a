@@ -2,11 +2,12 @@ use std::{
     error::Error,
     fmt,
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use iroh::address_lookup::EndpointData;
 use ma2a_core::{AddressEndpointDataV1, ProtocolError};
-use tokio::sync::watch;
+use tokio::{sync::watch, time::timeout};
 
 use crate::address_endpoint_data_from_iroh;
 
@@ -37,6 +38,12 @@ pub(crate) enum AddressObservationError {
     Closed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AddressObservationWaitError {
+    Observation(AddressObservationError),
+    TimedOut,
+}
+
 impl fmt::Display for AddressObservationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -55,6 +62,26 @@ impl Error for AddressObservationError {
         match self {
             Self::Invalid(error) => Some(error),
             Self::Unavailable | Self::Poisoned | Self::Closed => None,
+        }
+    }
+}
+
+impl fmt::Display for AddressObservationWaitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Observation(error) => error.fmt(formatter),
+            Self::TimedOut => {
+                formatter.write_str("live address observation initialization timed out")
+            }
+        }
+    }
+}
+
+impl Error for AddressObservationWaitError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Observation(error) => Some(error),
+            Self::TimedOut => None,
         }
     }
 }
@@ -100,19 +127,27 @@ impl AddressObservation {
         }
     }
 
-    pub(crate) async fn wait_for_initial(&self) -> Result<(), AddressObservationError> {
-        let mut receiver = self.generation.subscribe();
-        loop {
-            match self.current() {
-                Ok(_) => return Ok(()),
-                Err(AddressObservationError::Unavailable) => {}
-                Err(error) => return Err(error),
+    pub(crate) async fn wait_for_initial(
+        &self,
+        timeout_after: Duration,
+    ) -> Result<(), AddressObservationWaitError> {
+        let result = timeout(timeout_after, async {
+            let mut receiver = self.generation.subscribe();
+            loop {
+                match self.current() {
+                    Ok(_) => return Ok(()),
+                    Err(AddressObservationError::Unavailable) => {}
+                    Err(error) => return Err(error),
+                }
+                receiver
+                    .changed()
+                    .await
+                    .map_err(|_| AddressObservationError::Closed)?;
             }
-            receiver
-                .changed()
-                .await
-                .map_err(|_| AddressObservationError::Closed)?;
-        }
+        })
+        .await
+        .map_err(|_| AddressObservationWaitError::TimedOut)?;
+        result.map_err(AddressObservationWaitError::Observation)
     }
 
     #[cfg(test)]
@@ -123,13 +158,13 @@ impl AddressObservation {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use iroh::address_lookup::{EndpointData, UserData};
     use iroh_base::{CustomAddr, TransportAddr};
     use ma2a_core::{MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN, ProtocolError};
 
-    use super::{AddressObservation, AddressObservationError};
+    use super::{AddressObservation, AddressObservationError, AddressObservationWaitError};
 
     #[test]
     fn oversized_custom_data_sets_invalid_without_retaining_signable_data() {
@@ -149,6 +184,51 @@ mod tests {
             Err(AddressObservationError::Invalid(
                 ProtocolError::INVALID_INPUT
             ))
+        );
+    }
+
+    #[test]
+    fn seventeen_addresses_set_invalid_without_retaining_signable_data() {
+        // Given
+        let observation = AddressObservation::default();
+        observation.observe(&EndpointData::new(vec![TransportAddr::Ip(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 4_899)),
+        )]));
+        assert!(observation.current().is_ok());
+        let addresses = (0_u16..17)
+            .map(|offset| {
+                TransportAddr::Ip(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    4_900_u16 + offset,
+                )))
+            })
+            .collect();
+
+        // When
+        observation.observe(&EndpointData::new(addresses));
+
+        // Then
+        assert_eq!(
+            observation.current(),
+            Err(AddressObservationError::Invalid(
+                ProtocolError::INVALID_INPUT
+            ))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_wait_times_out_while_observation_remains_unavailable() {
+        // Given
+        let observation = AddressObservation::default();
+
+        // When
+        let result = observation.wait_for_initial(Duration::from_secs(2)).await;
+
+        // Then
+        assert_eq!(result, Err(AddressObservationWaitError::TimedOut));
+        assert_eq!(
+            observation.current(),
+            Err(AddressObservationError::Unavailable)
         );
     }
 
@@ -179,7 +259,12 @@ mod tests {
         // Given
         let observation = AddressObservation::default();
         let mut generation = observation.subscribe();
-        let initial = EndpointData::new(vec![TransportAddr::Ip("127.0.0.1:4801".parse()?)]);
+        let addresses = vec![
+            TransportAddr::Custom(CustomAddr::from_parts(31, b"first")),
+            TransportAddr::Ip("127.0.0.1:4801".parse()?),
+            TransportAddr::Custom(CustomAddr::from_parts(32, b"last")),
+        ];
+        let initial = EndpointData::new(addresses.clone());
         let updated = initial
             .clone()
             .with_user_data(UserData::try_from(String::new())?);
@@ -195,6 +280,12 @@ mod tests {
         // Then
         assert_eq!(initial_generation, 1);
         assert_eq!(updated_generation, 2);
+        assert_eq!(
+            observation
+                .current()
+                .map(|(_, data)| data.addresses().to_vec()),
+            Ok(addresses)
+        );
         assert_eq!(
             observation
                 .current()
