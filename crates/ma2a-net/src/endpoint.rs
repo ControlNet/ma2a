@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, net::Ipv4Addr};
+use std::{error::Error, fmt, net::Ipv4Addr, time::Duration};
 
 use iroh::{
     Endpoint, EndpointAddr, RelayMode, SecretKey, address_lookup::UserData, endpoint::presets,
@@ -12,10 +12,12 @@ use tokio::sync::mpsc;
 use crate::{
     AddressPublisher, AddressPublisherError, SpaceAddressLookup,
     address_lookup::RuntimeAddressLookup,
-    address_observation::AddressObservationError,
+    address_observation::AddressObservationWaitError,
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
     protocols::ENROLLMENT_ALPN,
 };
+
+const INITIAL_ADDRESS_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A zeroizing Iroh Endpoint secret that never reveals private bytes through `Debug`.
 #[derive(Clone)]
@@ -86,7 +88,7 @@ pub struct NetError(NetErrorKind);
 #[derive(Debug)]
 enum NetErrorKind {
     Bind(iroh::endpoint::BindError),
-    Observation(AddressObservationError),
+    Observation(AddressObservationWaitError),
     Shutdown,
     Enrollment,
 }
@@ -131,7 +133,8 @@ impl RuntimeEndpoint {
     /// Binds direct transports with public discovery and relay publication disabled.
     ///
     /// # Errors
-    /// Returns [`NetError`] when Iroh cannot bind the Endpoint.
+    /// Returns [`NetError`] when Iroh cannot bind the Endpoint or does not publish its initial
+    /// local observation within two seconds.
     pub async fn bind(
         secret: EndpointSecret,
         enrollment_calls: mpsc::Sender<EnrollmentCall>,
@@ -149,7 +152,8 @@ impl RuntimeEndpoint {
     /// Binds direct transports with the supplied private Space address lookup.
     ///
     /// # Errors
-    /// Returns [`NetError`] when Iroh cannot bind the Endpoint.
+    /// Returns [`NetError`] when Iroh cannot bind the Endpoint or does not publish its initial
+    /// local observation within two seconds.
     pub async fn bind_with_lookup(
         secret: EndpointSecret,
         enrollment_calls: mpsc::Sender<EnrollmentCall>,
@@ -175,10 +179,13 @@ impl RuntimeEndpoint {
             .bind()
             .await
             .map_err(|error| NetError(NetErrorKind::Bind(error)))?;
-        observation
-            .wait_for_initial()
+        if let Err(error) = observation
+            .wait_for_initial(INITIAL_ADDRESS_OBSERVATION_TIMEOUT)
             .await
-            .map_err(|error| NetError(NetErrorKind::Observation(error)))?;
+        {
+            endpoint.close().await;
+            return Err(NetError(NetErrorKind::Observation(error)));
+        }
         let router = Router::builder(endpoint)
             .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
             .spawn();
