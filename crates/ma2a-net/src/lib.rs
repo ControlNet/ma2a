@@ -18,7 +18,9 @@ pub use address_record::{
     AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator,
     AddressValidationContext, ValidatedAddressRecord,
 };
-pub use endpoint::{EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpoint};
+pub use endpoint::{
+    EndpointBindOptions, EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpoint,
+};
 pub use enrollment::EnrollmentCall;
 pub use iroh::EndpointAddr;
 pub use metrics::{

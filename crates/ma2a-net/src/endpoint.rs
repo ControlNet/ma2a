@@ -129,6 +129,26 @@ pub struct RuntimeEndpoint {
     observation: crate::address_observation::AddressObservation,
 }
 
+/// Enrollment routing inputs for a lookup-aware Runtime Endpoint bind.
+#[derive(Debug)]
+pub struct EndpointBindOptions {
+    enrollment_calls: mpsc::Sender<EnrollmentCall>,
+    bind_port: Option<u16>,
+}
+
+impl EndpointBindOptions {
+    /// Creates enrollment routing inputs with an optional fixed UDP port.
+    pub const fn new(
+        enrollment_calls: mpsc::Sender<EnrollmentCall>,
+        bind_port: Option<u16>,
+    ) -> Self {
+        Self {
+            enrollment_calls,
+            bind_port,
+        }
+    }
+}
+
 impl RuntimeEndpoint {
     /// Binds direct transports with public discovery and relay publication disabled.
     ///
@@ -142,9 +162,8 @@ impl RuntimeEndpoint {
     ) -> Result<Self, NetError> {
         Self::bind_with_lookup(
             secret,
-            enrollment_calls,
-            bind_port,
             SpaceAddressLookup::default(),
+            EndpointBindOptions::new(enrollment_calls, bind_port),
         )
         .await
     }
@@ -156,10 +175,13 @@ impl RuntimeEndpoint {
     /// local observation within two seconds.
     pub async fn bind_with_lookup(
         secret: EndpointSecret,
-        enrollment_calls: mpsc::Sender<EnrollmentCall>,
-        bind_port: Option<u16>,
         lookup: SpaceAddressLookup,
+        options: EndpointBindOptions,
     ) -> Result<Self, NetError> {
+        let EndpointBindOptions {
+            enrollment_calls,
+            bind_port,
+        } = options;
         let runtime_lookup = RuntimeAddressLookup::new(lookup);
         let observation = runtime_lookup.observation();
         let builder = Endpoint::builder(presets::Minimal)

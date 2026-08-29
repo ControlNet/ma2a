@@ -8,7 +8,9 @@ mod support;
 
 use iroh::address_lookup::{AddressLookup as _, EndpointData, UserData};
 use iroh_base::{SecretKey, TransportAddr};
-use ma2a_net::{AddressPublishRequest, EndpointSecret, RuntimeEndpoint, SpaceAddressLookup};
+use ma2a_net::{
+    AddressPublishRequest, EndpointBindOptions, EndpointSecret, RuntimeEndpoint, SpaceAddressLookup,
+};
 use ma2a_store::{Repository, SpaceRecord, StoreConfig};
 use support::{TempState, TestResult, space_fixture};
 
@@ -27,9 +29,8 @@ async fn runtime_publisher_ignores_callbacks_injected_through_the_public_lookup(
     let (enrollment_sender, _enrollment_receiver) = tokio::sync::mpsc::channel(1);
     let endpoint = RuntimeEndpoint::bind_with_lookup(
         EndpointSecret::parse(&secret_bytes)?,
-        enrollment_sender,
-        None,
         lookup,
+        EndpointBindOptions::new(enrollment_sender, None),
     )
     .await?;
     let injected = TransportAddr::Ip("127.0.0.1:4812".parse()?);
