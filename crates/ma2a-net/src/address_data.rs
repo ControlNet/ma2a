@@ -14,11 +14,10 @@ const MAX_RELAY_URL_LEN: usize = 512;
 pub fn address_endpoint_data_from_iroh(
     data: &EndpointData,
 ) -> Result<AddressEndpointDataV1, ProtocolError> {
-    let mut addresses = Vec::new();
+    if data.addrs().count() > MAX_ADDRESS_RECORD_ADDRESSES {
+        return Err(ProtocolError::INVALID_INPUT);
+    }
     for address in data.addrs() {
-        if addresses.len() == MAX_ADDRESS_RECORD_ADDRESSES {
-            return Err(ProtocolError::INVALID_INPUT);
-        }
         match address {
             TransportAddr::Relay(url) if url.as_str().len() > MAX_RELAY_URL_LEN => {
                 return Err(ProtocolError::INVALID_INPUT);
@@ -34,12 +33,12 @@ pub fn address_endpoint_data_from_iroh(
             TransportAddr::Relay(_) | TransportAddr::Ip(_) | TransportAddr::Custom(_) => {}
             _ => return Err(ProtocolError::INVALID_INPUT),
         }
-        addresses.push(address.clone());
     }
     let user_data = data.user_data().map(AsRef::<str>::as_ref);
     if user_data.is_some_and(|value| value.len() > MAX_ADDRESS_RECORD_USER_DATA_LEN) {
         return Err(ProtocolError::INVALID_INPUT);
     }
+    let addresses = data.addrs().cloned().collect();
     AddressEndpointDataV1::from_parts(addresses, user_data.map(str::to_owned))
 }
 
