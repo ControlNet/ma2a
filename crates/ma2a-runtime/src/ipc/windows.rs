@@ -9,6 +9,8 @@ use interprocess::{
 };
 use widestring::U16CString;
 
+use ma2a_windows_security::{current_user_sid, process_user_sid};
+
 use super::{IpcError, IpcPaths};
 
 pub(crate) type PlatformListener = Listener;
@@ -33,8 +35,9 @@ fn name(paths: &IpcPaths) -> Result<interprocess::local_socket::Name<'static>, I
 
 pub(crate) fn bind(paths: &IpcPaths) -> Result<PlatformListener, IpcError> {
     prepare(paths)?;
-    let sddl =
-        U16CString::from_str("D:P(A;;GA;;;SY)(A;;GA;;;OW)").map_err(|_| IpcError::InvalidPath)?;
+    let current_user = current_user_sid()?;
+    let sddl = U16CString::from_str(current_user.private_pipe_sddl()?)
+        .map_err(|_| IpcError::InvalidPath)?;
     let descriptor = SecurityDescriptor::deserialize(&sddl)?;
     Ok(ListenerOptions::new()
         .name(name(paths)?)
@@ -54,7 +57,11 @@ pub(crate) async fn accept(listener: &PlatformListener) -> Result<PlatformStream
 }
 
 pub(crate) fn authorize(stream: &PlatformStream, _paths: &IpcPaths) -> Result<(), IpcError> {
-    if stream.peer_creds()?.pid().is_some_and(|pid| pid != 0) {
+    let peer_pid = stream
+        .peer_creds()?
+        .pid()
+        .ok_or(IpcError::UnauthorizedPeer)?;
+    if peer_pid != 0 && process_user_sid(peer_pid)? == current_user_sid()? {
         Ok(())
     } else {
         Err(IpcError::UnauthorizedPeer)
@@ -63,12 +70,4 @@ pub(crate) fn authorize(stream: &PlatformStream, _paths: &IpcPaths) -> Result<()
 
 pub(crate) const fn remove_stale_endpoint(_paths: &IpcPaths) -> Result<(), IpcError> {
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn pipe_dacl_is_current_owner_and_system_only() {
-        assert_eq!("D:P(A;;GA;;;SY)(A;;GA;;;OW)", "D:P(A;;GA;;;SY)(A;;GA;;;OW)");
-    }
 }
