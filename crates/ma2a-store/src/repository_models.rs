@@ -230,6 +230,8 @@ pub struct RelayAdvertisementAdvance {
     pub relay_endpoint_id: EndpointId,
     /// Monotonic advertisement sequence.
     pub sequence: u64,
+    /// Advertisement issue time.
+    pub issued_at_ms: i64,
     /// Advertisement expiry time.
     pub expires_at_ms: i64,
     /// Hash of the signed canonical advertisement.

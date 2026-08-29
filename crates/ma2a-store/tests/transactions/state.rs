@@ -1,7 +1,8 @@
 use ma2a_store::{
     AddressAdvance, AddressRecordOutcome, PasswordReset, RelayAdvertisementAdvance,
-    RelayConfiguration, RelayObservation, Repository, RuntimeMetadataUpdate, SequenceOutcome,
-    SessionDigests, SessionRecord, SessionTimestamps, StoreConfig, derive_password_verifier,
+    RelayConfiguration, RelayObservation, RelayTransportConfiguration, Repository,
+    RuntimeMetadataUpdate, SequenceOutcome, SessionDigests, SessionRecord, SessionTimestamps,
+    StoreConfig, derive_password_verifier,
 };
 use rusqlite::Connection;
 
@@ -39,6 +40,7 @@ fn address_and_advertisement_reject_stale_sequences() -> TestResult {
         space_id: space_id()?,
         relay_endpoint_id: endpoint,
         sequence: 9,
+        issued_at_ms: 2,
         expires_at_ms: 30,
         advertisement_hash: [9; 32],
         signed_advertisement: b"relay".to_vec(),
@@ -182,13 +184,23 @@ fn signed_membership_and_relay_metadata_are_persisted() -> TestResult {
         last_shutdown_clean: false,
         observed_at_ms: 70,
     })?;
-    repository.set_relay_configuration(&RelayConfiguration {
+    let relay_configuration = RelayConfiguration {
         public_fallback_enabled: true,
-        public_relay_url: Some("https://relay.invalid".to_owned()),
-        private_provider_enabled: false,
-        listener_address: None,
-        tls_mode: None,
-    })?;
+        public_relay_urls: vec![
+            "https://relay-a.invalid".to_owned(),
+            "https://relay-b.invalid".to_owned(),
+        ],
+        private_provider_enabled: true,
+        listener_address: Some("127.0.0.1:443".to_owned()),
+        private_relay_url: Some("https://private-relay.invalid".to_owned()),
+        served_spaces: vec![space_id()?],
+        transport: Some(RelayTransportConfiguration::NativeTls {
+            certificate_path: "/run/ma2a/relay.cert.pem".to_owned(),
+            private_key_path: "/run/ma2a/relay.key.pem".to_owned(),
+        }),
+    };
+    repository.set_relay_configuration(&relay_configuration)?;
+    assert_eq!(repository.reserve_private_relay_sequence()?, 1);
     repository.record_relay_observation(&RelayObservation {
         relay_url: "https://relay.invalid".to_owned(),
         observed_at_ms: 70,
@@ -200,6 +212,10 @@ fn signed_membership_and_relay_metadata_are_persisted() -> TestResult {
     drop(repository);
 
     // Then
+    let mut repository = Repository::open(&config)?;
+    assert_eq!(repository.relay_configuration()?, relay_configuration);
+    assert_eq!(repository.reserve_private_relay_sequence()?, 2);
+    drop(repository);
     let connection = Connection::open(config.database_path())?;
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM members", [], |row| row
