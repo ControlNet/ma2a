@@ -10,6 +10,9 @@ use zeroize::Zeroizing;
 
 use crate::{StoreError, permissions};
 
+#[cfg(test)]
+mod tests;
+
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// The two private-key classes allowed in Phase 1.
@@ -123,6 +126,33 @@ pub struct KeyStore {
     root: PathBuf,
 }
 
+trait PublicationOperations {
+    fn hard_link(&self, temporary: &Path, destination: &Path) -> std::io::Result<()>;
+    fn remove_temporary(&self, temporary: &Path) -> std::io::Result<()>;
+    fn sync_parent(&self, destination: &Path) -> Result<(), StoreError>;
+    fn validate_destination(&self, destination: &Path) -> Result<(), StoreError>;
+}
+
+struct FilesystemPublication;
+
+impl PublicationOperations for FilesystemPublication {
+    fn hard_link(&self, temporary: &Path, destination: &Path) -> std::io::Result<()> {
+        fs::hard_link(temporary, destination)
+    }
+
+    fn remove_temporary(&self, temporary: &Path) -> std::io::Result<()> {
+        fs::remove_file(temporary)
+    }
+
+    fn sync_parent(&self, destination: &Path) -> Result<(), StoreError> {
+        sync_parent(destination)
+    }
+
+    fn validate_destination(&self, destination: &Path) -> Result<(), StoreError> {
+        permissions::validate_private_file(destination, "protected-key file")
+    }
+}
+
 impl KeyStore {
     /// Opens and validates the protected-key directory hierarchy.
     ///
@@ -152,25 +182,33 @@ impl KeyStore {
     /// Returns [`StoreError`] when the reference already exists or the atomic,
     /// owner-only filesystem write cannot be completed.
     pub fn write(&self, material: KeyMaterial<'_>) -> Result<(), StoreError> {
+        self.write_with_operations(material, &FilesystemPublication)
+    }
+
+    fn write_with_operations(
+        &self,
+        material: KeyMaterial<'_>,
+        operations: &impl PublicationOperations,
+    ) -> Result<(), StoreError> {
         let destination = self.path_for(material.kind, material.reference);
         let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let temporary = destination.with_extension(format!("tmp-{}-{serial}", std::process::id()));
         let write_result = Self::write_temporary(&temporary, material.secret);
         if let Err(error) = write_result {
-            let _cleanup_result = fs::remove_file(&temporary);
+            let _cleanup_result = operations.remove_temporary(&temporary);
             return Err(error);
         }
-        if let Err(error) = fs::hard_link(&temporary, &destination) {
-            let _cleanup_result = fs::remove_file(&temporary);
+        if let Err(error) = operations.hard_link(&temporary, &destination) {
+            let _cleanup_result = operations.remove_temporary(&temporary);
             return if error.kind() == std::io::ErrorKind::AlreadyExists {
                 Err(StoreError::ProtectedKeyAlreadyExists)
             } else {
                 Err(error.into())
             };
         }
-        fs::remove_file(&temporary)?;
-        sync_parent(&destination)?;
-        permissions::validate_private_file(&destination, "protected-key file")
+        let _cleanup_result = operations.remove_temporary(&temporary);
+        operations.sync_parent(&destination)?;
+        operations.validate_destination(&destination)
     }
 
     /// Loads protected material into a buffer that zeroizes on drop.
