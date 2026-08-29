@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react"
 
+import { loginAndTouchSession } from "./api/web-auth"
 import { AppShell } from "./components/app-shell"
 import { isRoutePath, ROUTE_PATHS, type RoutePath } from "./routes"
 import { LoginScreen, SetupScreen } from "./screens/auth"
@@ -65,8 +66,13 @@ export function App({
     [controlled],
   )
 
+  const login = useCallback(async (passphrase: string): Promise<void> => {
+    await loginAndTouchSession(passphrase)
+    window.location.replace("/")
+  }, [])
+
   if (path === ROUTE_PATHS.login) {
-    return <LoginScreen />
+    return <LoginScreen onLogin={login} />
   }
   if (path === ROUTE_PATHS.setup) {
     return <SetupScreen />
