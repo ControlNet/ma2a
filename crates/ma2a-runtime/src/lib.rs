@@ -8,12 +8,19 @@ pub mod api;
 pub mod ipc;
 
 mod actor;
+mod enrollment;
+mod enrollment_actor;
 mod error;
 mod lifecycle;
 mod state;
 mod store;
+mod store_client;
 
 pub use actor::RuntimeHandle;
+pub use enrollment::{
+    EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EnrollmentErrorCode,
+    EstablishedEnrollment,
+};
 pub use error::{RuntimeError, RuntimeErrorCode};
 pub use lifecycle::Runtime;
 pub use state::{Connectivity, RuntimeEvent, RuntimeStatus, ShutdownReport};

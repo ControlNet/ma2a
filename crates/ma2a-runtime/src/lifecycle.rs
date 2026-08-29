@@ -42,7 +42,8 @@ impl Runtime {
         let identity = store.initialize().await?;
         let boot_id = boot_id()?;
         let boot_revision = store.begin_boot(boot_id).await?;
-        let endpoint = RuntimeEndpoint::bind(identity.secret).await?;
+        let (enrollment_sender, enrollment_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
+        let endpoint = RuntimeEndpoint::bind(identity.secret, enrollment_sender).await?;
         if endpoint.endpoint_id() != identity.endpoint_id {
             return Err(RuntimeError::new(RuntimeErrorKind::IdentityMismatch));
         }
@@ -56,7 +57,7 @@ impl Runtime {
             connectivity: Connectivity::DIRECT_ONLY,
         };
         state.revision = store.observe(&state).await?.max(boot_revision);
-        let (actor, handle, cancellation) = Actor::new(state, endpoint, store);
+        let (actor, handle, cancellation) = Actor::new(state, endpoint, store, enrollment_calls);
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
         Ok(Self {
             handle,
