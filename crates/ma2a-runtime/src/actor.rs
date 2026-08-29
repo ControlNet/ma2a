@@ -1,11 +1,12 @@
 use std::collections::BTreeSet;
 
-use ma2a_core::SpaceId;
-use ma2a_net::RuntimeEndpoint;
+use ma2a_core::{SignedInviteTicket, SpaceId};
+use ma2a_net::{EnrollmentCall, RuntimeEndpoint};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EstablishedEnrollment,
     error::{RuntimeError, RuntimeErrorKind},
     state::{RuntimeEvent, RuntimeStatus},
     store::StoreClient,
@@ -20,13 +21,25 @@ pub(crate) enum Command {
         memberships: Vec<SpaceId>,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
+    CreateEnrollmentInvite {
+        creation: EnrollmentCreation,
+        reply: oneshot::Sender<Result<SignedInviteTicket, EnrollmentError>>,
+    },
+    RedeemEnrollment {
+        attempt: EnrollmentAttempt,
+        reply: oneshot::Sender<Result<EstablishedEnrollment, EnrollmentError>>,
+    },
+    CancelEnrollmentInvite {
+        invitation_id: [u8; 16],
+        reply: oneshot::Sender<Result<(), EnrollmentError>>,
+    },
     Shutdown(oneshot::Sender<ShutdownAck>),
 }
 
 /// Bounded command and event handle for the single-owner Runtime actor.
 #[derive(Clone, Debug)]
 pub struct RuntimeHandle {
-    commands: mpsc::Sender<Command>,
+    pub(crate) commands: mpsc::Sender<Command>,
     events: broadcast::Sender<RuntimeEvent>,
 }
 
@@ -95,19 +108,25 @@ pub(crate) struct ShutdownAck {
 }
 
 pub(crate) struct Actor {
-    state: RuntimeStatus,
-    endpoint: RuntimeEndpoint,
-    store: StoreClient,
+    pub(crate) state: RuntimeStatus,
+    pub(crate) endpoint: RuntimeEndpoint,
+    pub(crate) store: StoreClient,
     commands: mpsc::Receiver<Command>,
-    events: broadcast::Sender<RuntimeEvent>,
+    pub(crate) events: broadcast::Sender<RuntimeEvent>,
+    enrollment_calls: mpsc::Receiver<EnrollmentCall>,
     cancellation: CancellationToken,
 }
 
 impl Actor {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the actor owns each independently constructed runtime subsystem"
+    )]
     pub(crate) fn new(
         state: RuntimeStatus,
         endpoint: RuntimeEndpoint,
         store: StoreClient,
+        enrollment_calls: mpsc::Receiver<EnrollmentCall>,
     ) -> (Self, RuntimeHandle, CancellationToken) {
         let (command_sender, commands) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
@@ -119,6 +138,7 @@ impl Actor {
             store,
             commands,
             events,
+            enrollment_calls,
             cancellation: cancellation.child_token(),
         };
         (actor, handle, cancellation)
@@ -138,6 +158,22 @@ impl Actor {
                         let result = self.observe_memberships(memberships).await;
                         let _unsent = reply.send(result);
                     }
+                    Some(Command::CreateEnrollmentInvite { creation, reply }) => {
+                        let result = self.store.create_enrollment_invite(
+                            creation, self.state.endpoint_id, self.state.endpoint_addr.clone(),
+                        ).await.map_err(|_| EnrollmentError::internal());
+                        let _unsent = reply.send(result);
+                    }
+                    Some(Command::RedeemEnrollment { attempt, reply }) => {
+                        let result = self.redeem_enrollment(attempt).await;
+                        let _unsent = reply.send(result);
+                    }
+                    Some(Command::CancelEnrollmentInvite { invitation_id, reply }) => {
+                        let result = self.store.cancel_enrollment_invite(invitation_id).await
+                            .map(|revision| { self.state.revision = revision; })
+                            .map_err(|_| EnrollmentError::internal());
+                        let _unsent = reply.send(result);
+                    }
                     Some(Command::Shutdown(reply)) => {
                         let result = self.finish(true).await;
                         if let Ok(ack) = result {
@@ -147,6 +183,9 @@ impl Actor {
                         return result;
                     }
                     None => return self.finish(false).await,
+                },
+                call = self.enrollment_calls.recv() => if let Some(call) = call {
+                    self.handle_enrollment_call(call).await;
                 }
             }
         }

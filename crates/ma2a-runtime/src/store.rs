@@ -2,15 +2,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ma2a_net::EndpointSecret;
 use ma2a_store::{
-    EndpointObservationUpdate, EndpointRecord, KeyKind, KeyMaterial, KeyReference, KeyStore,
-    Repository, RuntimeMetadataUpdate, StoreConfig, StoreError,
+    EndpointObservationUpdate, EndpointRecord, EnrollmentOutcome, EnrollmentRedemption, KeyKind,
+    KeyMaterial, KeyReference, KeyStore, Repository, RuntimeMetadataUpdate, StoreConfig,
+    StoreError,
 };
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{
-    error::{RuntimeError, RuntimeErrorKind},
-    state::RuntimeStatus,
-};
+use crate::error::{RuntimeError, RuntimeErrorKind};
 
 pub(crate) const STORE_CAPACITY: usize = 8;
 const ENDPOINT_KEY_REFERENCE: &str = "endpoint-identity-v1";
@@ -31,6 +29,25 @@ pub(crate) enum StoreCommand {
         observed_at_ms: i64,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
+    CreateEnrollmentInvite {
+        creation: crate::EnrollmentCreation,
+        creator: ma2a_core::EndpointId,
+        owner_addr: ma2a_net::EndpointAddr,
+        reply: oneshot::Sender<Result<ma2a_core::SignedInviteTicket, RuntimeError>>,
+    },
+    CancelEnrollmentInvite {
+        invitation_id: [u8; 16],
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    RedeemEnrollment {
+        ticket: ma2a_core::SignedInviteTicket,
+        redemption: EnrollmentRedemption,
+        reply: oneshot::Sender<Result<EnrollmentOutcome, RuntimeError>>,
+    },
+    PersistEnrollment {
+        chain: Vec<u8>,
+        reply: oneshot::Sender<Result<(u64, ma2a_core::SpaceChain), RuntimeError>>,
+    },
     Stop(oneshot::Sender<()>),
 }
 
@@ -41,65 +58,7 @@ pub(crate) struct Identity {
 
 #[derive(Clone, Debug)]
 pub(crate) struct StoreClient {
-    sender: mpsc::Sender<StoreCommand>,
-}
-
-impl StoreClient {
-    pub(crate) const fn new(sender: mpsc::Sender<StoreCommand>) -> Self {
-        Self { sender }
-    }
-
-    pub(crate) async fn initialize(&self) -> Result<Identity, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.send(StoreCommand::Initialize(reply)).await?;
-        response.await.map_err(channel_error)?
-    }
-
-    pub(crate) async fn begin_boot(&self, boot_id: [u8; 16]) -> Result<u64, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.send(StoreCommand::BeginBoot {
-            boot_id,
-            observed_at_ms: now_ms()?,
-            reply,
-        })
-        .await?;
-        response.await.map_err(channel_error)?
-    }
-
-    pub(crate) async fn observe(&self, state: &RuntimeStatus) -> Result<u64, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        let observation = EndpointObservationUpdate {
-            observed_at_ms: now_ms()?,
-            ready: state.ready,
-            direct_address_count: count(state.endpoint_addr.ip_addrs().count())?,
-            relay_address_count: count(state.endpoint_addr.relay_urls().count())?,
-            membership_count: count(state.membership_count())?,
-        };
-        self.send(StoreCommand::Observe { observation, reply })
-            .await?;
-        response.await.map_err(channel_error)?
-    }
-
-    pub(crate) async fn clean_shutdown(&self, boot_id: [u8; 16]) -> Result<u64, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.send(StoreCommand::CleanShutdown {
-            boot_id,
-            observed_at_ms: now_ms()?,
-            reply,
-        })
-        .await?;
-        response.await.map_err(channel_error)?
-    }
-
-    pub(crate) async fn stop(&self) -> Result<(), RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.send(StoreCommand::Stop(reply)).await?;
-        response.await.map_err(channel_error)
-    }
-
-    async fn send(&self, command: StoreCommand) -> Result<(), RuntimeError> {
-        self.sender.send(command).await.map_err(channel_error)
-    }
+    pub(crate) sender: mpsc::Sender<StoreCommand>,
 }
 
 pub(crate) struct StoreBackend {
@@ -153,6 +112,55 @@ impl StoreBackend {
                         });
                     let _unsent = reply.send(result.map_err(Into::into));
                 }
+                StoreCommand::CreateEnrollmentInvite {
+                    creation,
+                    creator,
+                    owner_addr,
+                    reply,
+                } => {
+                    let result = self.repository.create_enrollment_invite(
+                        creation.space_id(),
+                        creator,
+                        owner_addr,
+                        creation.validity(),
+                        &creation.into_entropy(),
+                    );
+                    let _unsent = reply.send(result.map_err(Into::into));
+                }
+                StoreCommand::CancelEnrollmentInvite {
+                    invitation_id,
+                    reply,
+                } => {
+                    let _unsent = reply.send(
+                        self.repository
+                            .cancel_invitation(invitation_id)
+                            .map_err(Into::into),
+                    );
+                }
+                StoreCommand::RedeemEnrollment {
+                    ticket,
+                    redemption,
+                    reply,
+                } => {
+                    let _unsent = reply.send(
+                        self.repository
+                            .redeem_enrollment(&ticket, &redemption)
+                            .map_err(Into::into),
+                    );
+                }
+                StoreCommand::PersistEnrollment { chain, reply } => {
+                    let result: Result<(u64, ma2a_core::SpaceChain), ma2a_store::StoreError> =
+                        (|| {
+                            let chain = ma2a_core::SpaceChain::import_public(&chain)?;
+                            let revision = self
+                                .repository
+                                .persist_space_chain(&chain)?
+                                .revision()
+                                .map_or_else(|| self.repository.revision(), Ok)?;
+                            Ok((revision, chain))
+                        })();
+                    let _unsent = reply.send(result.map_err(Into::into));
+                }
                 StoreCommand::Stop(reply) => {
                     let _unsent = reply.send(());
                     break;
@@ -199,11 +207,11 @@ impl StoreBackend {
     }
 }
 
-fn channel_error<T>(_error: T) -> RuntimeError {
+pub(crate) fn channel_error<T>(_error: T) -> RuntimeError {
     RuntimeError::new(RuntimeErrorKind::Channel)
 }
 
-fn now_ms() -> Result<i64, RuntimeError> {
+pub(crate) fn now_ms() -> Result<i64, RuntimeError> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?
@@ -211,6 +219,6 @@ fn now_ms() -> Result<i64, RuntimeError> {
     i64::try_from(millis).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
 }
 
-fn count(value: usize) -> Result<u64, RuntimeError> {
+pub(crate) fn count(value: usize) -> Result<u64, RuntimeError> {
     u64::try_from(value).map_err(|_| RuntimeError::new(RuntimeErrorKind::ObservationOverflow))
 }

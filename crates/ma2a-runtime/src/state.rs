@@ -59,6 +59,11 @@ impl RuntimeStatus {
         self.memberships.len()
     }
 
+    /// Returns whether at least one verified local Space enables normal protocols.
+    pub fn normal_protocols_eligible(&self) -> bool {
+        !self.memberships.is_empty()
+    }
+
     /// Returns whether startup completed successfully.
     pub const fn is_ready(&self) -> bool {
         self.ready
