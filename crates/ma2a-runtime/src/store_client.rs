@@ -1,10 +1,12 @@
-use ma2a_store::{EndpointObservationUpdate, EnrollmentOutcome, EnrollmentRedemption};
+use ma2a_store::{AuthorizedEnrollmentRedemption, EndpointObservationUpdate, EnrollmentOutcome};
 use tokio::sync::oneshot;
 
 use crate::{
+    RuntimeClock as _,
+    clock::SystemClock,
     error::RuntimeError,
     state::RuntimeStatus,
-    store::{Identity, StoreClient, StoreCommand, channel_error, count, now_ms},
+    store::{Identity, StoreClient, StoreCommand, channel_error, count},
 };
 
 impl StoreClient {
@@ -18,11 +20,18 @@ impl StoreClient {
         response.await.map_err(channel_error)?
     }
 
+    pub(crate) async fn set_endpoint_bind_port(&self, port: u16) -> Result<u64, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::SetEndpointBindPort { port, reply })
+            .await?;
+        response.await.map_err(channel_error)?
+    }
+
     pub(crate) async fn begin_boot(&self, boot_id: [u8; 16]) -> Result<u64, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::BeginBoot {
             boot_id,
-            observed_at_ms: now_ms()?,
+            observed_at_ms: SystemClock.now_ms()?,
             reply,
         })
         .await?;
@@ -32,7 +41,7 @@ impl StoreClient {
     pub(crate) async fn observe(&self, state: &RuntimeStatus) -> Result<u64, RuntimeError> {
         let (reply, response) = oneshot::channel();
         let observation = EndpointObservationUpdate {
-            observed_at_ms: now_ms()?,
+            observed_at_ms: SystemClock.now_ms()?,
             ready: state.ready,
             direct_address_count: count(state.endpoint_addr.ip_addrs().count())?,
             relay_address_count: count(state.endpoint_addr.relay_urls().count())?,
@@ -47,7 +56,7 @@ impl StoreClient {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::CleanShutdown {
             boot_id,
-            observed_at_ms: now_ms()?,
+            observed_at_ms: SystemClock.now_ms()?,
             reply,
         })
         .await?;
@@ -96,22 +105,17 @@ impl StoreClient {
 
     pub(crate) async fn redeem_enrollment(
         &self,
-        ticket: ma2a_core::SignedInviteTicket,
-        redemption: EnrollmentRedemption,
+        authorized: AuthorizedEnrollmentRedemption,
     ) -> Result<EnrollmentOutcome, RuntimeError> {
         let (reply, response) = oneshot::channel();
-        self.send(StoreCommand::RedeemEnrollment {
-            ticket,
-            redemption,
-            reply,
-        })
-        .await?;
+        self.send(StoreCommand::RedeemEnrollment { authorized, reply })
+            .await?;
         response.await.map_err(channel_error)?
     }
 
     pub(crate) async fn persist_enrollment(
         &self,
-        chain: Vec<u8>,
+        chain: ma2a_core::SpaceChain,
     ) -> Result<(u64, ma2a_core::SpaceChain), RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PersistEnrollment { chain, reply })

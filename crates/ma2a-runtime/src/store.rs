@@ -1,9 +1,9 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::BTreeSet;
 
 use ma2a_net::EndpointSecret;
 use ma2a_store::{
-    EndpointObservationUpdate, EndpointRecord, EnrollmentOutcome, EnrollmentRedemption, KeyKind,
-    KeyMaterial, KeyReference, KeyStore, Repository, RuntimeMetadataUpdate, StoreConfig,
+    AuthorizedEnrollmentRedemption, EndpointObservationUpdate, EndpointRecord, EnrollmentOutcome,
+    KeyKind, KeyMaterial, KeyReference, KeyStore, Repository, RuntimeMetadataUpdate, StoreConfig,
     StoreError,
 };
 use tokio::sync::{mpsc, oneshot};
@@ -15,6 +15,10 @@ const ENDPOINT_KEY_REFERENCE: &str = "endpoint-identity-v1";
 
 pub(crate) enum StoreCommand {
     Initialize(oneshot::Sender<Result<Identity, RuntimeError>>),
+    SetEndpointBindPort {
+        port: u16,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
     BeginBoot {
         boot_id: [u8; 16],
         observed_at_ms: i64,
@@ -40,12 +44,11 @@ pub(crate) enum StoreCommand {
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
     RedeemEnrollment {
-        ticket: ma2a_core::SignedInviteTicket,
-        redemption: EnrollmentRedemption,
+        authorized: AuthorizedEnrollmentRedemption,
         reply: oneshot::Sender<Result<EnrollmentOutcome, RuntimeError>>,
     },
     PersistEnrollment {
-        chain: Vec<u8>,
+        chain: ma2a_core::SpaceChain,
         reply: oneshot::Sender<Result<(u64, ma2a_core::SpaceChain), RuntimeError>>,
     },
     Stop(oneshot::Sender<()>),
@@ -54,6 +57,8 @@ pub(crate) enum StoreCommand {
 pub(crate) struct Identity {
     pub(crate) secret: EndpointSecret,
     pub(crate) endpoint_id: ma2a_core::EndpointId,
+    pub(crate) memberships: BTreeSet<ma2a_core::SpaceId>,
+    pub(crate) bind_port: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +84,13 @@ impl StoreBackend {
             match command {
                 StoreCommand::Initialize(reply) => {
                     let _unsent = reply.send(self.initialize());
+                }
+                StoreCommand::SetEndpointBindPort { port, reply } => {
+                    let _unsent = reply.send(
+                        self.repository
+                            .set_endpoint_bind_port(port)
+                            .map_err(Into::into),
+                    );
                 }
                 StoreCommand::BeginBoot {
                     boot_id,
@@ -137,21 +149,16 @@ impl StoreBackend {
                             .map_err(Into::into),
                     );
                 }
-                StoreCommand::RedeemEnrollment {
-                    ticket,
-                    redemption,
-                    reply,
-                } => {
+                StoreCommand::RedeemEnrollment { authorized, reply } => {
                     let _unsent = reply.send(
                         self.repository
-                            .redeem_enrollment(&ticket, &redemption)
+                            .redeem_enrollment(&authorized)
                             .map_err(Into::into),
                     );
                 }
                 StoreCommand::PersistEnrollment { chain, reply } => {
                     let result: Result<(u64, ma2a_core::SpaceChain), ma2a_store::StoreError> =
                         (|| {
-                            let chain = ma2a_core::SpaceChain::import_public(&chain)?;
                             let revision = self
                                 .repository
                                 .persist_space_chain(&chain)?
@@ -200,23 +207,19 @@ impl StoreBackend {
             self.repository
                 .set_endpoint(&EndpointRecord::new(endpoint_id, reference))?;
         }
+        let memberships = self.repository.memberships_for(endpoint_id)?;
+        let bind_port = self.repository.endpoint_bind_port()?;
         Ok(Identity {
             secret,
             endpoint_id,
+            memberships,
+            bind_port,
         })
     }
 }
 
 pub(crate) fn channel_error<T>(_error: T) -> RuntimeError {
     RuntimeError::new(RuntimeErrorKind::Channel)
-}
-
-pub(crate) fn now_ms() -> Result<i64, RuntimeError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?
-        .as_millis();
-    i64::try_from(millis).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
 }
 
 pub(crate) fn count(value: usize) -> Result<u64, RuntimeError> {
