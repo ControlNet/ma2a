@@ -1,15 +1,13 @@
 use std::{error::Error, fmt, net::Ipv4Addr};
 
-use iroh::{
-    Endpoint, EndpointAddr, RelayMode, SecretKey, address_lookup::memory::MemoryLookup,
-    endpoint::presets, protocol::Router,
-};
+use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets, protocol::Router};
 use ma2a_core::EndpointId;
 use zeroize::Zeroizing;
 
 use tokio::sync::mpsc;
 
 use crate::{
+    AddressPublisher, AddressPublisherError, SpaceAddressLookup,
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
     protocols::ENROLLMENT_ALPN,
 };
@@ -128,11 +126,30 @@ impl RuntimeEndpoint {
         enrollment_calls: mpsc::Sender<EnrollmentCall>,
         bind_port: Option<u16>,
     ) -> Result<Self, NetError> {
+        Self::bind_with_lookup(
+            secret,
+            enrollment_calls,
+            bind_port,
+            SpaceAddressLookup::default(),
+        )
+        .await
+    }
+
+    /// Binds direct transports with the supplied private Space address lookup.
+    ///
+    /// # Errors
+    /// Returns [`NetError`] when Iroh cannot bind the Endpoint.
+    pub async fn bind_with_lookup(
+        secret: EndpointSecret,
+        enrollment_calls: mpsc::Sender<EnrollmentCall>,
+        bind_port: Option<u16>,
+        lookup: SpaceAddressLookup,
+    ) -> Result<Self, NetError> {
         let builder = Endpoint::builder(presets::Minimal)
             .secret_key(secret.0)
             .relay_mode(RelayMode::Disabled)
             .clear_address_lookup()
-            .address_lookup(MemoryLookup::with_provenance("ma2a_private"))
+            .address_lookup(lookup)
             .alpns(vec![ENROLLMENT_ALPN.to_vec()]);
         let builder = if let Some(port) = bind_port {
             builder
@@ -186,6 +203,14 @@ impl RuntimeEndpoint {
         request: &[u8],
     ) -> Result<(u8, Vec<Vec<u8>>), NetError> {
         exchange(self.router.endpoint(), owner, request).await
+    }
+
+    /// Creates a publisher backed by this running Endpoint's current observations.
+    ///
+    /// # Errors
+    /// Returns [`AddressPublisherError`] when current transport data is not publishable.
+    pub fn address_publisher(&self) -> Result<AddressPublisher, AddressPublisherError> {
+        AddressPublisher::from_endpoint(self.router.endpoint())
     }
 
     /// Closes the Endpoint and joins the protocol router.
