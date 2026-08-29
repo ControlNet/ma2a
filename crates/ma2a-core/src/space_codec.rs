@@ -41,6 +41,10 @@ pub(crate) fn write_bool(output: &mut Vec<u8>, value: bool) {
     output.push(if value { 0xf5 } else { 0xf4 });
 }
 
+pub(crate) fn write_null(output: &mut Vec<u8>) {
+    output.push(0xf6);
+}
+
 fn write_length(output: &mut Vec<u8>, major: u8, length: usize) -> Result<(), ProtocolError> {
     let value = u64::try_from(length).map_err(|_| ProtocolError::INVALID_INPUT)?;
     write_major(output, major, value);
@@ -127,16 +131,25 @@ impl<'a> Decoder<'a> {
     }
 
     pub(crate) fn text(&mut self, maximum: usize) -> Result<&'a str, ProtocolError> {
-        let length = self.length(3)?;
-        if length == 0 || length > maximum {
+        let text = self.utf8_text(maximum)?;
+        if text.is_empty() {
             return Err(ProtocolError::INVALID_INPUT);
         }
-        let text =
-            std::str::from_utf8(self.take(length)?).map_err(|_| ProtocolError::INVALID_INPUT)?;
         if text.chars().any(char::is_control) {
             return Err(ProtocolError::INVALID_INPUT);
         }
         Ok(text)
+    }
+
+    pub(crate) fn optional_text(
+        &mut self,
+        maximum: usize,
+    ) -> Result<Option<&'a str>, ProtocolError> {
+        if self.input.get(self.offset) == Some(&0xf6) {
+            self.offset += 1;
+            return Ok(None);
+        }
+        self.utf8_text(maximum).map(Some)
     }
 
     pub(crate) fn boolean(&mut self) -> Result<bool, ProtocolError> {
@@ -157,6 +170,14 @@ impl<'a> Decoder<'a> {
 
     fn length(&mut self, major: u8) -> Result<usize, ProtocolError> {
         usize::try_from(self.major(major)?).map_err(|_| ProtocolError::INVALID_INPUT)
+    }
+
+    fn utf8_text(&mut self, maximum: usize) -> Result<&'a str, ProtocolError> {
+        let length = self.length(3)?;
+        if length > maximum {
+            return Err(ProtocolError::INVALID_INPUT);
+        }
+        std::str::from_utf8(self.take(length)?).map_err(|_| ProtocolError::INVALID_INPUT)
     }
 
     fn major(&mut self, expected: u8) -> Result<u64, ProtocolError> {
