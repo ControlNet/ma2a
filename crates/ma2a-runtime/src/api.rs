@@ -13,11 +13,12 @@ mod strict_json;
 
 use ma2a_core::{ProtocolError, RequestId};
 
+pub(crate) use commands::UiControlCommand;
 pub use commands::{COMMAND_NAMES, Command};
 pub use events::{
     EVENT_NAMES, EventContinuity, RuntimeEvent, classify_event_revision, encode_event,
 };
-pub use responses::{ApiResponse, CommandResult, encode_error, encode_response};
+pub use responses::{ApiResponse, CommandResult, UiControlResult, encode_error, encode_response};
 pub use result_data::{
     CapabilityFlags, EchoReplyView, HandshakeAuth, HandshakeState, HandshakeView,
     InteractionCapabilities, ManagementCapabilities, PrivateRelayView, PublicRelayView,
