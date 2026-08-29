@@ -5,6 +5,7 @@ members = [
     "crates/ma2a-net",
     "crates/ma2a-runtime",
     "crates/ma2a-store",
+    "crates/ma2a-windows-security",
     "xtask",
 ]
 default-members = [
@@ -41,6 +42,7 @@ ma2a-core = { path = "crates/ma2a-core", version = "=0.1.0" }
 ma2a-net = { path = "crates/ma2a-net", version = "=0.1.0" }
 ma2a-runtime = { path = "crates/ma2a-runtime", version = "=0.1.0" }
 ma2a-store = { path = "crates/ma2a-store", version = "=0.1.0" }
+ma2a-windows-security = { path = "crates/ma2a-windows-security", version = "=0.1.0" }
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["backup", "bundled", "fallible_uint"] }
 rustix = { version = "=1.1.4", default-features = false, features = ["process", "std"] }
@@ -52,6 +54,7 @@ tokio-util = "=0.7.19"
 toml = "=1.1.4"
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 widestring = "=1.2.1"
+windows-sys = "=0.61.2"
 
 [workspace.lints.rust]
 elided_lifetimes_in_paths = "warn"
