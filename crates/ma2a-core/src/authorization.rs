@@ -35,6 +35,13 @@ impl SpaceAuthorizationView {
                 })
     }
 
+    /// Returns whether the Endpoint is a current member of this exact Space.
+    pub fn contains_member(&self, endpoint_id: EndpointId) -> bool {
+        self.members
+            .binary_search_by_key(&endpoint_id, SpaceMemberV1::endpoint_id)
+            .is_ok()
+    }
+
     /// Returns the Space identifier represented by this view.
     pub const fn space_id(&self) -> SpaceId {
         self.space_id
