@@ -11,6 +11,8 @@ pub(crate) mod support;
 mod pins_tests;
 #[cfg(test)]
 mod support_tests;
+#[cfg(test)]
+mod workspace_tests;
 
 use std::{env, path::Path};
 
