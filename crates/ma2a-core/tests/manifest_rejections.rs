@@ -4,9 +4,10 @@
 mod space_vectors;
 
 use ma2a_core::{
-    ManifestApplyOutcome, ManifestError, ProtocolError, SignedSpaceManifestV1,
-    SpaceAuthoritySecret, SpaceChain, SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1,
-    SpaceRevocationV1,
+    EndpointId, ManifestApplyOutcome, ManifestError, MemberCapabilities, ProtocolError,
+    SignedSpaceManifestV1, SpaceAuthoritySecret, SpaceChain, SpaceGenesisIdentity,
+    SpaceGenesisOwner, SpaceGenesisV1, SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1,
+    SpaceMemberV1, SpacePolicyV1, SpaceRevocationV1,
 };
 use space_vectors::{member, signed_genesis, signed_manifest};
 
@@ -43,6 +44,27 @@ fn authority_swap_cannot_verify_an_existing_manifest() -> Result<(), Box<dyn std
 
     assert_eq!(
         SignedSpaceManifestV1::from_canonical_bytes(manifest.canonical_bytes(), other_authority),
+        Err(ProtocolError::INVALID_INPUT)
+    );
+    Ok(())
+}
+
+#[test]
+fn endpoint_key_cannot_substitute_for_space_authority() -> Result<(), Box<dyn std::error::Error>> {
+    let endpoint_secret = SpaceAuthoritySecret::from_bytes([0x44; 32]);
+    let endpoint_id = EndpointId::try_from(endpoint_secret.public_key().as_bytes().as_slice())?;
+    let initial_member = SpaceMemberV1::new(
+        endpoint_id,
+        "owner-endpoint".to_owned(),
+        MemberCapabilities::new(true, true),
+    )?;
+    let genesis = SpaceGenesisV1::new(
+        SpaceGenesisIdentity::new([0x45; 32], 1, endpoint_secret.public_key())?,
+        SpaceGenesisOwner::new(initial_member, SpacePolicyV1::phase_one_default()),
+    );
+
+    assert_eq!(
+        genesis.sign(&endpoint_secret),
         Err(ProtocolError::INVALID_INPUT)
     );
     Ok(())

@@ -278,6 +278,9 @@ impl SignedSpaceGenesisV1 {
     }
 
     fn from_parts(genesis: SpaceGenesisV1, signature: [u8; 64]) -> Result<Self, ProtocolError> {
+        if genesis.authority.as_bytes() == genesis.initial_member.endpoint_id().as_bytes() {
+            return Err(ProtocolError::INVALID_INPUT);
+        }
         let body = genesis.body_bytes()?;
         let mut canonical_bytes = buffer()?;
         write_map(&mut canonical_bytes, 2)?;
