@@ -3,9 +3,12 @@ use std::fmt;
 use ed25519_dalek::Signature;
 use iroh_base::EndpointAddr;
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
-use zeroize::Zeroize as _;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::{EndpointId, ProtocolError, SpaceAuthorityPublicKey, SpaceAuthoritySecret, SpaceId};
+
+#[path = "invite/codec.rs"]
+mod codec;
 
 const INVITE_SIGNATURE_DOMAIN: &[u8] = b"ma2a-enrollment-invite-signature-v1";
 const INVITE_DIGEST_DOMAIN: &[u8] = b"ma2a-enrollment-invite-digest-v1";
@@ -69,6 +72,8 @@ pub struct SignedInviteTicket {
     created_at_ms: u64,
     expires_at_ms: u64,
     owner_addr: EndpointAddr,
+    owner_addr_len: u16,
+    owner_addr_bytes: Vec<u8>,
     secret: [u8; 32],
     signature: [u8; 64],
 }
@@ -94,6 +99,9 @@ impl SignedInviteTicket {
         if owner_addr.id != creator.to_public_key()? {
             return Err(ProtocolError::INVALID_INPUT);
         }
+        let owner_addr_bytes = EndpointTicket::new(owner_addr.clone()).encode_bytes();
+        let owner_addr_len =
+            u16::try_from(owner_addr_bytes.len()).map_err(|_| ProtocolError::INVALID_INPUT)?;
         let mut ticket = Self {
             invitation_id: entropy.invitation_id,
             space_id,
@@ -101,10 +109,12 @@ impl SignedInviteTicket {
             created_at_ms: validity.created_at_ms,
             expires_at_ms: validity.expires_at_ms,
             owner_addr,
+            owner_addr_len,
+            owner_addr_bytes,
             secret: entropy.secret,
             signature: [0; 64],
         };
-        ticket.signature = authority.sign(INVITE_SIGNATURE_DOMAIN, &ticket.body_bytes()?);
+        ticket.signature = authority.sign(INVITE_SIGNATURE_DOMAIN, &ticket.body_bytes());
         if ticket.encode_bytes().len() > MAX_INVITE_TICKET_BYTES {
             return Err(ProtocolError::INVALID_INPUT);
         }
@@ -124,7 +134,7 @@ impl SignedInviteTicket {
         }
         let mut message = Vec::with_capacity(INVITE_SIGNATURE_DOMAIN.len() + FIXED_INVITE_BODY_LEN);
         message.extend_from_slice(INVITE_SIGNATURE_DOMAIN);
-        message.extend_from_slice(&self.body_bytes()?);
+        message.extend_from_slice(&self.body_bytes());
         ed25519_dalek::VerifyingKey::from_bytes(authority.as_bytes())
             .map_err(|_| ProtocolError::INVALID_INPUT)?
             .verify_strict(&message, &Signature::from_bytes(&self.signature))
@@ -164,21 +174,25 @@ impl SignedInviteTicket {
         self.owner_addr.clone()
     }
 
-    fn body_bytes(&self) -> Result<Vec<u8>, ProtocolError> {
-        let endpoint = EndpointTicket::new(self.owner_addr.clone()).encode_bytes();
-        let endpoint_len =
-            u16::try_from(endpoint.len()).map_err(|_| ProtocolError::INVALID_INPUT)?;
-        let mut output = Vec::with_capacity(FIXED_INVITE_BODY_LEN + endpoint.len());
+    /// Returns the canonical bounded owner bootstrap address stored with the invitation.
+    pub fn encoded_owner_addr(&self) -> &[u8] {
+        &self.owner_addr_bytes
+    }
+
+    fn body_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut output = Zeroizing::new(Vec::with_capacity(
+            FIXED_INVITE_BODY_LEN + self.owner_addr_bytes.len(),
+        ));
         output.push(INVITE_VERSION);
         output.extend_from_slice(&self.invitation_id);
         output.extend_from_slice(self.space_id.as_bytes());
         output.extend_from_slice(self.creator.as_bytes());
         output.extend_from_slice(&self.created_at_ms.to_be_bytes());
         output.extend_from_slice(&self.expires_at_ms.to_be_bytes());
-        output.extend_from_slice(&endpoint_len.to_be_bytes());
-        output.extend_from_slice(&endpoint);
+        output.extend_from_slice(&self.owner_addr_len.to_be_bytes());
+        output.extend_from_slice(&self.owner_addr_bytes);
         output.extend_from_slice(&self.secret);
-        Ok(output)
+        output
     }
 }
 
@@ -196,17 +210,23 @@ impl fmt::Debug for SignedInviteTicket {
     }
 }
 
+impl Drop for SignedInviteTicket {
+    fn drop(&mut self) {
+        self.secret.zeroize();
+    }
+}
+
 impl Ticket for SignedInviteTicket {
     const KIND: &'static str = "ma2ainvite";
 
     fn encode_bytes(&self) -> Vec<u8> {
-        let mut output = self.body_bytes().unwrap_or_default();
+        let mut output = self.body_bytes();
         output.extend_from_slice(&self.signature);
-        output
+        output.to_vec()
     }
 
     fn decode_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
-        decode_ticket(bytes)
+        codec::decode_ticket(bytes)
             .map_err(|_| iroh_tickets::ParseError::verification_failed("invalid ma2a invite"))
     }
 }
@@ -235,59 +255,18 @@ impl InviteValidity {
             expires_at_ms,
         })
     }
-}
 
-fn decode_ticket(bytes: &[u8]) -> Result<SignedInviteTicket, ProtocolError> {
-    if bytes.len() > MAX_INVITE_TICKET_BYTES || bytes.len() < FIXED_INVITE_BODY_LEN + 64 {
-        return Err(ProtocolError::INVALID_INPUT);
+    /// Creates a validity interval from an owner-issued timestamp and bounded lifetime.
+    ///
+    /// # Errors
+    /// Returns an error when the lifetime is zero, oversized, or overflows the owner timestamp.
+    pub const fn for_lifetime(created_at_ms: u64, lifetime_ms: u64) -> Result<Self, ProtocolError> {
+        if lifetime_ms == 0 || lifetime_ms > MAX_INVITE_LIFETIME_MS {
+            return Err(ProtocolError::INVALID_INPUT);
+        }
+        let Some(expires_at_ms) = created_at_ms.checked_add(lifetime_ms) else {
+            return Err(ProtocolError::INVALID_INPUT);
+        };
+        Self::new(created_at_ms, expires_at_ms)
     }
-    let mut cursor = 0;
-    if take::<1>(bytes, &mut cursor)?[0] != INVITE_VERSION {
-        return Err(ProtocolError::VERSION_MISMATCH);
-    }
-    let invitation_id = take::<16>(bytes, &mut cursor)?;
-    let space_id = SpaceId::try_from(take::<32>(bytes, &mut cursor)?.as_slice())?;
-    let creator = EndpointId::try_from(take::<32>(bytes, &mut cursor)?.as_slice())?;
-    let created_at_ms = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
-    let expires_at_ms = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
-    let _validity = InviteValidity::new(created_at_ms, expires_at_ms)?;
-    let endpoint_len = usize::from(u16::from_be_bytes(take::<2>(bytes, &mut cursor)?));
-    let endpoint_end = cursor
-        .checked_add(endpoint_len)
-        .ok_or(ProtocolError::INVALID_INPUT)?;
-    let endpoint = bytes
-        .get(cursor..endpoint_end)
-        .ok_or(ProtocolError::INVALID_INPUT)?;
-    cursor = endpoint_end;
-    let owner_addr = EndpointTicket::decode_bytes(endpoint)
-        .map_err(|_| ProtocolError::INVALID_INPUT)?
-        .endpoint_addr()
-        .clone();
-    let secret = take::<32>(bytes, &mut cursor)?;
-    let signature = take::<64>(bytes, &mut cursor)?;
-    if cursor != bytes.len() {
-        return Err(ProtocolError::INVALID_INPUT);
-    }
-    Ok(SignedInviteTicket {
-        invitation_id,
-        space_id,
-        creator,
-        created_at_ms,
-        expires_at_ms,
-        owner_addr,
-        secret,
-        signature,
-    })
-}
-
-fn take<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], ProtocolError> {
-    let end = cursor.checked_add(N).ok_or(ProtocolError::INVALID_INPUT)?;
-    let value = <[u8; N]>::try_from(
-        bytes
-            .get(*cursor..end)
-            .ok_or(ProtocolError::INVALID_INPUT)?,
-    )
-    .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    *cursor = end;
-    Ok(value)
 }
