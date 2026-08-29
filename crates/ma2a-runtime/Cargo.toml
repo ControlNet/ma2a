@@ -24,6 +24,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+ma2a-windows-security.workspace = true
 widestring.workspace = true
 
 [dev-dependencies]
