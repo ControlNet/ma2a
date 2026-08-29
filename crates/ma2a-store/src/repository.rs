@@ -81,6 +81,34 @@ impl Repository {
         )?)
     }
 
+    /// Loads the one persisted Runtime Endpoint identity, if initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the row is malformed or cannot be read.
+    pub fn endpoint(&self) -> Result<Option<EndpointRecord>, StoreError> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT endpoint_id, endpoint_key_ref FROM endpoints WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        row.map_or(Ok(None), |(endpoint_bytes, reference)| {
+            let endpoint_id =
+                ma2a_core::EndpointId::try_from(endpoint_bytes.as_slice()).map_err(|_| {
+                    StoreError::SchemaMismatch {
+                        detail: "persisted Endpoint identity is not a valid Iroh public key",
+                    }
+                })?;
+            Ok(Some(EndpointRecord::new(
+                endpoint_id,
+                KeyReference::parse(&reference)?,
+            )))
+        })
+    }
+
     /// Reads the effective safety settings from this `SQLite` connection.
     ///
     /// # Errors
