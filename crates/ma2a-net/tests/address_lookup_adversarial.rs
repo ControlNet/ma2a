@@ -52,8 +52,24 @@ fn lookup_does_not_regress_when_an_older_validated_record_arrives_late() -> Test
     let fixture = space_fixture(&signer, 0x82)?;
     let state = TempState::new("lookup-cache-rollback")?;
     let mut repository = repository(&state, &fixture)?;
-    let older = validate(&mut repository, &signer, &fixture, 1, "127.0.0.1:4301")?;
-    let newer = validate(&mut repository, &signer, &fixture, 2, "127.0.0.1:4302")?;
+    let older = validate(
+        &mut repository,
+        &RecordInput {
+            signer: &signer,
+            fixture: &fixture,
+            sequence: 1,
+            address: "127.0.0.1:4301",
+        },
+    )?;
+    let newer = validate(
+        &mut repository,
+        &RecordInput {
+            signer: &signer,
+            fixture: &fixture,
+            sequence: 2,
+            address: "127.0.0.1:4302",
+        },
+    )?;
     let lookup = SpaceAddressLookup::with_clock(Arc::new(ReviewClock::new(NOW_MS)));
     lookup.replace_authorizations(vec![fixture.authorization.clone()])?;
     lookup.cache(newer)?;
@@ -81,9 +97,18 @@ fn lookup_returns_empty_when_clock_rollback_makes_a_record_future_dated() -> Tes
     let fixture = space_fixture(&signer, 0x84)?;
     let state = TempState::new("lookup-clock-rollback")?;
     let mut repository = repository(&state, &fixture)?;
-    let record = validate(&mut repository, &signer, &fixture, 1, "127.0.0.1:4303")?;
+    let record = validate(
+        &mut repository,
+        &RecordInput {
+            signer: &signer,
+            fixture: &fixture,
+            sequence: 1,
+            address: "127.0.0.1:4303",
+        },
+    )?;
     let clock = Arc::new(ReviewClock::new(NOW_MS));
-    let lookup = SpaceAddressLookup::with_clock(clock.clone());
+    let lookup_clock = Arc::clone(&clock);
+    let lookup = SpaceAddressLookup::with_clock(lookup_clock);
     lookup.replace_authorizations(vec![fixture.authorization.clone()])?;
     lookup.cache(record)?;
 
@@ -106,7 +131,7 @@ fn lookup_rejects_conflicting_authorization_views_for_one_space() -> TestResult 
     let lookup = SpaceAddressLookup::with_clock(Arc::new(ReviewClock::new(NOW_MS)));
 
     // When
-    let result = lookup.replace_authorizations(vec![fixture.authorization.clone(), revoked]);
+    let result = lookup.replace_authorizations(vec![fixture.authorization, revoked]);
 
     // Then
     assert!(result.is_err());
@@ -125,26 +150,36 @@ fn repository(
     Ok(repository)
 }
 
+struct RecordInput<'a> {
+    signer: &'a SecretKey,
+    fixture: &'a support::SpaceFixture,
+    sequence: u64,
+    address: &'a str,
+}
+
 fn validate(
     repository: &mut Repository,
-    signer: &SecretKey,
-    fixture: &support::SpaceFixture,
-    sequence: u64,
-    address: &str,
+    input: &RecordInput<'_>,
 ) -> Result<ValidatedAddressRecord, Box<dyn std::error::Error + Send + Sync>> {
-    let scope = AddressRecordScope::new(fixture.genesis.space_id(), signer.public().into());
-    let validity = AddressRecordValidity::new(sequence, NOW_MS, NOW_MS + 600_000)?;
+    let scope = AddressRecordScope::new(
+        input.fixture.genesis.space_id(),
+        input.signer.public().into(),
+    );
+    let validity = AddressRecordValidity::new(input.sequence, NOW_MS, NOW_MS + 600_000)?;
     let envelope = SpaceAddressRecordV1::new(
         scope,
         validity,
-        AddressEndpointDataV1::new(vec![TransportAddr::Ip(address.parse()?)])?,
+        AddressEndpointDataV1::new(vec![TransportAddr::Ip(input.address.parse()?)])?,
     )
-    .sign(signer)?;
-    let target = AddressRecordTarget::new(fixture.genesis.space_id(), signer.public().into());
+    .sign(input.signer)?;
+    let target = AddressRecordTarget::new(
+        input.fixture.genesis.space_id(),
+        input.signer.public().into(),
+    );
     Ok(AddressRecordValidator::validate_and_store(
         repository,
         envelope.canonical_bytes(),
-        target.validation(&fixture.authorization, NOW_MS),
+        target.validation(&input.fixture.authorization, NOW_MS),
     )?)
 }
 

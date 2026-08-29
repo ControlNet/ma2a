@@ -114,6 +114,7 @@ impl SpaceAddressLookup {
             return Ok(());
         }
         records.insert(key, record);
+        drop(records);
         Ok(())
     }
 
