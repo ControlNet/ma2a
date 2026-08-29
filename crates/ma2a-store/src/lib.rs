@@ -12,6 +12,8 @@ mod key_store;
 mod migrations;
 mod owned_spaces;
 mod permissions;
+mod relay_config;
+mod relay_settings;
 mod repository;
 mod repository_models;
 mod repository_mutations;
@@ -33,6 +35,7 @@ pub use error::StoreError;
 pub use key_store::{KeyKind, KeyMaterial, KeyReference, KeyStore, ProtectedSecret};
 pub use migrations::SCHEMA_VERSION;
 pub use owned_spaces::{AdvancedOwnedSpace, CreatedSpace, OwnedSpaceUpdate, SpaceCreation};
+pub use relay_config::{PersistedRelayAdvertisement, RelayAdvertisementOutcome};
 pub use repository::Repository;
 pub use repository_models::{
     AddressAdvance, DatabaseSettings, EndpointRecord, InvitationRecord, ManifestAdvance,
@@ -40,8 +43,8 @@ pub use repository_models::{
     SequenceOutcome, SpaceRecord,
 };
 pub use repository_state_models::{
-    EndpointObservationUpdate, RelayConfiguration, RelayObservation, RuntimeMetadata,
-    RuntimeMetadataUpdate,
+    EndpointObservationUpdate, RelayConfiguration, RelayObservation, RelayTransportConfiguration,
+    RuntimeMetadata, RuntimeMetadataUpdate,
 };
 pub use sessions::{
     SessionAdmission, SessionCreate, SessionDigests, SessionRecord, SessionTimestamps, SessionTouch,
