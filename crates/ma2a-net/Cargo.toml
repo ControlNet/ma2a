@@ -17,6 +17,7 @@ irpc.workspace = true
 irpc-iroh.workspace = true
 ma2a-core.workspace = true
 tokio.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true
