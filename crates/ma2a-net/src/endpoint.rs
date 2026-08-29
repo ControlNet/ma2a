@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     AddressPublisher, AddressPublisherError, SpaceAddressLookup,
+    address_lookup::RuntimeAddressLookup,
     address_observation::AddressObservationError,
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
     protocols::ENROLLMENT_ALPN,
@@ -123,7 +124,7 @@ impl Error for NetError {
 #[derive(Debug)]
 pub struct RuntimeEndpoint {
     router: Router,
-    lookup: SpaceAddressLookup,
+    observation: crate::address_observation::AddressObservation,
 }
 
 impl RuntimeEndpoint {
@@ -155,11 +156,13 @@ impl RuntimeEndpoint {
         bind_port: Option<u16>,
         lookup: SpaceAddressLookup,
     ) -> Result<Self, NetError> {
+        let runtime_lookup = RuntimeAddressLookup::new(lookup);
+        let observation = runtime_lookup.observation();
         let builder = Endpoint::builder(presets::Minimal)
             .secret_key(secret.0)
             .relay_mode(RelayMode::Disabled)
             .clear_address_lookup()
-            .address_lookup(lookup.clone())
+            .address_lookup(runtime_lookup)
             .alpns(vec![ENROLLMENT_ALPN.to_vec()]);
         let builder = if let Some(port) = bind_port {
             builder
@@ -172,15 +175,17 @@ impl RuntimeEndpoint {
             .bind()
             .await
             .map_err(|error| NetError(NetErrorKind::Bind(error)))?;
-        lookup
-            .observation()
+        observation
             .wait_for_initial()
             .await
             .map_err(|error| NetError(NetErrorKind::Observation(error)))?;
         let router = Router::builder(endpoint)
             .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
             .spawn();
-        Ok(Self { router, lookup })
+        Ok(Self {
+            router,
+            observation,
+        })
     }
 
     /// Returns the local UDP port advertised for direct enrollment.
@@ -222,10 +227,17 @@ impl RuntimeEndpoint {
 
     /// Creates a publisher backed by this running Endpoint's current observations.
     ///
+    /// Live publisher construction is provenance-bound to this Runtime Endpoint:
+    /// ```compile_fail
+    /// use ma2a_net::AddressPublisher;
+    ///
+    /// let _ = AddressPublisher::from_endpoint;
+    /// ```
+    ///
     /// # Errors
     /// Returns [`AddressPublisherError`] when current transport data is not publishable.
     pub fn address_publisher(&self) -> Result<AddressPublisher, AddressPublisherError> {
-        AddressPublisher::from_endpoint(self.router.endpoint(), &self.lookup)
+        AddressPublisher::from_endpoint(self.router.endpoint(), self.observation.clone())
     }
 
     /// Updates application-defined data included in the live Iroh observation.

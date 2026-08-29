@@ -9,7 +9,7 @@ use ma2a_core::{
 use ma2a_store::{Repository, StoreError};
 
 use crate::{
-    AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator, SpaceAddressLookup,
+    AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator,
     ValidatedAddressRecord,
     address_observation::{AddressObservation, AddressObservationError},
 };
@@ -74,11 +74,10 @@ impl AddressPublisher {
     ///
     /// # Errors
     /// Returns [`AddressPublisherError`] unless a valid callback observation is available.
-    pub fn from_endpoint(
+    pub(crate) fn from_endpoint(
         endpoint: &Endpoint,
-        lookup: &SpaceAddressLookup,
+        observation: AddressObservation,
     ) -> Result<Self, AddressPublisherError> {
-        let observation = lookup.observation();
         observation.current().map_err(AddressPublisherError::from)?;
         Ok(Self {
             secret: endpoint.secret_key().clone(),
