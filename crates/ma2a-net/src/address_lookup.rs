@@ -13,7 +13,7 @@ use n0_future::{StreamExt as _, boxed::BoxStream};
 
 use crate::{
     AddressCacheOutcome, AddressLookupExclusion, AddressMetrics, ValidatedAddressRecord,
-    address_endpoint_data_to_iroh,
+    address_endpoint_data_to_iroh, address_observation::AddressObservation,
 };
 
 /// Clock used to expire cached address records during synchronous Iroh lookup.
@@ -63,6 +63,7 @@ pub struct SpaceAddressLookup {
     authorizations: Arc<RwLock<AuthorizationState>>,
     clock: Arc<dyn AddressLookupClock>,
     metrics: AddressMetrics,
+    observation: AddressObservation,
 }
 
 impl Default for SpaceAddressLookup {
@@ -87,7 +88,12 @@ impl SpaceAddressLookup {
             authorizations: Arc::new(RwLock::new(AuthorizationState::default())),
             clock,
             metrics,
+            observation: AddressObservation::default(),
         }
+    }
+
+    pub(crate) fn observation(&self) -> AddressObservation {
+        self.observation.clone()
     }
 
     /// Replaces current verified Space authorization snapshots.
@@ -211,6 +217,10 @@ impl SpaceAddressLookup {
 }
 
 impl AddressLookup for SpaceAddressLookup {
+    fn publish(&self, data: &iroh::address_lookup::EndpointData) {
+        self.observation.observe(data);
+    }
+
     fn resolve(&self, endpoint_id: IrohEndpointId) -> Option<BoxStream<Result<Item, LookupError>>> {
         let stream = self.resolve_endpoint(endpoint_id).map_or_else(
             || n0_future::stream::empty().boxed(),

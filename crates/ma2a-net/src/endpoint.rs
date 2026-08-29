@@ -1,6 +1,9 @@
 use std::{error::Error, fmt, net::Ipv4Addr};
 
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets, protocol::Router};
+use iroh::{
+    Endpoint, EndpointAddr, RelayMode, SecretKey, address_lookup::UserData, endpoint::presets,
+    protocol::Router,
+};
 use ma2a_core::EndpointId;
 use zeroize::Zeroizing;
 
@@ -8,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     AddressPublisher, AddressPublisherError, SpaceAddressLookup,
+    address_observation::AddressObservationError,
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
     protocols::ENROLLMENT_ALPN,
 };
@@ -81,6 +85,7 @@ pub struct NetError(NetErrorKind);
 #[derive(Debug)]
 enum NetErrorKind {
     Bind(iroh::endpoint::BindError),
+    Observation(AddressObservationError),
     Shutdown,
     Enrollment,
 }
@@ -89,6 +94,9 @@ impl fmt::Display for NetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             NetErrorKind::Bind(error) => write!(formatter, "Iroh Endpoint bind failed: {error}"),
+            NetErrorKind::Observation(error) => {
+                write!(formatter, "Iroh Endpoint observation failed: {error}")
+            }
             NetErrorKind::Shutdown => formatter.write_str("Iroh Endpoint shutdown task failed"),
             NetErrorKind::Enrollment => formatter.write_str("Iroh enrollment exchange failed"),
         }
@@ -105,6 +113,7 @@ impl Error for NetError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.0 {
             NetErrorKind::Bind(error) => Some(error),
+            NetErrorKind::Observation(error) => Some(error),
             NetErrorKind::Shutdown | NetErrorKind::Enrollment => None,
         }
     }
@@ -114,6 +123,7 @@ impl Error for NetError {
 #[derive(Debug)]
 pub struct RuntimeEndpoint {
     router: Router,
+    lookup: SpaceAddressLookup,
 }
 
 impl RuntimeEndpoint {
@@ -149,7 +159,7 @@ impl RuntimeEndpoint {
             .secret_key(secret.0)
             .relay_mode(RelayMode::Disabled)
             .clear_address_lookup()
-            .address_lookup(lookup)
+            .address_lookup(lookup.clone())
             .alpns(vec![ENROLLMENT_ALPN.to_vec()]);
         let builder = if let Some(port) = bind_port {
             builder
@@ -162,10 +172,15 @@ impl RuntimeEndpoint {
             .bind()
             .await
             .map_err(|error| NetError(NetErrorKind::Bind(error)))?;
+        lookup
+            .observation()
+            .wait_for_initial()
+            .await
+            .map_err(|error| NetError(NetErrorKind::Observation(error)))?;
         let router = Router::builder(endpoint)
             .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
             .spawn();
-        Ok(Self { router })
+        Ok(Self { router, lookup })
     }
 
     /// Returns the local UDP port advertised for direct enrollment.
@@ -210,7 +225,14 @@ impl RuntimeEndpoint {
     /// # Errors
     /// Returns [`AddressPublisherError`] when current transport data is not publishable.
     pub fn address_publisher(&self) -> Result<AddressPublisher, AddressPublisherError> {
-        AddressPublisher::from_endpoint(self.router.endpoint())
+        AddressPublisher::from_endpoint(self.router.endpoint(), &self.lookup)
+    }
+
+    /// Updates application-defined data included in the live Iroh observation.
+    pub fn set_user_data_for_address_lookup(&self, user_data: Option<UserData>) {
+        self.router
+            .endpoint()
+            .set_user_data_for_address_lookup(user_data);
     }
 
     /// Closes the Endpoint and joins the protocol router.
