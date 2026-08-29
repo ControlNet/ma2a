@@ -36,10 +36,13 @@ fallback are intentionally unsupported.
 ## Privacy and Recovery
 
 On Unix, runtime files live in `run-v1` with directory mode `0700`; `control.sock`, `startup.lock`,
-and `daemon.lock` use mode `0600`. The server rejects peers whose effective user ID differs from its own. On Windows,
-the namespaced pipe rejects remote clients, uses a protected DACL granting access only to the
-current user's concrete SID and Local System, and rejects local callers whose process-token SID
-does not equal the daemon user's SID.
+and `daemon.lock` use mode `0600`. The server rejects peers whose effective user ID differs from its
+own. On Windows, pinned `interprocess` 2.4.3 leaves `accept_remote` false by default and therefore
+creates each named-pipe instance with `PIPE_REJECT_REMOTE_CLIENTS`. The pipe also uses a protected
+DACL granting access only to the current user's concrete SID and Local System. For every accepted
+connection, the daemon captures its process-token SID, impersonates the named-pipe client, queries
+the impersonated thread token's SID, reverts through an RAII guard, and accepts only an exact SID
+match. Authorization never derives identity from a peer process identifier.
 
 A stale Unix socket is removed only after a process owns the startup lock and a liveness handshake
 has failed. This prevents one contender from deleting a live daemon's endpoint. The daemon owns one
