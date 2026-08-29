@@ -20,11 +20,18 @@ sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+widestring.workspace = true
+
 [dev-dependencies]
 rusqlite.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["axum", "interprocess"]
+ignored = ["axum"]

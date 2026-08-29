@@ -1471,8 +1471,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "798de1433ba514cc6c04c4144c2469af81396e4906195218737c776d47769572"
 dependencies = [
  "doctest-file",
+ "futures-core",
  "libc",
  "recvmsg",
+ "tokio",
  "widestring",
  "windows-sys 0.61.2",
 ]
@@ -1920,7 +1922,9 @@ dependencies = [
  "ma2a-net",
  "ma2a-runtime",
  "ma2a-store",
+ "serde_json",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1964,11 +1968,13 @@ dependencies = [
  "ma2a-net",
  "ma2a-store",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "tokio-util",
+ "widestring",
 ]
 
 [[package]]
