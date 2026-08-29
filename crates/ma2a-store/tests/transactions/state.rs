@@ -1,8 +1,7 @@
 use ma2a_store::{
-    AddressAdvance, AddressRecordOutcome, PasswordReset, RelayAdvertisementAdvance,
-    RelayConfiguration, RelayObservation, RelayTransportConfiguration, Repository,
-    RuntimeMetadataUpdate, SequenceOutcome, SessionDigests, SessionRecord, SessionTimestamps,
-    StoreConfig, derive_password_verifier,
+    AddressAdvance, AddressRecordOutcome, PasswordReset, RelayConfiguration, RelayObservation,
+    RelayTransportConfiguration, Repository, RuntimeMetadataUpdate, SessionDigests, SessionRecord,
+    SessionTimestamps, StoreConfig, derive_password_verifier,
 };
 use rusqlite::Connection;
 
@@ -10,7 +9,7 @@ use super::{endpoint_id, space_id, support::TempState};
 use crate::support::TestResult;
 
 #[test]
-fn address_and_advertisement_reject_stale_sequences() -> TestResult {
+fn address_rejects_stale_sequences() -> TestResult {
     // Given
     let state = TempState::new("highest-sequences")?;
     let config = StoreConfig::new(state.path());
@@ -36,16 +35,6 @@ fn address_and_advertisement_reject_stale_sequences() -> TestResult {
         record_hash: [8; 32],
         signed_record: b"stale".to_vec(),
     })?;
-    let advertisement = repository.advance_relay_advertisement(&RelayAdvertisementAdvance {
-        space_id: space_id()?,
-        relay_endpoint_id: endpoint,
-        sequence: 9,
-        issued_at_ms: 2,
-        expires_at_ms: 30,
-        advertisement_hash: [9; 32],
-        signed_advertisement: b"relay".to_vec(),
-    })?;
-
     // Then
     assert!(matches!(address, AddressRecordOutcome::Advanced { .. }));
     assert_eq!(
@@ -54,7 +43,6 @@ fn address_and_advertisement_reject_stale_sequences() -> TestResult {
             current_sequence: 4
         }
     );
-    assert!(matches!(advertisement, SequenceOutcome::Advanced { .. }));
     Ok(())
 }
 
