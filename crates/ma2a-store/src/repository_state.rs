@@ -1,6 +1,6 @@
 use crate::{
-    EndpointObservationUpdate, RelayConfiguration, RelayObservation, Repository, RuntimeMetadata,
-    RuntimeMetadataUpdate, StoreError, repository::increment_revision,
+    EndpointObservationUpdate, RelayConfiguration, RelayObservation, RelayTransportConfiguration,
+    Repository, RuntimeMetadata, RuntimeMetadataUpdate, StoreError, repository::increment_revision,
 };
 
 impl Repository {
@@ -162,18 +162,48 @@ impl Repository {
         configuration: &RelayConfiguration,
     ) -> Result<u64, StoreError> {
         let transaction = self.immediate()?;
+        let (tls_mode, certificate_path, private_key_path) = match &configuration.transport {
+            Some(RelayTransportConfiguration::NativeTls {
+                certificate_path,
+                private_key_path,
+            }) => (
+                Some(0_u8),
+                Some(certificate_path.as_str()),
+                Some(private_key_path.as_str()),
+            ),
+            Some(RelayTransportConfiguration::ExternalTlsTermination) => (Some(1_u8), None, None),
+            None => (None, None, None),
+        };
         transaction.execute(
             "UPDATE relay_configuration SET public_fallback_enabled = ?1,
              public_relay_url = ?2, private_provider_enabled = ?3,
-             listener_address = ?4, tls_mode = ?5 WHERE singleton = 1",
+             listener_address = ?4, tls_mode = ?5, private_relay_url = ?6,
+             certificate_path = ?7, private_key_path = ?8 WHERE singleton = 1",
             (
                 configuration.public_fallback_enabled,
-                configuration.public_relay_url.as_deref(),
+                configuration.public_relay_urls.first().map(String::as_str),
                 configuration.private_provider_enabled,
                 configuration.listener_address.as_deref(),
-                configuration.tls_mode,
+                tls_mode,
+                configuration.private_relay_url.as_deref(),
+                certificate_path,
+                private_key_path,
             ),
         )?;
+        transaction.execute("DELETE FROM relay_public_fallback_urls", [])?;
+        for (position, relay_url) in configuration.public_relay_urls.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO relay_public_fallback_urls(position, relay_url) VALUES (?1, ?2)",
+                (position, relay_url),
+            )?;
+        }
+        transaction.execute("DELETE FROM relay_served_spaces", [])?;
+        for space_id in &configuration.served_spaces {
+            transaction.execute(
+                "INSERT INTO relay_served_spaces(space_id) VALUES (?1)",
+                [space_id.as_bytes().as_slice()],
+            )?;
+        }
         let revision = increment_revision(&transaction)?;
         transaction.commit()?;
         Ok(revision)
