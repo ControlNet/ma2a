@@ -15,6 +15,9 @@ use std::{
 
 use serde_json::Value;
 
+#[path = "daemon_lifecycle/identity.rs"]
+mod identity;
+
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
@@ -161,6 +164,7 @@ fn concurrent_status_calls_converge_on_one_daemon() -> TestResult {
         .write(true)
         .open(fixture.runtime_dir().join("daemon.lock"))?;
     assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
+    identity::assert_live_endpoint_matches_persisted(&fixture.state_dir)?;
     Ok(())
 }
 
