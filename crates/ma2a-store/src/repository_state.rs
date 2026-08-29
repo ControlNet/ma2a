@@ -1,7 +1,6 @@
 use crate::{
     EndpointObservationUpdate, RelayConfiguration, RelayObservation, Repository, RuntimeMetadata,
-    RuntimeMetadataUpdate, StoreError,
-    repository::increment_revision,
+    RuntimeMetadataUpdate, StoreError, repository::increment_revision,
 };
 
 impl Repository {
