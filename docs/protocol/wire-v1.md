@@ -9,7 +9,8 @@ envelopes never carry a Space selector or `authorized_via` value.
 
 - `EndpointId`: exactly 32 bytes that parse as an Iroh 1.1 public key. Other lengths and invalid
   Ed25519 compressed points are rejected.
-- `SpaceId`: `BLAKE3("ma2a-space-v1" || canonical_genesis_cbor)`, preserving the exact genesis bytes.
+- `SpaceId`: `BLAKE3("ma2a-space-v1" || canonical_space_genesis_v1_body_cbor)`. The input is the
+  exact unsigned `SpaceGenesisV1` body bytes, never its signature envelope.
 - `RequestId`: 16 cryptographically random bytes from the operating system random source.
 - `ProtocolVersion`: major `1`, minor `0`.
 - Service kind `Echo`: integer discriminant `0`. No other service kind exists in Phase 1.
