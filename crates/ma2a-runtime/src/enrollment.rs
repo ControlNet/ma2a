@@ -18,21 +18,24 @@ pub struct EnrollmentCreation {
 
 impl EnrollmentCreation {
     /// Creates invitation parameters for a Space and validity window.
+    ///
+    /// # Errors
+    /// Returns an error unless the invitation lifetime is positive and at most five minutes.
     #[allow(
         clippy::too_many_arguments,
         reason = "the creation boundary keeps validity timestamps and injected entropy explicit"
     )]
-    pub const fn new(
+    pub fn new(
         space_id: SpaceId,
         created_at_ms: u64,
         expires_at_ms: u64,
         entropy: InviteEntropy,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ma2a_core::ProtocolError> {
+        Ok(Self {
             space_id,
-            validity: InviteValidity::new(created_at_ms, expires_at_ms),
+            validity: InviteValidity::new(created_at_ms, expires_at_ms)?,
             entropy,
-        }
+        })
     }
 
     /// Returns the Space to which the invitation grants membership.
@@ -54,7 +57,6 @@ pub struct EnrollmentAttempt {
     ticket: SignedInviteTicket,
     request_id: RequestId,
     display_name: String,
-    now_ms: u64,
 }
 
 impl EnrollmentAttempt {
@@ -67,13 +69,11 @@ impl EnrollmentAttempt {
         ticket: SignedInviteTicket,
         request_id: RequestId,
         display_name: String,
-        now_ms: u64,
     ) -> Self {
         Self {
             ticket,
             request_id,
             display_name,
-            now_ms,
         }
     }
 
@@ -172,11 +172,10 @@ pub(crate) fn encode_attempt(attempt: &EnrollmentAttempt) -> Result<Vec<u8>, Enr
         return Err(EnrollmentError::internal());
     }
     let name_len = u16::try_from(name.len()).map_err(|_| EnrollmentError::internal())?;
-    let mut bytes = Vec::with_capacity(2 + ticket.len() + 16 + 8 + 2 + name.len());
+    let mut bytes = Vec::with_capacity(2 + ticket.len() + 16 + 2 + name.len());
     bytes.extend_from_slice(&ticket_len.to_be_bytes());
     bytes.extend_from_slice(&ticket);
     bytes.extend_from_slice(attempt.request_id.as_bytes());
-    bytes.extend_from_slice(&attempt.now_ms.to_be_bytes());
     bytes.extend_from_slice(&name_len.to_be_bytes());
     bytes.extend_from_slice(name);
     Ok(bytes)
@@ -200,8 +199,6 @@ pub(crate) fn decode_attempt(
     cursor = ticket_end;
     let request_id = RequestId::try_from(take::<16>(bytes, &mut cursor)?.as_slice())
         .map_err(|_| EnrollmentError::internal())?;
-    let now_u64 = u64::from_be_bytes(take::<8>(bytes, &mut cursor)?);
-    let now_ms = i64::try_from(now_u64).map_err(|_| EnrollmentError::internal())?;
     let name_len = usize::from(u16::from_be_bytes(take::<2>(bytes, &mut cursor)?));
     let name_end = cursor
         .checked_add(name_len)
@@ -220,9 +217,6 @@ pub(crate) fn decode_attempt(
         endpoint_id,
         request_id,
         display_name,
-        invitation_id: ticket.invitation_id(),
-        token_hash: ticket.secret_digest(),
-        now_ms,
     };
     Ok((ticket, redemption))
 }
