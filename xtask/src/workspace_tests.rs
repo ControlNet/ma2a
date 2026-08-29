@@ -8,11 +8,29 @@ const EXPECTED_MEMBERS: [&str; 6] = [
     "ma2a-store",
     "xtask",
 ];
-const AUDITED_UNSAFE_BOUNDARY: &str = "crates/ma2a-runtime/src/ipc/windows_security.rs";
-const AUDITED_UNSAFE_ALLOW: &str = concat!(
-    "allow(unsafe",
-    "_code, reason = \"audited Windows token FFI boundary\")"
-);
+const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 3] = [
+    (
+        "crates/ma2a-net/src/relay_tls_windows.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows file-security FFI boundary\")"
+        ),
+    ),
+    (
+        "crates/ma2a-net/src/relay_tls_windows_sid.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows SID FFI boundary\")"
+        ),
+    ),
+    (
+        "crates/ma2a-runtime/src/ipc/windows_security.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows token FFI boundary\")"
+        ),
+    ),
+];
 
 fn root() -> Result<&'static Path, Box<dyn Error>> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -91,14 +109,14 @@ fn unsafe_code_is_confined_to_audited_windows_boundary() -> Result<(), Box<dyn E
     }
 
     // Then
-    assert_eq!(
-        unsafe_files,
-        BTreeSet::from([AUDITED_UNSAFE_BOUNDARY.to_owned()])
-    );
-    assert_eq!(
-        allow_files,
-        BTreeSet::from([AUDITED_UNSAFE_BOUNDARY.to_owned()])
-    );
-    assert!(fs::read_to_string(root.join(AUDITED_UNSAFE_BOUNDARY))?.contains(AUDITED_UNSAFE_ALLOW));
+    let expected = AUDITED_UNSAFE_BOUNDARIES
+        .iter()
+        .map(|(path, _)| (*path).to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(unsafe_files, expected);
+    assert_eq!(allow_files, expected);
+    for (path, audited_allow) in AUDITED_UNSAFE_BOUNDARIES {
+        assert!(fs::read_to_string(root.join(path))?.contains(audited_allow));
+    }
     Ok(())
 }
