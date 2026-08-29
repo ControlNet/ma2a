@@ -21,7 +21,11 @@ export class WebAuthenticationError extends Error {
   }
 }
 
-export async function loginAndTouchSession(passphrase: string): Promise<void> {
+export type WebSession = {
+  readonly csrfToken: string
+}
+
+export async function loginAndTouchSession(passphrase: string): Promise<WebSession> {
   try {
     const payload: unknown = await http
       .post(new URL("/api/v1/web/auth/login", window.location.origin), {
@@ -31,6 +35,17 @@ export async function loginAndTouchSession(passphrase: string): Promise<void> {
     const session = LoginResponseSchema.parse(payload)
     await http.post(new URL("/api/v1/web/session/touch", window.location.origin), {
       headers: { "x-csrf-token": session.csrf_token },
+    })
+    return { csrfToken: session.csrf_token }
+  } catch (error) {
+    throw new WebAuthenticationError(error)
+  }
+}
+
+export async function logoutSession(session: WebSession): Promise<void> {
+  try {
+    await http.post(new URL("/api/v1/web/auth/logout", window.location.origin), {
+      headers: { "x-csrf-token": session.csrfToken },
     })
   } catch (error) {
     throw new WebAuthenticationError(error)

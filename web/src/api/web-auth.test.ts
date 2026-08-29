@@ -1,12 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest"
 
-import { loginAndTouchSession } from "./web-auth"
+import { loginAndTouchSession, logoutSession } from "./web-auth"
 
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
-test("uses the returned CSRF token for an authenticated mutation without browser storage", async () => {
+test("uses the login CSRF token through logout without browser storage", async () => {
   // Given
   const requests: Request[] = []
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
@@ -18,14 +18,20 @@ test("uses the returned CSRF token for an authenticated mutation without browser
     return new Response(null, { status: 204 })
   })
   const localStorageWrite = vi.spyOn(window.localStorage, "setItem")
+  const sessionStorageWrite = vi.spyOn(window.sessionStorage, "setItem")
 
   // When
-  await loginAndTouchSession("browser-login-passphrase-9!")
+  const session = await loginAndTouchSession("browser-login-passphrase-9!")
+  await logoutSession(session)
 
   // Then
-  expect(requests).toHaveLength(2)
+  expect(requests).toHaveLength(3)
   expect(new URL(requests[0]?.url ?? "https://invalid/").pathname).toBe("/api/v1/web/auth/login")
   expect(new URL(requests[1]?.url ?? "https://invalid/").pathname).toBe("/api/v1/web/session/touch")
   expect(requests[1]?.headers.get("x-csrf-token")).toBe("ab".repeat(32))
+  expect(new URL(requests[2]?.url ?? "https://invalid/").pathname).toBe("/api/v1/web/auth/logout")
+  expect(requests[2]?.headers.get("x-csrf-token")).toBe("ab".repeat(32))
+  expect(session.csrfToken).toBe("ab".repeat(32))
   expect(localStorageWrite).not.toHaveBeenCalled()
+  expect(sessionStorageWrite).not.toHaveBeenCalled()
 })
