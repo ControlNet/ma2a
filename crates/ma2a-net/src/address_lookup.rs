@@ -79,15 +79,21 @@ impl SpaceAddressLookup {
         &self,
         authorizations: Vec<SpaceAuthorizationView>,
     ) -> Result<(), AddressLookupStateError> {
+        let mut replacement = BTreeMap::new();
+        for authorization in authorizations {
+            if replacement
+                .insert(authorization.space_id(), authorization)
+                .is_some()
+            {
+                return Err(AddressLookupStateError);
+            }
+        }
         {
             let mut state = self
                 .authorizations
                 .write()
                 .map_err(|_| AddressLookupStateError)?;
-            *state = authorizations
-                .into_iter()
-                .map(|authorization| (authorization.space_id(), authorization))
-                .collect();
+            *state = replacement;
         }
         Ok(())
     }
@@ -101,10 +107,13 @@ impl SpaceAddressLookup {
             record.record().record().space_id(),
             record.record().record().endpoint_id(),
         );
-        self.records
-            .write()
-            .map_err(|_| AddressLookupStateError)?
-            .insert(key, record);
+        let mut records = self.records.write().map_err(|_| AddressLookupStateError)?;
+        if records.get(&key).is_some_and(|current| {
+            current.record().record().sequence() >= record.record().record().sequence()
+        }) {
+            return Ok(());
+        }
+        records.insert(key, record);
         Ok(())
     }
 
@@ -124,7 +133,10 @@ impl SpaceAddressLookup {
                     continue;
                 };
                 let record = validated.record().record();
-                if !authorization.contains_member(target) || record.expires_at_ms() <= now_ms {
+                if !authorization.contains_member(target)
+                    || record.issued_at_ms() > now_ms
+                    || record.expires_at_ms() <= now_ms
+                {
                     continue;
                 }
                 addresses.extend(record.endpoint_data().addresses().iter().cloned());
