@@ -6,25 +6,21 @@ use std::{
     fmt::{self, Write as _},
     io::{self, Write as _},
     path::PathBuf,
-    sync::Arc,
 };
 
 use ma2a_core::RequestId;
 use ma2a_runtime::{
     RuntimeError, api,
-    current_user::{CurrentUserError, CurrentUserRuntime},
+    current_user::CurrentUserError,
     ipc::{IpcError, IpcPaths, LocalApiClient},
-    web::{LoopbackWebServer, SystemClock, WebAssets, WebAuthConfig, WebServerConfig},
 };
 
 mod autostart;
 mod commands;
+mod credential_command;
 mod daemon;
+mod web_command;
 
-use commands::{
-    control::RuntimeControlClient,
-    ui::{PasswordCommand, TerminalPasswordReader},
-};
 mod embedded_web {
     include!(concat!(env!("OUT_DIR"), "/embedded_web.rs"));
 }
@@ -118,11 +114,15 @@ async fn main() -> Result<(), AppError> {
         Command::Daemon => daemon::run(cli.state_dir, paths, false).await,
         Command::DaemonDetached => daemon::run(cli.state_dir, paths, true).await,
         Command::Init | Command::UiPasswordSet => {
-            run_password_at(&cli.state_dir, PasswordCommand::Set).await
+            credential_command::run_password(&cli.state_dir, commands::ui::PasswordCommand::Set)
+                .await
         }
-        Command::UiPasswordReset => run_password_at(&cli.state_dir, PasswordCommand::Reset).await,
-        Command::UiSessionRevokeAll => run_revoke_all_at(&cli.state_dir).await,
-        Command::Web => run_web_at(&cli.state_dir).await,
+        Command::UiPasswordReset => {
+            credential_command::run_password(&cli.state_dir, commands::ui::PasswordCommand::Reset)
+                .await
+        }
+        Command::UiSessionRevokeAll => credential_command::run_revoke_all(&cli.state_dir).await,
+        Command::Web => web_command::run(&cli.state_dir).await,
         Command::Status => {
             call(
                 &cli.state_dir,
@@ -244,69 +244,6 @@ fn write_help() -> Result<(), AppError> {
         "Usage:\n  ma2a [--state-dir PATH] <daemon|status|shutdown|web|init>\n  ma2a [--state-dir PATH] ui password <set|reset>\n  ma2a [--state-dir PATH] ui session revoke-all\n  ma2a --help\n  ma2a --version"
     )?;
     Ok(())
-}
-
-async fn run_password_at(
-    state_dir: &std::path::Path,
-    action: PasswordCommand,
-) -> Result<(), AppError> {
-    let runtime = CurrentUserRuntime::open_at(
-        state_dir,
-        Arc::new(SystemClock::default()),
-        WebAuthConfig::default(),
-    )
-    .await
-    .map_err(AppError::CurrentUser)?;
-    let mut client = RuntimeControlClient::new(runtime);
-    let mut reader = TerminalPasswordReader;
-    commands::ui::change_password(action, &mut reader, &mut client)
-        .await
-        .map_err(AppError::Command)?;
-    writeln!(io::stdout().lock(), "Web password updated").map_err(AppError::Io)
-}
-
-async fn run_revoke_all_at(state_dir: &std::path::Path) -> Result<(), AppError> {
-    let runtime = CurrentUserRuntime::open_at(
-        state_dir,
-        Arc::new(SystemClock::default()),
-        WebAuthConfig::default(),
-    )
-    .await
-    .map_err(AppError::CurrentUser)?;
-    let mut client = RuntimeControlClient::new(runtime);
-    commands::ui::revoke_all_sessions(&mut client)
-        .await
-        .map_err(AppError::Command)?;
-    writeln!(io::stdout().lock(), "All Web sessions revoked").map_err(AppError::Io)
-}
-
-async fn run_web_at(state_dir: &std::path::Path) -> Result<(), AppError> {
-    let runtime = CurrentUserRuntime::open_at(
-        state_dir,
-        Arc::new(SystemClock::default()),
-        WebAuthConfig::default(),
-    )
-    .await
-    .map_err(AppError::CurrentUser)?;
-    let server = LoopbackWebServer::bind(
-        runtime.web_auth().clone(),
-        WebAssets::new(embedded_web::WEB_ASSETS),
-        WebServerConfig::default(),
-    )
-    .await
-    .map_err(AppError::Web)?;
-    writeln!(
-        io::stdout().lock(),
-        "MA2A Web: http://127.0.0.1:{}",
-        server.port()
-    )
-    .map_err(AppError::Io)?;
-    server
-        .serve(async {
-            let _result = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .map_err(AppError::Web)
 }
 
 #[cfg(test)]

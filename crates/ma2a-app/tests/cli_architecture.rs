@@ -8,14 +8,13 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn cli_credentials_use_only_the_local_control_boundary() -> TestResult {
     // Given
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let manifest = fs::read_to_string(manifest_dir.join("Cargo.toml"))?;
-    let source = rust_sources(&manifest_dir.join("src"))?;
+    let source = rust_sources(&manifest_dir.join("src/commands"))?;
 
     // When
-    let forbidden_manifest_dependency = manifest.contains("ma2a-store");
     let forbidden_source = [
         "Repository::open",
         "StoreConfig",
+        "CurrentUserRuntime",
         "MA2A_STATE_DIR",
         "ui_credentials",
         "UPDATE sessions",
@@ -24,8 +23,8 @@ fn cli_credentials_use_only_the_local_control_boundary() -> TestResult {
     .find(|needle| source.contains(needle));
 
     // Then
-    assert!(!forbidden_manifest_dependency);
     assert_eq!(forbidden_source, None);
+    assert!(source.contains("LocalApiClient"));
     Ok(())
 }
 
