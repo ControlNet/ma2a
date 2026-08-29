@@ -7,6 +7,7 @@ mod address_record;
 mod endpoint;
 mod enrollment;
 mod protocols;
+mod publisher;
 
 pub use address_lookup::{AddressLookupClock, AddressLookupStateError, SpaceAddressLookup};
 pub use address_record::{
@@ -17,3 +18,4 @@ pub use endpoint::{EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpo
 pub use enrollment::EnrollmentCall;
 pub use iroh::EndpointAddr;
 pub use protocols::{ENROLLMENT_ALPN, NORMAL_PROTOCOL_ALPNS, ProtocolRole};
+pub use publisher::{AddressPublishRequest, AddressPublisher, AddressPublisherError};
