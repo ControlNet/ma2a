@@ -1,8 +1,3 @@
-use iroh::{
-    endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler},
-};
-
 /// Reserved bootstrap-only enrollment ALPN.
 pub const ENROLLMENT_ALPN: &[u8] = b"ma2a/enrollment/1";
 /// Normal MA2A ALPNs rejected by a zero-Space Runtime during TLS negotiation.
@@ -44,15 +39,5 @@ impl ProtocolRole {
     /// Returns whether this is the reserved enrollment role.
     pub const fn is_enrollment(self) -> bool {
         matches!(self.0, RoleKind::Enrollment)
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct EnrollmentReservation;
-
-impl ProtocolHandler for EnrollmentReservation {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        connection.close(0_u8.into(), b"");
-        Ok(())
     }
 }
