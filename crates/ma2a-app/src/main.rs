@@ -6,26 +6,37 @@ use std::{
     fmt::{self, Write as _},
     io::{self, Write as _},
     path::PathBuf,
+    sync::Arc,
 };
 
 use ma2a_core::RequestId;
 use ma2a_runtime::{
     RuntimeError, api,
+    current_user::{CurrentUserError, CurrentUserRuntime},
     ipc::{IpcError, IpcPaths, LocalApiClient},
+    web::{LoopbackWebServer, SystemClock, WebAssets, WebAuthConfig, WebServerConfig},
 };
 
 mod autostart;
+mod commands;
 mod daemon;
 
+use commands::{
+    control::RuntimeControlClient,
+    ui::{PasswordCommand, TerminalPasswordReader},
+};
 mod embedded_web {
     include!(concat!(env!("OUT_DIR"), "/embedded_web.rs"));
 }
 
 enum AppError {
+    Command(commands::ui::UiCommandError),
+    CurrentUser(CurrentUserError),
     Io(io::Error),
     Ipc(IpcError),
     Runtime(RuntimeError),
     Usage(&'static str),
+    Web(io::Error),
 }
 
 impl fmt::Debug for AppError {
@@ -37,15 +48,29 @@ impl fmt::Debug for AppError {
 impl fmt::Display for AppError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Command(error) => error.fmt(formatter),
+            Self::CurrentUser(error) => error.fmt(formatter),
             Self::Io(error) => write!(formatter, "MA2A I/O failed: {error}"),
             Self::Ipc(error) => error.fmt(formatter),
             Self::Runtime(error) => error.fmt(formatter),
             Self::Usage(message) => formatter.write_str(message),
+            Self::Web(error) => write!(formatter, "loopback Web server failed: {error}"),
         }
     }
 }
 
-impl Error for AppError {}
+impl Error for AppError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Command(error) => Some(error),
+            Self::CurrentUser(error) => Some(error),
+            Self::Io(error) | Self::Web(error) => Some(error),
+            Self::Ipc(error) => Some(error),
+            Self::Runtime(error) => Some(error),
+            Self::Usage(_) => None,
+        }
+    }
+}
 
 impl From<io::Error> for AppError {
     fn from(error: io::Error) -> Self {
@@ -68,8 +93,13 @@ impl From<RuntimeError> for AppError {
 enum Command {
     Daemon,
     DaemonDetached,
+    Init,
     Status,
     Shutdown,
+    UiPasswordSet,
+    UiPasswordReset,
+    UiSessionRevokeAll,
+    Web,
     Help,
     Version,
 }
@@ -87,6 +117,12 @@ async fn main() -> Result<(), AppError> {
     match cli.command {
         Command::Daemon => daemon::run(cli.state_dir, paths, false).await,
         Command::DaemonDetached => daemon::run(cli.state_dir, paths, true).await,
+        Command::Init | Command::UiPasswordSet => {
+            run_password_at(&cli.state_dir, PasswordCommand::Set).await
+        }
+        Command::UiPasswordReset => run_password_at(&cli.state_dir, PasswordCommand::Reset).await,
+        Command::UiSessionRevokeAll => run_revoke_all_at(&cli.state_dir).await,
+        Command::Web => run_web_at(&cli.state_dir).await,
         Command::Status => {
             call(
                 &cli.state_dir,
@@ -139,33 +175,51 @@ fn shutdown_command() -> Result<api::Command, AppError> {
     Ok(api::decode_command(request.as_bytes()).map_err(IpcError::from)?)
 }
 
-fn parse_args(mut arguments: impl Iterator<Item = OsString>) -> Result<Cli, AppError> {
-    let first = arguments.next();
-    let (state_dir, command) = if first.as_deref() == Some(OsStr::new("--state-dir")) {
-        let state_dir = arguments
-            .next()
-            .ok_or(AppError::Usage("--state-dir requires a path"))?;
-        let command = arguments.next();
-        (PathBuf::from(state_dir), command)
-    } else {
-        (default_state_dir()?, first)
+fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Cli, AppError> {
+    let arguments = arguments.collect::<Vec<_>>();
+    let (state_dir, command_arguments) = match arguments.as_slice() {
+        [flag, state_dir, command_arguments @ ..] if flag == OsStr::new("--state-dir") => {
+            (PathBuf::from(state_dir), command_arguments)
+        }
+        [flag] if flag == OsStr::new("--state-dir") => {
+            return Err(AppError::Usage("--state-dir requires a path"));
+        }
+        _ => (default_state_dir()?, arguments.as_slice()),
     };
-    if arguments.next().is_some() {
-        return Err(AppError::Usage(
-            "unexpected extra argument; run ma2a --help",
-        ));
-    }
-    let command = match command.as_deref() {
-        Some(value) if value == OsStr::new("daemon") => Command::Daemon,
-        Some(value) if value == OsStr::new("daemon-detached") => Command::DaemonDetached,
-        Some(value) if value == OsStr::new("status") => Command::Status,
-        Some(value) if value == OsStr::new("shutdown") => Command::Shutdown,
-        Some(value) if value == OsStr::new("--help") || value == OsStr::new("-h") => Command::Help,
-        Some(value) if value == OsStr::new("--version") || value == OsStr::new("-V") => {
+    let command = match command_arguments {
+        [] => Command::Help,
+        [value] if value == OsStr::new("daemon") => Command::Daemon,
+        [value] if value == OsStr::new("daemon-detached") => Command::DaemonDetached,
+        [value] if value == OsStr::new("init") => Command::Init,
+        [value] if value == OsStr::new("status") => Command::Status,
+        [value] if value == OsStr::new("shutdown") => Command::Shutdown,
+        [value] if value == OsStr::new("web") => Command::Web,
+        [value] if value == OsStr::new("--help") || value == OsStr::new("-h") => Command::Help,
+        [value] if value == OsStr::new("--version") || value == OsStr::new("-V") => {
             Command::Version
         }
-        None => Command::Help,
-        Some(_) => return Err(AppError::Usage("unknown command; run ma2a --help")),
+        [ui, password, action]
+            if ui == OsStr::new("ui")
+                && password == OsStr::new("password")
+                && action == OsStr::new("set") =>
+        {
+            Command::UiPasswordSet
+        }
+        [ui, password, action]
+            if ui == OsStr::new("ui")
+                && password == OsStr::new("password")
+                && action == OsStr::new("reset") =>
+        {
+            Command::UiPasswordReset
+        }
+        [ui, session, action]
+            if ui == OsStr::new("ui")
+                && session == OsStr::new("session")
+                && action == OsStr::new("revoke-all") =>
+        {
+            Command::UiSessionRevokeAll
+        }
+        _ => return Err(AppError::Usage("unknown command; run ma2a --help")),
     };
     Ok(Cli { state_dir, command })
 }
@@ -187,9 +241,72 @@ fn default_state_dir() -> Result<PathBuf, AppError> {
 fn write_help() -> Result<(), AppError> {
     writeln!(
         io::stdout().lock(),
-        "Usage: ma2a [--state-dir PATH] <daemon|status|shutdown>\n       ma2a --help\n       ma2a --version"
+        "Usage:\n  ma2a [--state-dir PATH] <daemon|status|shutdown|web|init>\n  ma2a [--state-dir PATH] ui password <set|reset>\n  ma2a [--state-dir PATH] ui session revoke-all\n  ma2a --help\n  ma2a --version"
     )?;
     Ok(())
+}
+
+async fn run_password_at(
+    state_dir: &std::path::Path,
+    action: PasswordCommand,
+) -> Result<(), AppError> {
+    let runtime = CurrentUserRuntime::open_at(
+        state_dir,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await
+    .map_err(AppError::CurrentUser)?;
+    let mut client = RuntimeControlClient::new(runtime);
+    let mut reader = TerminalPasswordReader;
+    commands::ui::change_password(action, &mut reader, &mut client)
+        .await
+        .map_err(AppError::Command)?;
+    writeln!(io::stdout().lock(), "Web password updated").map_err(AppError::Io)
+}
+
+async fn run_revoke_all_at(state_dir: &std::path::Path) -> Result<(), AppError> {
+    let runtime = CurrentUserRuntime::open_at(
+        state_dir,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await
+    .map_err(AppError::CurrentUser)?;
+    let mut client = RuntimeControlClient::new(runtime);
+    commands::ui::revoke_all_sessions(&mut client)
+        .await
+        .map_err(AppError::Command)?;
+    writeln!(io::stdout().lock(), "All Web sessions revoked").map_err(AppError::Io)
+}
+
+async fn run_web_at(state_dir: &std::path::Path) -> Result<(), AppError> {
+    let runtime = CurrentUserRuntime::open_at(
+        state_dir,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await
+    .map_err(AppError::CurrentUser)?;
+    let server = LoopbackWebServer::bind(
+        runtime.web_auth().clone(),
+        WebAssets::new(embedded_web::WEB_ASSETS),
+        WebServerConfig::default(),
+    )
+    .await
+    .map_err(AppError::Web)?;
+    writeln!(
+        io::stdout().lock(),
+        "MA2A Web: http://127.0.0.1:{}",
+        server.port()
+    )
+    .map_err(AppError::Io)?;
+    server
+        .serve(async {
+            let _result = tokio::signal::ctrl_c().await;
+        })
+        .await
+        .map_err(AppError::Web)
 }
 
 #[cfg(test)]
