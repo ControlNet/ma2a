@@ -153,6 +153,23 @@ fn rejects_version_two_before_any_boundary_callback() {
 }
 
 #[test]
+fn transport_adapter_can_preflight_version_without_runtime_state() {
+    // Given
+    let input = br#"{"version":9,"operation":"status"}"#;
+    let mut boundary = BoundaryProbe::default();
+
+    // When
+    let error = dispatch_request(input, &mut boundary).expect_err("version 9 must fail");
+
+    // Then
+    assert_eq!(error.code(), ProtocolError::VERSION_MISMATCH);
+    assert_eq!(boundary.state_reads, 0);
+    assert_eq!(boundary.replay_reads, 0);
+    assert_eq!(boundary.replay_results, 0);
+    assert_eq!(boundary.mutations, 0);
+}
+
+#[test]
 fn rejects_unknown_operation_without_revision_change() {
     let input = br#"{"version":1,"operation":"future_operation"}"#;
     let mut boundary = BoundaryProbe::default();
