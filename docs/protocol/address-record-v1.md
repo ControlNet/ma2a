@@ -21,20 +21,24 @@ The unsigned body is a seven-entry deterministic CBOR map:
 The signed envelope is `{0: body_bytes, 1: signature_bytes}`. The body is one CBOR byte string and
 the signature is exactly 64 bytes. The complete signed envelope is at most 16,384 bytes.
 
-Endpoint data contains between 1 and 16 unique transport addresses in canonical Iroh
-`TransportAddr` order. At most one relay URL is allowed. Custom transports and Iroh `UserData` are
-not carried in version 1 because they are opaque and are not required for direct/private relay
-dialing. Each transport address is a two-element array:
+Endpoint data is a two-element array `[addresses, user_data]`. `addresses` contains between 0 and 16
+unique transport addresses in signed priority order. The encoder does not sort them. `user_data` is
+either CBOR null for absence or UTF-8 text of at most 245 bytes; present empty text is distinct from
+absence. Each transport address is a two-element array:
 
 | Kind | Payload |
 | --- | --- |
 | `0` | relay URL as canonical text, at most 512 bytes |
 | `1` | IPv4 octets followed by big-endian port, exactly 6 bytes |
 | `2` | IPv6 octets followed by big-endian port, exactly 18 bytes |
+| `3` | custom transport array `[id, data]`, where `id` is the exact `u64` transport ID and `data` is at most 1,024 opaque bytes |
 
-Port zero, duplicate addresses, unknown kinds, nested Endpoint identities, unknown map fields,
-non-shortest CBOR, indefinite values, and trailing bytes are invalid. An older wire containing an
-inner `EndpointAddr.endpoint_id` is therefore rejected rather than interpreted.
+Port zero, duplicate addresses, invalid relay URLs, malformed UTF-8, oversized custom or user data,
+unknown transport kinds, nested Endpoint identities, unknown map fields, non-shortest CBOR,
+indefinite values, and trailing bytes are invalid. Unknown future non-exhaustive Iroh transport
+variants fail closed at the conversion boundary. An older wire containing an inner
+`EndpointAddr.endpoint_id` is therefore rejected rather than interpreted. The 16,384-byte complete
+record limit remains an independent envelope bound.
 
 ## Signature And Hash
 
@@ -50,7 +54,8 @@ record_hash = BLAKE3(
 
 The public key selected for verification is `record.endpoint_id`. A construction boundary starting
 from `EndpointAddr` must first require `endpoint_addr.id == signer.public()` and then discard the
-outer identity, retaining only its transport data.
+outer identity, retaining only its transport data. Complete snapshot publication may additionally
+carry Iroh `UserData`; the signed endpoint-data value itself never contains an Endpoint identity.
 
 ## Validity And Sequence
 
@@ -83,10 +88,21 @@ No rejected object is cached or forwarded.
 
 The MA2A `AddressLookup` has no DNS or Pkarr publication path. `resolve(target)` examines only fresh,
 validated records whose `endpoint_id` equals `target` and whose Space authorization view still lists
-that target as a member. Each shared Space is evaluated independently. The lookup merges and
-deduplicates only those records' relay/IP transport addresses, then returns
-`EndpointInfo::from_parts(target, endpoint_data)`.
+that target as a member. Each shared Space is evaluated independently in authorization snapshot
+order. The lookup merges Relay, IP, and Custom addresses while retaining first-seen priority order
+and removing later duplicates. Optional user data must agree exactly across all contributing Spaces,
+including the distinction between absent and present empty data. The result is reconstructed with
+`EndpointInfo::from_parts(target, complete_endpoint_data)`.
 
-Missing authorization, expiry, poisoned cache state, no valid target record, or any uncertainty
-returns no result. The lookup never substitutes another member's addresses, a Space relay
-advertisement, locally configured public fallback, or any synthesized identity or route.
+Missing authorization, expiry, a future-issued record, poisoned cache state, conflicting user data,
+no valid target record, or any material multi-Space uncertainty returns no result. The lookup never
+substitutes another member's addresses, a Space relay advertisement, locally configured public
+fallback, or any synthesized identity or route.
+
+## Metrics
+
+Address record observability uses closed typed counters only. It counts validation acceptance and
+rejection outcomes, persistence advanced/idempotent/rollback/fork outcomes, lookup future/expiry
+exclusions, and cache inserted/stale/equal outcomes. The metric API has no runtime label strings and
+never records Space IDs, Endpoint IDs, addresses, relay URLs, custom IDs or bytes, user data,
+signatures, hashes, or other topology-bearing values.
