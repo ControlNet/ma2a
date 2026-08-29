@@ -90,6 +90,7 @@ pub(crate) fn password() -> zeroize::Zeroizing<String> {
 )]
 pub(crate) struct HttpResponse {
     pub(crate) status: u16,
+    pub(crate) set_cookies: Vec<String>,
     #[allow(
         dead_code,
         reason = "shared response field is used by the security test binary"
@@ -179,11 +180,18 @@ fn parse_response(response: &[u8]) -> TestResult<HttpResponse> {
         .ok_or("HTTP response has no status")?
         .parse::<u16>()?;
     let headers = lines
+        .clone()
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
         .collect();
+    let set_cookies = lines
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _value)| name.eq_ignore_ascii_case("set-cookie"))
+        .map(|(_name, value)| value.trim().to_owned())
+        .collect();
     Ok(HttpResponse {
         status,
+        set_cookies,
         headers,
         body: response
             .get(split + 4..)

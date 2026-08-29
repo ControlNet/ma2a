@@ -47,14 +47,22 @@ async fn login_cookie_and_security_headers_are_strict() -> TestResult {
         .await?;
 
     assert_eq!(response.status, 200);
-    let cookie = response
-        .headers
-        .get("set-cookie")
+    let session_cookie = response
+        .set_cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("ma2a_session="))
         .ok_or("missing session cookie")?;
-    assert!(cookie.starts_with("ma2a_session="));
-    assert!(cookie.contains("; Path=/; HttpOnly; SameSite=Strict; Max-Age="));
-    assert!(!cookie.contains("Domain="));
-    assert!(!cookie.contains("; Secure"));
+    let csrf_cookie = response
+        .set_cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("ma2a_csrf="))
+        .ok_or("missing CSRF cookie")?;
+    assert!(session_cookie.contains("; Path=/; HttpOnly; SameSite=Strict; Max-Age="));
+    assert!(!session_cookie.contains("Domain="));
+    assert!(!session_cookie.contains("; Secure"));
+    assert!(csrf_cookie.contains("; Path=/; SameSite=Strict; Max-Age="));
+    assert!(!csrf_cookie.contains("HttpOnly"));
+    assert!(!csrf_cookie.contains("Domain="));
     assert_eq!(
         response
             .headers
@@ -76,6 +84,55 @@ async fn login_cookie_and_security_headers_are_strict() -> TestResult {
     );
     assert!(response.headers.contains_key("content-security-policy"));
     assert!(!response.headers.contains_key("access-control-allow-origin"));
+    server.stop().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logout_expires_session_and_csrf_cookies() -> TestResult {
+    // Given
+    let state = TempState::new("logout-cookies")?;
+    let auth = WebAuthService::open(
+        StoreConfig::new(state.path()),
+        clock(1_500),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    auth.change_password(PasswordAction::Set, password())
+        .await?;
+    let session = auth.login(password()).await?;
+    let server = RunningServer::start(auth, WebServerConfig::default()).await?;
+    let origin = format!("http://127.0.0.1:{}", server.port());
+    let cookie = format!("ma2a_session={}", session.bearer());
+
+    // When
+    let response = server
+        .request(&request(
+            server.port(),
+            "POST",
+            "/api/v1/web/auth/logout",
+            &[
+                ("Origin", &origin),
+                ("Sec-Fetch-Site", "same-origin"),
+                ("Cookie", &cookie),
+                ("X-CSRF-Token", session.csrf_token()),
+            ],
+            b"",
+        ))
+        .await?;
+
+    // Then
+    assert_eq!(response.status, 204);
+    assert!(
+        response.set_cookies.iter().any(|cookie| {
+            cookie == "ma2a_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        })
+    );
+    assert!(
+        response
+            .set_cookies
+            .iter()
+            .any(|cookie| { cookie == "ma2a_csrf=; Path=/; SameSite=Strict; Max-Age=0" })
+    );
     server.stop().await
 }
 
