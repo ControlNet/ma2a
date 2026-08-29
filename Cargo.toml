@@ -28,7 +28,7 @@ axum = "=0.8.9"
 blake3 = "=1.8.7"
 ed25519-dalek = "=3.0.0"
 getrandom = "=0.4.3"
-interprocess = "=2.4.3"
+interprocess = { version = "=2.4.3", features = ["tokio"] }
 iroh = "=1.1.0"
 iroh-base = "=1.1.0"
 iroh-metrics = "=1.0.1"
@@ -51,6 +51,7 @@ tokio = "=1.53.1"
 tokio-util = "=0.7.19"
 toml = "=1.1.4"
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+widestring = "=1.2.1"
 
 [workspace.lints.rust]
 elided_lifetimes_in_paths = "warn"
