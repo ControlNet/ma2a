@@ -156,9 +156,11 @@ impl Actor {
         &mut self,
         memberships: Vec<SpaceId>,
     ) -> Result<u64, RuntimeError> {
-        self.state.memberships = memberships.into_iter().collect::<BTreeSet<_>>();
-        let revision = self.store.observe(&self.state).await?;
-        self.state.revision = revision;
+        let mut candidate = self.state.clone();
+        candidate.memberships = memberships.into_iter().collect::<BTreeSet<_>>();
+        let revision = self.store.observe(&candidate).await?;
+        candidate.revision = revision;
+        self.state = candidate;
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
