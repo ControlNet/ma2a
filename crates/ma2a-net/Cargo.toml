@@ -11,15 +11,30 @@ iroh.workspace = true
 iroh-base.workspace = true
 iroh-metrics.workspace = true
 iroh-ping.workspace = true
-iroh-relay.workspace = true
+iroh-relay = { workspace = true, features = ["server"] }
 iroh-tickets.workspace = true
 irpc.workspace = true
 irpc-iroh.workspace = true
 ma2a-core.workspace = true
 ma2a-store.workspace = true
 n0-future.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
 tokio.workspace = true
+x509-parser.workspace = true
 zeroize.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+http.workspace = true
+iroh-dns.workspace = true
+rcgen.workspace = true
+tokio-rustls.workspace = true
 
 [lints]
 workspace = true
