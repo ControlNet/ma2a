@@ -1,10 +1,13 @@
 //! Online `SQLite` backup integrity coverage.
 
+#[path = "common/space_fixture.rs"]
+mod space_fixture;
 #[path = "common/support.rs"]
 mod support;
 
-use ma2a_store::{Repository, SpaceRecord, StoreConfig};
+use ma2a_store::{Repository, StoreConfig};
 use rusqlite::Connection;
+use space_fixture::space_record;
 use support::{TempState, TestResult};
 
 #[test]
@@ -13,7 +16,7 @@ fn online_backup_reopens_with_integrity_and_committed_state() -> TestResult {
     let state = TempState::new("backup")?;
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
-    repository.create_space(&SpaceRecord::new(space_id(), b"genesis".to_vec(), None))?;
+    repository.create_space(&space_record()?)?;
     let destination = state.path().join("backup.sqlite3");
 
     // When
@@ -31,8 +34,4 @@ fn online_backup_reopens_with_integrity_and_committed_state() -> TestResult {
         1
     );
     Ok(())
-}
-
-fn space_id() -> ma2a_core::SpaceId {
-    ma2a_core::SpaceId::derive(b"ma2a-store-test-genesis")
 }
