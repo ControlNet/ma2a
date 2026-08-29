@@ -46,7 +46,47 @@ enum ResultKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult(ResultKind);
 
+/// Typed UI credential result returned through current-user local control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UiControlResult<'a> {
+    /// The first UI password verifier was established.
+    PasswordSet(&'a UiAuthView),
+    /// The UI password verifier was replaced and older sessions were revoked.
+    PasswordReset(&'a UiAuthView),
+    /// Every browser session was revoked.
+    SessionsRevoked(&'a UiAuthView),
+}
+
 impl CommandResult {
+    /// Returns the typed UI credential result, when this result belongs to that command family.
+    #[must_use]
+    pub const fn ui_control_result(&self) -> Option<UiControlResult<'_>> {
+        match &self.0 {
+            ResultKind::UiPasswordSet(value) => Some(UiControlResult::PasswordSet(value)),
+            ResultKind::UiPasswordReset(value) => Some(UiControlResult::PasswordReset(value)),
+            ResultKind::SessionsRevoked(value) => Some(UiControlResult::SessionsRevoked(value)),
+            ResultKind::Handshake(_)
+            | ResultKind::Status(_)
+            | ResultKind::EndpointInfo(_)
+            | ResultKind::SpaceCreated(_)
+            | ResultKind::Spaces(_)
+            | ResultKind::Space(_)
+            | ResultKind::SpaceInvitationCreated(_)
+            | ResultKind::SpaceRedeemed(_)
+            | ResultKind::SpaceRevoked(_)
+            | ResultKind::ControlSyncStatus(_)
+            | ResultKind::ControlSyncTriggered(_)
+            | ResultKind::PrivateRelayConfigured(_)
+            | ResultKind::PrivateRelayStatus(_)
+            | ResultKind::PublicRelayConfigured(_)
+            | ResultKind::PublicRelayStatus(_)
+            | ResultKind::Echo(_)
+            | ResultKind::Snapshot(_)
+            | ResultKind::ShuttingDown => None,
+        }
+    }
+
     /// Creates the graceful-shutdown acknowledgement.
     pub const fn shutting_down() -> Self {
         Self(ResultKind::ShuttingDown)

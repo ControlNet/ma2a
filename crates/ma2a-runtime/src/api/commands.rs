@@ -1,6 +1,7 @@
 //! Closed local Runtime command set.
 
 use ma2a_core::{EndpointId, RequestId, SpaceId};
+use zeroize::Zeroizing;
 
 use super::{ApiError, MAX_TEXT_BYTES};
 
@@ -29,20 +30,44 @@ pub const COMMAND_NAMES: [&str; 21] = [
     "graceful_shutdown",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BoundedText(String);
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct BoundedText(Zeroizing<String>);
 
 impl BoundedText {
     pub(crate) fn parse(value: &str, maximum: usize) -> Result<Self, ApiError> {
         if value.is_empty() || value.len() > maximum || value.len() > MAX_TEXT_BYTES {
             Err(ApiError::invalid_input())
         } else {
-            Ok(Self(value.to_owned()))
+            Ok(Self(Zeroizing::new(value.to_owned())))
         }
     }
 
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+
+    fn parse_secret(value: Zeroizing<String>, maximum: usize) -> Result<Self, ApiError> {
+        if value.is_empty() || value.len() > maximum || value.len() > MAX_TEXT_BYTES {
+            Err(ApiError::invalid_input())
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    fn into_secret(self) -> Zeroizing<String> {
+        self.0
+    }
+}
+
+pub(crate) enum UiControlCommand {
+    PasswordSet(Zeroizing<String>),
+    PasswordReset(Zeroizing<String>),
+    SessionsRevokeAll,
+}
+
+impl std::fmt::Debug for BoundedText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BoundedText([REDACTED])")
     }
 }
 
@@ -84,6 +109,72 @@ pub struct Command {
 }
 
 impl Command {
+    pub(crate) fn into_ui_control(self) -> Result<UiControlCommand, ApiError> {
+        match self.kind {
+            CommandKind::UiPasswordSet(_, password) => {
+                Ok(UiControlCommand::PasswordSet(password.into_secret()))
+            }
+            CommandKind::UiPasswordReset(_, password) => {
+                Ok(UiControlCommand::PasswordReset(password.into_secret()))
+            }
+            CommandKind::SessionRevokeAll(_) => Ok(UiControlCommand::SessionsRevokeAll),
+            CommandKind::Handshake
+            | CommandKind::Status
+            | CommandKind::EndpointInfo
+            | CommandKind::SpaceCreate(_, _)
+            | CommandKind::SpaceList
+            | CommandKind::SpaceShow(_)
+            | CommandKind::SpaceInvite(_, _, _)
+            | CommandKind::SpaceRedeem(_, _)
+            | CommandKind::SpaceRevoke(_, _, _)
+            | CommandKind::ControlSyncStatus(_)
+            | CommandKind::ControlSyncTrigger(_, _)
+            | CommandKind::PrivateRelayConfigure(_, _, _, _)
+            | CommandKind::PrivateRelayStatus
+            | CommandKind::PublicRelayConfigure(_, _)
+            | CommandKind::PublicRelayStatus
+            | CommandKind::EchoCall(_, _, _)
+            | CommandKind::SnapshotFetch
+            | CommandKind::GracefulShutdown(_) => Err(ApiError::invalid_input()),
+        }
+    }
+
+    /// Creates a typed Todo 4 UI password-set command with a fresh request identifier.
+    ///
+    /// # Errors
+    /// Returns a typed local API failure when randomness or password bounds fail.
+    pub fn ui_password_set(password: Zeroizing<String>) -> Result<Self, ApiError> {
+        Ok(Self {
+            kind: CommandKind::UiPasswordSet(
+                RequestId::random().map_err(ApiError::new)?,
+                BoundedText::parse_secret(password, 1_024)?,
+            ),
+        })
+    }
+
+    /// Creates a typed Todo 4 UI password-reset command with a fresh request identifier.
+    ///
+    /// # Errors
+    /// Returns a typed local API failure when randomness or password bounds fail.
+    pub fn ui_password_reset(password: Zeroizing<String>) -> Result<Self, ApiError> {
+        Ok(Self {
+            kind: CommandKind::UiPasswordReset(
+                RequestId::random().map_err(ApiError::new)?,
+                BoundedText::parse_secret(password, 1_024)?,
+            ),
+        })
+    }
+
+    /// Creates a typed Todo 4 session revoke-all command with a fresh request identifier.
+    ///
+    /// # Errors
+    /// Returns a typed local API failure when request identifier generation fails.
+    pub fn session_revoke_all() -> Result<Self, ApiError> {
+        Ok(Self {
+            kind: CommandKind::SessionRevokeAll(RequestId::random().map_err(ApiError::new)?),
+        })
+    }
+
     /// Returns the stable operation discriminant.
     pub const fn operation(&self) -> &'static str {
         match self.kind {
