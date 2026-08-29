@@ -123,12 +123,10 @@ async fn handle_connection(
     platform::authorize(&stream, &context.paths)?;
     let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
     let preflight = api::decode_command(&frame.payload);
-    let encoded = match preflight {
+    let (encoded, requests_shutdown) = match preflight {
         Ok(_) => dispatch(&frame.payload, context.handle, &context.replay).await?,
-        Err(error) => api::encode_error(error)?,
+        Err(error) => (api::encode_error(error)?, false),
     };
-    let requests_shutdown =
-        preflight.is_ok_and(|command| command.operation() == "graceful_shutdown");
     write_frame(
         &mut stream,
         FrameRef {
@@ -148,7 +146,7 @@ async fn dispatch(
     input: &[u8],
     handle: RuntimeHandle,
     replay: &Mutex<BTreeMap<RequestId, ReplayEntry>>,
-) -> Result<Vec<u8>, IpcError> {
+) -> Result<(Vec<u8>, bool), IpcError> {
     let status = handle.status().await?;
     dispatch_locked(
         input,
@@ -164,11 +162,14 @@ fn dispatch_locked(
     input: &[u8],
     status: RuntimeStatus,
     replay: MutexGuard<'_, BTreeMap<RequestId, ReplayEntry>>,
-) -> Result<Vec<u8>, IpcError> {
+) -> Result<(Vec<u8>, bool), IpcError> {
     let mut boundary = RuntimeBoundary::new(status, replay);
     match api::dispatch_request(input, &mut boundary) {
-        Ok(response) => Ok(api::encode_response(&response)?),
-        Err(error) => Ok(api::encode_error(error)?),
+        Ok(response) => Ok((
+            api::encode_response(&response)?,
+            response.result_type() == "shutting_down",
+        )),
+        Err(error) => Ok((api::encode_error(error)?, false)),
     }
 }
 
@@ -274,3 +275,7 @@ impl RuntimeApiBoundary for RuntimeBoundary<'_> {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod tests;
