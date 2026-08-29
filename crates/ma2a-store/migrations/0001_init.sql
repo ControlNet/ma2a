@@ -10,7 +10,21 @@ CREATE TABLE runtime_metadata (
     revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
     boot_id BLOB CHECK (boot_id IS NULL OR length(boot_id) = 16),
     last_shutdown_clean INTEGER CHECK (last_shutdown_clean IN (0, 1)),
-    last_shutdown_at_ms INTEGER
+    last_shutdown_at_ms INTEGER,
+    endpoint_observed_at_ms INTEGER,
+    endpoint_ready INTEGER CHECK (endpoint_ready IN (0, 1)),
+    direct_address_count INTEGER CHECK (direct_address_count >= 0),
+    relay_address_count INTEGER CHECK (relay_address_count >= 0),
+    membership_count INTEGER CHECK (membership_count >= 0),
+    CHECK (
+        (endpoint_observed_at_ms IS NULL AND endpoint_ready IS NULL
+            AND direct_address_count IS NULL AND relay_address_count IS NULL
+            AND membership_count IS NULL)
+        OR
+        (endpoint_observed_at_ms IS NOT NULL AND endpoint_ready IS NOT NULL
+            AND direct_address_count IS NOT NULL AND relay_address_count IS NOT NULL
+            AND membership_count IS NOT NULL)
+    )
 ) STRICT;
 
 INSERT INTO runtime_metadata(singleton) VALUES (1);
