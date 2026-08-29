@@ -158,7 +158,9 @@ impl Repository {
             }
             2 => return Ok(EnrollmentOutcome::Cancelled),
             3 => return Ok(EnrollmentOutcome::Expired),
-            _ if state.1 <= now_ms => return Ok(EnrollmentOutcome::Expired),
+            _ if now_ms < created_at_ms || state.1 <= now_ms => {
+                return Ok(EnrollmentOutcome::Expired);
+            }
             _ => {}
         }
         let mut chain = load_chain(&transaction, space_id)?.ok_or(StoreError::SpaceNotFound)?;
