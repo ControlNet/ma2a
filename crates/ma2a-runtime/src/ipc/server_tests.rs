@@ -106,6 +106,7 @@ async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResul
             ReplayEntry {
                 fingerprint: [0_u8; 32],
                 result: CommandResult::shutting_down(),
+                revision: 0,
             },
         );
     }
