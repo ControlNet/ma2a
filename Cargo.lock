@@ -1956,6 +1956,7 @@ dependencies = [
  "ma2a-core",
  "ma2a-net",
  "ma2a-store",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",

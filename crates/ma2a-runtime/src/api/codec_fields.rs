@@ -3,13 +3,6 @@ use serde_json::{Map, Value};
 
 use super::{ApiError, commands::BoundedText};
 
-pub(crate) fn object(value: &Value) -> Result<Map<String, Value>, ApiError> {
-    value
-        .as_object()
-        .cloned()
-        .ok_or_else(ApiError::invalid_input)
-}
-
 pub(crate) fn exact_fields(object: &Map<String, Value>, required: &[&str]) -> Result<(), ApiError> {
     if object.len() != required.len() || object.keys().any(|key| !required.contains(&key.as_str()))
     {
@@ -85,7 +78,6 @@ const fn hex_nibble(value: Option<u8>) -> Result<u8, ApiError> {
     match value {
         Some(byte @ b'0'..=b'9') => Ok(byte - b'0'),
         Some(byte @ b'a'..=b'f') => Ok(byte - b'a' + 10),
-        Some(byte @ b'A'..=b'F') => Ok(byte - b'A' + 10),
         Some(_) | None => Err(ApiError::new(ProtocolError::INVALID_INPUT)),
     }
 }

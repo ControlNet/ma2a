@@ -3,21 +3,27 @@ use serde_json::{Map, Value, json};
 use super::{
     ApiError, LOCAL_API_VERSION, MAX_LOCAL_REQUEST_BYTES,
     codec_fields::{
-        bounded_text, encode_hex, endpoint_id, exact_fields, number, object, request_id, space_id,
-        text,
+        bounded_text, encode_hex, endpoint_id, exact_fields, number, request_id, space_id, text,
     },
     commands::{Command, CommandKind, PrivateRelayMode},
+    strict_json,
 };
 
 pub(crate) fn decode_request(input: &[u8]) -> Result<Command, ApiError> {
     if input.len() > MAX_LOCAL_REQUEST_BYTES {
         return Err(ApiError::invalid_input());
     }
-    let document = serde_json::from_slice::<Value>(input).map_err(|_| ApiError::invalid_input())?;
-    let object = object(&document)?;
+    let document = strict_json::decode_root_object(input)?;
+    let object = document.fields;
     let version = number(&object, "version")?;
+    if document.duplicate_version {
+        return Err(ApiError::invalid_input());
+    }
     if version != u64::from(LOCAL_API_VERSION) {
         return Err(ApiError::version_mismatch());
+    }
+    if document.duplicate_member {
+        return Err(ApiError::invalid_input());
     }
     parse_command(&object)
 }
