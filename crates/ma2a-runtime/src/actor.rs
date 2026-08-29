@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use ma2a_core::{SignedInviteTicket, SpaceId};
 use ma2a_net::{EnrollmentCall, RuntimeEndpoint};
@@ -113,6 +113,7 @@ pub(crate) struct Actor {
     pub(crate) store: StoreClient,
     commands: mpsc::Receiver<Command>,
     pub(crate) events: broadcast::Sender<RuntimeEvent>,
+    pub(crate) clock: Arc<dyn crate::RuntimeClock>,
     enrollment_calls: mpsc::Receiver<EnrollmentCall>,
     cancellation: CancellationToken,
 }
@@ -127,6 +128,7 @@ impl Actor {
         endpoint: RuntimeEndpoint,
         store: StoreClient,
         enrollment_calls: mpsc::Receiver<EnrollmentCall>,
+        clock: Arc<dyn crate::RuntimeClock>,
     ) -> (Self, RuntimeHandle, CancellationToken) {
         let (command_sender, commands) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
@@ -138,6 +140,7 @@ impl Actor {
             store,
             commands,
             events,
+            clock,
             enrollment_calls,
             cancellation: cancellation.child_token(),
         };

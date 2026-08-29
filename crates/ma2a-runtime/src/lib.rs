@@ -8,6 +8,7 @@ pub mod api;
 pub mod ipc;
 
 mod actor;
+mod clock;
 mod enrollment;
 mod enrollment_actor;
 mod error;
@@ -17,6 +18,7 @@ mod store;
 mod store_client;
 
 pub use actor::RuntimeHandle;
+pub use clock::RuntimeClock;
 pub use enrollment::{
     EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EnrollmentErrorCode,
     EstablishedEnrollment,
