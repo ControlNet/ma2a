@@ -1981,6 +1981,8 @@ dependencies = [
  "irpc",
  "irpc-iroh",
  "ma2a-core",
+ "ma2a-store",
+ "n0-future",
  "tokio",
  "zeroize",
 ]

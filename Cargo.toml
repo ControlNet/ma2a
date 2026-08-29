@@ -42,6 +42,7 @@ ma2a-core = { path = "crates/ma2a-core", version = "=0.1.0" }
 ma2a-net = { path = "crates/ma2a-net", version = "=0.1.0" }
 ma2a-runtime = { path = "crates/ma2a-runtime", version = "=0.1.0" }
 ma2a-store = { path = "crates/ma2a-store", version = "=0.1.0" }
+n0-future = "=0.3.2"
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["backup", "bundled", "fallible_uint"] }
 rpassword = "=7.5.4"
