@@ -4,6 +4,7 @@ mod codec;
 mod codec_fields;
 mod commands;
 mod events;
+mod response_decode;
 mod responses;
 mod result_data;
 mod schema;
@@ -18,6 +19,7 @@ pub use commands::{COMMAND_NAMES, Command};
 pub use events::{
     EVENT_NAMES, EventContinuity, RuntimeEvent, classify_event_revision, encode_event,
 };
+pub use response_decode::decode_ui_control_response;
 pub use responses::{ApiResponse, CommandResult, UiControlResult, encode_error, encode_response};
 pub use result_data::{
     CapabilityFlags, EchoReplyView, HandshakeAuth, HandshakeState, HandshakeView,
@@ -145,6 +147,10 @@ pub fn decode_command(input: &[u8]) -> Result<Command, ApiError> {
 /// Returns invalid input when serialization fails or exceeds the request bound.
 pub fn encode_command(command: &Command) -> Result<Vec<u8>, ApiError> {
     codec::encode_request(command)
+}
+
+pub(crate) fn command_fingerprint(command: &Command) -> Result<[u8; 32], ApiError> {
+    codec::fingerprint(command)
 }
 
 /// Parses, version-gates, replay-classifies, and dispatches one local request.
