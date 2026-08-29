@@ -175,13 +175,16 @@ impl Actor {
         let endpoint_closed = self.endpoint.shutdown().await?;
         let observation = self.store.observe(&self.state).await;
         let clean_shutdown = if clean {
-            self.store.clean_shutdown(self.state.boot_id).await
+            Some(self.store.clean_shutdown(self.state.boot_id).await)
         } else {
-            Ok(self.state.revision)
+            None
         };
         let stop = self.store.stop().await;
-        self.state.revision = observation?;
-        self.state.revision = clean_shutdown?;
+        let observation_revision = observation?;
+        self.state.revision = match clean_shutdown {
+            Some(result) => result?,
+            None => observation_revision,
+        };
         stop?;
         Ok(ShutdownAck {
             revision: self.state.revision,
