@@ -1,7 +1,6 @@
 use ma2a_store::{
-    AddressAdvance, ManifestAdvance, MemberRecord, MemberRevocation, MemberRole, PasswordReset,
-    RelayAdvertisementAdvance, RelayConfiguration, RelayObservation, Repository,
-    RuntimeMetadataUpdate, SequenceOutcome, SessionRecord, SpaceRecord, StoreConfig,
+    AddressAdvance, PasswordReset, RelayAdvertisementAdvance, RelayConfiguration, RelayObservation,
+    Repository, RuntimeMetadataUpdate, SequenceOutcome, SessionRecord, StoreConfig,
 };
 use rusqlite::Connection;
 
@@ -14,12 +13,11 @@ fn address_and_advertisement_reject_stale_sequences() -> TestResult {
     let state = TempState::new("highest-sequences")?;
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
-    repository.create_space(&SpaceRecord::new(space_id(), b"genesis".to_vec(), None))?;
+    repository.create_space(&super::space_fixture::space_record()?)?;
     let endpoint = endpoint_id()?;
-
     // When
     let address = repository.advance_address(&AddressAdvance {
-        space_id: space_id(),
+        space_id: space_id()?,
         endpoint_id: endpoint,
         sequence: 4,
         issued_at_ms: 1,
@@ -28,7 +26,7 @@ fn address_and_advertisement_reject_stale_sequences() -> TestResult {
         signed_record: b"address".to_vec(),
     })?;
     let stale_address = repository.advance_address(&AddressAdvance {
-        space_id: space_id(),
+        space_id: space_id()?,
         endpoint_id: endpoint,
         sequence: 3,
         issued_at_ms: 2,
@@ -37,7 +35,7 @@ fn address_and_advertisement_reject_stale_sequences() -> TestResult {
         signed_record: b"stale".to_vec(),
     })?;
     let advertisement = repository.advance_relay_advertisement(&RelayAdvertisementAdvance {
-        space_id: space_id(),
+        space_id: space_id()?,
         relay_endpoint_id: endpoint,
         sequence: 9,
         expires_at_ms: 30,
@@ -97,20 +95,14 @@ fn password_reset_revokes_existing_sessions_in_one_revision() -> TestResult {
 }
 
 #[test]
-fn runtime_membership_and_relay_metadata_are_persisted() -> TestResult {
+fn signed_membership_and_relay_metadata_are_persisted() -> TestResult {
     // Given
     let state = TempState::new("public-state")?;
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
-    repository.create_space(&SpaceRecord::new(space_id(), b"genesis".to_vec(), None))?;
-    repository.advance_manifest(&ManifestAdvance::new(
-        space_id(),
-        0,
-        None,
-        [11; 32],
-        b"manifest".to_vec(),
-    ))?;
-    let endpoint = endpoint_id()?;
+    repository.create_space(&super::space_fixture::space_record()?)?;
+    let genesis = super::space_fixture::signed_space_genesis()?;
+    repository.advance_manifest(&super::manifest_advance(1, genesis.chain_hash())?)?;
 
     // When
     repository.record_runtime_metadata(&RuntimeMetadataUpdate {
@@ -118,18 +110,6 @@ fn runtime_membership_and_relay_metadata_are_persisted() -> TestResult {
         last_shutdown_clean: false,
         observed_at_ms: 70,
     })?;
-    repository.upsert_member(&MemberRecord::new(
-        space_id(),
-        endpoint,
-        MemberRole::MEMBER,
-        0,
-    ))?;
-    repository.revoke_member(&MemberRevocation::new(
-        space_id(),
-        endpoint,
-        0,
-        b"revocation".to_vec(),
-    ))?;
     repository.set_relay_configuration(&RelayConfiguration {
         public_fallback_enabled: true,
         public_relay_url: Some("https://relay.invalid".to_owned()),
@@ -157,7 +137,7 @@ fn runtime_membership_and_relay_metadata_are_persisted() -> TestResult {
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM member_revocations", [], |row| row
             .get::<_, u32>(0))?,
-        1
+        0
     );
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM relay_observations", [], |row| row

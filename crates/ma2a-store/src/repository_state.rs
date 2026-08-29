@@ -1,6 +1,6 @@
 use crate::{
-    EndpointObservationUpdate, MemberRecord, MemberRevocation, RelayConfiguration,
-    RelayObservation, Repository, RuntimeMetadata, RuntimeMetadataUpdate, StoreError,
+    EndpointObservationUpdate, RelayConfiguration, RelayObservation, Repository, RuntimeMetadata,
+    RuntimeMetadataUpdate, StoreError,
     repository::increment_revision,
 };
 
@@ -119,54 +119,6 @@ impl Repository {
                 observation.direct_address_count,
                 observation.relay_address_count,
                 observation.membership_count,
-            ),
-        )?;
-        let revision = increment_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(revision)
-    }
-
-    /// Inserts or updates current membership at an accepted manifest generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError`] when membership state cannot be committed.
-    pub fn upsert_member(&mut self, member: &MemberRecord) -> Result<u64, StoreError> {
-        let transaction = self.immediate()?;
-        transaction.execute(
-            "INSERT INTO members(space_id, endpoint_id, role, accepted_generation)
-             VALUES (?1, ?2, ?3, ?4) ON CONFLICT(space_id, endpoint_id) DO UPDATE SET
-             role = excluded.role, accepted_generation = excluded.accepted_generation",
-            (
-                member.space_id.as_bytes().as_slice(),
-                member.endpoint_id.as_bytes().as_slice(),
-                member.role.code(),
-                member.accepted_generation,
-            ),
-        )?;
-        let revision = increment_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(revision)
-    }
-
-    /// Stores the latest signed revocation for one Space member.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError`] when revocation state cannot be committed.
-    pub fn revoke_member(&mut self, revocation: &MemberRevocation) -> Result<u64, StoreError> {
-        let transaction = self.immediate()?;
-        transaction.execute(
-            "INSERT INTO member_revocations(space_id, endpoint_id, revoked_generation,
-             signed_revocation) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(space_id, endpoint_id) DO UPDATE SET
-             revoked_generation = excluded.revoked_generation,
-             signed_revocation = excluded.signed_revocation",
-            (
-                revocation.space_id.as_bytes().as_slice(),
-                revocation.endpoint_id.as_bytes().as_slice(),
-                revocation.revoked_generation,
-                revocation.signed_revocation.as_slice(),
             ),
         )?;
         let revision = increment_revision(&transaction)?;

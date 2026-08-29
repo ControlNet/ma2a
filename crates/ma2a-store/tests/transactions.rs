@@ -1,5 +1,7 @@
 //! Real `SQLite` transaction, rollback, reopen, and contention coverage.
 
+#[path = "common/space_fixture.rs"]
+mod space_fixture;
 #[path = "transactions/state.rs"]
 mod state;
 #[path = "common/support.rs"]
@@ -12,8 +14,7 @@ use std::{
 };
 
 use ma2a_store::{
-    InvitationRecord, ManifestAdvance, ManifestOutcome, Redemption, RedemptionOutcome, Repository,
-    SpaceRecord, StoreConfig,
+    InvitationRecord, ManifestOutcome, Redemption, RedemptionOutcome, Repository, StoreConfig,
 };
 use rusqlite::Connection;
 use support::{TempState, TestResult, TestResultValue};
@@ -28,15 +29,9 @@ fn manifest_conflict_rolls_back_manifest_and_revision() -> TestResult {
     let state = TempState::new("manifest-rollback")?;
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
-    repository.create_space(&SpaceRecord::new(space_id(), b"genesis".to_vec(), None))?;
+    repository.create_space(&space_fixture::space_record()?)?;
     let revision = repository.revision()?;
-    let advance = ManifestAdvance::new(
-        space_id(),
-        2,
-        Some([1; 32]),
-        [2; 32],
-        b"signed-manifest".to_vec(),
-    );
+    let advance = manifest_advance(2, [1; 32])?;
 
     // When
     let outcome = repository.advance_manifest(&advance)?;
@@ -45,7 +40,7 @@ fn manifest_conflict_rolls_back_manifest_and_revision() -> TestResult {
     assert_eq!(
         outcome,
         ManifestOutcome::Conflict {
-            current_generation: None
+            current_generation: Some(0)
         }
     );
     assert_eq!(repository.revision()?, revision);
@@ -54,7 +49,7 @@ fn manifest_conflict_rolls_back_manifest_and_revision() -> TestResult {
     assert_eq!(
         connection.query_row("SELECT COUNT(*) FROM manifests", [], |row| row
             .get::<_, u32>(0))?,
-        0
+        1
     );
     Ok(())
 }
@@ -120,7 +115,7 @@ fn run_crash_child() -> TestResult {
     connection.execute_batch("BEGIN IMMEDIATE")?;
     connection.execute(
         "INSERT INTO spaces(space_id, genesis_cbor) VALUES (?1, ?2)",
-        (space_id().as_bytes().as_slice(), b"uncommitted".as_slice()),
+        (space_id()?.as_bytes().as_slice(), b"uncommitted".as_slice()),
     )?;
     connection.execute(
         "UPDATE runtime_metadata SET revision = revision + 1 WHERE singleton = 1",
@@ -139,8 +134,13 @@ fn two_concurrent_redemptions_have_exactly_one_winner() -> TestResult {
     let state = TempState::new("concurrent-redemption")?;
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
-    repository.create_space(&SpaceRecord::new(space_id(), b"genesis".to_vec(), None))?;
-    repository.create_invitation(&InvitationRecord::new([3; 16], space_id(), [4; 32], 10_000))?;
+    repository.create_space(&space_fixture::space_record()?)?;
+    repository.create_invitation(&InvitationRecord::new(
+        [3; 16],
+        space_id()?,
+        [4; 32],
+        10_000,
+    ))?;
     drop(repository);
     let barrier = Arc::new(Barrier::new(3));
 
@@ -174,8 +174,8 @@ fn expired_invitation_is_persistently_invalidated() -> TestResult {
     let state = TempState::new("expired-invitation")?;
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
-    repository.create_space(&SpaceRecord::new(space_id(), b"genesis".to_vec(), None))?;
-    repository.create_invitation(&InvitationRecord::new([5; 16], space_id(), [6; 32], 10))?;
+    repository.create_space(&space_fixture::space_record()?)?;
+    repository.create_invitation(&InvitationRecord::new([5; 16], space_id()?, [6; 32], 10))?;
     let redemption = Redemption::new([6; 32], endpoint_id()?, 10, 10);
 
     // When
@@ -221,6 +221,30 @@ fn endpoint_id() -> TestResultValue<ma2a_core::EndpointId> {
     Ok(ma2a_core::EndpointId::try_from(BYTES.as_slice())?)
 }
 
-fn space_id() -> ma2a_core::SpaceId {
-    ma2a_core::SpaceId::derive(b"ma2a-store-test-genesis")
+fn space_id() -> TestResultValue<ma2a_core::SpaceId> {
+    Ok(space_fixture::signed_space_genesis()?.space_id())
+}
+
+fn manifest_advance(
+    generation: u64,
+    previous_hash: [u8; 32],
+) -> TestResultValue<ma2a_store::ManifestAdvance> {
+    let genesis = space_fixture::signed_space_genesis()?;
+    let secret = ma2a_core::SpaceAuthoritySecret::from_bytes([0x41; 32]);
+    let manifest = ma2a_core::SpaceManifestV1::new(
+        ma2a_core::SpaceManifestLink::new(genesis.space_id(), generation, previous_hash),
+        generation + 1,
+        ma2a_core::SpaceManifestMembership::new(
+            vec![genesis.genesis().initial_member().clone()],
+            vec![],
+        ),
+    )?
+    .sign(&secret)?;
+    Ok(ma2a_store::ManifestAdvance::new(
+        genesis.space_id(),
+        manifest.generation(),
+        Some(manifest.previous_hash()),
+        manifest.manifest_hash(),
+        manifest.canonical_bytes().to_vec(),
+    ))
 }

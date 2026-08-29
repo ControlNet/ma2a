@@ -107,46 +107,38 @@ impl Repository {
         &mut self,
         advance: &ManifestAdvance,
     ) -> Result<ManifestOutcome, StoreError> {
-        let transaction = self.immediate()?;
-        let current = transaction.query_row(
-            "SELECT latest_manifest_generation, latest_manifest_hash FROM spaces WHERE space_id = ?1",
-            [advance.space_id.as_bytes().as_slice()],
-            |row| Ok((row.get::<_, Option<u64>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
-        )?;
-        let expected_generation = current.0.map_or(0, |value| value + 1);
-        let previous_matches = match (&advance.previous_hash, current.1.as_deref()) {
-            (None, None) => true,
-            (Some(proposed), Some(stored)) => proposed.as_slice() == stored,
-            (None, Some(_)) | (Some(_), None) => false,
-        };
-        if advance.generation != expected_generation || !previous_matches {
+        let Some(mut chain) = self.load_space_chain(advance.space_id)? else {
             return Ok(ManifestOutcome::Conflict {
-                current_generation: current.0,
+                current_generation: None,
+            });
+        };
+        let current_generation = chain.latest_generation();
+        let manifest = ma2a_core::SignedSpaceManifestV1::from_canonical_bytes(
+            &advance.signed_manifest,
+            chain.genesis().authority(),
+        )
+        .map_err(|_| StoreError::Manifest(ma2a_core::ManifestError::INVALID_SIGNATURE))?;
+        if manifest.manifest().space_id() != advance.space_id
+            || manifest.generation() != advance.generation
+            || advance.previous_hash != Some(manifest.previous_hash())
+            || manifest.manifest_hash() != advance.manifest_hash
+        {
+            return Err(StoreError::SchemaMismatch {
+                detail: "manifest advance metadata does not match signed bytes",
             });
         }
-        transaction.execute(
-            "INSERT INTO manifests(space_id, generation, previous_hash, manifest_hash, signed_manifest)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            (
-                advance.space_id.as_bytes().as_slice(),
-                advance.generation,
-                advance.previous_hash.as_ref().map(<[u8; 32]>::as_slice),
-                advance.manifest_hash.as_slice(),
-                advance.signed_manifest.as_slice(),
-            ),
-        )?;
-        transaction.execute(
-            "UPDATE spaces SET latest_manifest_generation = ?1, latest_manifest_hash = ?2
-             WHERE space_id = ?3",
-            (
-                advance.generation,
-                advance.manifest_hash.as_slice(),
-                advance.space_id.as_bytes().as_slice(),
-            ),
-        )?;
-        let revision = increment_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(ManifestOutcome::Advanced { revision })
+        if chain.apply(&manifest).is_err() {
+            return Ok(ManifestOutcome::Conflict {
+                current_generation: Some(current_generation),
+            });
+        }
+        let persistence = self.persist_space_chain(&chain)?;
+        Ok(persistence.revision().map_or(
+            ManifestOutcome::Conflict {
+                current_generation: Some(current_generation),
+            },
+            |revision| ManifestOutcome::Advanced { revision },
+        ))
     }
 
     /// Replaces current address state only when the sequence increases.
