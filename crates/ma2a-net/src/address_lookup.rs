@@ -6,12 +6,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use iroh::address_lookup::{AddressLookup, EndpointData, EndpointInfo, Error as LookupError, Item};
+use iroh::address_lookup::{AddressLookup, EndpointInfo, Error as LookupError, Item};
 use iroh_base::{EndpointId as IrohEndpointId, TransportAddr};
 use ma2a_core::{EndpointId, SpaceAuthorizationView, SpaceId};
 use n0_future::{StreamExt as _, boxed::BoxStream};
 
-use crate::ValidatedAddressRecord;
+use crate::{
+    AddressCacheOutcome, AddressLookupExclusion, AddressMetrics, ValidatedAddressRecord,
+    address_endpoint_data_to_iroh,
+};
 
 /// Clock used to expire cached address records during synchronous Iroh lookup.
 pub trait AddressLookupClock: fmt::Debug + Send + Sync + 'static {
@@ -47,12 +50,19 @@ impl Error for AddressLookupStateError {}
 
 type RecordKey = (SpaceId, EndpointId);
 
+#[derive(Debug, Default)]
+struct AuthorizationState {
+    order: Vec<SpaceId>,
+    by_space: BTreeMap<SpaceId, SpaceAuthorizationView>,
+}
+
 /// Private target-specific Iroh address lookup backed only by validated Space records.
 #[derive(Clone, Debug)]
 pub struct SpaceAddressLookup {
     records: Arc<RwLock<BTreeMap<RecordKey, ValidatedAddressRecord>>>,
-    authorizations: Arc<RwLock<BTreeMap<SpaceId, SpaceAuthorizationView>>>,
+    authorizations: Arc<RwLock<AuthorizationState>>,
     clock: Arc<dyn AddressLookupClock>,
+    metrics: AddressMetrics,
 }
 
 impl Default for SpaceAddressLookup {
@@ -64,10 +74,19 @@ impl Default for SpaceAddressLookup {
 impl SpaceAddressLookup {
     /// Creates an empty lookup with an injected expiry clock.
     pub fn with_clock(clock: Arc<dyn AddressLookupClock>) -> Self {
+        Self::with_clock_and_metrics(clock, AddressMetrics::default())
+    }
+
+    /// Creates an empty lookup with injected clock and typed metrics.
+    pub fn with_clock_and_metrics(
+        clock: Arc<dyn AddressLookupClock>,
+        metrics: AddressMetrics,
+    ) -> Self {
         Self {
             records: Arc::new(RwLock::new(BTreeMap::new())),
-            authorizations: Arc::new(RwLock::new(BTreeMap::new())),
+            authorizations: Arc::new(RwLock::new(AuthorizationState::default())),
             clock,
+            metrics,
         }
     }
 
@@ -79,14 +98,17 @@ impl SpaceAddressLookup {
         &self,
         authorizations: Vec<SpaceAuthorizationView>,
     ) -> Result<(), AddressLookupStateError> {
-        let mut replacement = BTreeMap::new();
+        let mut replacement = AuthorizationState::default();
         for authorization in authorizations {
+            let space_id = authorization.space_id();
             if replacement
-                .insert(authorization.space_id(), authorization)
+                .by_space
+                .insert(space_id, authorization)
                 .is_some()
             {
                 return Err(AddressLookupStateError);
             }
+            replacement.order.push(space_id);
         }
         {
             let mut state = self
@@ -108,12 +130,26 @@ impl SpaceAddressLookup {
             record.record().record().endpoint_id(),
         );
         let mut records = self.records.write().map_err(|_| AddressLookupStateError)?;
-        if records.get(&key).is_some_and(|current| {
-            current.record().record().sequence() >= record.record().record().sequence()
-        }) {
-            return Ok(());
+        if let Some(current) = records.get(&key) {
+            match current
+                .record()
+                .record()
+                .sequence()
+                .cmp(&record.record().record().sequence())
+            {
+                std::cmp::Ordering::Greater => {
+                    self.metrics.record_cache(AddressCacheOutcome::Stale);
+                    return Ok(());
+                }
+                std::cmp::Ordering::Equal => {
+                    self.metrics.record_cache(AddressCacheOutcome::Equal);
+                    return Ok(());
+                }
+                std::cmp::Ordering::Less => {}
+            }
         }
         records.insert(key, record);
+        self.metrics.record_cache(AddressCacheOutcome::Inserted);
         drop(records);
         Ok(())
     }
@@ -122,37 +158,55 @@ impl SpaceAddressLookup {
     pub fn resolve_endpoint(&self, endpoint_id: IrohEndpointId) -> Option<EndpointInfo> {
         let target = EndpointId::from(endpoint_id);
         let now_ms = self.clock.now_ms();
-        let addresses = {
+        let data = {
             let records = self.records.read().ok()?;
             let authorizations = self.authorizations.read().ok()?;
-            let mut addresses = BTreeSet::<TransportAddr>::new();
-            for ((space_id, record_endpoint), validated) in records.iter() {
-                if *record_endpoint != target {
+            let mut addresses = Vec::<TransportAddr>::new();
+            let mut seen = BTreeSet::<TransportAddr>::new();
+            let mut user_data = None::<Option<String>>;
+            for space_id in &authorizations.order {
+                let Some(validated) = records.get(&(*space_id, target)) else {
                     continue;
-                }
-                let Some(authorization) = authorizations.get(space_id) else {
+                };
+                let Some(authorization) = authorizations.by_space.get(space_id) else {
                     continue;
                 };
                 let record = validated.record().record();
-                if !authorization.contains_member(target)
-                    || record.issued_at_ms() > now_ms
-                    || record.expires_at_ms() <= now_ms
-                {
+                if !authorization.contains_member(target) {
                     continue;
                 }
-                addresses.extend(record.endpoint_data().addresses().iter().cloned());
+                if record.issued_at_ms() > now_ms {
+                    self.metrics.record_lookup(AddressLookupExclusion::Future);
+                    continue;
+                }
+                if record.expires_at_ms() <= now_ms {
+                    self.metrics.record_lookup(AddressLookupExclusion::Expired);
+                    continue;
+                }
+                let record_user_data = record.endpoint_data().user_data().map(str::to_owned);
+                if user_data
+                    .as_ref()
+                    .is_some_and(|current| current != &record_user_data)
+                {
+                    return None;
+                }
+                user_data = Some(record_user_data);
+                for address in record.endpoint_data().addresses() {
+                    if seen.insert(address.clone()) {
+                        addresses.push(address.clone());
+                    }
+                }
             }
             drop(authorizations);
             drop(records);
-            addresses
+            (addresses, user_data.flatten())
         };
-        if addresses.is_empty() {
+        if data.0.is_empty() && data.1.is_none() {
             return None;
         }
-        Some(EndpointInfo::from_parts(
-            endpoint_id,
-            EndpointData::from(addresses),
-        ))
+        let bounded = ma2a_core::AddressEndpointDataV1::from_parts(data.0, data.1).ok()?;
+        let endpoint_data = address_endpoint_data_to_iroh(&bounded).ok()?;
+        Some(EndpointInfo::from_parts(endpoint_id, endpoint_data))
     }
 }
 
