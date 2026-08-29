@@ -63,6 +63,11 @@ pub struct SpaceAddressLookup {
     authorizations: Arc<RwLock<AuthorizationState>>,
     clock: Arc<dyn AddressLookupClock>,
     metrics: AddressMetrics,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RuntimeAddressLookup {
+    resolver: SpaceAddressLookup,
     observation: AddressObservation,
 }
 
@@ -88,12 +93,7 @@ impl SpaceAddressLookup {
             authorizations: Arc::new(RwLock::new(AuthorizationState::default())),
             clock,
             metrics,
-            observation: AddressObservation::default(),
         }
-    }
-
-    pub(crate) fn observation(&self) -> AddressObservation {
-        self.observation.clone()
     }
 
     /// Replaces current verified Space authorization snapshots.
@@ -217,15 +217,34 @@ impl SpaceAddressLookup {
 }
 
 impl AddressLookup for SpaceAddressLookup {
-    fn publish(&self, data: &iroh::address_lookup::EndpointData) {
-        self.observation.observe(data);
-    }
-
     fn resolve(&self, endpoint_id: IrohEndpointId) -> Option<BoxStream<Result<Item, LookupError>>> {
         let stream = self.resolve_endpoint(endpoint_id).map_or_else(
             || n0_future::stream::empty().boxed(),
             |info| n0_future::stream::iter([Ok(Item::new(info, "ma2a_space", None))]).boxed(),
         );
         Some(stream)
+    }
+}
+
+impl RuntimeAddressLookup {
+    pub(crate) fn new(resolver: SpaceAddressLookup) -> Self {
+        Self {
+            resolver,
+            observation: AddressObservation::default(),
+        }
+    }
+
+    pub(crate) fn observation(&self) -> AddressObservation {
+        self.observation.clone()
+    }
+}
+
+impl AddressLookup for RuntimeAddressLookup {
+    fn publish(&self, data: &iroh::address_lookup::EndpointData) {
+        self.observation.observe(data);
+    }
+
+    fn resolve(&self, endpoint_id: IrohEndpointId) -> Option<BoxStream<Result<Item, LookupError>>> {
+        self.resolver.resolve(endpoint_id)
     }
 }
