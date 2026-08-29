@@ -1918,6 +1918,7 @@ name = "ma2a-app"
 version = "0.1.0"
 dependencies = [
  "iroh",
+ "iroh-tickets",
  "ma2a-core",
  "ma2a-net",
  "ma2a-runtime",
@@ -1938,6 +1939,7 @@ dependencies = [
  "iroh-base",
  "iroh-tickets",
  "proptest",
+ "zeroize",
 ]
 
 [[package]]
@@ -1965,6 +1967,7 @@ dependencies = [
  "blake3",
  "getrandom 0.4.3",
  "interprocess",
+ "iroh-tickets",
  "ma2a-core",
  "ma2a-net",
  "ma2a-store",
@@ -1984,6 +1987,7 @@ name = "ma2a-store"
 version = "0.1.0"
 dependencies = [
  "ma2a-core",
+ "ma2a-net",
  "rusqlite",
  "rustix",
  "zeroize",
