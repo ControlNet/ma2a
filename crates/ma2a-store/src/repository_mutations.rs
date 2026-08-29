@@ -132,10 +132,16 @@ impl Repository {
                 current_generation: Some(current_generation),
             });
         }
+        let accepted_generation = chain.latest_generation();
         let persistence = self.persist_space_chain(&chain)?;
-        Ok(persistence.revision().map_or(
-            ManifestOutcome::Conflict {
+        if persistence.error().is_some() {
+            return Ok(ManifestOutcome::Conflict {
                 current_generation: Some(current_generation),
+            });
+        }
+        Ok(persistence.revision().map_or(
+            ManifestOutcome::Idempotent {
+                current_generation: accepted_generation,
             },
             |revision| ManifestOutcome::Advanced { revision },
         ))

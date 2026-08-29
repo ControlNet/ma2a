@@ -55,6 +55,28 @@ fn manifest_conflict_rolls_back_manifest_and_revision() -> TestResult {
 }
 
 #[test]
+fn identical_manifest_replay_is_idempotent_without_revision_change() -> TestResult {
+    let state = TempState::new("manifest-idempotent-replay")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let genesis = space_fixture::signed_space_genesis()?;
+    repository.create_space(&space_fixture::space_record()?)?;
+    let advance = manifest_advance(1, genesis.chain_hash())?;
+    let first = repository.advance_manifest(&advance)?;
+    assert!(matches!(first, ManifestOutcome::Advanced { .. }));
+    let revision = repository.revision()?;
+
+    assert_eq!(
+        repository.advance_manifest(&advance)?,
+        ManifestOutcome::Idempotent {
+            current_generation: 1
+        }
+    );
+    assert_eq!(repository.revision()?, revision);
+    Ok(())
+}
+
+#[test]
 fn forced_termination_rolls_back_uncommitted_transaction() -> TestResult {
     if std::env::var_os(CRASH_CHILD_ENV).is_some() {
         return run_crash_child();
