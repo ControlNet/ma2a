@@ -78,14 +78,36 @@ impl RuntimeMetadata {
 pub struct RelayConfiguration {
     /// Enables separately configured public Iroh Relay fallback.
     pub public_fallback_enabled: bool,
-    /// Optional public Relay URL.
-    pub public_relay_url: Option<String>,
+    /// Ordered operator-supplied public Relay URLs.
+    pub public_relay_urls: Vec<String>,
     /// Enables the local Runtime's private-relay provider role.
     pub private_provider_enabled: bool,
     /// Optional local private-relay listener address.
     pub listener_address: Option<String>,
-    /// Native TLS or external termination mode code.
-    pub tls_mode: Option<u8>,
+    /// Externally advertised private Relay URL.
+    pub private_relay_url: Option<String>,
+    /// Exact configured Space subset served by the provider.
+    pub served_spaces: Vec<SpaceId>,
+    /// Operator-selected private Relay transport configuration.
+    pub transport: Option<RelayTransportConfiguration>,
+}
+
+/// Persisted private Relay TLS deployment mode and path references.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "Store owns the complete closed relay transport persistence contract"
+)]
+pub enum RelayTransportConfiguration {
+    /// The embedded relay loads certificate and key files by path.
+    NativeTls {
+        /// Certificate chain path, never certificate bytes.
+        certificate_path: String,
+        /// Private-key path, never private-key bytes.
+        private_key_path: String,
+    },
+    /// A loopback proxy backend receives externally terminated TLS traffic.
+    ExternalTlsTermination,
 }
 
 /// Latest observed effective state for one relay URL.
@@ -108,3 +130,4 @@ pub struct RelayObservation {
     /// Bounded runtime-owned observation payload.
     pub observed_state: Vec<u8>,
 }
+use ma2a_core::SpaceId;
