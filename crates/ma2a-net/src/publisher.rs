@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use iroh::{Endpoint, EndpointAddr, SecretKey};
+use iroh::{Endpoint, EndpointAddr, SecretKey, address_lookup::UserData};
 use ma2a_core::{
     AddressEndpointDataV1, AddressRecordScope, AddressRecordValidity,
     MAX_ADDRESS_RECORD_VALIDITY_MS, ProtocolError, SignedSpaceAddressRecordV1,
@@ -18,7 +18,10 @@ const ADDRESS_REFRESH_INTERVAL_MS: u64 = 300_000;
 #[derive(Clone)]
 enum PublisherSource {
     Live(Endpoint),
-    Snapshot(EndpointAddr),
+    Snapshot {
+        endpoint_addr: EndpointAddr,
+        user_data: Option<UserData>,
+    },
 }
 
 /// Endpoint-owned address publisher using live Iroh observations or a validated snapshot.
@@ -40,7 +43,29 @@ impl AddressPublisher {
         validate_observation(&secret, &endpoint_addr)?;
         Ok(Self {
             secret,
-            source: PublisherSource::Snapshot(endpoint_addr),
+            source: PublisherSource::Snapshot {
+                endpoint_addr,
+                user_data: None,
+            },
+        })
+    }
+
+    /// Creates a complete snapshot publisher after checking the address identity.
+    ///
+    /// # Errors
+    /// Returns [`AddressPublisherError::IdentityMismatch`] before any record can be signed.
+    pub fn new_with_user_data(
+        secret: SecretKey,
+        endpoint_addr: EndpointAddr,
+        user_data: Option<UserData>,
+    ) -> Result<Self, AddressPublisherError> {
+        validate_observation(&secret, &endpoint_addr)?;
+        Ok(Self {
+            secret,
+            source: PublisherSource::Snapshot {
+                endpoint_addr,
+                user_data,
+            },
         })
     }
 
@@ -65,14 +90,19 @@ impl AddressPublisher {
         repository: &mut Repository,
         request: AddressPublishRequest<'_>,
     ) -> Result<Option<ValidatedAddressRecord>, AddressPublisherError> {
-        let endpoint_addr = match &self.source {
-            PublisherSource::Live(endpoint) => endpoint.addr(),
-            PublisherSource::Snapshot(endpoint_addr) => endpoint_addr.clone(),
+        let (endpoint_addr, user_data) = match &self.source {
+            PublisherSource::Live(endpoint) => (endpoint.addr(), None),
+            PublisherSource::Snapshot {
+                endpoint_addr,
+                user_data,
+            } => (endpoint_addr.clone(), user_data.clone()),
         };
         validate_observation(&self.secret, &endpoint_addr)?;
-        let endpoint_data =
-            AddressEndpointDataV1::new(endpoint_addr.addrs.iter().cloned().collect())
-                .map_err(AddressPublisherError::Protocol)?;
+        let endpoint_data = AddressEndpointDataV1::from_parts(
+            endpoint_addr.addrs.iter().cloned().collect(),
+            user_data.map(|value| value.to_string()),
+        )
+        .map_err(AddressPublisherError::Protocol)?;
         let endpoint_id = self.secret.public().into();
         let space_id = request.authorization.space_id();
         let current = repository
