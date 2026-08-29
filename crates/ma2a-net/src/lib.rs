@@ -2,10 +2,15 @@
 
 #![forbid(unsafe_code)]
 
+mod address_record;
 mod endpoint;
 mod enrollment;
 mod protocols;
 
+pub use address_record::{
+    AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator,
+    AddressValidationContext, ValidatedAddressRecord,
+};
 pub use endpoint::{EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpoint};
 pub use enrollment::EnrollmentCall;
 pub use iroh::EndpointAddr;
