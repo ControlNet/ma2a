@@ -1,5 +1,5 @@
-import { type ReactNode, useCallback, useEffect, useState } from "react"
-
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { createRuntimeMutationClient } from "./api/mutations"
 import {
   currentWebSession,
   loginAndTouchSession,
@@ -8,6 +8,8 @@ import {
 } from "./api/web-auth"
 import { AppShell } from "./components/app-shell"
 import { isRoutePath, ROUTE_PATHS, type RoutePath } from "./routes"
+import { createRuntimeActions, type RuntimeActions } from "./runtime-actions"
+import { RuntimeController } from "./runtime-controller"
 import { LoginScreen, SetupScreen } from "./screens/auth"
 import { EchoScreen } from "./screens/echo"
 import { EndpointScreen } from "./screens/endpoint"
@@ -17,7 +19,11 @@ import { SettingsScreen } from "./screens/settings"
 import { SpacesScreen } from "./screens/spaces"
 import type { RuntimeViewData } from "./view-model"
 
-function routeContent(path: RoutePath, runtime?: RuntimeViewData): ReactNode {
+function routeContent(
+  path: RoutePath,
+  runtime: RuntimeViewData | undefined,
+  actions: RuntimeActions | undefined,
+): ReactNode {
   switch (path) {
     case ROUTE_PATHS.login:
       return <LoginScreen />
@@ -28,11 +34,11 @@ function routeContent(path: RoutePath, runtime?: RuntimeViewData): ReactNode {
     case ROUTE_PATHS.endpoint:
       return <EndpointScreen runtime={runtime} />
     case ROUTE_PATHS.spaces:
-      return <SpacesScreen runtime={runtime} />
+      return <SpacesScreen actions={actions} runtime={runtime} />
     case ROUTE_PATHS.relays:
-      return <RelaysScreen runtime={runtime} />
+      return <RelaysScreen actions={actions} runtime={runtime} />
     case ROUTE_PATHS.echo:
-      return <EchoScreen runtime={runtime} />
+      return <EchoScreen actions={actions} runtime={runtime} />
     case ROUTE_PATHS.settings:
       return <SettingsScreen />
   }
@@ -51,7 +57,17 @@ export function App({
 }): ReactNode {
   const [path, setPath] = useState<RoutePath>(initialPath ?? browserPath)
   const [session, setSession] = useState<WebSession | undefined>(currentWebSession)
+  const [liveRuntime, setLiveRuntime] = useState<RuntimeViewData | undefined>(runtime)
+  const [controller, setController] = useState<RuntimeController | undefined>()
   const controlled = initialPath !== undefined
+  const displayedRuntime = controlled ? runtime : liveRuntime
+
+  const actions = useMemo(() => {
+    if (session === undefined || controller === undefined) return undefined
+    return createRuntimeActions(createRuntimeMutationClient({ csrfToken: session.csrfToken }), () =>
+      controller.refresh(),
+    )
+  }, [controller, session])
 
   useEffect(() => {
     if (controlled) {
@@ -72,6 +88,22 @@ export function App({
     [controlled],
   )
 
+  useEffect(() => {
+    if (controlled || session === undefined) return
+    const active = new RuntimeController({
+      onRuntime: setLiveRuntime,
+      onSessionExpired: () => {
+        setSession(undefined)
+        setLiveRuntime(undefined)
+        navigate(ROUTE_PATHS.login)
+      },
+      onError: () => undefined,
+    })
+    setController(active)
+    void active.start()
+    return () => active.stop()
+  }, [controlled, navigate, session])
+
   const login = useCallback(
     async (passphrase: string): Promise<void> => {
       const authenticatedSession = await loginAndTouchSession(passphrase)
@@ -86,7 +118,9 @@ export function App({
       ? undefined
       : async (): Promise<void> => {
           await logoutSession(session)
+          controller?.stop()
           setSession(undefined)
+          setLiveRuntime(undefined)
           navigate(ROUTE_PATHS.login)
         }
 
@@ -97,11 +131,11 @@ export function App({
     return <SetupScreen />
   }
   return (
-    <AppShell onNavigate={navigate} path={path} runtime={runtime}>
+    <AppShell onNavigate={navigate} path={path} runtime={displayedRuntime}>
       {path === ROUTE_PATHS.settings ? (
-        <SettingsScreen onLogout={logout} />
+        <SettingsScreen actions={actions} onLogout={logout} runtime={displayedRuntime} />
       ) : (
-        routeContent(path, runtime)
+        routeContent(path, displayedRuntime, actions)
       )}
     </AppShell>
   )
