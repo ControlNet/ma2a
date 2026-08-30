@@ -174,7 +174,7 @@ impl Actor {
         succeeded: bool,
         synchronized_peers: &BTreeSet<EndpointId>,
     ) {
-        for waiter in self.control_queue.complete(round_id) {
+        for waiter in self.control_queue.complete(round_id, succeeded) {
             let waiter_succeeded = succeeded
                 && waiter
                     .peer()

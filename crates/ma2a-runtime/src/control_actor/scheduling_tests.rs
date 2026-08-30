@@ -81,7 +81,7 @@ fn older_round_does_not_complete_a_newer_targeted_waiter() -> TestResult {
     let pending = queue.request(ControlRoundScope::peer(peer), Some(newer_reply));
 
     // When
-    let completed = queue.complete(older.id());
+    let completed = queue.complete(older.id(), true);
 
     // Then
     assert!(pending.is_none());
@@ -96,7 +96,24 @@ fn older_round_does_not_complete_a_newer_targeted_waiter() -> TestResult {
     ));
     let newer = queue.take_pending().ok_or("pending round missing")?;
     assert_eq!(newer.scope(), &ControlRoundScope::peer(peer));
-    assert_eq!(queue.complete(newer.id()).len(), 1);
+    assert_eq!(queue.complete(newer.id(), true).len(), 1);
+    Ok(())
+}
+
+#[test]
+fn control_queue_health_tracks_pending_and_failed_work() -> TestResult {
+    // Given
+    let mut queue = ControlRoundQueue::default();
+    assert!(queue.is_synchronized());
+    let round = queue
+        .request(ControlRoundScope::all(), None)
+        .ok_or("control round missing")?;
+
+    // When
+    let _completed = queue.complete(round.id(), false);
+
+    // Then
+    assert!(!queue.is_synchronized());
     Ok(())
 }
 
@@ -120,7 +137,7 @@ fn global_pending_work_preserves_the_targeted_peer_for_its_waiter() -> TestResul
             .is_none()
     );
     assert!(queue.request(ControlRoundScope::all(), None).is_none());
-    assert!(queue.complete(active.id()).is_empty());
+    assert!(queue.complete(active.id(), true).is_empty());
 
     // When
     let pending = queue.take_pending().ok_or("pending round missing")?;
@@ -138,7 +155,7 @@ fn global_pending_work_preserves_the_targeted_peer_for_its_waiter() -> TestResul
         response.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
     ));
-    assert_eq!(queue.complete(pending.id()).len(), 1);
+    assert_eq!(queue.complete(pending.id(), true).len(), 1);
     let global = queue.take_pending().ok_or("global round missing")?;
     let global_selected = ControlRoundRequest {
         local_endpoint_id: local,
