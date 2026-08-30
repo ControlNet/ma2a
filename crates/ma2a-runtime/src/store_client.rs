@@ -150,12 +150,14 @@ impl StoreClient {
         publisher: ma2a_net::AddressPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,
+        force_advance: bool,
     ) -> Result<(u64, bool), RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PublishAddress {
             publisher,
             local_endpoint_id,
             now_ms,
+            force_advance,
             reply,
         })
         .await?;
@@ -194,6 +196,34 @@ impl StoreClient {
         self.send(StoreCommand::LoadControlLookup {
             local_endpoint_id,
             now_ms,
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    pub(crate) async fn load_relay_map(
+        &self,
+        local_endpoint_id: ma2a_core::EndpointId,
+        now_ms: u64,
+    ) -> Result<ma2a_net::LocalIrohRelayMap, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::LoadRelayMap {
+            local_endpoint_id,
+            now_ms,
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    pub(crate) async fn record_relay_observations(
+        &self,
+        observations: Vec<ma2a_store::RelayObservation>,
+    ) -> Result<u64, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::RecordRelayObservations {
+            observations,
             reply,
         })
         .await?;

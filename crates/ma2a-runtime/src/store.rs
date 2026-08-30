@@ -1,5 +1,6 @@
 mod command;
 mod local_control;
+mod relay_state;
 
 use std::collections::BTreeSet;
 
@@ -136,10 +137,15 @@ impl StoreBackend {
                     publisher,
                     local_endpoint_id,
                     now_ms,
+                    force_advance,
                     reply,
                 } => {
-                    let _unsent =
-                        reply.send(self.publish_address(&publisher, local_endpoint_id, now_ms));
+                    let _unsent = reply.send(self.publish_address(
+                        &publisher,
+                        local_endpoint_id,
+                        now_ms,
+                        force_advance,
+                    ));
                 }
                 StoreCommand::PublishRelayAdvertisements {
                     publisher,
@@ -166,6 +172,19 @@ impl StoreBackend {
                         now_ms,
                     );
                     let _unsent = reply.send(result);
+                }
+                StoreCommand::LoadRelayMap {
+                    local_endpoint_id,
+                    now_ms,
+                    reply,
+                } => {
+                    let _unsent = reply.send(self.load_relay_map(local_endpoint_id, now_ms));
+                }
+                StoreCommand::RecordRelayObservations {
+                    observations,
+                    reply,
+                } => {
+                    let _unsent = reply.send(self.record_relay_observations(&observations));
                 }
                 StoreCommand::PrepareControlRound { input, reply } => {
                     let result = crate::control_sync::prepare_round(&self.repository, &input);

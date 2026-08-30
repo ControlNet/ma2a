@@ -11,15 +11,20 @@ impl StoreBackend {
         publisher: &ma2a_net::AddressPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,
+        force_advance: bool,
     ) -> Result<(u64, bool), RuntimeError> {
         let states = self.repository.control_spaces_for(local_endpoint_id)?;
         let mut advanced = false;
         for state in states {
+            let authorization = state.authorization();
+            let request = ma2a_net::AddressPublishRequest::new(&authorization, now_ms);
+            let request = if force_advance {
+                request.force_advance()
+            } else {
+                request
+            };
             advanced |= publisher
-                .publish(
-                    &mut self.repository,
-                    ma2a_net::AddressPublishRequest::new(&state.authorization(), now_ms),
-                )
+                .publish(&mut self.repository, request)
                 .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?
                 .is_some();
         }
