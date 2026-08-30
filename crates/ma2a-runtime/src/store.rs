@@ -185,6 +185,18 @@ impl StoreBackend {
                     let result = crate::control_sync::apply_response(&mut self.repository, &input);
                     let _unsent = reply.send(result);
                 }
+                StoreCommand::AuthorizeEcho {
+                    local_endpoint_id,
+                    peer_endpoint_id,
+                    reply,
+                } => {
+                    let result = crate::services::echo::authorize(
+                        &self.repository,
+                        local_endpoint_id,
+                        peer_endpoint_id,
+                    );
+                    let _unsent = reply.send(result);
+                }
                 StoreCommand::Stop(reply) => {
                     let _unsent = reply.send(());
                     break;

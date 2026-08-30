@@ -94,5 +94,10 @@ pub(crate) enum StoreCommand {
         input: ControlExchangeInput,
         reply: oneshot::Sender<Result<ControlApplyOutcome, RuntimeError>>,
     },
+    AuthorizeEcho {
+        local_endpoint_id: ma2a_core::EndpointId,
+        peer_endpoint_id: ma2a_core::EndpointId,
+        reply: oneshot::Sender<Result<(), ma2a_core::EchoError>>,
+    },
     Stop(oneshot::Sender<()>),
 }
