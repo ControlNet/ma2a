@@ -6,6 +6,8 @@
 
 mod support;
 
+use std::time::Duration;
+
 use iroh::address_lookup::{AddressLookup as _, EndpointData, UserData};
 use iroh_base::{SecretKey, TransportAddr};
 use ma2a_net::{
@@ -177,6 +179,69 @@ async fn live_publisher_advances_for_user_data_and_distinguishes_empty_from_abse
         None
     );
     endpoint.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn relay_observer_publishes_exact_next_record_for_user_data_only_change() -> TestResult {
+    // Given
+    let secret_bytes = [0x5b; 32];
+    let signer = SecretKey::from_bytes(&secret_bytes);
+    let fixture = space_fixture(&signer, 0x6d)?;
+    let state = TempState::new("relay-observer-user-data")?;
+    let mut repository = repository(&state, &fixture)?;
+    let (enrollment_sender, _enrollment_receiver) = tokio::sync::mpsc::channel(1);
+    let endpoint = RuntimeEndpoint::bind(
+        EndpointSecret::parse(&secret_bytes)?,
+        enrollment_sender,
+        None,
+    )
+    .await?;
+    let publisher = endpoint.address_publisher()?;
+    let (observation_sender, mut observations) = tokio::sync::mpsc::channel(2);
+    let observer = endpoint.spawn_relay_observer(observation_sender);
+    let initial_observation = observations
+        .recv()
+        .await
+        .ok_or("initial relay observation channel closed")?;
+    let initial = publisher
+        .publish(
+            &mut repository,
+            AddressPublishRequest::new(&fixture.authorization, NOW_MS),
+        )?
+        .ok_or("initial relay-observer publication was skipped")?;
+
+    // When
+    endpoint.set_user_data_for_address_lookup(Some(UserData::try_from(
+        "effective-metadata".to_owned(),
+    )?));
+    let updated_observation = tokio::time::timeout(Duration::from_secs(2), observations.recv())
+        .await?
+        .ok_or("updated relay observation channel closed")?;
+    let updated = publisher
+        .publish(
+            &mut repository,
+            AddressPublishRequest::new(&fixture.authorization, NOW_MS + 1),
+        )?
+        .ok_or("updated relay-observer publication was skipped")?;
+
+    // Then
+    assert_eq!(initial_observation.endpoint_addr().id, signer.public());
+    assert_eq!(updated_observation.endpoint_addr().id, signer.public());
+    assert_eq!(
+        updated.record().record().sequence(),
+        initial.record().record().sequence() + 1
+    );
+    assert_eq!(
+        updated.record().record().endpoint_id(),
+        initial.record().record().endpoint_id()
+    );
+    assert_eq!(
+        updated.record().record().endpoint_data().user_data(),
+        Some("effective-metadata")
+    );
+    endpoint.shutdown().await?;
+    observer.await?;
     Ok(())
 }
 

@@ -108,6 +108,9 @@ impl AddressObservation {
         let Ok(mut state) = self.state.write() else {
             return;
         };
+        if state.value == value {
+            return;
+        }
         state.generation = state.generation.saturating_add(1);
         state.value = value;
         let generation = state.generation;
@@ -150,7 +153,6 @@ impl AddressObservation {
         result.map_err(AddressObservationWaitError::Observation)
     }
 
-    #[cfg(test)]
     pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
         self.generation.subscribe()
     }
@@ -276,10 +278,12 @@ mod tests {
         observation.observe(&updated);
         generation.changed().await?;
         let updated_generation = *generation.borrow_and_update();
+        observation.observe(&updated);
 
         // Then
         assert_eq!(initial_generation, 1);
         assert_eq!(updated_generation, 2);
+        assert!(!generation.has_changed()?);
         assert_eq!(
             observation
                 .current()
