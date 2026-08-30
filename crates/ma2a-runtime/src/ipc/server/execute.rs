@@ -101,7 +101,7 @@ pub(super) async fn execute(
                 .ok_or(ProtocolError::INVALID_INPUT)?;
             context
                 .handle
-                .sync_control()
+                .sync_control_with(peer)
                 .await
                 .map_err(|_| ProtocolError::UNAVAILABLE)?;
             let synchronized = context

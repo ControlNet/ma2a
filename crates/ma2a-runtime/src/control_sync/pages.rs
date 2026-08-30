@@ -1,19 +1,16 @@
 mod builder;
+mod staging;
 
 use std::collections::BTreeSet;
 
-use ma2a_core::{
-    ControlArtifactKind, ControlCursorV1, ControlPageV1, SignedSpaceAddressRecordV1,
-    SignedSpaceManifestV1, SpaceAuthorizationView, SpaceChain,
-};
-use ma2a_net::{
-    AddressRecordTarget, AddressRecordValidator, AdvertisementValidationContext, ControlRejection,
-    PrivateRelayAdvertisementValidator, cursor_sequence,
-};
-use ma2a_store::{ControlSpaceState, Repository};
+use ma2a_core::{ControlArtifactKind, ControlCursorV1, ControlPageV1, SpaceChain};
+use ma2a_net::{ControlRejection, cursor_sequence};
+use ma2a_store::ControlSpaceState;
 
 use crate::error::{RuntimeError, RuntimeErrorKind};
 use builder::PageBuilder;
+pub(crate) use staging::ControlChanges;
+pub(super) use staging::apply_pages;
 
 #[derive(Clone, Copy)]
 pub(super) struct PageApplication<'a> {
@@ -107,81 +104,6 @@ pub(super) fn pull_page(
     }
     ControlPageV1::new(state.chain().space_id(), omitted, page.artifacts)
         .map_err(|_| ControlRejection::Invalid)
-}
-
-pub(super) fn apply_pages(
-    repository: &mut Repository,
-    application: PageApplication<'_>,
-) -> Result<(), ControlRejection> {
-    for page in application.pages {
-        let state = application
-            .shared
-            .iter()
-            .find(|state| state.chain().space_id() == page.space_id())
-            .ok_or(ControlRejection::Invalid)?;
-        let mut chain = state.chain().clone();
-        for artifact in page
-            .artifacts()
-            .iter()
-            .filter(|artifact| artifact.kind() == ControlArtifactKind::MANIFEST)
-        {
-            let manifest = SignedSpaceManifestV1::from_canonical_bytes(
-                artifact.signed_bytes(),
-                chain.genesis().authority(),
-            )
-            .map_err(|_| ControlRejection::Invalid)?;
-            if manifest.generation() <= chain.latest_generation() {
-                let index = manifest
-                    .generation()
-                    .checked_sub(1)
-                    .and_then(|generation| usize::try_from(generation).ok())
-                    .ok_or(ControlRejection::Invalid)?;
-                let accepted = chain
-                    .manifests()
-                    .get(index)
-                    .ok_or(ControlRejection::Invalid)?;
-                if accepted.canonical_bytes() != manifest.canonical_bytes() {
-                    return Err(ControlRejection::Invalid);
-                }
-                continue;
-            }
-            chain
-                .apply(&manifest)
-                .map_err(|_| ControlRejection::Invalid)?;
-        }
-        repository
-            .persist_space_chain(&chain)
-            .map_err(|_| ControlRejection::Unavailable)?;
-        let authorization = SpaceAuthorizationView::from_chain(&chain);
-        for artifact in page.artifacts() {
-            match artifact.kind() {
-                kind if kind == ControlArtifactKind::MANIFEST => {}
-                kind if kind == ControlArtifactKind::ADDRESS_RECORD => {
-                    let signed =
-                        SignedSpaceAddressRecordV1::parse_canonical_bytes(artifact.signed_bytes())
-                            .map_err(|_| ControlRejection::Invalid)?;
-                    let target =
-                        AddressRecordTarget::new(page.space_id(), signed.record().endpoint_id());
-                    AddressRecordValidator::validate_and_store(
-                        repository,
-                        artifact.signed_bytes(),
-                        target.validation(&authorization, application.now_ms),
-                    )
-                    .map_err(|_| ControlRejection::Invalid)?;
-                }
-                kind if kind == ControlArtifactKind::RELAY_ADVERTISEMENT => {
-                    PrivateRelayAdvertisementValidator::validate_and_store(
-                        repository,
-                        artifact.signed_bytes(),
-                        AdvertisementValidationContext::new(&authorization, application.now_ms),
-                    )
-                    .map_err(|_| ControlRejection::Invalid)?;
-                }
-                _ => return Err(ControlRejection::Invalid),
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn validate_page_spaces(

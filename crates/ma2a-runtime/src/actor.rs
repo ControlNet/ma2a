@@ -47,7 +47,10 @@ pub(crate) enum Command {
         peer: ma2a_core::EndpointId,
         reply: oneshot::Sender<bool>,
     },
-    SyncControl(oneshot::Sender<Result<u64, RuntimeError>>),
+    SyncControl {
+        peer: Option<ma2a_core::EndpointId>,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
     Shutdown(oneshot::Sender<ShutdownAck>),
 }
 
@@ -67,11 +70,11 @@ pub(crate) struct Actor {
     enrollment_calls: mpsc::Receiver<EnrollmentCall>,
     pub(crate) control_calls: mpsc::Receiver<ControlCall>,
     pub(crate) lookup: SpaceAddressLookup,
-    pub(crate) control_rounds:
-        JoinSet<Result<Option<crate::control_sync::ControlRoundOutcome>, RuntimeError>>,
-    pub(crate) control_rotation: usize,
-    pub(crate) control_pending: bool,
-    pub(crate) control_waiters: Vec<oneshot::Sender<Result<u64, RuntimeError>>>,
+    pub(crate) control_rounds: JoinSet<(
+        crate::control_actor::ScheduledControlRound,
+        Result<Option<crate::control_sync::ControlRoundOutcome>, RuntimeError>,
+    )>,
+    pub(crate) control_queue: crate::control_actor::ControlRoundQueue,
     pub(crate) synchronized_control_peers: BTreeSet<ma2a_core::EndpointId>,
     cancellation: CancellationToken,
 }
@@ -105,9 +108,7 @@ impl Actor {
             control_calls,
             lookup,
             control_rounds: JoinSet::new(),
-            control_rotation: 0,
-            control_pending: false,
-            control_waiters: Vec::new(),
+            control_queue: crate::control_actor::ControlRoundQueue::default(),
             synchronized_control_peers: BTreeSet::new(),
             cancellation: cancellation.child_token(),
         };
@@ -116,7 +117,7 @@ impl Actor {
 
     pub(crate) async fn run(mut self) -> Result<ShutdownAck, RuntimeError> {
         let _receiver_count = self.events.send(RuntimeEvent::ready(self.state.revision));
-        self.schedule_control_round();
+        self.schedule_control_round(crate::control_sync::ControlRoundTrigger::Startup, None);
         let control_period = crate::control_actor::control_period(self.state.endpoint_id);
         let mut periodic =
             tokio::time::interval_at(tokio::time::Instant::now() + control_period, control_period);
@@ -162,13 +163,15 @@ impl Actor {
                     Some(Command::ControlSyncStatus { peer, reply }) => {
                         let _unsent = reply.send(self.synchronized_control_peers.contains(&peer));
                     }
-                    Some(Command::SyncControl(reply)) => {
-                        if self.state.memberships.is_empty() {
-                            let _unsent = reply.send(Ok(self.state.revision));
-                        } else {
-                            self.control_waiters.push(reply);
-                            self.schedule_control_round();
-                        }
+                    Some(Command::SyncControl { peer, reply }) => {
+                        let scope = peer.map_or_else(
+                            crate::control_sync::ControlRoundScope::all,
+                            crate::control_sync::ControlRoundScope::peer,
+                        );
+                        self.schedule_control_round(
+                            crate::control_sync::ControlRoundTrigger::Explicit(scope),
+                            Some(reply),
+                        );
                     }
                     Some(Command::Shutdown(reply)) => {
                         let result = self.finish(true).await;
@@ -191,7 +194,9 @@ impl Actor {
                         self.finish_control_round(result);
                     }
                 },
-                _ = periodic.tick() => self.schedule_control_round(),
+                _ = periodic.tick() => self.schedule_control_round(
+                    crate::control_sync::ControlRoundTrigger::Periodic, None,
+                ),
             }
         }
     }
@@ -209,7 +214,10 @@ impl Actor {
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
         self.refresh_control_lookup().await?;
-        self.schedule_control_round();
+        self.schedule_control_round(
+            crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
+            None,
+        );
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
