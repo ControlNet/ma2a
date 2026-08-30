@@ -24,7 +24,9 @@ zeroize.workspace = true
 
 [dev-dependencies]
 iroh-tickets.workspace = true
-iroh.workspace = true
+iroh = { workspace = true, features = ["test-utils"] }
+iroh-base.workspace = true
+iroh-relay.workspace = true
 ma2a-net.workspace = true
 ma2a-store.workspace = true
 rusqlite.workspace = true
