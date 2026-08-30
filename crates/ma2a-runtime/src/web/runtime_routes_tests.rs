@@ -1,4 +1,9 @@
-use axum::response::{IntoResponse as _, Sse};
+use std::fmt::Write as _;
+
+use axum::{
+    body::to_bytes,
+    response::{IntoResponse as _, Sse},
+};
 use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 
 use super::*;
@@ -36,15 +41,15 @@ fn snapshot_change_classifies_consecutive_gap_and_restart() {
     assert_eq!(restart, SnapshotChange::Resync);
 }
 
-#[test]
-fn queue_overflow_reserves_terminal_resync_event() {
+#[tokio::test]
+async fn queue_overflow_reserves_terminal_resync_event() {
     // Given
     let boot_id = "00112233445566778899aabbccddeeff".to_owned();
     let mut cursor = EventCursor {
         revision: 10,
         boot_id: boot_id.clone(),
     };
-    let (sender, mut receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+    let (sender, receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
     // When
     for revision in 11..=18 {
@@ -64,11 +69,25 @@ fn queue_overflow_reserves_terminal_resync_event() {
         },
     );
     drop(sender);
-    let events = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+    let response = Sse::new(ReceiverStream::new(receiver)).into_response();
+    let events = to_bytes(response.into_body(), 16_384).await;
+    assert!(events.is_ok(), "overflow event stream must serialize");
+    let events = events.unwrap_or_default();
+    let mut expected = String::new();
+    for revision in 11..=18 {
+        assert!(
+            write!(
+                &mut expected,
+                "id: {revision}\ndata: {{\"changed\":{{}},\"revision\":{revision},\"type\":\"snapshot_invalidated\"}}\n\n"
+            )
+            .is_ok()
+        );
+    }
+    expected.push_str("event: resync-required\ndata: {\"revision\":19}\n\n");
 
     // Then
     assert!(!remains_open);
-    assert_eq!(events.len(), EVENT_CHANNEL_CAPACITY);
+    assert_eq!(events.as_ref(), expected.as_bytes());
 }
 
 #[tokio::test(start_paused = true)]
@@ -85,10 +104,9 @@ async fn heartbeat_is_an_unrevisioned_sse_comment() {
     let frame = body.next().await;
 
     // Then
-    assert_eq!(
-        frame.transpose().expect("heartbeat body error"),
-        Some(":\n\n".into())
-    );
+    let frame = frame.transpose();
+    assert!(frame.is_ok(), "heartbeat body must serialize");
+    assert_eq!(frame.unwrap_or(None), Some(":\n\n".into()));
 }
 
 #[tokio::test(start_paused = true)]

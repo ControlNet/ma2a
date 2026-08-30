@@ -1,6 +1,13 @@
 //! Authenticated Web projection integration coverage.
 
-use std::{error::Error, fmt::Write as _, fs, net::SocketAddr, path::PathBuf, sync::Arc};
+#[path = "support/web.rs"]
+#[allow(
+    dead_code,
+    reason = "this integration target uses only the shared manual clock"
+)]
+mod support;
+
+use std::{error::Error, net::SocketAddr, sync::Arc};
 
 use axum::{
     body::{Body, to_bytes},
@@ -13,46 +20,17 @@ use ma2a_runtime::{
     current_user::CurrentUserRuntime,
     ipc::{IpcPaths, LocalApiClient, LocalApiServer},
     web::{
-        SystemClock, WebAssets, WebAuthConfig, WebRuntimeDependencies, WebServerConfig,
-        build_runtime_router,
+        WebAssets, WebAuthConfig, WebRuntimeDependencies, WebServerConfig, build_runtime_router,
     },
 };
 use ma2a_store::StoreConfig;
+use support::{TempState, clock};
 use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt as _;
 use zeroize::Zeroizing;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
-
-struct TempState(PathBuf);
-
-impl TempState {
-    fn new() -> TestResult<Self> {
-        let mut identifier = String::with_capacity(64);
-        for byte in ma2a_core::RequestId::random()?.as_bytes() {
-            write!(&mut identifier, "{byte:02x}")?;
-        }
-        let path = std::env::temp_dir().join(format!(
-            "ma2a-web-runtime-{}-{}",
-            std::process::id(),
-            identifier
-        ));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(path))
-    }
-}
-
-impl Drop for TempState {
-    fn drop(&mut self) {
-        let _result = fs::remove_dir_all(&self.0);
-    }
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
@@ -61,11 +39,12 @@ impl Drop for TempState {
 )]
 async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> TestResult {
     // Given
-    let state = TempState::new()?;
-    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let state = TempState::new("runtime")?;
+    let runtime = Runtime::start(StoreConfig::new(state.path())).await?;
+    let auth_clock = clock(1_000);
     let control = CurrentUserRuntime::open_at(
-        &state.0,
-        Arc::new(SystemClock::default()),
+        state.path(),
+        Arc::clone(&auth_clock) as Arc<dyn ma2a_runtime::web::Clock>,
         WebAuthConfig::default(),
     )
     .await?;
@@ -80,7 +59,7 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
         .web_auth()
         .login(Zeroizing::new("web-runtime-passphrase-9!".to_owned()))
         .await?;
-    let paths = IpcPaths::new(&state.0)?;
+    let paths = IpcPaths::new(state.path())?;
     let api_server = LocalApiServer::bind(paths.clone(), runtime.handle(), control.clone())?;
     let cancellation = CancellationToken::new();
     let api_task = tokio::spawn(api_server.serve(cancellation.child_token()));
@@ -205,6 +184,55 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
             .any(|window| window == b"event: resync-required")
     );
     drop(streams);
+
+    let expiring_session = control
+        .web_auth()
+        .login(Zeroizing::new("web-runtime-passphrase-9!".to_owned()))
+        .await?;
+    let expiring_cookie = format!("ma2a_session={}", expiring_session.bearer());
+    let expiring_snapshot = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/snapshot")
+                .header("host", "127.0.0.1:43210")
+                .header("cookie", &expiring_cookie)
+                .body(Body::empty())?,
+        )
+        .await?;
+    let expiring_snapshot: serde_json::Value =
+        serde_json::from_slice(&to_bytes(expiring_snapshot.into_body(), 65_536).await?)?;
+    let expiring_revision = expiring_snapshot
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("expiring snapshot revision missing")?;
+    let expiring_stream = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/events?since={expiring_revision}"))
+                .header("host", "127.0.0.1:43210")
+                .header("cookie", &expiring_cookie)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(expiring_stream.status(), StatusCode::OK);
+    let mut expiring_body = expiring_stream.into_body().into_data_stream();
+
+    auth_clock.set(1_000 + WebAuthConfig::ABSOLUTE_TIMEOUT_MS);
+    let expired = tokio::time::timeout(std::time::Duration::from_secs(2), expiring_body.next())
+        .await?
+        .ok_or("expired event stream closed without recovery event")??;
+    assert_eq!(
+        expired.as_ref(),
+        format!("event: resync-required\ndata: {{\"revision\":{expiring_revision}}}\n\n")
+            .as_bytes()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), expiring_body.next())
+            .await?
+            .is_none()
+    );
+
     cancellation.cancel();
     api_task.await??;
     runtime.shutdown().await?;
