@@ -107,6 +107,10 @@ impl Actor {
                         self.synchronized_control_peers.insert(remote_endpoint_id);
                         self.endpoint
                             .set_control_enabled(!self.state.memberships.is_empty());
+                        if self.refresh_relay_candidates().await.is_err() {
+                            call.respond(Err(ma2a_net::ControlRejection::Unavailable));
+                            return;
+                        }
                         self.schedule_control_changes(outcome.changes);
                         call.respond(Ok(response));
                     }
@@ -117,7 +121,7 @@ impl Actor {
         }
     }
 
-    pub(crate) fn finish_control_round(
+    pub(crate) async fn finish_control_round(
         &mut self,
         result: Result<
             (
@@ -148,8 +152,11 @@ impl Actor {
                     .extend(synchronized_peers.iter().copied());
                 self.endpoint
                     .set_control_enabled(!self.state.memberships.is_empty());
-                self.schedule_control_changes(changes);
-                (true, synchronized_peers)
+                let succeeded = self.refresh_relay_candidates().await.is_ok();
+                if succeeded {
+                    self.schedule_control_changes(changes);
+                }
+                (succeeded, synchronized_peers)
             }
             Ok(None) => (true, BTreeSet::new()),
             Err(_) => (false, BTreeSet::new()),
