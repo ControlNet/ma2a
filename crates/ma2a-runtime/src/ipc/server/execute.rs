@@ -129,6 +129,13 @@ pub(super) async fn execute(
                     .map_err(|_| ProtocolError::INTERNAL)?,
             )
         }
+        "snapshot_fetch" => CommandResult::snapshot(
+            context
+                .handle
+                .snapshot()
+                .await
+                .map_err(|_| ProtocolError::UNAVAILABLE)?,
+        ),
         "graceful_shutdown" => CommandResult::shutting_down(),
         "ui_password_set" | "ui_password_reset" | "session_revoke_all" => context
             .control

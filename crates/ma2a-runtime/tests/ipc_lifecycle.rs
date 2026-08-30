@@ -15,7 +15,7 @@ use ma2a_runtime::{
     api::{Command, decode_command},
     current_user::CurrentUserRuntime,
     ipc::{IpcPaths, LocalApiClient, LocalApiServer},
-    web::{SystemClock, WebAuthConfig},
+    web::{PasswordAction, SystemClock, WebAuthConfig},
 };
 use ma2a_store::StoreConfig;
 use tokio_util::sync::CancellationToken;
@@ -171,6 +171,74 @@ async fn password_set_updates_daemon_handshake_and_authoritative_revision() -> T
             .get("revision")
             .and_then(serde_json::Value::as_u64),
         Some(mutation_revision)
+    );
+    cancellation.cancel();
+    server_task.await??;
+    runtime.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn snapshot_fetch_returns_the_authoritative_runtime_projection() -> TestResult {
+    // Given
+    let state = TempState::new()?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let status = runtime.handle().status().await?;
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    control
+        .web_auth()
+        .change_password(
+            PasswordAction::Set,
+            Zeroizing::new("snapshot-revision-passphrase-9!".to_owned()),
+        )
+        .await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let cancellation = CancellationToken::new();
+    let server_task = tokio::spawn(server.serve(cancellation.child_token()));
+    let command = decode_command(br#"{"version":1,"operation":"snapshot_fetch"}"#)?;
+
+    // When
+    let response = LocalApiClient::new(paths).call(&command).await?;
+
+    // Then
+    let response: serde_json::Value = serde_json::from_slice(&response)?;
+    assert_eq!(
+        response
+            .pointer("/result/type")
+            .and_then(serde_json::Value::as_str),
+        Some("snapshot")
+    );
+    let response_revision = response
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("response revision missing")?;
+    let snapshot_revision = response
+        .pointer("/result/payload/revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("snapshot revision missing")?;
+    assert!(snapshot_revision > status.revision());
+    assert_eq!(response_revision, snapshot_revision);
+    assert_eq!(
+        response
+            .pointer("/result/payload/endpoint/online")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        response.pointer("/result/payload/spaces"),
+        Some(&serde_json::json!([]))
+    );
+    assert_eq!(
+        response
+            .pointer("/result/payload/ui_auth/password_set")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
     );
     cancellation.cancel();
     server_task.await??;

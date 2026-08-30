@@ -175,6 +175,13 @@ impl Command {
         })
     }
 
+    /// Creates an authoritative snapshot query.
+    pub const fn snapshot_fetch() -> Self {
+        Self {
+            kind: CommandKind::SnapshotFetch,
+        }
+    }
+
     /// Returns the stable operation discriminant.
     pub const fn operation(&self) -> &'static str {
         match self.kind {
