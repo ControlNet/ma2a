@@ -14,6 +14,8 @@ use crate::state::{RuntimeEvent, RuntimeStatus};
 use crate::{enrollment::EnrollmentError, error::RuntimeError, store::StoreClient};
 
 mod command;
+#[cfg(test)]
+mod effective_data_test;
 mod handle;
 mod local_control;
 pub(crate) use command::Command;
