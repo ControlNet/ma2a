@@ -196,25 +196,21 @@ pub enum ManifestOutcome {
 
 /// Current highest signed address state for one Space member.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "this schema-v1 transaction DTO is intentionally constructible as a complete record"
-)]
-pub struct AddressAdvance {
+pub(crate) struct AddressAdvance {
     /// Space that scopes forwarding and authorization.
-    pub space_id: SpaceId,
+    pub(crate) space_id: SpaceId,
     /// Endpoint whose current reachability is signed.
-    pub endpoint_id: EndpointId,
+    pub(crate) endpoint_id: EndpointId,
     /// Monotonic Endpoint-owned sequence.
-    pub sequence: u64,
+    pub(crate) sequence: u64,
     /// Signed record issue time.
-    pub issued_at_ms: i64,
+    pub(crate) issued_at_ms: i64,
     /// Signed record expiry time.
-    pub expires_at_ms: i64,
+    pub(crate) expires_at_ms: i64,
     /// Hash of the signed canonical record.
-    pub record_hash: [u8; 32],
+    pub(crate) record_hash: [u8; 32],
     /// Exact signed record bytes retained for forwarding.
-    pub signed_record: Vec<u8>,
+    pub(crate) signed_record: Vec<u8>,
 }
 
 /// Password verifier replacement and session-revocation timestamp.
