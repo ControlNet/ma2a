@@ -184,6 +184,54 @@ impl Repository {
         )
         .transpose()
     }
+
+    /// Loads every current signed relay advertisement in one exact Space.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when any row is malformed or cannot be read.
+    pub fn relay_advertisements_for_space(
+        &self,
+        space_id: SpaceId,
+    ) -> Result<Vec<PersistedRelayAdvertisement>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT relay_endpoint_id, sequence, issued_at_ms, expires_at_ms,
+                    advertisement_hash, signed_advertisement
+             FROM relay_advertisement_state WHERE space_id = ?1 ORDER BY relay_endpoint_id",
+        )?;
+        let rows = statement.query_map([space_id.as_bytes().as_slice()], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+            ))
+        })?;
+        let mut advertisements = Vec::new();
+        for row in rows {
+            let (provider, sequence, issued_at_ms, expires_at_ms, hash, signed_advertisement) =
+                row?;
+            advertisements.push(PersistedRelayAdvertisement {
+                space_id,
+                provider_endpoint_id: EndpointId::try_from(provider.as_slice()).map_err(|_| {
+                    StoreError::SchemaMismatch {
+                        detail: "persisted relay provider identifier is invalid",
+                    }
+                })?,
+                sequence,
+                issued_at_ms,
+                expires_at_ms,
+                advertisement_hash: <[u8; 32]>::try_from(hash).map_err(|_| {
+                    StoreError::SchemaMismatch {
+                        detail: "persisted relay advertisement hash has invalid length",
+                    }
+                })?,
+                signed_advertisement,
+            });
+        }
+        Ok(advertisements)
+    }
 }
 
 fn commit_advertisement(
