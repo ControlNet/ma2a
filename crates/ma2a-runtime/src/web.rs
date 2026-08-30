@@ -3,19 +3,17 @@ mod auth;
 mod csrf;
 mod headers;
 mod rate_limit;
+mod router;
+mod runtime_routes;
 mod server;
 mod types;
 
-use std::time::Duration;
-
 use axum::{
-    Json, Router,
+    Json,
     body::Bytes,
-    extract::{DefaultBodyLimit, State},
+    extract::State,
     http::{HeaderMap, StatusCode, header},
-    middleware,
     response::{IntoResponse as _, Redirect, Response},
-    routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -24,7 +22,8 @@ use zeroize::Zeroizing;
 pub use assets::WebAssets;
 use assets::asset_response;
 pub use auth::WebAuthService;
-use rate_limit::LoginRateLimit;
+use router::WebState;
+pub use router::{WebRuntimeDependencies, WebServerConfig, build_router, build_runtime_router};
 pub use server::LoopbackWebServer;
 pub use types::{
     AuthFailure, AuthenticatedSession, Clock, CredentialState, LoginSession, PasswordAction,
@@ -33,80 +32,6 @@ pub use types::{
 
 const SESSION_COOKIE: &str = "ma2a_session";
 const CSRF_COOKIE: &str = "ma2a_csrf";
-
-/// Bounded loopback HTTP server settings.
-#[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
-pub struct WebServerConfig {
-    request_timeout: Duration,
-}
-
-impl WebServerConfig {
-    /// Maximum accepted request body.
-    pub const MAX_BODY_BYTES: usize = 16_384;
-    /// Login attempts accepted per fixed rolling window.
-    pub const LOGIN_ATTEMPTS: usize = 5;
-    const LOGIN_WINDOW_MS: i64 = 60_000;
-
-    /// Overrides the per-request deadline.
-    #[must_use]
-    pub const fn with_request_timeout(mut self, timeout: Duration) -> Self {
-        self.request_timeout = timeout;
-        self
-    }
-}
-
-impl Default for WebServerConfig {
-    fn default() -> Self {
-        Self {
-            request_timeout: Duration::from_secs(10),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct WebState {
-    auth: WebAuthService,
-    assets: WebAssets,
-    config: WebServerConfig,
-    port: u16,
-    login_rate: std::sync::Arc<LoginRateLimit>,
-}
-
-/// Builds the loopback router for a selected listener port.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the public testable router seam mirrors its four independent construction inputs"
-)]
-pub fn build_router(
-    auth: WebAuthService,
-    assets: WebAssets,
-    config: WebServerConfig,
-    port: u16,
-) -> Router {
-    let state = WebState {
-        auth,
-        assets,
-        config,
-        port,
-        login_rate: std::sync::Arc::new(LoginRateLimit::new(
-            WebServerConfig::LOGIN_ATTEMPTS,
-            WebServerConfig::LOGIN_WINDOW_MS,
-        )),
-    };
-    Router::new()
-        .route("/api/v1/web/auth/state", get(auth_state))
-        .route("/api/v1/web/auth/login", post(login))
-        .route("/api/v1/web/auth/logout", post(logout))
-        .route("/api/v1/web/session/touch", post(touch_session))
-        .fallback(asset)
-        .layer(DefaultBodyLimit::max(WebServerConfig::MAX_BODY_BYTES))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            headers::request_guards,
-        ))
-        .with_state(state)
-}
 
 async fn auth_state(State(state): State<WebState>) -> Response {
     state.auth.setup_required().await.map_or_else(
