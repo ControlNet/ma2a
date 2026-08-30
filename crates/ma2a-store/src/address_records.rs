@@ -211,6 +211,49 @@ impl Repository {
         }
         Ok(records)
     }
+
+    /// Loads every current signed address record in one exact Space.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when any row is malformed or cannot be read.
+    pub fn address_records_for_space(
+        &self,
+        space_id: SpaceId,
+    ) -> Result<Vec<PersistedAddressRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT endpoint_id, sequence, issued_at_ms, expires_at_ms, record_hash, signed_record
+             FROM address_state WHERE space_id = ?1 ORDER BY endpoint_id",
+        )?;
+        let rows = statement.query_map([space_id.as_bytes().as_slice()], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+            ))
+        })?;
+        let mut records = Vec::new();
+        for row in rows {
+            let (endpoint, sequence, issued, expires, hash, signed) = row?;
+            let endpoint_id = EndpointId::try_from(endpoint.as_slice()).map_err(|_| {
+                StoreError::SchemaMismatch {
+                    detail: "persisted address Endpoint identifier is invalid",
+                }
+            })?;
+            records.push(persisted_record(
+                space_id,
+                endpoint_id,
+                sequence,
+                issued,
+                expires,
+                &hash,
+                signed,
+            )?);
+        }
+        Ok(records)
+    }
 }
 
 fn commit_address_advance(
