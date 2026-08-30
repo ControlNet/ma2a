@@ -175,13 +175,10 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
     control.send(Command::session_revoke_all()?).await?;
     let revoked = streams.pop().ok_or("active event stream missing")?;
     let mut revoked_body = revoked.into_body().into_data_stream();
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), revoked_body.next())
-        .await?
-        .ok_or("revoked event stream closed without recovery event")??;
     assert!(
-        frame
-            .windows(22)
-            .any(|window| window == b"event: resync-required")
+        tokio::time::timeout(std::time::Duration::from_secs(2), revoked_body.next())
+            .await?
+            .is_none()
     );
     drop(streams);
 
@@ -219,14 +216,6 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
     let mut expiring_body = expiring_stream.into_body().into_data_stream();
 
     auth_clock.set(1_000 + WebAuthConfig::ABSOLUTE_TIMEOUT_MS);
-    let expired = tokio::time::timeout(std::time::Duration::from_secs(2), expiring_body.next())
-        .await?
-        .ok_or("expired event stream closed without recovery event")??;
-    assert_eq!(
-        expired.as_ref(),
-        format!("event: resync-required\ndata: {{\"revision\":{expiring_revision}}}\n\n")
-            .as_bytes()
-    );
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(2), expiring_body.next())
             .await?

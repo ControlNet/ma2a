@@ -111,7 +111,6 @@ impl EventProducer {
                 return;
             }
             if self.state.auth.validate(&self.bearer).await.is_err() {
-                let _result = self.sender.try_send(Ok(resync_event(self.cursor.revision)));
                 return;
             }
             let Ok((current, _)) = fetch_snapshot(&self.state).await else {
