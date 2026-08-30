@@ -1,5 +1,7 @@
 //! Atomic control-batch persistence coverage.
 
+#[path = "control_batch/manifests.rs"]
+mod manifests;
 #[path = "common/support.rs"]
 mod support;
 
