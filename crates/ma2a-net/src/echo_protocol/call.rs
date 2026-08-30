@@ -1,0 +1,118 @@
+use ma2a_core::{EchoError, EndpointId};
+use tokio::sync::oneshot;
+
+type EchoCallChannel = (
+    EchoCall,
+    oneshot::Receiver<EchoAdmission>,
+    oneshot::Sender<Vec<u8>>,
+    oneshot::Receiver<Result<EchoServiceResponse, EchoError>>,
+);
+
+/// Successful crate-private service output returned to the transport.
+#[derive(Debug)]
+pub struct EchoServiceResponse {
+    body: Vec<u8>,
+    duration_ms: u16,
+}
+
+impl EchoServiceResponse {
+    /// Creates one bounded encoded response.
+    ///
+    /// # Errors
+    /// Returns [`EchoError::InvalidInput`] when body or duration bounds are exceeded.
+    pub fn new(body: Vec<u8>, duration_ms: u16) -> Result<Self, EchoError> {
+        if body.len() > ma2a_core::MAX_WIRE_LEN || duration_ms > ma2a_core::MAX_ECHO_DURATION_MS {
+            return Err(EchoError::InvalidInput);
+        }
+        Ok(Self { body, duration_ms })
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<u8>, u16) {
+        (self.body, self.duration_ms)
+    }
+}
+
+/// Authorization result delivered before the handler reads request bytes.
+#[derive(Debug)]
+pub(crate) enum EchoAdmission {
+    /// Current persisted authorization admitted the authenticated peer.
+    Authorized,
+    /// Current persisted authorization denied the authenticated peer.
+    Denied,
+}
+
+/// One TLS-authenticated inbound call whose body remains unread until admission.
+#[derive(Debug)]
+pub struct EchoCall {
+    remote_endpoint_id: EndpointId,
+    admission: oneshot::Sender<EchoAdmission>,
+    request: oneshot::Receiver<Vec<u8>>,
+    response: oneshot::Sender<Result<EchoServiceResponse, EchoError>>,
+}
+
+/// Body and response channels available only after authorization succeeds.
+#[derive(Debug)]
+pub struct EchoAuthorizedCall {
+    request: oneshot::Receiver<Vec<u8>>,
+    response: oneshot::Sender<Result<EchoServiceResponse, EchoError>>,
+}
+
+impl EchoCall {
+    pub(crate) fn channel(remote_endpoint_id: EndpointId) -> EchoCallChannel {
+        let (admission, admitted) = oneshot::channel();
+        let (request, received) = oneshot::channel();
+        let (response, replied) = oneshot::channel();
+        (
+            Self {
+                remote_endpoint_id,
+                admission,
+                request: received,
+                response,
+            },
+            admitted,
+            request,
+            replied,
+        )
+    }
+
+    /// Returns the identity authenticated by Iroh TLS.
+    pub const fn remote_endpoint_id(&self) -> EndpointId {
+        self.remote_endpoint_id
+    }
+
+    /// Admits the peer before exposing body bytes to Runtime code.
+    pub fn authorize(self) -> Option<EchoAuthorizedCall> {
+        self.admission.send(EchoAdmission::Authorized).ok()?;
+        Some(EchoAuthorizedCall {
+            request: self.request,
+            response: self.response,
+        })
+    }
+
+    /// Denies the peer without exposing or reading body bytes.
+    pub fn deny(self) {
+        let _unsent = self.admission.send(EchoAdmission::Denied);
+    }
+}
+
+impl EchoAuthorizedCall {
+    /// Waits for the bounded body read by the transport after admission.
+    ///
+    /// # Errors
+    /// Returns [`EchoError::Cancelled`] when the transport drops the request body channel.
+    pub async fn request(self) -> Result<(Vec<u8>, EchoResponder), EchoError> {
+        let request = self.request.await.map_err(|_| EchoError::Cancelled)?;
+        Ok((request, EchoResponder(self.response)))
+    }
+}
+
+/// Single-use response capability paired with one authorized request.
+#[derive(Debug)]
+pub struct EchoResponder(oneshot::Sender<Result<EchoServiceResponse, EchoError>>);
+
+impl EchoResponder {
+    /// Completes the authorized call exactly once.
+    pub fn respond(self, response: Result<EchoServiceResponse, EchoError>) {
+        let _unsent = self.0.send(response);
+    }
+}
