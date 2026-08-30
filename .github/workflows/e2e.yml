@@ -1,0 +1,39 @@
+name: e2e
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  MA2A_E2E_RUNS: "3"
+  MA2A_E2E_OUTPUT: target/e2e-evidence
+
+jobs:
+  phase-one:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Run repeated isolated Phase One scenarios
+        run: ./scripts/run-e2e.sh
+      - name: Publish repetition summary
+        if: always()
+        run: test -f target/e2e-evidence/summary.txt && cat target/e2e-evidence/summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-one-e2e
+          path: target/e2e-evidence/
+          if-no-files-found: error
