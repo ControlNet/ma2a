@@ -174,12 +174,18 @@ impl ControlRequestV1 {
     /// Attaches bounded opportunistic push pages for the same known Spaces.
     ///
     /// # Errors
-    /// Returns [`ProtocolError::INVALID_INPUT`] when the page count exceeds the Space bound.
+    /// Returns [`ProtocolError::INVALID_INPUT`] when pages are excessive, non-canonical, duplicated,
+    /// or not tied to a cursor Space.
     pub fn with_push_pages(
         mut self,
         push_pages: Vec<ControlPageV1>,
     ) -> Result<Self, ProtocolError> {
-        if push_pages.len() > MAX_CONTROL_SPACES_PER_REQUEST {
+        validate_pages(&push_pages)?;
+        if push_pages.iter().any(|page| {
+            self.cursors
+                .binary_search_by_key(&page.space_id(), ControlCursorV1::space_id)
+                .is_err()
+        }) {
             return Err(ProtocolError::INVALID_INPUT);
         }
         self.push_pages = push_pages;
@@ -276,11 +282,9 @@ impl ControlResponseV1 {
     /// Creates a response with at most one page per requested Space.
     ///
     /// # Errors
-    /// Returns [`ProtocolError::INVALID_INPUT`] when the page count exceeds the Space bound.
+    /// Returns [`ProtocolError::INVALID_INPUT`] when pages are excessive, non-canonical, or duplicated.
     pub fn new(pages: Vec<ControlPageV1>) -> Result<Self, ProtocolError> {
-        if pages.len() > MAX_CONTROL_SPACES_PER_REQUEST {
-            return Err(ProtocolError::INVALID_INPUT);
-        }
+        validate_pages(&pages)?;
         Ok(Self { pages })
     }
 
@@ -298,6 +302,17 @@ fn canonicalize_entries(entries: &mut [ControlCursorEntryV1]) -> Result<(), Prot
     if entries
         .windows(2)
         .any(|pair| matches!(pair, [first, second] if first.endpoint_id() == second.endpoint_id()))
+    {
+        return Err(ProtocolError::INVALID_INPUT);
+    }
+    Ok(())
+}
+
+fn validate_pages(pages: &[ControlPageV1]) -> Result<(), ProtocolError> {
+    if pages.len() > MAX_CONTROL_SPACES_PER_REQUEST
+        || pages
+            .windows(2)
+            .any(|pair| matches!(pair, [first, second] if first.space_id() >= second.space_id()))
     {
         return Err(ProtocolError::INVALID_INPUT);
     }
