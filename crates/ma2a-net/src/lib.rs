@@ -7,6 +7,7 @@ mod address_data;
 mod address_lookup;
 mod address_observation;
 mod address_record;
+mod control;
 mod endpoint;
 mod enrollment;
 mod metrics;
@@ -25,6 +26,11 @@ pub use address_lookup::{AddressLookupClock, AddressLookupStateError, SpaceAddre
 pub use address_record::{
     AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator,
     AddressValidationContext, ValidatedAddressRecord,
+};
+pub use control::{
+    CONTROL_ALPN, CONTROL_DIAL_CONCURRENCY, CONTROL_MAX_ATTEMPTS, CONTROL_ROUND_DEADLINE,
+    ControlCall, ControlClient, ControlRejection, cursor_sequence, exchange_control_with_retry,
+    retry_delay, select_peer_window,
 };
 pub use endpoint::{
     EndpointBindOptions, EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpoint,

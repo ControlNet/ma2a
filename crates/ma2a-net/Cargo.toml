@@ -7,6 +7,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+getrandom.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-metrics.workspace = true
