@@ -3,7 +3,7 @@ use tokio::sync::oneshot;
 
 type EchoCallChannel = (
     EchoCall,
-    oneshot::Receiver<EchoAdmission>,
+    oneshot::Receiver<Result<(), EchoError>>,
     oneshot::Sender<Vec<u8>>,
     oneshot::Receiver<Result<EchoServiceResponse, EchoError>>,
 );
@@ -32,20 +32,11 @@ impl EchoServiceResponse {
     }
 }
 
-/// Authorization result delivered before the handler reads request bytes.
-#[derive(Debug)]
-pub(crate) enum EchoAdmission {
-    /// Current persisted authorization admitted the authenticated peer.
-    Authorized,
-    /// Current persisted authorization denied the authenticated peer.
-    Denied,
-}
-
 /// One TLS-authenticated inbound call whose body remains unread until admission.
 #[derive(Debug)]
 pub struct EchoCall {
     remote_endpoint_id: EndpointId,
-    admission: oneshot::Sender<EchoAdmission>,
+    admission: oneshot::Sender<Result<(), EchoError>>,
     request: oneshot::Receiver<Vec<u8>>,
     response: oneshot::Sender<Result<EchoServiceResponse, EchoError>>,
 }
@@ -82,16 +73,16 @@ impl EchoCall {
 
     /// Admits the peer before exposing body bytes to Runtime code.
     pub fn authorize(self) -> Option<EchoAuthorizedCall> {
-        self.admission.send(EchoAdmission::Authorized).ok()?;
+        self.admission.send(Ok(())).ok()?;
         Some(EchoAuthorizedCall {
             request: self.request,
             response: self.response,
         })
     }
 
-    /// Denies the peer without exposing or reading body bytes.
-    pub fn deny(self) {
-        let _unsent = self.admission.send(EchoAdmission::Denied);
+    /// Rejects the peer with a typed error without exposing or reading body bytes.
+    pub fn reject(self, error: EchoError) {
+        let _unsent = self.admission.send(Err(error));
     }
 }
 
@@ -114,5 +105,44 @@ impl EchoResponder {
     /// Completes the authorized call exactly once.
     pub fn respond(self, response: Result<EchoServiceResponse, EchoError>) {
         let _unsent = self.0.send(response);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::EchoError;
+
+    use super::EchoCall;
+    use crate::EndpointSecret;
+
+    #[tokio::test]
+    async fn unavailable_admission_is_preserved_before_body_read() {
+        // Given
+        let peer = EndpointSecret::generate().endpoint_id();
+        let (call, admission, _request, _response) = EchoCall::channel(peer);
+
+        // When
+        call.reject(EchoError::Unavailable);
+
+        // Then
+        assert!(matches!(admission.await, Ok(Err(EchoError::Unavailable))));
+    }
+
+    #[tokio::test]
+    async fn dropping_authorized_runtime_work_cancels_the_transport_response() {
+        // Given
+        let peer = EndpointSecret::generate().endpoint_id();
+        let (call, admission, _request, response) = EchoCall::channel(peer);
+        let authorized = call.authorize().expect("admission receiver remains");
+        assert!(matches!(admission.await, Ok(Ok(()))));
+        let runtime_work = tokio::spawn(authorized.request());
+        tokio::task::yield_now().await;
+
+        // When
+        runtime_work.abort();
+        let _cancelled = runtime_work.await;
+
+        // Then
+        assert!(response.await.is_err());
     }
 }

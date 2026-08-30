@@ -63,7 +63,8 @@ impl Drop for EchoPermit {
 mod tests {
     use ma2a_core::EndpointId;
 
-    use super::EchoLimiter;
+    use super::{ECHO_GLOBAL_LIMIT, EchoLimiter};
+    use crate::EndpointSecret;
 
     const PEER: [u8; 32] = [
         0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
@@ -85,6 +86,29 @@ mod tests {
         let excess = limiter.try_acquire(peer);
         permits.pop();
         let replacement = limiter.try_acquire(peer);
+
+        // Then
+        assert!(excess.is_none());
+        assert!(replacement.is_some());
+    }
+
+    #[test]
+    fn global_limit_is_rejected_and_drop_releases_capacity() {
+        // Given
+        let limiter = EchoLimiter::default();
+        let mut permits = (0..ECHO_GLOBAL_LIMIT)
+            .map(|_| {
+                let peer = EndpointSecret::generate().endpoint_id();
+                limiter.try_acquire(peer).expect("within global limit")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(permits.len(), ECHO_GLOBAL_LIMIT);
+        let excess_peer = EndpointSecret::generate().endpoint_id();
+
+        // When
+        let excess = limiter.try_acquire(excess_peer);
+        permits.pop();
+        let replacement = limiter.try_acquire(excess_peer);
 
         // Then
         assert!(excess.is_none());
