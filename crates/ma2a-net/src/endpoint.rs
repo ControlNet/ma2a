@@ -12,7 +12,8 @@ use zeroize::Zeroizing;
 use tokio::sync::mpsc;
 
 use crate::{
-    AddressPublisher, AddressPublisherError, PublicRelayFallbackConfig, SpaceAddressLookup,
+    AddressPublisher, AddressPublisherError, PrivateRelayAdvertisementPublisher,
+    PrivateRelayProviderConfig, PublicRelayFallbackConfig, SpaceAddressLookup,
     address_lookup::RuntimeAddressLookup,
     control::{CONTROL_ALPN, ControlCall, ControlClient, ControlHandler},
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
@@ -266,6 +267,17 @@ impl RuntimeEndpoint {
     /// Returns [`AddressPublisherError`] when current transport data is not publishable.
     pub fn address_publisher(&self) -> Result<AddressPublisher, AddressPublisherError> {
         AddressPublisher::from_endpoint(self.router.endpoint(), self.observation.clone())
+    }
+
+    /// Creates a private-relay advertisement publisher bound to this Runtime identity.
+    pub fn private_relay_advertisement_publisher(
+        &self,
+        config: PrivateRelayProviderConfig,
+    ) -> PrivateRelayAdvertisementPublisher {
+        PrivateRelayAdvertisementPublisher::new(
+            EndpointSecret(self.router.endpoint().secret_key().clone()),
+            config,
+        )
     }
 
     /// Updates application-defined data included in the live Iroh observation.
