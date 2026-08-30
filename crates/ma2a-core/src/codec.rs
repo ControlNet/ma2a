@@ -23,8 +23,8 @@ pub fn encode_request(request: &RequestEnvelope<'_>) -> Result<Vec<u8>, Protocol
     output.extend_from_slice(&[2, 0x58, 0x20]);
     output.extend_from_slice(request.target().as_bytes());
     output.extend_from_slice(&[3, PAIR, 0]);
-    if request.operation().service_kind() != ServiceKind::ECHO {
-        return Err(ProtocolError::INVALID_INPUT);
+    match request.operation().service_kind() {
+        ServiceKind::Echo => {}
     }
     write_bytes(&mut output, request.operation().payload())?;
     Ok(output)

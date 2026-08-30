@@ -2,18 +2,15 @@
 
 use crate::{EndpointId, SpaceId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ServiceCode {
-    Echo,
-}
-
 /// The complete Phase 1 service set.
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "canonical dispatch must update every match when a service is added"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ServiceKind(ServiceCode);
-
-impl ServiceKind {
+pub enum ServiceKind {
     /// The bounded encrypted Echo service.
-    pub const ECHO: Self = Self(ServiceCode::Echo);
+    Echo,
 }
 
 /// The one persistent Endpoint identity owned by a Runtime.
