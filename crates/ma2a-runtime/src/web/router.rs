@@ -151,6 +151,39 @@ fn routes(state: WebState, runtime: bool) -> Router {
         router
             .route("/api/v1/snapshot", get(super::runtime_routes::snapshot))
             .route("/api/v1/events", get(super::runtime_routes::events))
+            .route(
+                "/api/v1/spaces/create",
+                post(super::runtime_mutations::mutation),
+            )
+            .route(
+                "/api/v1/spaces/invite",
+                post(super::runtime_mutations::mutation),
+            )
+            .route(
+                "/api/v1/spaces/redeem",
+                post(super::runtime_mutations::mutation),
+            )
+            .route(
+                "/api/v1/spaces/revoke",
+                post(super::runtime_mutations::mutation),
+            )
+            .route(
+                "/api/v1/control-sync/trigger",
+                post(super::runtime_mutations::mutation),
+            )
+            .route(
+                "/api/v1/relays/private/configure",
+                post(super::runtime_mutations::mutation),
+            )
+            .route(
+                "/api/v1/relays/public/configure",
+                post(super::runtime_mutations::mutation),
+            )
+            .route("/api/v1/echo", post(super::runtime_mutations::mutation))
+            .route(
+                "/api/v1/sessions/revoke-all",
+                post(super::runtime_mutations::mutation),
+            )
     } else {
         router
     };
