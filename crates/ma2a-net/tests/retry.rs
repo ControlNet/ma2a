@@ -109,6 +109,26 @@ async fn permanent_authorization_failure_executes_exactly_once() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn error_details_truncate_at_utf8_boundaries() {
+    // Given
+    let prefix = "a".repeat(159);
+    let detail = format!("{prefix}é");
+
+    // When
+    let failure = DialFailure::transient(&detail);
+    let displayed = failure.to_string();
+
+    // Then
+    assert_eq!(displayed, prefix);
+    assert!(displayed.len() <= 160);
+    assert_eq!(failure.class(), ConnectionErrorClass::Transient);
+    assert_eq!(failure.attempts(), 1);
+
+    let ascii = DialFailure::authorization_denied("authorization denied");
+    assert_eq!(ascii.to_string(), "authorization denied");
+}
+
 #[tokio::test]
 async fn permanent_version_failure_executes_exactly_once() -> TestResult {
     assert_permanent_failure(
