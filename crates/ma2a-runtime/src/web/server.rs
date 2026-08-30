@@ -2,7 +2,10 @@ use std::{future::Future, net::SocketAddr};
 
 use axum::Router;
 
-use super::{WebAssets, WebAuthService, WebServerConfig, build_router};
+use super::{
+    WebAssets, WebAuthService, WebRuntimeDependencies, WebServerConfig, build_router,
+    build_runtime_router,
+};
 
 /// Bound loopback Web server with an OS-selected port.
 #[derive(Debug)]
@@ -29,6 +32,24 @@ impl LoopbackWebServer {
         Ok(Self {
             listeners: vec![ipv4, ipv6],
             router: build_router(auth, assets, config, port),
+            port,
+        })
+    }
+
+    /// Binds loopback listeners with authenticated Runtime snapshot and event routes.
+    ///
+    /// # Errors
+    /// Returns an I/O error when either loopback listener cannot be established.
+    pub async fn bind_with_runtime(
+        dependencies: WebRuntimeDependencies,
+        config: WebServerConfig,
+    ) -> std::io::Result<Self> {
+        let ipv4 = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = ipv4.local_addr()?.port();
+        let ipv6 = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)).await?;
+        Ok(Self {
+            listeners: vec![ipv4, ipv6],
+            router: build_runtime_router(dependencies, config, port),
             port,
         })
     }
