@@ -49,6 +49,8 @@ impl ControlRoundRunner {
         self,
         request: ControlRoundRequest,
     ) -> Result<Option<ControlRoundOutcome>, RuntimeError> {
+        let local_endpoint_id = request.local_endpoint_id;
+        let now_ms = request.now_ms;
         let mut pending = self
             .store
             .prepare_control_round(request)
@@ -59,6 +61,7 @@ impl ControlRoundRunner {
         let mut dials = JoinSet::new();
         let mut latest = None;
         let mut synchronized_peers = BTreeSet::new();
+        let mut changes = crate::control_sync::ControlChanges::default();
         while !pending.is_empty() || !dials.is_empty() {
             spawn_control_dials(&mut pending, &mut dials, {
                 let client = self.client.clone();
@@ -77,17 +80,19 @@ impl ControlRoundRunner {
                 revision,
                 memberships,
                 lookup: lookup_state,
+                changes: applied,
             } = self
                 .store
                 .apply_control_response(ControlExchangeInput {
-                    local_endpoint_id: request.local_endpoint_id,
+                    local_endpoint_id,
                     remote_endpoint_id: peer,
                     payload: response,
-                    now_ms: request.now_ms,
+                    now_ms,
                 })
                 .await?;
             install_lookup(&self.lookup, lookup_state)?;
             synchronized_peers.insert(peer);
+            changes.merge(applied);
             latest = Some((revision, memberships));
         }
         if had_peers && latest.is_none() {
@@ -97,6 +102,7 @@ impl ControlRoundRunner {
             revision,
             memberships,
             synchronized_peers,
+            changes,
         }))
     }
 }

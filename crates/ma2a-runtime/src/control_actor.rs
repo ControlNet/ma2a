@@ -6,11 +6,17 @@ use ma2a_net::ControlCall;
 use crate::{
     actor::Actor,
     control_sync::{
-        ControlExchangeInput, ControlRoundOutcome, ControlRoundRequest, ControlRoundRunner,
-        install_lookup,
+        ControlChanges, ControlExchangeInput, ControlRoundOutcome, ControlRoundRequest,
+        ControlRoundRunner, ControlRoundTrigger, install_lookup,
     },
     error::{RuntimeError, RuntimeErrorKind},
 };
+
+mod queue;
+pub(crate) use queue::{ControlRoundQueue, ScheduledControlRound};
+
+#[cfg(test)]
+mod scheduling_tests;
 
 const CONTROL_PERIOD_BASE_SECS: u64 = 60;
 const CONTROL_PERIOD_JITTER_SECS: u64 = 30;
@@ -26,33 +32,45 @@ pub(crate) fn control_period(endpoint_id: EndpointId) -> Duration {
 }
 
 impl Actor {
-    pub(crate) fn schedule_control_round(&mut self) {
+    pub(crate) fn schedule_control_round(
+        &mut self,
+        trigger: ControlRoundTrigger,
+        reply: Option<tokio::sync::oneshot::Sender<Result<u64, RuntimeError>>>,
+    ) {
         if self.state.memberships.is_empty() {
+            if let Some(reply) = reply {
+                let _unsent = reply.send(Ok(self.state.revision));
+            }
             return;
         }
-        if !self.control_rounds.is_empty() {
-            self.control_pending = true;
+        let Some(scheduled) = self.control_queue.request(trigger.scope(), reply) else {
             return;
-        }
+        };
+        self.spawn_control_round(scheduled);
+    }
+
+    fn spawn_control_round(&mut self, scheduled: ScheduledControlRound) {
         let Ok(now_ms) = self.clock.now_ms().and_then(|value| {
             u64::try_from(value).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
         }) else {
+            self.complete_control_waiters(scheduled.id(), false);
             return;
         };
         let store = self.store.clone();
         let client = self.endpoint.control_client();
         let lookup = self.lookup.clone();
         let endpoint_id = self.state.endpoint_id;
-        let rotation = self.control_rotation;
-        self.control_rotation = self.control_rotation.wrapping_add(1);
+        let task = scheduled;
         self.control_rounds.spawn(async move {
-            ControlRoundRunner::new(store, client, lookup)
+            let result = ControlRoundRunner::new(store, client, lookup)
                 .run(ControlRoundRequest {
                     local_endpoint_id: endpoint_id,
-                    rotation,
+                    rotation: task.rotation(),
                     now_ms,
+                    scope: task.scope().clone(),
                 })
-                .await
+                .await;
+            (task, result)
         });
     }
 
@@ -88,6 +106,7 @@ impl Actor {
                         self.synchronized_control_peers.insert(remote_endpoint_id);
                         self.endpoint
                             .set_control_enabled(!self.state.memberships.is_empty());
+                        self.schedule_control_changes(outcome.changes);
                         call.respond(Ok(response));
                     }
                     Err(rejection) => call.respond(Err(rejection)),
@@ -99,10 +118,25 @@ impl Actor {
 
     pub(crate) fn finish_control_round(
         &mut self,
-        result: Result<Result<Option<ControlRoundOutcome>, RuntimeError>, tokio::task::JoinError>,
+        result: Result<
+            (
+                ScheduledControlRound,
+                Result<Option<ControlRoundOutcome>, RuntimeError>,
+            ),
+            tokio::task::JoinError,
+        >,
     ) {
-        let succeeded = match result {
-            Ok(Ok(Some(outcome))) => {
+        let Ok((scheduled, outcome)) = result else {
+            let Some(round_id) = self.control_queue.active_id() else {
+                return;
+            };
+            self.complete_control_waiters(round_id, false);
+            return;
+        };
+        let round_id = scheduled.id();
+        let succeeded = match outcome {
+            Ok(Some(outcome)) => {
+                let changes = outcome.changes;
                 if self.state.memberships != outcome.memberships {
                     self.synchronized_control_peers.clear();
                 }
@@ -112,17 +146,17 @@ impl Actor {
                     .extend(outcome.synchronized_peers);
                 self.endpoint
                     .set_control_enabled(!self.state.memberships.is_empty());
+                self.schedule_control_changes(changes);
                 true
             }
-            Ok(Ok(None)) => true,
-            Ok(Err(_)) | Err(_) => false,
+            Ok(None) => true,
+            Err(_) => false,
         };
-        if !succeeded && self.control_pending {
-            self.control_pending = false;
-            self.schedule_control_round();
-            return;
-        }
-        for waiter in self.control_waiters.drain(..) {
+        self.complete_control_waiters(round_id, succeeded);
+    }
+
+    fn complete_control_waiters(&mut self, round_id: queue::ControlRoundId, succeeded: bool) {
+        for waiter in self.control_queue.complete(round_id) {
             let result = if succeeded {
                 Ok(self.state.revision)
             } else {
@@ -130,9 +164,20 @@ impl Actor {
             };
             let _unsent = waiter.send(result);
         }
-        if self.control_pending {
-            self.control_pending = false;
-            self.schedule_control_round();
+        if let Some(scheduled) = self.control_queue.take_pending() {
+            self.spawn_control_round(scheduled);
+        }
+    }
+
+    fn schedule_control_changes(&mut self, changes: ControlChanges) {
+        if changes.manifest {
+            self.schedule_control_round(ControlRoundTrigger::ManifestAdvanced, None);
+        }
+        if changes.address {
+            self.schedule_control_round(ControlRoundTrigger::AddressAdvanced, None);
+        }
+        if changes.relay {
+            self.schedule_control_round(ControlRoundTrigger::RelayAdvanced, None);
         }
     }
 

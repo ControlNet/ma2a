@@ -112,7 +112,10 @@ impl Actor {
         self.refresh_control_lookup()
             .await
             .map_err(|_| EnrollmentError::internal())?;
-        self.schedule_control_round();
+        self.schedule_control_round(
+            crate::control_sync::ControlRoundTrigger::EnrollmentCompleted,
+            None,
+        );
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
@@ -135,7 +138,10 @@ impl Actor {
             Ok(EnrollmentOutcome::Redeemed { revision, chain }) => {
                 self.state.revision = revision;
                 if self.refresh_control_lookup().await.is_ok() {
-                    self.schedule_control_round();
+                    self.schedule_control_round(
+                        crate::control_sync::ControlRoundTrigger::EnrollmentCompleted,
+                        None,
+                    );
                 }
                 respond_with_chain(call, &chain);
             }

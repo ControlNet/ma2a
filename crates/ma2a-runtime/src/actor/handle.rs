@@ -72,9 +72,17 @@ impl RuntimeHandle {
     /// # Errors
     /// Returns [`RuntimeError`] when the Runtime actor has stopped.
     pub async fn sync_control(&self) -> Result<u64, RuntimeError> {
+        self.sync_control_scope(None).await
+    }
+
+    pub(crate) async fn sync_control_with(&self, peer: EndpointId) -> Result<u64, RuntimeError> {
+        self.sync_control_scope(Some(peer)).await
+    }
+
+    async fn sync_control_scope(&self, peer: Option<EndpointId>) -> Result<u64, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(Command::SyncControl(reply))
+            .send(Command::SyncControl { peer, reply })
             .await
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
         response

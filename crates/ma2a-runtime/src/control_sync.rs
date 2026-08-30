@@ -1,15 +1,17 @@
 mod pages;
 mod scheduler;
+mod scope;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ma2a_core::{
-    ControlCursorV1, ControlPageV1, ControlRequestV1, ControlResponseV1, EndpointId,
+    AuthorizationEndpoints, AuthorizationRequest, AuthorizationResource, ControlCursorV1,
+    ControlPageV1, ControlRequestV1, ControlResponseV1, EndpointId, RemoteOperation,
     SpaceAuthorizationView,
 };
 use ma2a_net::{
     AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator, ControlRejection,
-    SpaceAddressLookup, ValidatedAddressRecord, select_peer_window,
+    SpaceAddressLookup, ValidatedAddressRecord,
 };
 use ma2a_store::{ControlSpaceState, Repository};
 
@@ -27,13 +29,6 @@ pub(crate) struct PreparedControlPeer {
     pub(crate) request: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ControlRoundRequest {
-    pub(crate) local_endpoint_id: EndpointId,
-    pub(crate) rotation: usize,
-    pub(crate) now_ms: u64,
-}
-
 #[derive(Debug)]
 pub(crate) struct ControlExchangeInput {
     pub(crate) local_endpoint_id: EndpointId,
@@ -47,6 +42,7 @@ pub(crate) struct ControlApplyOutcome {
     pub(crate) revision: u64,
     pub(crate) memberships: BTreeSet<ma2a_core::SpaceId>,
     pub(crate) lookup: ControlLookupState,
+    pub(crate) changes: ControlChanges,
 }
 
 #[derive(Debug)]
@@ -55,16 +51,14 @@ pub(crate) struct ControlRespondOutcome {
     pub(crate) revision: u64,
     pub(crate) memberships: BTreeSet<ma2a_core::SpaceId>,
     pub(crate) lookup: ControlLookupState,
+    pub(crate) changes: ControlChanges,
 }
 
-#[derive(Debug)]
-pub(crate) struct ControlRoundOutcome {
-    pub(crate) revision: u64,
-    pub(crate) memberships: BTreeSet<ma2a_core::SpaceId>,
-    pub(crate) synchronized_peers: BTreeSet<EndpointId>,
-}
-
+pub(crate) use pages::ControlChanges;
 pub(crate) use scheduler::ControlRoundRunner;
+pub(crate) use scope::{
+    ControlRoundOutcome, ControlRoundRequest, ControlRoundScope, ControlRoundTrigger,
+};
 
 pub(crate) fn install_lookup(
     lookup: &SpaceAddressLookup,
@@ -144,7 +138,7 @@ pub(crate) fn prepare_round(
             })
             .map(ma2a_store::PersistedAddressRecord::endpoint_id)
             .collect::<Vec<_>>();
-        for peer in select_peer_window(input.local_endpoint_id, &fresh_targets, input.rotation) {
+        for peer in input.select(&fresh_targets) {
             let entry = by_peer.entry(peer).or_default();
             entry.0.push(
                 state
@@ -176,10 +170,39 @@ pub(crate) fn respond(
     if shared.is_empty() {
         return Err(ControlRejection::Unauthorized);
     }
+    let authorizations = shared
+        .iter()
+        .map(ControlSpaceState::authorization)
+        .collect::<Vec<_>>();
+    crate::authz::authorize_remote(
+        &AuthorizationRequest::new(
+            AuthorizationEndpoints::new(input.remote_endpoint_id, input.local_endpoint_id),
+            RemoteOperation::CONTROL_SYNC,
+            None,
+        ),
+        &authorizations,
+    )
+    .map_err(|_| ControlRejection::Unauthorized)?;
     let request =
         ControlRequestV1::decode(&input.payload).map_err(|_| ControlRejection::Invalid)?;
+    for space_id in request
+        .cursors()
+        .iter()
+        .map(ControlCursorV1::space_id)
+        .chain(request.push_pages().iter().map(ControlPageV1::space_id))
+    {
+        crate::authz::authorize_remote(
+            &AuthorizationRequest::new(
+                AuthorizationEndpoints::new(input.remote_endpoint_id, input.local_endpoint_id),
+                RemoteOperation::CONTROL_SYNC,
+                Some(AuthorizationResource::control_space_cursor(space_id)),
+            ),
+            &authorizations,
+        )
+        .map_err(|_| ControlRejection::Unauthorized)?;
+    }
     pages::validate_page_spaces(&shared, request.push_pages())?;
-    pages::apply_pages(
+    let changes = pages::apply_pages(
         repository,
         pages::PageApplication::new(&shared, request.push_pages(), input.now_ms),
     )?;
@@ -211,6 +234,7 @@ pub(crate) fn respond(
             .memberships_for(input.local_endpoint_id)
             .map_err(|_| ControlRejection::Unavailable)?,
         lookup,
+        changes,
     })
 }
 
@@ -227,7 +251,7 @@ pub(crate) fn apply_response(
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
     pages::validate_page_spaces(&shared, response.pages())
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-    pages::apply_pages(
+    let changes = pages::apply_pages(
         repository,
         pages::PageApplication::new(&shared, response.pages(), input.now_ms),
     )
@@ -237,5 +261,6 @@ pub(crate) fn apply_response(
         revision: repository.revision()?,
         memberships: repository.memberships_for(input.local_endpoint_id)?,
         lookup,
+        changes,
     })
 }
