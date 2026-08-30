@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use ma2a_core::{ProtocolError, RequestId};
+use serde_json::Value;
 use tokio::{
     sync::{Mutex, Semaphore, TryAcquireError, mpsc},
     task::JoinSet,
@@ -195,10 +196,30 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
     };
     drop(replay);
     let response = api::ApiResponse::new(command.request_id(), response_revision, result);
-    Ok((
-        api::encode_response(&response)?,
-        response.result_type() == "shutting_down",
-    ))
+    let encoded = if command.operation() == "snapshot_fetch" {
+        encode_stamped_snapshot_response(&response, status.boot_id())?
+    } else {
+        api::encode_response(&response)?
+    };
+    Ok((encoded, response.result_type() == "shutting_down"))
+}
+
+fn encode_stamped_snapshot_response(
+    response: &api::ApiResponse,
+    boot_id: [u8; 16],
+) -> Result<Vec<u8>, IpcError> {
+    let encoded = api::encode_response(response)?;
+    let mut value: Value = serde_json::from_slice(&encoded).map_err(|_| IpcError::InvalidFrame)?;
+    value.as_object_mut().ok_or(IpcError::InvalidFrame)?.insert(
+        "runtime_boot_id".to_owned(),
+        Value::String(api::encode_hex(&boot_id)),
+    );
+    let encoded = serde_json::to_vec(&value).map_err(|_| IpcError::InvalidFrame)?;
+    if encoded.len() > api::MAX_LOCAL_RESPONSE_BYTES {
+        Err(IpcError::InvalidFrame)
+    } else {
+        Ok(encoded)
+    }
 }
 
 #[derive(Clone, Debug)]
