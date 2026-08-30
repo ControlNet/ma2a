@@ -1,5 +1,7 @@
 //! End-to-end active-dial control synchronization coverage.
 
+#[path = "control_sync_e2e/adversarial.rs"]
+mod control_sync_e2e_adversarial;
 #[path = "control_sync_e2e/artifacts.rs"]
 mod control_sync_e2e_artifacts;
 #[path = "control_sync_e2e/support.rs"]

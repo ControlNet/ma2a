@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn transient_control_failure_stops_after_three_attempts() {
+    async fn unreachable_peer_exhausts_three_attempts_without_wall_clock_delay() {
         // Given
         let attempts = Cell::new(0_usize);
 
