@@ -38,6 +38,8 @@ Durable replay storage is implemented by the Runtime persistence layer, not this
 
 ## Snapshots And Events
 
-`RuntimeSnapshot` is authoritative and includes revision, Endpoint, Spaces, control synchronization, relay candidates, observed relay state, reachability, recent Echo summary, and UI authentication state.
+`snapshot_fetch` and authenticated `GET /api/v1/snapshot` return the same authoritative `RuntimeSnapshot` projection. The HTTP route returns the snapshot payload directly. Runtime/SQLite supplies the revision, verified Space membership and member counts, password state, and active-session count from one read transaction; the actor adds current Endpoint, control-sync, Iroh-observed reachability, and bounded Echo state. Until local Space labels are persisted, the canonical lowercase Space ID is the display name.
 
-SSE events are best-effort projections containing a revision and changed entity IDs. They are not a durable event log. A disconnect, duplicate, reordered event, revision gap, or `snapshot_invalidated` event requires fetching a new authoritative snapshot before applying further incremental events.
+Authenticated `GET /api/v1/events?since=<revision>` accepts only a baseline equal to the current authoritative revision. A stale baseline receives one `resync-required` SSE event and the stream closes. Accepted streams use a bounded per-client queue and event IDs equal to revision. A later consecutive revision emits a typed `snapshot_invalidated` event; a skipped revision, queue overflow, Runtime unavailability/restart, or expired/revoked session emits `resync-required` when possible and closes. Polling and session-validity checks do not extend session deadlines or advance revision.
+
+SSE events are best-effort projections, not a durable event log or replay mechanism. A disconnect, duplicate, reordered event, revision gap, `snapshot_invalidated`, or `resync-required` signal makes client state uncertain. The frontend discards further incremental events and replaces the entire state with the next successful snapshot rather than merging it with uncertain state.
