@@ -1,6 +1,8 @@
 use ma2a_store::{AuthorizedEnrollmentRedemption, EndpointObservationUpdate, EnrollmentOutcome};
 use tokio::sync::oneshot;
 
+mod echo;
+
 use crate::{
     RuntimeClock as _,
     clock::SystemClock,
