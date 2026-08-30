@@ -58,6 +58,7 @@ pub(crate) enum StoreCommand {
         publisher: ma2a_net::AddressPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,
+        force_advance: bool,
         reply: oneshot::Sender<Result<(u64, bool), RuntimeError>>,
     },
     PublishRelayAdvertisements {
@@ -71,6 +72,15 @@ pub(crate) enum StoreCommand {
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,
         reply: oneshot::Sender<Result<ControlLookupState, RuntimeError>>,
+    },
+    LoadRelayMap {
+        local_endpoint_id: ma2a_core::EndpointId,
+        now_ms: u64,
+        reply: oneshot::Sender<Result<ma2a_net::LocalIrohRelayMap, RuntimeError>>,
+    },
+    RecordRelayObservations {
+        observations: Vec<ma2a_store::RelayObservation>,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
     PrepareControlRound {
         input: ControlRoundRequest,
