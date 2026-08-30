@@ -11,6 +11,11 @@ use crate::{
 
 pub(crate) enum StoreCommand {
     Initialize(oneshot::Sender<Result<super::Identity, RuntimeError>>),
+    Snapshot {
+        endpoint_id: ma2a_core::EndpointId,
+        now_ms: i64,
+        reply: oneshot::Sender<Result<ma2a_store::SnapshotState, RuntimeError>>,
+    },
     SetEndpointBindPort {
         port: u16,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,

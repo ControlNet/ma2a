@@ -40,6 +40,14 @@ impl StoreBackend {
                 StoreCommand::Initialize(reply) => {
                     let _unsent = reply.send(self.initialize());
                 }
+                StoreCommand::Snapshot {
+                    endpoint_id,
+                    now_ms,
+                    reply,
+                } => {
+                    let result = self.repository.snapshot_state(endpoint_id, now_ms);
+                    let _unsent = reply.send(result.map_err(Into::into));
+                }
                 StoreCommand::SetEndpointBindPort { port, reply } => {
                     let _unsent = reply.send(self.set_endpoint_bind_port(port));
                 }
