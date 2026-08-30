@@ -18,17 +18,13 @@ mod command;
 mod effective_data_test;
 mod handle;
 mod local_control;
+mod shutdown;
 pub(crate) use command::Command;
 pub use handle::RuntimeHandle;
+pub(crate) use shutdown::ShutdownAck;
 
 pub(crate) const COMMAND_CAPACITY: usize = 32;
 pub(crate) const EVENT_CAPACITY: usize = 32;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ShutdownAck {
-    pub(crate) revision: u64,
-    pub(crate) endpoint_closed: bool,
-}
 
 pub(crate) struct Actor {
     pub(crate) state: RuntimeStatus,
@@ -257,32 +253,5 @@ impl Actor {
             .events
             .send(RuntimeEvent::memberships_changed(revision));
         Ok(revision)
-    }
-
-    async fn finish(mut self, clean: bool) -> Result<ShutdownAck, RuntimeError> {
-        self.state.ready = false;
-        let _receiver_count = self
-            .events
-            .send(RuntimeEvent::shutting_down(self.state.revision));
-        self.control_rounds.shutdown().await;
-        let endpoint_closed = self.endpoint.shutdown().await?;
-        self.relay_observer.await?;
-        let observation = self.store.observe(&self.state).await;
-        let clean_shutdown = if clean {
-            Some(self.store.clean_shutdown(self.state.boot_id).await)
-        } else {
-            None
-        };
-        let stop = self.store.stop().await;
-        let observation_revision = observation?;
-        self.state.revision = match clean_shutdown {
-            Some(result) => result?,
-            None => observation_revision,
-        };
-        stop?;
-        Ok(ShutdownAck {
-            revision: self.state.revision,
-            endpoint_closed,
-        })
     }
 }
