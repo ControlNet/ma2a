@@ -128,22 +128,18 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     assert!(allowed.reachable);
     assert_eq!(
         snapshot.pointer("/relay_candidates"),
-        Some(&serde_json::json!([{
-            "endpoint_id": crate::api::encode_hex(relay.public().as_bytes()),
-            "relay_kind": "private",
-            "eligible": true,
-        }]))
+        Some(&serde_json::json!([]))
     );
     assert_eq!(
         snapshot.pointer("/observed_relay_state"),
         Some(&serde_json::json!({
-            "private_relay_online": true,
+            "private_relay_online": false,
             "public_relay_online": false,
         }))
     );
     assert_eq!(
         snapshot.pointer("/control_sync/synchronized"),
-        Some(&serde_json::json!(true))
+        Some(&serde_json::json!(false))
     );
     assert_eq!(
         snapshot.pointer("/reachability/direct"),
