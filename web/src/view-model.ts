@@ -3,9 +3,7 @@ export type EndpointStatus = "active" | "degraded" | "offline"
 export type ObservedPath = "direct" | "relay" | "mixed" | "unknown"
 export type SyncState = "current" | "catching-up" | "stalled"
 export type RelayKind = "private" | "public"
-export type RelayCompatibility = "home-compatible" | "space-only" | "fallback"
-export type RelayStatus = "eligible" | "selected" | "disabled" | "expired"
-export type EchoStatus = "echoed" | "denied" | "failed"
+export type RelayStatus = "eligible" | "disabled"
 
 export type EndpointView = {
   readonly id: string
@@ -21,10 +19,8 @@ export type SpaceView = {
 }
 
 export type RelayView = {
-  readonly id: string
-  readonly url: string
+  readonly endpointId: string
   readonly kind: RelayKind
-  readonly compatibility: RelayCompatibility
   readonly status: RelayStatus
 }
 
@@ -34,19 +30,26 @@ export type ReachabilityView = {
   readonly detail: string
 }
 
-export type EchoSummaryView = {
-  readonly requestId: string
-  readonly target: string
-  readonly status: EchoStatus
-  readonly path: ObservedPath
-}
-
 export type RuntimeViewData = {
   readonly revision: number
   readonly connection: ConnectionState
+  readonly runtimeVersion: string
   readonly endpoint: EndpointView
   readonly spaces: readonly SpaceView[]
   readonly relays: readonly RelayView[]
+  readonly observedRelayState: {
+    readonly private_relay_online: boolean
+    readonly public_relay_online: boolean
+  }
   readonly reachability: ReachabilityView
-  readonly echoHistory: readonly EchoSummaryView[]
+  readonly controlSync: {
+    readonly peer_endpoint_ids: readonly string[]
+    readonly synchronized: boolean
+  }
+  readonly echoTotals: { readonly successes: number; readonly failures: number }
+  readonly uiAuth: {
+    readonly initialized: boolean
+    readonly password_set: boolean
+    readonly active_sessions: number
+  }
 }
