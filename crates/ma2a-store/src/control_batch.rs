@@ -2,7 +2,7 @@ use ma2a_core::SpaceChain;
 use rusqlite::OptionalExtension as _;
 
 use crate::{
-    AddressAdvance, KeyReference, Repository, StoreError, ValidatedRelayAdvertisement,
+    KeyReference, Repository, StoreError, ValidatedAddressRecord, ValidatedRelayAdvertisement,
     repository::increment_revision, space_rows::replace_chain,
 };
 
@@ -10,7 +10,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct ControlBatch {
     chains: Vec<SpaceChain>,
-    addresses: Vec<AddressAdvance>,
+    addresses: Vec<ValidatedAddressRecord>,
     relays: Vec<ValidatedRelayAdvertisement>,
 }
 
@@ -18,7 +18,7 @@ impl ControlBatch {
     /// Collects already validated control artifacts for one atomic commit.
     pub const fn new(
         chains: Vec<SpaceChain>,
-        addresses: Vec<AddressAdvance>,
+        addresses: Vec<ValidatedAddressRecord>,
         relays: Vec<ValidatedRelayAdvertisement>,
     ) -> Self {
         Self {
@@ -55,7 +55,8 @@ impl Repository {
                 .transpose()?;
             replace_chain(&transaction, chain, reference.as_ref())?;
         }
-        for advance in &batch.addresses {
+        for record in &batch.addresses {
+            let advance = record.advance();
             transaction.execute(
                 "INSERT INTO address_state(space_id, endpoint_id, sequence, issued_at_ms,
                  expires_at_ms, record_hash, signed_record) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
