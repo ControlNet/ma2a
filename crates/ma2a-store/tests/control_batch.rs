@@ -3,7 +3,10 @@
 #[path = "common/support.rs"]
 mod support;
 
-use ma2a_store::{AddressAdvance, ControlBatch, Repository, StoreConfig};
+use ma2a_store::{
+    AddressRecordTarget, AddressRecordValidation, ControlBatch, Repository, StoreConfig,
+    ValidatedAddressRecord,
+};
 use support::{TempState, TestResult};
 
 #[test]
@@ -27,20 +30,26 @@ fn control_batch_commits_all_advances_at_one_revision() -> TestResult {
     )
     .sign(&authority)?;
     let chain = ma2a_core::SpaceChain::from_genesis(genesis.clone())?;
-    let advance = AddressAdvance {
-        space_id: genesis.space_id(),
-        endpoint_id,
-        sequence: 1,
-        issued_at_ms: 10,
-        expires_at_ms: 20,
-        record_hash: [7; 32],
-        signed_record: vec![8],
-    };
+    let authorization = ma2a_core::SpaceAuthorizationView::from_chain(&chain);
+    let record = ma2a_core::SpaceAddressRecordV1::new(
+        ma2a_core::AddressRecordScope::new(genesis.space_id(), endpoint_id),
+        ma2a_core::AddressRecordValidity::new(1, 10, 20)?,
+        ma2a_core::AddressEndpointDataV1::new(Vec::new())?,
+    )
+    .sign(&iroh_base::SecretKey::from_bytes(&[0x43; 32]))?;
+    let validated = ValidatedAddressRecord::parse(
+        record.canonical_bytes(),
+        AddressRecordValidation::new(
+            AddressRecordTarget::new(genesis.space_id(), endpoint_id),
+            &authorization,
+            15,
+        ),
+    )?;
 
     // When
     let revision = repository.persist_control_batch(&ControlBatch::new(
         vec![chain],
-        vec![advance],
+        vec![validated],
         Vec::new(),
     ))?;
 
