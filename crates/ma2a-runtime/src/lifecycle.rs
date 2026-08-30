@@ -63,8 +63,10 @@ impl Runtime {
             .load_control_lookup(identity.endpoint_id, now_ms)
             .await?;
         crate::control_sync::install_lookup(&lookup, lookup_state)?;
+        let relay_map = store.load_relay_map(identity.endpoint_id, now_ms).await?;
         let options = EndpointBindOptions::new(enrollment_sender, identity.bind_port)
-            .with_control(control_sender, !identity.memberships.is_empty());
+            .with_control(control_sender, !identity.memberships.is_empty())
+            .with_relay_map(relay_map.clone());
         let endpoint =
             RuntimeEndpoint::bind_with_lookup(identity.secret, lookup.clone(), options).await?;
         if endpoint.endpoint_id() != identity.endpoint_id {
@@ -76,14 +78,16 @@ impl Runtime {
         }
         let boot_id = boot_id()?;
         let boot_revision = store.begin_boot(boot_id).await?;
+        let relay_observation_revision = store.record_relay_observations(Vec::new()).await?;
         let mut state = RuntimeStatus {
             endpoint_id: identity.endpoint_id,
             endpoint_addr: endpoint.endpoint_addr(),
             boot_id,
-            revision: boot_revision,
+            revision: boot_revision.max(relay_observation_revision),
             memberships: identity.memberships,
             ready: true,
             connectivity: Connectivity::DIRECT_ONLY,
+            relay: crate::reachability::RelayReachabilityState::new(relay_map),
         };
         state.revision = store.observe(&state).await?.max(boot_revision);
         let (actor, handle, cancellation) = Actor::new(

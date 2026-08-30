@@ -3,6 +3,8 @@ use std::collections::BTreeSet;
 use ma2a_core::{EndpointId, SpaceId};
 use ma2a_net::EndpointAddr;
 
+use crate::reachability::RelayReachabilityState;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConnectivityKind {
     DirectOnly,
@@ -31,6 +33,7 @@ pub struct RuntimeStatus {
     pub(crate) memberships: BTreeSet<SpaceId>,
     pub(crate) ready: bool,
     pub(crate) connectivity: Connectivity,
+    pub(crate) relay: RelayReachabilityState,
 }
 
 impl RuntimeStatus {
@@ -72,6 +75,16 @@ impl RuntimeStatus {
     /// Returns truthful current connectivity capability.
     pub const fn connectivity(&self) -> Connectivity {
         self.connectivity
+    }
+
+    /// Returns relay-backed reachability derived from Iroh-observed state.
+    pub const fn relay_reachability(&self) -> ma2a_core::RelayReachability {
+        self.relay.reachability()
+    }
+
+    /// Iterates Iroh-reported home relay URLs accepted from the supplied map.
+    pub fn observed_home_relays(&self) -> impl Iterator<Item = &str> {
+        self.relay.observed_home_relays()
     }
 }
 
