@@ -1,19 +1,11 @@
-use std::{
-    error::Error,
-    fs,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicI64, AtomicU64, Ordering},
-    },
-};
+use std::error::Error;
 
 use iroh::SecretKey;
 use ma2a_core::{
     InviteEntropy, MemberCapabilities, RequestId, SpaceManifestMembership, SpaceMemberV1,
     SpacePolicyV1,
 };
-use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock};
+use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, Runtime};
 use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
 
 use crate::control_sync_e2e_artifacts::{
@@ -21,48 +13,15 @@ use crate::control_sync_e2e_artifacts::{
     relay_advertisement,
 };
 
+#[path = "support/state.rs"]
+mod state;
+
+use state::TempState;
+pub(super) use state::clock;
+
 pub(super) type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 type TestResultValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
 const NOW_MS: i64 = 1_700_000_000_000;
-
-#[derive(Debug)]
-struct TestClock(AtomicI64);
-
-impl RuntimeClock for TestClock {
-    fn now_ms(&self) -> Result<i64, ma2a_runtime::RuntimeError> {
-        Ok(self.0.load(Ordering::SeqCst))
-    }
-}
-
-pub(super) fn clock() -> Arc<dyn RuntimeClock> {
-    Arc::new(TestClock(AtomicI64::new(NOW_MS)))
-}
-
-struct TempState(PathBuf);
-
-impl TempState {
-    fn new(label: &str) -> TestResultValue<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ma2a-control-{label}-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(path))
-    }
-}
-
-impl Drop for TempState {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
 
 pub(super) struct ControlFixture {
     owner_state: TempState,
