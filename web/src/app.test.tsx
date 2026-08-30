@@ -90,8 +90,8 @@ test.each([
 
 test.each([
   [EMPTY_RUNTIME_FIXTURE, "No relay candidates"],
-  [ONE_RUNTIME_FIXTURE, "relay.test.invalid"],
-  [MANY_RUNTIME_FIXTURE, "space-relay.test.invalid"],
+  [ONE_RUNTIME_FIXTURE, "11111111"],
+  [MANY_RUNTIME_FIXTURE, "22222222"],
 ] as const)("renders zero, one, and many Relay states", (runtime, expectedText) => {
   render(<App initialPath="/relays" runtime={runtime} />)
 
