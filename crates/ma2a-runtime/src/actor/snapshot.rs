@@ -66,7 +66,6 @@ impl Actor {
                     .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let direct = self.state.endpoint_addr.ip_addrs().next().is_some();
         let endpoint = EndpointView::new(
             self.state.endpoint_id,
             env!("CARGO_PKG_VERSION"),
@@ -75,18 +74,15 @@ impl Actor {
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         let collections = SnapshotCollections::new(
             spaces,
-            ControlSyncView::new(
-                control_peers,
-                self.synchronized_control_peers.len() == self.state.memberships.len(),
-            )
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?,
+            ControlSyncView::new(control_peers, self.control_queue.is_synchronized())
+                .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?,
             relay_candidates,
         )
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         let state = SnapshotState::new(
             NetworkSnapshotState::new(
                 ObservedRelayStateView::new(private_relay_online, public_relay_online),
-                ReachabilityView::new(direct, relay_connected),
+                ReachabilityView::new(false, relay_connected),
             ),
             ClientSnapshotState::new(
                 EchoSummaryView::new(successes, failures),
