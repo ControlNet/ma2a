@@ -80,6 +80,8 @@ fn secured(mut response: Response) -> Response {
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
     response
 }

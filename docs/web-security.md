@@ -12,4 +12,4 @@ The session cookie is host-only, `HttpOnly`, and `SameSite=Strict`. Plain HTTP l
 
 An SSE connection validates its session without extending session deadlines. Expiry or revocation closes the stream without emitting a revision, snapshot-derived payload, or other state-bearing recovery frame.
 
-All responses set a restrictive Content Security Policy, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`. The server emits no permissive CORS headers.
+All responses set a restrictive Content Security Policy, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`. API and error responses default to `Cache-Control: no-store`; SPA documents use `no-cache`, and content-hashed `assets/*` use immutable one-year caching. The server emits no permissive CORS headers.
