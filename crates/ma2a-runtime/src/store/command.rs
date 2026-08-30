@@ -1,0 +1,68 @@
+use ma2a_store::{AuthorizedEnrollmentRedemption, EndpointObservationUpdate, EnrollmentOutcome};
+use tokio::sync::oneshot;
+
+use crate::{
+    control_sync::{
+        ControlApplyOutcome, ControlExchangeInput, ControlLookupState, ControlRespondOutcome,
+        ControlRoundRequest, PreparedControlPeer,
+    },
+    error::RuntimeError,
+};
+
+pub(crate) enum StoreCommand {
+    Initialize(oneshot::Sender<Result<super::Identity, RuntimeError>>),
+    SetEndpointBindPort {
+        port: u16,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    BeginBoot {
+        boot_id: [u8; 16],
+        observed_at_ms: i64,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    Observe {
+        observation: EndpointObservationUpdate,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    CleanShutdown {
+        boot_id: [u8; 16],
+        observed_at_ms: i64,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    CreateEnrollmentInvite {
+        creation: crate::enrollment::IssuedEnrollmentCreation,
+        creator: ma2a_core::EndpointId,
+        owner_addr: ma2a_net::EndpointAddr,
+        reply: oneshot::Sender<Result<ma2a_core::SignedInviteTicket, RuntimeError>>,
+    },
+    CancelEnrollmentInvite {
+        invitation_id: [u8; 16],
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    RedeemEnrollment {
+        authorized: AuthorizedEnrollmentRedemption,
+        reply: oneshot::Sender<Result<EnrollmentOutcome, RuntimeError>>,
+    },
+    PersistEnrollment {
+        chain: ma2a_core::SpaceChain,
+        reply: oneshot::Sender<Result<(u64, ma2a_core::SpaceChain), RuntimeError>>,
+    },
+    LoadControlLookup {
+        local_endpoint_id: ma2a_core::EndpointId,
+        now_ms: u64,
+        reply: oneshot::Sender<Result<ControlLookupState, RuntimeError>>,
+    },
+    PrepareControlRound {
+        input: ControlRoundRequest,
+        reply: oneshot::Sender<Result<Vec<PreparedControlPeer>, RuntimeError>>,
+    },
+    RespondControl {
+        input: ControlExchangeInput,
+        reply: oneshot::Sender<Result<ControlRespondOutcome, ma2a_net::ControlRejection>>,
+    },
+    ApplyControlResponse {
+        input: ControlExchangeInput,
+        reply: oneshot::Sender<Result<ControlApplyOutcome, RuntimeError>>,
+    },
+    Stop(oneshot::Sender<()>),
+}
