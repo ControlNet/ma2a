@@ -171,6 +171,22 @@ impl WebAuthService {
         self.authenticate_session(bearer, None).await
     }
 
+    pub(super) async fn validate(&self, bearer: &str) -> Result<AuthenticatedSession, AuthFailure> {
+        let digest = csrf::bearer_digest(bearer)?;
+        let config = self.inner.store.clone();
+        let now_ms = self.inner.clock.now_ms();
+        tokio::task::spawn_blocking(move || {
+            Repository::open(&config)?
+                .validate_session(&digest, now_ms)?
+                .ok_or(AuthFailure::Unauthorized)?;
+            Ok(AuthenticatedSession {
+                bearer_digest: digest,
+            })
+        })
+        .await
+        .map_err(|_| AuthFailure::Internal)?
+    }
+
     pub(super) async fn authenticate_mutation(
         &self,
         bearer: &str,
