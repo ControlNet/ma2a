@@ -55,22 +55,22 @@ export function OverviewScreen({
               </dl>
             </Section>
             <Section title="Recent Echo">
-              {runtime.echoHistory.length === 0 ? (
+              {runtime.echoTotals.successes + runtime.echoTotals.failures === 0 ? (
                 <EmptyState
                   description="Run an Echo test against an Endpoint to record a bounded result summary."
                   title="No Echo history"
                 />
               ) : (
-                <ul className="compact-list">
-                  {runtime.echoHistory.slice(0, 3).map((echo) => (
-                    <li key={echo.requestId}>
-                      <span>{echo.target}</span>
-                      <StatusText tone={echo.status === "echoed" ? "success" : "error"}>
-                        {echo.status}
-                      </StatusText>
-                    </li>
-                  ))}
-                </ul>
+                <dl className="detail-list">
+                  <div>
+                    <dt>Successes</dt>
+                    <dd>{runtime.echoTotals.successes}</dd>
+                  </div>
+                  <div>
+                    <dt>Failures</dt>
+                    <dd>{runtime.echoTotals.failures}</dd>
+                  </div>
+                </dl>
               )}
             </Section>
           </div>
