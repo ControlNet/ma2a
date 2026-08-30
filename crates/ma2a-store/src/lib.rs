@@ -10,6 +10,7 @@
 mod address_records;
 mod backup;
 mod config;
+mod control_state;
 mod enrollment;
 mod enrollment_models;
 mod error;
@@ -33,6 +34,7 @@ mod web_auth;
 
 pub use address_records::{AddressRecordOutcome, PersistedAddressRecord};
 pub use config::StoreConfig;
+pub use control_state::ControlSpaceState;
 pub use enrollment_models::{
     AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption,
 };
