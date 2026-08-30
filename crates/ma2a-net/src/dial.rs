@@ -281,8 +281,11 @@ impl DialFailure {
         self
     }
     fn new(class: ConnectionErrorClass, detail: &str) -> Self {
-        let mut bounded = detail.to_owned();
-        bounded.truncate(MAX_ERROR_DETAIL_BYTES);
+        let mut end = detail.len().min(MAX_ERROR_DETAIL_BYTES);
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        let bounded = detail[..end].to_owned();
         Self {
             class,
             detail: bounded,
