@@ -4,6 +4,7 @@ export type UncertaintyReason =
   | "event_before_snapshot"
   | "out_of_order_revision"
   | "revision_gap"
+  | "server_resync_required"
 
 export type RuntimeState =
   | { readonly kind: "empty" }
@@ -57,6 +58,18 @@ export function beginResnapshot(state: RuntimeState): RuntimeState {
   }
 }
 
+export function failResnapshot(state: RuntimeState): RuntimeState {
+  switch (state.kind) {
+    case "empty":
+    case "ready":
+      return state
+    case "uncertain":
+      return { ...state, resnapshot: "required" }
+    default:
+      return assertNever(state)
+  }
+}
+
 export function receiveRevision(state: RuntimeState, revision: number): StateTransition {
   switch (state.kind) {
     case "empty":
@@ -88,7 +101,28 @@ export function markDisconnected(state: RuntimeState): StateTransition {
     case "ready":
       return requireResnapshot(state.revision, "disconnected")
     case "uncertain":
-      return { accepted: false, effect: "none", state }
+      return {
+        accepted: false,
+        effect: state.resnapshot === "required" ? "resnapshot" : "none",
+        state,
+      }
+    default:
+      return assertNever(state)
+  }
+}
+
+export function markResyncRequired(state: RuntimeState): StateTransition {
+  switch (state.kind) {
+    case "empty":
+      return requireResnapshot(null, "server_resync_required")
+    case "ready":
+      return requireResnapshot(state.revision, "server_resync_required")
+    case "uncertain":
+      return {
+        accepted: false,
+        effect: state.resnapshot === "required" ? "resnapshot" : "none",
+        state,
+      }
     default:
       return assertNever(state)
   }
