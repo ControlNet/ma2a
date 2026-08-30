@@ -1,7 +1,9 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use ma2a_core::SpaceId;
-use ma2a_net::{ControlCall, EnrollmentCall, RuntimeEndpoint, SpaceAddressLookup};
+use ma2a_net::{
+    ControlCall, EnrollmentCall, IrohRelayObservation, RuntimeEndpoint, SpaceAddressLookup,
+};
 use tokio::{
     sync::{broadcast, mpsc},
     task::JoinSet,
@@ -36,6 +38,8 @@ pub(crate) struct Actor {
     enrollment_calls: mpsc::Receiver<EnrollmentCall>,
     pub(crate) control_calls: mpsc::Receiver<ControlCall>,
     pub(crate) lookup: SpaceAddressLookup,
+    relay_observations: mpsc::Receiver<IrohRelayObservation>,
+    relay_observer: tokio::task::JoinHandle<()>,
     pub(crate) control_rounds: JoinSet<(
         crate::control_actor::ScheduledControlRound,
         Result<Option<crate::control_sync::ControlRoundOutcome>, RuntimeError>,
@@ -67,6 +71,8 @@ impl Actor {
         #[cfg(test)]
         let control_schedule_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let cancellation = CancellationToken::new();
+        let (relay_observation_sender, relay_observations) = mpsc::channel(COMMAND_CAPACITY);
+        let relay_observer = endpoint.spawn_relay_observer(relay_observation_sender);
         let handle = RuntimeHandle::new(
             command_sender,
             events.clone(),
@@ -83,6 +89,8 @@ impl Actor {
             enrollment_calls,
             control_calls,
             lookup,
+            relay_observations,
+            relay_observer,
             control_rounds: JoinSet::new(),
             control_queue: crate::control_actor::ControlRoundQueue::default(),
             synchronized_control_peers: BTreeSet::new(),
@@ -166,13 +174,19 @@ impl Actor {
                                 self.state.memberships = memberships;
                                 self.endpoint
                                     .set_control_enabled(!self.state.memberships.is_empty());
-                                self.refresh_control_lookup().await.map(|()| {
-                                    self.schedule_control_round(
-                                        crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
-                                        None,
-                                    );
-                                    revision
-                                })
+                                match self.refresh_control_lookup().await {
+                                    Ok(()) => match self.refresh_relay_candidates().await {
+                                        Ok(_) => {
+                                            self.schedule_control_round(
+                                                crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
+                                                None,
+                                            );
+                                            Ok(revision)
+                                        }
+                                        Err(error) => Err(error),
+                                    },
+                                    Err(error) => Err(error),
+                                }
                             }
                             Err(error) => Err(error),
                         };
@@ -202,14 +216,20 @@ impl Actor {
                 call = self.control_calls.recv() => if let Some(call) = call {
                     self.handle_control_call(call).await;
                 },
+                observation = self.relay_observations.recv() => if let Some(observation) = observation {
+                    self.observe_iroh_relay(observation).await?;
+                },
                 joined = self.control_rounds.join_next(), if !self.control_rounds.is_empty() => {
                     if let Some(result) = joined {
-                        self.finish_control_round(result);
+                        self.finish_control_round(result).await;
                     }
                 },
-                _ = periodic.tick() => self.schedule_control_round(
-                    crate::control_sync::ControlRoundTrigger::Periodic, None,
-                ),
+                _ = periodic.tick() => {
+                    self.refresh_relay_candidates().await?;
+                    self.schedule_control_round(
+                        crate::control_sync::ControlRoundTrigger::Periodic, None,
+                    );
+                },
             }
         }
     }
@@ -244,6 +264,7 @@ impl Actor {
             .send(RuntimeEvent::shutting_down(self.state.revision));
         self.control_rounds.shutdown().await;
         let endpoint_closed = self.endpoint.shutdown().await?;
+        self.relay_observer.await?;
         let observation = self.store.observe(&self.state).await;
         let clean_shutdown = if clean {
             Some(self.store.clean_shutdown(self.state.boot_id).await)

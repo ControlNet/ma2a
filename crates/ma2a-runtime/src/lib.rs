@@ -20,6 +20,7 @@ mod enrollment;
 mod enrollment_actor;
 mod error;
 mod lifecycle;
+mod reachability;
 mod state;
 mod store;
 mod store_client;
