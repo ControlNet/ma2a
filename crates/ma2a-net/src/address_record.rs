@@ -1,7 +1,11 @@
 use std::{error::Error, fmt};
 
-use ma2a_core::{EndpointId, SignedSpaceAddressRecordV1, SpaceAuthorizationView, SpaceId};
-use ma2a_store::{AddressAdvance, AddressRecordOutcome, Repository, StoreError};
+use ma2a_core::{EndpointId, SpaceAuthorizationView, SpaceId};
+use ma2a_store::{
+    AddressRecordBoundaryError, AddressRecordOutcome,
+    AddressRecordTarget as StoreAddressRecordTarget, AddressRecordValidation, Repository,
+    StoreError, ValidatedAddressRecord,
+};
 
 use crate::{AddressMetrics, AddressPersistenceOutcome, AddressValidationOutcome};
 
@@ -51,25 +55,6 @@ impl<'a> AddressValidationContext<'a> {
     pub const fn with_metrics(mut self, metrics: &'a AddressMetrics) -> Self {
         self.metrics = Some(metrics);
         self
-    }
-}
-
-/// A canonical, authorized, current, signed, and persistently accepted address record.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValidatedAddressRecord {
-    signed: SignedSpaceAddressRecordV1,
-    advance: AddressAdvance,
-}
-
-impl ValidatedAddressRecord {
-    /// Returns the accepted signed record.
-    pub const fn record(&self) -> &SignedSpaceAddressRecordV1 {
-        &self.signed
-    }
-
-    /// Returns the validated persistence representation.
-    pub const fn advance(&self) -> &AddressAdvance {
-        &self.advance
     }
 }
 
@@ -156,54 +141,48 @@ impl AddressRecordValidator {
     ) -> Result<ValidatedAddressRecord, AddressRecordValidationError> {
         let default_metrics = AddressMetrics::default();
         let metrics = context.metrics.unwrap_or(&default_metrics);
-        let signed = SignedSpaceAddressRecordV1::parse_canonical_bytes(bytes).map_err(|_| {
-            metrics.record_validation(AddressValidationOutcome::InvalidEncoding);
-            AddressRecordValidationError::InvalidEncoding
-        })?;
-        let record = signed.record();
-        if record.endpoint_id() != context.target.endpoint_id {
-            metrics.record_validation(AddressValidationOutcome::WrongEndpoint);
-            return Err(AddressRecordValidationError::WrongEndpoint);
-        }
-        if context.authorization.space_id() != context.target.space_id
-            || record.space_id() != context.target.space_id
-        {
-            metrics.record_validation(AddressValidationOutcome::WrongSpace);
-            return Err(AddressRecordValidationError::WrongSpace);
-        }
-        if !context
-            .authorization
-            .contains_member(context.target.endpoint_id)
-        {
-            metrics.record_validation(AddressValidationOutcome::UnauthorizedMember);
-            return Err(AddressRecordValidationError::UnauthorizedMember);
-        }
-        if record.issued_at_ms() > context.now_ms {
-            metrics.record_validation(AddressValidationOutcome::FutureRecord);
-            return Err(AddressRecordValidationError::FutureRecord);
-        }
-        if record.expires_at_ms() <= context.now_ms {
-            metrics.record_validation(AddressValidationOutcome::ExpiredRecord);
-            return Err(AddressRecordValidationError::ExpiredRecord);
-        }
-        signed.verify_signature().map_err(|_| {
-            metrics.record_validation(AddressValidationOutcome::InvalidSignature);
-            AddressRecordValidationError::InvalidSignature
-        })?;
-        let issued_at_ms = i64::try_from(record.issued_at_ms())
-            .map_err(|_| AddressRecordValidationError::InvalidEncoding)?;
-        let expires_at_ms = i64::try_from(record.expires_at_ms())
-            .map_err(|_| AddressRecordValidationError::InvalidEncoding)?;
-        let advance = AddressAdvance {
-            space_id: record.space_id(),
-            endpoint_id: record.endpoint_id(),
-            sequence: record.sequence(),
-            issued_at_ms,
-            expires_at_ms,
-            record_hash: signed.record_hash(),
-            signed_record: signed.canonical_bytes().to_vec(),
-        };
-        Ok(ValidatedAddressRecord { signed, advance })
+        ValidatedAddressRecord::parse(
+            bytes,
+            AddressRecordValidation::new(
+                StoreAddressRecordTarget::new(context.target.space_id, context.target.endpoint_id),
+                context.authorization,
+                context.now_ms,
+            ),
+        )
+        .map_err(|error| {
+            let (outcome, error) = match error {
+                AddressRecordBoundaryError::InvalidEncoding => (
+                    AddressValidationOutcome::InvalidEncoding,
+                    AddressRecordValidationError::InvalidEncoding,
+                ),
+                AddressRecordBoundaryError::WrongSpace => (
+                    AddressValidationOutcome::WrongSpace,
+                    AddressRecordValidationError::WrongSpace,
+                ),
+                AddressRecordBoundaryError::WrongEndpoint => (
+                    AddressValidationOutcome::WrongEndpoint,
+                    AddressRecordValidationError::WrongEndpoint,
+                ),
+                AddressRecordBoundaryError::UnauthorizedMember => (
+                    AddressValidationOutcome::UnauthorizedMember,
+                    AddressRecordValidationError::UnauthorizedMember,
+                ),
+                AddressRecordBoundaryError::FutureRecord => (
+                    AddressValidationOutcome::FutureRecord,
+                    AddressRecordValidationError::FutureRecord,
+                ),
+                AddressRecordBoundaryError::ExpiredRecord => (
+                    AddressValidationOutcome::ExpiredRecord,
+                    AddressRecordValidationError::ExpiredRecord,
+                ),
+                AddressRecordBoundaryError::InvalidSignature => (
+                    AddressValidationOutcome::InvalidSignature,
+                    AddressRecordValidationError::InvalidSignature,
+                ),
+            };
+            metrics.record_validation(outcome);
+            error
+        })
     }
 
     /// Validates and persistently accepts one exact target record.
@@ -219,7 +198,7 @@ impl AddressRecordValidator {
         let default_metrics = AddressMetrics::default();
         let metrics = context.metrics.unwrap_or(&default_metrics);
         let outcome = repository
-            .advance_address(validated.advance())
+            .advance_validated_address(&validated)
             .map_err(|error| {
                 metrics.record_validation(AddressValidationOutcome::StoreError);
                 AddressRecordValidationError::Store(error)

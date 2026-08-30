@@ -25,7 +25,7 @@ pub use address_data::{address_endpoint_data_from_iroh, address_endpoint_data_to
 pub use address_lookup::{AddressLookupClock, AddressLookupStateError, SpaceAddressLookup};
 pub use address_record::{
     AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator,
-    AddressValidationContext, ValidatedAddressRecord,
+    AddressValidationContext,
 };
 pub use control::{
     CONTROL_ALPN, CONTROL_DIAL_CONCURRENCY, CONTROL_MAX_ATTEMPTS, CONTROL_ROUND_DEADLINE,
@@ -37,6 +37,7 @@ pub use endpoint::{
 };
 pub use enrollment::EnrollmentCall;
 pub use iroh::EndpointAddr;
+pub use ma2a_store::ValidatedAddressRecord;
 pub use metrics::{
     AddressCacheOutcome, AddressLookupExclusion, AddressMetrics, AddressMetricsSnapshot,
     AddressPersistenceOutcome, AddressValidationOutcome,
