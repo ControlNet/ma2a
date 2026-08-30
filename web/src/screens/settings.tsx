@@ -1,14 +1,21 @@
 import { type ReactNode, useState } from "react"
 
 import { CodeValue, PageHeader, Section } from "../components/primitives"
+import type { RuntimeActions } from "../runtime-actions"
+import type { RuntimeViewData } from "../view-model"
 
 export function SettingsScreen({
   onLogout,
+  actions,
+  runtime,
 }: {
   readonly onLogout?: (() => Promise<void>) | undefined
+  readonly actions?: RuntimeActions | undefined
+  readonly runtime?: RuntimeViewData | undefined
 }): ReactNode {
   const [logoutPending, setLogoutPending] = useState(false)
   const [logoutFailed, setLogoutFailed] = useState(false)
+  const [revokeMessage, setRevokeMessage] = useState<string | undefined>()
   const logout = (): void => {
     if (onLogout === undefined) {
       return
@@ -23,6 +30,17 @@ export function SettingsScreen({
       },
     )
   }
+  const revokeAll = (): void => {
+    if (actions === undefined) return
+    setRevokeMessage("Revoking sessions...")
+    void actions.revokeSessions().then(
+      () => {
+        setRevokeMessage("All browser sessions were revoked. Sign in again.")
+        void onLogout?.()
+      },
+      () => setRevokeMessage("Sessions could not be revoked."),
+    )
+  }
 
   return (
     <div className="page-stack">
@@ -35,7 +53,10 @@ export function SettingsScreen({
           <div className="settings-row">
             <div>
               <strong>Current browser session</strong>
-              <p>Authentication uses a host-only, HttpOnly, SameSite=Strict cookie.</p>
+              <p>
+                Authentication uses a host-only, HttpOnly, SameSite=Strict cookie. Active sessions:{" "}
+                {runtime?.uiAuth.active_sessions ?? "unknown"}.
+              </p>
             </div>
             <div className="action-cluster">
               <button
@@ -45,11 +66,17 @@ export function SettingsScreen({
               >
                 {logoutPending ? "Logging out..." : "Log out"}
               </button>
-              <button className="button-secondary" disabled type="button">
+              <button
+                className="button-danger"
+                disabled={actions === undefined}
+                onClick={revokeAll}
+                type="button"
+              >
                 Revoke all
               </button>
             </div>
             {logoutFailed ? <p role="alert">The current session could not be logged out.</p> : null}
+            {revokeMessage === undefined ? null : <p role="status">{revokeMessage}</p>}
           </div>
         </Section>
         <Section title="Password recovery">

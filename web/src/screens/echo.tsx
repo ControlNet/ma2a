@@ -1,24 +1,31 @@
-import type { ReactNode } from "react"
+import { type FormEvent, type ReactNode, useState } from "react"
 
 import { EmptyState, PageHeader, Section, StatusText } from "../components/primitives"
 import { PendingRuntime } from "../components/runtime-status"
-import type { EchoStatus, RuntimeViewData } from "../view-model"
-
-function echoTone(status: EchoStatus): "success" | "error" {
-  switch (status) {
-    case "echoed":
-      return "success"
-    case "denied":
-    case "failed":
-      return "error"
-  }
-}
+import type { RuntimeActions } from "../runtime-actions"
+import type { RuntimeViewData } from "../view-model"
 
 export function EchoScreen({
   runtime,
+  actions,
 }: {
   readonly runtime: RuntimeViewData | undefined
+  readonly actions: RuntimeActions | undefined
 }): ReactNode {
+  const [result, setResult] = useState<string | undefined>()
+  const submit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    const values = new FormData(event.currentTarget)
+    const endpointId = values.get("target")
+    const payload = values.get("payload")
+    if (typeof endpointId !== "string" || typeof payload !== "string" || actions === undefined)
+      return
+    setResult("Echo in progress...")
+    void actions.echo(endpointId, payload).then(
+      (reply) => setResult(`Echo reply from ${reply.target_endpoint_id}: ${reply.payload}`),
+      () => setResult("Echo failed or was not authorized."),
+    )
+  }
   return (
     <div className="page-stack">
       <PageHeader
@@ -30,7 +37,7 @@ export function EchoScreen({
       ) : (
         <div className="evidence-layout">
           <Section title="Request">
-            <form className="form-stack">
+            <form className="form-stack" onSubmit={submit}>
               <label htmlFor="echo-target">Target Endpoint ID</label>
               <input
                 aria-describedby="echo-target-help"
@@ -45,29 +52,32 @@ export function EchoScreen({
               </p>
               <label htmlFor="echo-payload">Payload</label>
               <textarea defaultValue="hello" id="echo-payload" name="payload" rows={4} />
-              <button disabled type="submit">
-                Runtime API required
+              <button disabled={actions === undefined} type="submit">
+                Send Echo
               </button>
+              {result === undefined ? null : <p role="status">{result}</p>}
             </form>
           </Section>
           <aside className="status-aside" aria-label="Recent Echo outcomes">
             <h2>Recent outcomes</h2>
-            {runtime.echoHistory.length === 0 ? (
-              <EmptyState
-                description="Only bounded status summaries appear here. Payloads and authorization details stay private."
-                title="No Echo history"
-              />
-            ) : (
-              <ul className="compact-list compact-list--stacked">
-                {runtime.echoHistory.map((echo) => (
-                  <li key={echo.requestId}>
-                    <span>{echo.target}</span>
-                    <span>{echo.path}</span>
-                    <StatusText tone={echoTone(echo.status)}>{echo.status}</StatusText>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <dl className="detail-list">
+              <div>
+                <dt>Successes</dt>
+                <dd>
+                  <StatusText tone="success">{runtime.echoTotals.successes}</StatusText>
+                </dd>
+              </div>
+              <div>
+                <dt>Failures</dt>
+                <dd>
+                  <StatusText tone="error">{runtime.echoTotals.failures}</StatusText>
+                </dd>
+              </div>
+            </dl>
+            <EmptyState
+              description="The authoritative snapshot retains bounded totals, not payload or target history."
+              title="No detailed history retained"
+            />
           </aside>
         </div>
       )}
