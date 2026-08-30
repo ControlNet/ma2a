@@ -1,147 +1,28 @@
 //! End-to-end active-dial control synchronization coverage.
 
-use std::{
-    error::Error,
-    fs,
-    net::{Ipv4Addr, SocketAddr},
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicI64, AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+#[path = "control_sync_e2e/artifacts.rs"]
+mod control_sync_e2e_artifacts;
+#[path = "control_sync_e2e/support.rs"]
+mod control_sync_e2e_support;
 
-use iroh::{SecretKey, TransportAddr};
-use ma2a_core::{
-    AddressEndpointDataV1, AddressRecordScope, AddressRecordValidity, InviteEntropy,
-    MemberCapabilities, RequestId, SpaceAddressRecordV1, SpaceAuthorizationView,
-    SpaceManifestMembership, SpaceMemberV1, SpacePolicyV1,
-};
-use ma2a_net::{AddressRecordTarget, AddressRecordValidator};
-use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock};
-use ma2a_store::{
-    KeyKind, KeyReference, KeyStore, OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig,
-};
+use std::time::Duration;
 
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
-const NOW_MS: i64 = 1_700_000_000_000;
+use ma2a_core::{ControlRequestV1, ControlResponseV1, SpaceManifestMembership, SpaceRevocationV1};
+use ma2a_net::{EndpointSecret, RuntimeEndpoint};
+use ma2a_runtime::Runtime;
+use ma2a_store::{OwnedSpaceUpdate, Repository};
+use tokio::sync::mpsc;
 
-#[derive(Debug)]
-struct TestClock(AtomicI64);
+use control_sync_e2e_support::{TestResult, clock, control_fixture};
 
-impl RuntimeClock for TestClock {
-    fn now_ms(&self) -> Result<i64, ma2a_runtime::RuntimeError> {
-        Ok(self.0.load(Ordering::SeqCst))
-    }
-}
-
-struct TempState(PathBuf);
-
-impl TempState {
-    fn new(label: &str) -> TestResultValue<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ma2a-control-{label}-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(path))
-    }
-}
-
-impl Drop for TempState {
-    fn drop(&mut self) {
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
-
-type TestResultValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
+type TestResultValue<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn explicit_round_converges_shared_spaces_without_leaking_private_space() -> TestResult {
     // Given
-    let owner_state = TempState::new("owner")?;
-    let candidate_state = TempState::new("candidate")?;
-    let owner_config = StoreConfig::new(&owner_state.0);
-    let candidate_config = StoreConfig::new(&candidate_state.0);
-    let clock = || Arc::new(TestClock(AtomicI64::new(NOW_MS)));
-    let owner = Runtime::start_with_clock(owner_config.clone(), clock()).await?;
-    let owner_status = owner.handle().status().await?;
-    owner.shutdown().await?;
-    let owner_member = SpaceMemberV1::new(
-        owner_status.endpoint_id(),
-        "owner".to_owned(),
-        MemberCapabilities::new(true, false),
-    )?;
-    let mut owner_repository = Repository::open(&owner_config)?;
-    let first = owner_repository.create_owned_space(&SpaceCreation::new(
-        u64::try_from(NOW_MS)?,
-        owner_member.clone(),
-        SpacePolicyV1::phase_one_default(),
-    ))?;
-    let second = owner_repository.create_owned_space(&SpaceCreation::new(
-        u64::try_from(NOW_MS + 1)?,
-        owner_member.clone(),
-        SpacePolicyV1::phase_one_default(),
-    ))?;
-    let private = owner_repository.create_owned_space(&SpaceCreation::new(
-        u64::try_from(NOW_MS + 2)?,
-        owner_member,
-        SpacePolicyV1::phase_one_default(),
-    ))?;
-    let shared_spaces = [first.space_id(), second.space_id()];
-    drop(owner_repository);
-    let owner = Runtime::start_with_clock(owner_config.clone(), clock()).await?;
-    let candidate = Runtime::start_with_clock(candidate_config.clone(), clock()).await?;
-    enroll_spaces(&owner, &candidate, shared_spaces).await?;
-    candidate.shutdown().await?;
-    owner.shutdown().await?;
-    let mut owner_repository = Repository::open(&owner_config)?;
-    for (offset, space_id) in shared_spaces.into_iter().enumerate() {
-        let chain = owner_repository
-            .load_space_chain(space_id)?
-            .ok_or("owner chain missing")?;
-        owner_repository.advance_owned_space(&OwnedSpaceUpdate::new(
-            space_id,
-            u64::try_from(NOW_MS + 10 + i64::try_from(offset)?)?,
-            SpaceManifestMembership::new(chain.members().to_vec(), vec![]),
-        ))?;
-    }
-    let owner_port = owner_repository
-        .endpoint_bind_port()?
-        .ok_or("owner bind port missing")?;
-    let owner_secret = endpoint_secret(&owner_state.0)?;
-    let owner_records = shared_spaces
-        .into_iter()
-        .map(|space_id| address_record(space_id, &owner_secret, owner_port))
-        .collect::<TestResultValue<Vec<_>>>()?;
-    for record in &owner_records {
-        persist_address(&mut owner_repository, record, u64::try_from(NOW_MS)?)?;
-    }
-    drop(owner_repository);
-    let mut candidate_repository = Repository::open(&candidate_config)?;
-    for record in &owner_records {
-        persist_address(&mut candidate_repository, record, u64::try_from(NOW_MS)?)?;
-    }
-    let candidate_port = candidate_repository
-        .endpoint_bind_port()?
-        .ok_or("candidate bind port missing")?;
-    let candidate_secret = endpoint_secret(&candidate_state.0)?;
-    let candidate_records = shared_spaces
-        .into_iter()
-        .map(|space_id| address_record(space_id, &candidate_secret, candidate_port))
-        .collect::<TestResultValue<Vec<_>>>()?;
-    for record in &candidate_records {
-        persist_address(&mut candidate_repository, record, u64::try_from(NOW_MS)?)?;
-    }
-    drop(candidate_repository);
+    let fixture = control_fixture().await?;
+    let owner_config = fixture.owner_config();
+    let candidate_config = fixture.candidate_config();
     let owner = Runtime::start_with_clock(owner_config.clone(), clock()).await?;
     let candidate = Runtime::start_with_clock(candidate_config.clone(), clock()).await?;
 
@@ -151,19 +32,39 @@ async fn explicit_round_converges_shared_spaces_without_leaking_private_space() 
     // Then
     let candidate_repository = Repository::open(&candidate_config)?;
     let owner_repository = Repository::open(&owner_config)?;
-    for (space_id, candidate_record) in shared_spaces.into_iter().zip(&candidate_records) {
+    for (((space_id, candidate_record), owner_record), owner_advertisement) in fixture
+        .shared_spaces
+        .into_iter()
+        .zip(&fixture.candidate_records)
+        .zip(&fixture.owner_records)
+        .zip(&fixture.owner_advertisements)
+    {
         let synchronized = candidate_repository
             .load_space_chain(space_id)?
             .ok_or("candidate chain missing")?;
         assert_eq!(synchronized.latest_generation(), 2);
         let imported = owner_repository
-            .address_record(space_id, candidate_secret.public().into())?
+            .address_record(space_id, fixture.candidate_secret.public().into())?
             .ok_or("candidate address was not pushed")?;
         assert_eq!(imported.signed_record(), candidate_record.canonical_bytes());
+        let imported_owner = candidate_repository
+            .address_record(space_id, fixture.owner_secret.public().into())?
+            .ok_or("newer owner address was not pulled")?;
+        assert_eq!(
+            imported_owner.signed_record(),
+            owner_record.canonical_bytes()
+        );
+        let imported_relay = candidate_repository
+            .relay_advertisement(space_id, fixture.owner_secret.public().into())?
+            .ok_or("owner relay advertisement was not pulled")?;
+        assert_eq!(
+            imported_relay.signed_advertisement(),
+            owner_advertisement.canonical_bytes()
+        );
     }
     assert!(
         candidate_repository
-            .load_space_chain(private.space_id())?
+            .load_space_chain(fixture.private_space)?
             .is_none()
     );
     candidate.shutdown().await?;
@@ -171,71 +72,94 @@ async fn explicit_round_converges_shared_spaces_without_leaking_private_space() 
     Ok(())
 }
 
-async fn enroll_spaces(
-    owner: &Runtime,
-    candidate: &Runtime,
-    spaces: [ma2a_core::SpaceId; 2],
-) -> TestResult {
-    for (offset, space_id) in spaces.into_iter().enumerate() {
-        let seed = u8::try_from(offset)?;
-        let ticket = owner
-            .handle()
-            .create_enrollment_invite(EnrollmentCreation::new(
-                space_id,
-                300_000,
-                InviteEntropy::from_bytes([0x31 + seed; 16], [0x41 + seed; 32]),
-            )?)
-            .await?;
-        candidate
-            .handle()
-            .redeem_enrollment(EnrollmentAttempt::new(
-                ticket,
-                RequestId::try_from([0x51 + seed; 16].as_slice())?,
-                "candidate".to_owned(),
-            ))
-            .await?;
-    }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn malformed_control_request_is_rejected_without_revision_change() -> TestResult {
+    // Given
+    let fixture = control_fixture().await?;
+    let owner_config = fixture.owner_config();
+    let owner = Runtime::start_with_clock(owner_config.clone(), clock()).await?;
+    let owner_addr = owner.handle().status().await?.endpoint_addr().clone();
+    let revision = Repository::open(&owner_config)?.revision()?;
+    let client = raw_endpoint(&fixture.candidate_secret).await?;
+
+    // When
+    let result = client
+        .exchange_control(owner_addr, b"not-a-control-request")
+        .await;
+
+    // Then
+    assert!(result.is_err());
+    assert_eq!(Repository::open(&owner_config)?.revision()?, revision);
+    client.shutdown().await?;
+    owner.shutdown().await?;
     Ok(())
 }
 
-fn endpoint_secret(state_dir: &Path) -> TestResultValue<SecretKey> {
-    let reference = KeyReference::parse("endpoint-identity-v1")?;
-    let protected = KeyStore::open(state_dir)?.read(KeyKind::Endpoint, &reference)?;
-    let bytes = <[u8; 32]>::try_from(protected.as_ref())?;
-    Ok(SecretKey::from_bytes(&bytes))
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoked_space_is_filtered_while_another_shared_space_remains_available() -> TestResult {
+    // Given
+    let fixture = control_fixture().await?;
+    let owner_config = fixture.owner_config();
+    let candidate_config = fixture.candidate_config();
+    let revoked_space = fixture.shared_spaces[0];
+    let retained_space = fixture.shared_spaces[1];
+    let candidate_id = fixture.candidate_secret.public().into();
+    let mut owner_repository = Repository::open(&owner_config)?;
+    let revoked_chain = owner_repository
+        .load_space_chain(revoked_space)?
+        .ok_or("revoked Space chain missing")?;
+    let retained_members = revoked_chain
+        .members()
+        .iter()
+        .filter(|member| member.endpoint_id() != candidate_id)
+        .cloned()
+        .collect();
+    owner_repository.advance_owned_space(&OwnedSpaceUpdate::new(
+        revoked_space,
+        1_700_000_000_100,
+        SpaceManifestMembership::new(retained_members, vec![SpaceRevocationV1::new(candidate_id)]),
+    ))?;
+    drop(owner_repository);
+    let candidate_repository = Repository::open(&candidate_config)?;
+    let retained_cursor = candidate_repository
+        .control_spaces_for(candidate_id)?
+        .into_iter()
+        .find(|state| state.chain().space_id() == retained_space)
+        .ok_or("retained shared Space missing")?
+        .cursor()?;
+    let request = ControlRequestV1::new(vec![retained_cursor])?.encode()?;
+    let owner = Runtime::start_with_clock(owner_config, clock()).await?;
+    let owner_addr = owner.handle().status().await?.endpoint_addr().clone();
+    let client = raw_endpoint(&fixture.candidate_secret).await?;
+
+    // When
+    let response = client.exchange_control(owner_addr, &request).await?;
+    let response = ControlResponseV1::decode(&response)?;
+
+    // Then
+    assert!(
+        response
+            .pages()
+            .iter()
+            .all(|page| page.space_id() == retained_space)
+    );
+    assert!(
+        response
+            .pages()
+            .iter()
+            .all(|page| page.space_id() != revoked_space)
+    );
+    client.shutdown().await?;
+    owner.shutdown().await?;
+    Ok(())
 }
 
-fn address_record(
-    space_id: ma2a_core::SpaceId,
-    secret: &SecretKey,
-    port: u16,
-) -> TestResultValue<ma2a_core::SignedSpaceAddressRecordV1> {
-    Ok(SpaceAddressRecordV1::new(
-        AddressRecordScope::new(space_id, secret.public().into()),
-        AddressRecordValidity::new(1, u64::try_from(NOW_MS)?, u64::try_from(NOW_MS + 600_000)?)?,
-        AddressEndpointDataV1::new(vec![TransportAddr::Ip(SocketAddr::new(
-            Ipv4Addr::LOCALHOST.into(),
-            port,
-        ))])?,
+async fn raw_endpoint(secret: &iroh::SecretKey) -> TestResultValue<RuntimeEndpoint> {
+    let (enrollment_calls, _receiver) = mpsc::channel(1);
+    Ok(RuntimeEndpoint::bind(
+        EndpointSecret::parse(&secret.to_bytes())?,
+        enrollment_calls,
+        None,
     )
-    .sign(secret)?)
-}
-
-fn persist_address(
-    repository: &mut Repository,
-    record: &ma2a_core::SignedSpaceAddressRecordV1,
-    now_ms: u64,
-) -> TestResult {
-    let chain = repository
-        .load_space_chain(record.record().space_id())?
-        .ok_or("address Space chain missing")?;
-    let authorization = SpaceAuthorizationView::from_chain(&chain);
-    let target =
-        AddressRecordTarget::new(record.record().space_id(), record.record().endpoint_id());
-    AddressRecordValidator::validate_and_store(
-        repository,
-        record.canonical_bytes(),
-        target.validation(&authorization, now_ms),
-    )?;
-    Ok(())
+    .await?)
 }
