@@ -57,7 +57,8 @@ button:disabled {
 }
 
 input,
-textarea {
+textarea,
+select {
   inline-size: 100%;
   min-block-size: 2.75rem;
   padding: var(--space-3) var(--space-4);
@@ -69,6 +70,11 @@ textarea {
 
 textarea {
   resize: vertical;
+}
+
+.button-danger {
+  border-color: var(--status-error);
+  background: var(--status-error);
 }
 
 label {

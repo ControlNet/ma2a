@@ -137,6 +137,19 @@ tbody th {
   margin: 0;
 }
 
+.operation-grid {
+  display: grid;
+  gap: var(--space-6);
+  grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+  padding-block: var(--space-5);
+  border-block: 1px solid var(--border-default);
+}
+
+.operation-grid h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
 @media (max-width: 47.99rem) {
   .auth-frame {
     align-items: start;
