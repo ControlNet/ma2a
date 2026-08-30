@@ -17,11 +17,13 @@ mod clock;
 mod connections;
 mod control_actor;
 mod control_sync;
+mod echo_audit;
 mod enrollment;
 mod enrollment_actor;
 mod error;
 mod lifecycle;
 mod reachability;
+mod services;
 mod state;
 mod store;
 mod store_client;
@@ -30,6 +32,7 @@ pub use actor::RuntimeHandle;
 pub use authz::authorize_remote;
 pub use clock::RuntimeClock;
 pub use connections::RuntimeConnections;
+pub use echo_audit::EchoAuditRecord;
 pub use enrollment::{
     EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EnrollmentErrorCode,
     EstablishedEnrollment,
