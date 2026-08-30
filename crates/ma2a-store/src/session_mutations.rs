@@ -15,6 +15,37 @@ enum SessionAuthentication<'a> {
 }
 
 impl Repository {
+    /// Validates one session without extending its deadlines or advancing revision.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when authentication state cannot be read.
+    pub fn validate_session(
+        &self,
+        session_id_hash: &[u8; 32],
+        now_ms: i64,
+    ) -> Result<Option<SessionRecord>, StoreError> {
+        let Some(session) = read_session(&self.connection, session_id_hash)? else {
+            return Ok(None);
+        };
+        let auth_epoch = self
+            .connection
+            .query_row(
+                "SELECT auth_epoch FROM ui_credentials WHERE singleton = 1",
+                [],
+                |row| row.get::<_, u64>(0),
+            )
+            .optional()?;
+        if session.revoked_at_ms.is_some()
+            || auth_epoch != Some(session.auth_epoch)
+            || now_ms >= session.idle_expires_at_ms
+            || now_ms >= session.absolute_expires_at_ms
+        {
+            Ok(None)
+        } else {
+            Ok(Some(session))
+        }
+    }
+
     /// Inserts a session only while its credential epoch is current and capacity remains.
     ///
     /// # Errors
