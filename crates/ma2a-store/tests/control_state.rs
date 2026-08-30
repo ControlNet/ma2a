@@ -5,9 +5,14 @@ mod support;
 
 use iroh_base::SecretKey;
 use ma2a_core::{
-    MemberCapabilities, SpaceManifestMembership, SpaceMemberV1, SpacePolicyV1, SpaceRevocationV1,
+    AddressEndpointDataV1, AddressRecordScope, AddressRecordValidity, MemberCapabilities,
+    SpaceAddressRecordV1, SpaceAuthorizationView, SpaceManifestMembership, SpaceMemberV1,
+    SpacePolicyV1, SpaceRevocationV1,
 };
-use ma2a_store::{AddressAdvance, OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
+use ma2a_store::{
+    AddressRecordTarget, AddressRecordValidation, OwnedSpaceUpdate, Repository, SpaceCreation,
+    StoreConfig, ValidatedAddressRecord,
+};
 use support::{TempState, TestResult};
 
 #[test]
@@ -46,15 +51,26 @@ fn control_snapshot_contains_only_shared_space_high_water_state() -> TestResult 
         11,
         SpaceManifestMembership::new(members, Vec::new()),
     ))?;
-    repository.advance_address(&AddressAdvance {
-        space_id: created.space_id(),
-        endpoint_id: peer,
-        sequence: 7,
-        issued_at_ms: 12,
-        expires_at_ms: 100,
-        record_hash: [0x44; 32],
-        signed_record: vec![0x55; 16],
-    })?;
+    let chain = repository
+        .load_space_chain(created.space_id())?
+        .ok_or("shared Space chain missing")?;
+    let authorization = SpaceAuthorizationView::from_chain(&chain);
+    let peer_secret = SecretKey::from_bytes(&[0x22; 32]);
+    let signed = SpaceAddressRecordV1::new(
+        AddressRecordScope::new(created.space_id(), peer),
+        AddressRecordValidity::new(7, 12, 100)?,
+        AddressEndpointDataV1::new(Vec::new())?,
+    )
+    .sign(&peer_secret)?;
+    let validated = ValidatedAddressRecord::parse(
+        signed.canonical_bytes(),
+        AddressRecordValidation::new(
+            AddressRecordTarget::new(created.space_id(), peer),
+            &authorization,
+            50,
+        ),
+    )?;
+    repository.advance_validated_address(&validated)?;
     let isolated = repository.create_owned_space(&SpaceCreation::new(
         12,
         local_member.clone(),

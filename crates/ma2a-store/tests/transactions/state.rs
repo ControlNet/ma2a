@@ -1,11 +1,12 @@
 use ma2a_store::{
-    AddressAdvance, AddressRecordOutcome, PasswordReset, RelayConfiguration, RelayObservation,
-    RelayTransportConfiguration, Repository, RuntimeMetadataUpdate, SessionDigests, SessionRecord,
-    SessionTimestamps, StoreConfig, derive_password_verifier,
+    AddressRecordOutcome, AddressRecordTarget, AddressRecordValidation, PasswordReset,
+    RelayConfiguration, RelayObservation, RelayTransportConfiguration, Repository,
+    RuntimeMetadataUpdate, SessionDigests, SessionRecord, SessionTimestamps, StoreConfig,
+    ValidatedAddressRecord, derive_password_verifier,
 };
 use rusqlite::Connection;
 
-use super::{endpoint_id, space_id, support::TempState};
+use super::{space_id, support::TempState};
 use crate::support::TestResult;
 
 #[test]
@@ -15,26 +16,11 @@ fn address_rejects_stale_sequences() -> TestResult {
     let config = StoreConfig::new(state.path());
     let mut repository = Repository::open(&config)?;
     repository.create_space(&super::space_fixture::space_record()?)?;
-    let endpoint = endpoint_id()?;
+    let first = validated_address(&repository, 4, 0x71)?;
+    let stale_record = validated_address(&repository, 3, 0x72)?;
     // When
-    let address = repository.advance_address(&AddressAdvance {
-        space_id: space_id()?,
-        endpoint_id: endpoint,
-        sequence: 4,
-        issued_at_ms: 1,
-        expires_at_ms: 20,
-        record_hash: [7; 32],
-        signed_record: b"address".to_vec(),
-    })?;
-    let stale_address = repository.advance_address(&AddressAdvance {
-        space_id: space_id()?,
-        endpoint_id: endpoint,
-        sequence: 3,
-        issued_at_ms: 2,
-        expires_at_ms: 20,
-        record_hash: [8; 32],
-        signed_record: b"stale".to_vec(),
-    })?;
+    let address = repository.advance_validated_address(&first)?;
+    let stale_address = repository.advance_validated_address(&stale_record)?;
     // Then
     assert!(matches!(address, AddressRecordOutcome::Advanced { .. }));
     assert_eq!(
@@ -51,38 +37,21 @@ fn address_high_water_rejects_forks_and_rollbacks_after_reopen() -> TestResult {
     // Given
     let state = TempState::new("address-high-water-reopen")?;
     let config = StoreConfig::new(state.path());
-    let endpoint = endpoint_id()?;
-    let first = AddressAdvance {
-        space_id: space_id()?,
-        endpoint_id: endpoint,
-        sequence: 4,
-        issued_at_ms: 10,
-        expires_at_ms: 20,
-        record_hash: [7; 32],
-        signed_record: b"address-four".to_vec(),
-    };
     let mut repository = Repository::open(&config)?;
     repository.create_space(&super::space_fixture::space_record()?)?;
+    let first = validated_address(&repository, 4, 0x71)?;
     assert!(matches!(
-        repository.advance_address(&first)?,
+        repository.advance_validated_address(&first)?,
         AddressRecordOutcome::Advanced { .. }
     ));
     drop(repository);
     let mut repository = Repository::open(&config)?;
 
     // When
-    let replay = repository.advance_address(&first)?;
-    let fork = repository.advance_address(&AddressAdvance {
-        record_hash: [8; 32],
-        signed_record: b"fork-four".to_vec(),
-        ..first.clone()
-    })?;
-    let rollback = repository.advance_address(&AddressAdvance {
-        sequence: 3,
-        record_hash: [9; 32],
-        signed_record: b"rollback-three".to_vec(),
-        ..first.clone()
-    })?;
+    let replay = repository.advance_validated_address(&first)?;
+    let fork = repository.advance_validated_address(&validated_address(&repository, 4, 0x72)?)?;
+    let rollback =
+        repository.advance_validated_address(&validated_address(&repository, 3, 0x73)?)?;
 
     // Then
     assert_eq!(
@@ -105,12 +74,41 @@ fn address_high_water_rejects_forks_and_rollbacks_after_reopen() -> TestResult {
     );
     assert_eq!(
         repository
-            .address_record(first.space_id, endpoint)?
+            .address_record(space_id()?, first.record().record().endpoint_id())?
             .ok_or("persisted address record was missing")?
             .signed_record(),
-        b"address-four"
+        first.record().canonical_bytes()
     );
     Ok(())
+}
+
+fn validated_address(
+    repository: &Repository,
+    sequence: u64,
+    payload: u8,
+) -> Result<ValidatedAddressRecord, Box<dyn std::error::Error + Send + Sync>> {
+    let secret = iroh_base::SecretKey::from_bytes(&[0x43; 32]);
+    let space_id = space_id()?;
+    let chain = repository
+        .load_space_chain(space_id)?
+        .ok_or("address Space chain missing")?;
+    let authorization = ma2a_core::SpaceAuthorizationView::from_chain(&chain);
+    let signed = ma2a_core::SpaceAddressRecordV1::new(
+        ma2a_core::AddressRecordScope::new(space_id, secret.public().into()),
+        ma2a_core::AddressRecordValidity::new(sequence, 10, 20)?,
+        ma2a_core::AddressEndpointDataV1::new(vec![iroh_base::TransportAddr::Ip(
+            std::net::SocketAddr::from(([127, 0, 0, 1], u16::from(payload))),
+        )])?,
+    )
+    .sign(&secret)?;
+    Ok(ValidatedAddressRecord::parse(
+        signed.canonical_bytes(),
+        AddressRecordValidation::new(
+            AddressRecordTarget::new(space_id, secret.public().into()),
+            &authorization,
+            15,
+        ),
+    )?)
 }
 
 #[test]

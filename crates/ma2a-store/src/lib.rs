@@ -35,7 +35,10 @@ mod spaces;
 mod web_auth;
 
 pub use address_record_queries::PersistedAddressRecord;
-pub use address_records::AddressRecordOutcome;
+pub use address_records::{
+    AddressRecordBoundaryError, AddressRecordOutcome, AddressRecordTarget, AddressRecordValidation,
+    ValidatedAddressRecord,
+};
 pub use config::StoreConfig;
 pub use control_batch::ControlBatch;
 pub use control_state::ControlSpaceState;
@@ -50,8 +53,8 @@ pub use relay_advertisement::{RelayAdvertisementBoundaryError, ValidatedRelayAdv
 pub use relay_config::{PersistedRelayAdvertisement, RelayAdvertisementOutcome};
 pub use repository::Repository;
 pub use repository_models::{
-    AddressAdvance, DatabaseSettings, EndpointRecord, InvitationRecord, ManifestAdvance,
-    ManifestOutcome, PasswordReset, Redemption, RedemptionOutcome, SpaceRecord,
+    DatabaseSettings, EndpointRecord, InvitationRecord, ManifestAdvance, ManifestOutcome,
+    PasswordReset, Redemption, RedemptionOutcome, SpaceRecord,
 };
 pub use repository_state_models::{
     EndpointObservationUpdate, RelayConfiguration, RelayObservation, RelayTransportConfiguration,
