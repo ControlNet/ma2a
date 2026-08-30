@@ -1,41 +1,59 @@
 import {
+  createRuntimeApiClient,
+  parseRuntimeEvent,
   parseRuntimeSnapshot,
   RuntimeApiPayloadError,
   type RuntimeSnapshot,
-  RuntimeStateCoordinator,
 } from "./client"
+import { runtimeSnapshot } from "./test-fixtures"
 
-function snapshot(revision: number): RuntimeSnapshot {
-  return {
-    revision,
-    endpoint: null,
-    spaces: null,
-    control_sync: null,
-    relay_candidates: null,
-    observed_relay_state: null,
-    reachability: null,
-    recent_echo_summary: null,
-    ui_auth: null,
+type FakeEventListener = (event: Event) => void
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = []
+
+  readonly listeners = new Map<string, FakeEventListener[]>()
+  closed = false
+
+  constructor(
+    readonly url: string,
+    readonly withCredentials: boolean,
+  ) {
+    FakeEventSource.instances.push(this)
+  }
+
+  addEventListener(type: string, listener: FakeEventListener): void {
+    const listeners = this.listeners.get(type) ?? []
+    listeners.push(listener)
+    this.listeners.set(type, listeners)
+  }
+
+  dispatch(type: string, event: Event): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event)
+    }
+  }
+
+  close(): void {
+    this.closed = true
+  }
+
+  static latest(): FakeEventSource {
+    const source = FakeEventSource.instances.at(-1)
+    if (source === undefined) {
+      throw new TypeError("No fake EventSource was constructed")
+    }
+    return source
   }
 }
 
-function deferredSnapshot(): {
-  readonly promise: Promise<RuntimeSnapshot>
-  readonly resolve: (value: RuntimeSnapshot) => void
-} {
-  let resolveSnapshot: ((value: RuntimeSnapshot) => void) | undefined
-  const promise = new Promise<RuntimeSnapshot>((resolve) => {
-    resolveSnapshot = resolve
-  })
-  if (resolveSnapshot === undefined) {
-    throw new TypeError("Deferred snapshot resolver was not initialized")
-  }
-  return { promise, resolve: resolveSnapshot }
-}
+afterEach(() => {
+  FakeEventSource.instances = []
+})
 
 describe("runtime API boundary", () => {
   test("parses the planned safe snapshot envelope", () => {
-    const given = snapshot(10)
+    const given = runtimeSnapshot(10)
 
     const when = parseRuntimeSnapshot(given)
 
@@ -43,65 +61,101 @@ describe("runtime API boundary", () => {
   })
 
   test("rejects malformed snapshot revisions with a typed boundary error", () => {
-    const given = { ...snapshot(10), revision: -1 }
+    const given = { ...runtimeSnapshot(10), revision: -1 }
 
     const when = (): RuntimeSnapshot => parseRuntimeSnapshot(given)
 
     expect(when).toThrow(RuntimeApiPayloadError)
   })
-})
 
-describe("runtime state coordinator", () => {
-  test("resnapshots once on a gap and resumes only from the replacement revision", async () => {
-    const replacement = deferredSnapshot()
-    const acceptedRevisions: number[] = []
-    const appliedSnapshots: number[] = []
-    let snapshotRequests = 0
-    const given = new RuntimeStateCoordinator({
-      fetchSnapshot: () => {
-        snapshotRequests += 1
-        return replacement.promise
+  test("rejects malformed nested snapshot fields at the HTTP boundary", () => {
+    const given = {
+      ...runtimeSnapshot(10),
+      endpoint: {
+        endpoint_id: "00".repeat(32),
+        runtime_version: "0.1.0",
+        online: "yes",
       },
-      onIncremental: (revision) => acceptedRevisions.push(revision),
-      onSnapshot: (value) => appliedSnapshots.push(value.revision),
-      onRecoveryError: () => undefined,
-    })
-    given.install(snapshot(10))
+    }
 
-    const gapRecovery = given.receiveRevision(12)
-    const discarded = await given.receiveRevision(13)
-    replacement.resolve(snapshot(20))
-    await gapRecovery
-    const accepted = await given.receiveRevision(21)
+    const when = (): RuntimeSnapshot => parseRuntimeSnapshot(given)
 
-    expect(snapshotRequests).toBe(1)
-    expect(discarded).toBe(false)
-    expect(accepted).toBe(true)
-    expect(appliedSnapshots).toEqual([10, 20])
-    expect(acceptedRevisions).toEqual([21])
+    expect(when).toThrow(RuntimeApiPayloadError)
   })
 
-  test("resnapshots once after disconnect and reports a failed recovery", async () => {
-    const recoveryError = new TypeError("network unavailable")
-    const observedErrors: unknown[] = []
-    let snapshotRequests = 0
-    const given = new RuntimeStateCoordinator({
-      fetchSnapshot: () => {
-        snapshotRequests += 1
-        return Promise.reject(recoveryError)
+  test("parses a closed typed runtime event", () => {
+    const given = { type: "spaces_changed", revision: 11, changed: { space_ids: [] } }
+
+    const when = parseRuntimeEvent(given)
+
+    expect(when).toEqual(given)
+  })
+
+  test("rejects unknown runtime event classes", () => {
+    const given = { type: "unknown", revision: 11, changed: {} }
+
+    const when = (): ReturnType<typeof parseRuntimeEvent> => parseRuntimeEvent(given)
+
+    expect(when).toThrow(RuntimeApiPayloadError)
+  })
+
+  test("subscribes from the installed revision and closes malformed streams for recovery", () => {
+    const payloadErrors: RuntimeApiPayloadError[] = []
+    let recoveries = 0
+    const given = createRuntimeApiClient(
+      {
+        snapshot: "/api/v1/snapshot",
+        events: "/api/v1/events",
       },
-      onIncremental: () => undefined,
-      onSnapshot: () => undefined,
-      onRecoveryError: (error) => observedErrors.push(error),
+      (url: string, init: EventSourceInit) =>
+        new FakeEventSource(url, init.withCredentials ?? false),
+    )
+
+    given.subscribe(41, {
+      onEvent: () => undefined,
+      onResyncRequired: () => {
+        recoveries += 1
+      },
+      onDisconnect: () => undefined,
+      onPayloadError: (error) => payloadErrors.push(error),
     })
-    given.install(snapshot(10))
+    const source = FakeEventSource.latest()
+    source.dispatch("message", new MessageEvent("message", { data: "{" }))
 
-    await given.disconnect()
-    const discarded = await given.receiveRevision(11)
+    expect(source.url).toBe("/api/v1/events?since=41")
+    expect(source.withCredentials).toBe(true)
+    expect(payloadErrors).toHaveLength(1)
+    expect(recoveries).toBe(1)
+    expect(source.closed).toBe(true)
+  })
 
-    expect(snapshotRequests).toBe(1)
-    expect(discarded).toBe(false)
-    expect(observedErrors).toEqual([recoveryError])
-    expect(given.currentState().kind).toBe("uncertain")
+  test("does not reclassify callback failures as malformed server payloads", () => {
+    const callbackError = new TypeError("consumer failed")
+    const payloadErrors: RuntimeApiPayloadError[] = []
+    const given = createRuntimeApiClient(
+      {
+        snapshot: "/api/v1/snapshot",
+        events: "/api/v1/events",
+      },
+      (url: string, init: EventSourceInit) =>
+        new FakeEventSource(url, init.withCredentials ?? false),
+    )
+    given.subscribe(10, {
+      onEvent: () => {
+        throw callbackError
+      },
+      onResyncRequired: () => undefined,
+      onDisconnect: () => undefined,
+      onPayloadError: (error) => payloadErrors.push(error),
+    })
+    const source = FakeEventSource.latest()
+    const event = new MessageEvent("message", {
+      data: JSON.stringify({ type: "spaces_changed", revision: 11, changed: { space_ids: [] } }),
+    })
+
+    const when = (): void => source.dispatch("message", event)
+
+    expect(when).toThrow(callbackError)
+    expect(payloadErrors).toEqual([])
   })
 })

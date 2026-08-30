@@ -2,43 +2,27 @@ import ky from "ky"
 import { z } from "zod"
 
 import {
-  beginResnapshot,
-  EMPTY_RUNTIME_STATE,
-  installSnapshot,
-  markDisconnected,
-  type RuntimeState,
-  receiveRevision,
-} from "./state"
+  parseRuntimeEvent,
+  parseRuntimeSnapshot,
+  RuntimeApiPayloadError,
+  type RuntimeEvent,
+  type RuntimeSnapshot,
+} from "./codec"
 
-const RuntimeSnapshotSchema = z
-  .strictObject({
-    revision: z.number().int().nonnegative(),
-    endpoint: z.unknown(),
-    spaces: z.unknown(),
-    control_sync: z.unknown(),
-    relay_candidates: z.unknown(),
-    observed_relay_state: z.unknown(),
-    reachability: z.unknown(),
-    recent_echo_summary: z.unknown(),
-    ui_auth: z.unknown(),
-  })
-  .readonly()
-
-const RuntimeEventSchema = z.looseObject({
-  revision: z.number().int().nonnegative(),
-})
+export {
+  parseRuntimeEvent,
+  parseRuntimeSnapshot,
+  RuntimeApiPayloadError,
+  type RuntimeEvent,
+  type RuntimeSnapshot,
+} from "./codec"
+export {
+  RuntimeStateCoordinator,
+  type RuntimeStateCoordinatorOptions,
+  StaleRuntimeSnapshotError,
+} from "./coordinator"
 
 const SameOriginPathSchema = z.string().regex(/^\/(?!\/)/)
-
-export type RuntimeSnapshot = z.infer<typeof RuntimeSnapshotSchema>
-
-export class RuntimeApiPayloadError extends Error {
-  readonly name = "RuntimeApiPayloadError"
-
-  constructor(readonly issues: readonly string[]) {
-    super(`Runtime API payload is invalid: ${issues.join(", ")}`)
-  }
-}
 
 export class RuntimeApiPathError extends Error {
   readonly name = "RuntimeApiPathError"
@@ -46,14 +30,6 @@ export class RuntimeApiPathError extends Error {
   constructor(readonly path: string) {
     super(`Runtime API path must be same-origin: ${path}`)
   }
-}
-
-export function parseRuntimeSnapshot(value: unknown): RuntimeSnapshot {
-  const result = RuntimeSnapshotSchema.safeParse(value)
-  if (!result.success) {
-    throw new RuntimeApiPayloadError(result.error.issues.map((issue) => issue.message))
-  }
-  return result.data
 }
 
 function parseSameOriginPath(path: string): string {
@@ -64,27 +40,37 @@ function parseSameOriginPath(path: string): string {
   return result.data
 }
 
-function assertNever(value: never): never {
-  throw new TypeError(`Unexpected recovery outcome: ${JSON.stringify(value)}`)
-}
-
 export type RuntimeApiPaths = {
   readonly snapshot: string
   readonly events: string
 }
 
 export type RuntimeEventCallbacks = {
-  readonly onRevision: (revision: number) => void
+  readonly onEvent: (event: RuntimeEvent) => void
+  readonly onResyncRequired: () => void
   readonly onDisconnect: () => void
   readonly onPayloadError: (error: RuntimeApiPayloadError) => void
 }
 
-export type RuntimeApiClient = {
-  readonly fetchSnapshot: () => Promise<RuntimeSnapshot>
-  readonly subscribe: (callbacks: RuntimeEventCallbacks) => () => void
+export type RuntimeEventSource = {
+  readonly addEventListener: (type: string, listener: (event: Event) => void) => void
+  readonly close: () => void
 }
 
-export function createRuntimeApiClient(paths: RuntimeApiPaths): RuntimeApiClient {
+export type RuntimeEventSourceFactory = (url: string, init: EventSourceInit) => RuntimeEventSource
+
+export type RuntimeApiClient = {
+  readonly fetchSnapshot: () => Promise<RuntimeSnapshot>
+  readonly subscribe: (revision: number, callbacks: RuntimeEventCallbacks) => () => void
+}
+
+const createBrowserEventSource: RuntimeEventSourceFactory = (url, init) =>
+  new EventSource(url, init)
+
+export function createRuntimeApiClient(
+  paths: RuntimeApiPaths,
+  createEventSource: RuntimeEventSourceFactory = createBrowserEventSource,
+): RuntimeApiClient {
   const snapshotPath = parseSameOriginPath(paths.snapshot)
   const eventsPath = parseSameOriginPath(paths.events)
   const http = ky.create({
@@ -99,82 +85,43 @@ export function createRuntimeApiClient(paths: RuntimeApiPaths): RuntimeApiClient
       const payload: unknown = await http.get(snapshotPath).json()
       return parseRuntimeSnapshot(payload)
     },
-    subscribe: (callbacks) => {
-      const source = new EventSource(eventsPath, { withCredentials: true })
+    subscribe: (revision, callbacks) => {
+      const source = createEventSource(`${eventsPath}?since=${revision}`, { withCredentials: true })
       source.addEventListener("message", (message) => {
-        const payload: unknown = JSON.parse(message.data)
-        const result = RuntimeEventSchema.safeParse(payload)
-        if (!result.success) {
-          callbacks.onPayloadError(
-            new RuntimeApiPayloadError(result.error.issues.map((issue) => issue.message)),
-          )
+        if (!(message instanceof MessageEvent)) {
+          source.close()
+          callbacks.onPayloadError(new RuntimeApiPayloadError(["event data is not a message"]))
+          callbacks.onResyncRequired()
           return
         }
-        callbacks.onRevision(result.data.revision)
+        let event: RuntimeEvent
+        try {
+          const payload: unknown = JSON.parse(message.data)
+          event = parseRuntimeEvent(payload)
+        } catch (error) {
+          if (!(error instanceof RuntimeApiPayloadError) && !(error instanceof SyntaxError)) {
+            throw error
+          }
+          source.close()
+          const payloadError =
+            error instanceof RuntimeApiPayloadError
+              ? error
+              : new RuntimeApiPayloadError(["event data is not valid JSON"])
+          callbacks.onPayloadError(payloadError)
+          callbacks.onResyncRequired()
+          return
+        }
+        callbacks.onEvent(event)
       })
-      source.addEventListener("error", callbacks.onDisconnect)
+      source.addEventListener("resync-required", () => {
+        source.close()
+        callbacks.onResyncRequired()
+      })
+      source.addEventListener("error", () => {
+        source.close()
+        callbacks.onDisconnect()
+      })
       return () => source.close()
     },
-  }
-}
-
-export type RuntimeStateCoordinatorOptions = {
-  readonly fetchSnapshot: () => Promise<RuntimeSnapshot>
-  readonly onIncremental: (revision: number) => void
-  readonly onSnapshot: (snapshot: RuntimeSnapshot) => void
-  readonly onRecoveryError: (error: unknown) => void
-}
-
-export class RuntimeStateCoordinator {
-  private state: RuntimeState = EMPTY_RUNTIME_STATE
-
-  constructor(private readonly options: RuntimeStateCoordinatorOptions) {}
-
-  currentState(): RuntimeState {
-    return this.state
-  }
-
-  install(snapshot: RuntimeSnapshot): void {
-    this.state = installSnapshot(snapshot.revision)
-    this.options.onSnapshot(snapshot)
-  }
-
-  async receiveRevision(revision: number): Promise<boolean> {
-    const transition = receiveRevision(this.state, revision)
-    this.state = transition.state
-    if (transition.accepted) {
-      this.options.onIncremental(revision)
-      return true
-    }
-    if (transition.effect === "resnapshot") {
-      await this.recover()
-    }
-    return false
-  }
-
-  async disconnect(): Promise<void> {
-    const transition = markDisconnected(this.state)
-    this.state = transition.state
-    if (transition.effect === "resnapshot") {
-      await this.recover()
-    }
-  }
-
-  private async recover(): Promise<void> {
-    this.state = beginResnapshot(this.state)
-    const outcome = await this.options.fetchSnapshot().then(
-      (snapshot) => ({ kind: "success", snapshot }) as const,
-      (error: unknown) => ({ kind: "failure", error }) as const,
-    )
-    switch (outcome.kind) {
-      case "success":
-        this.install(outcome.snapshot)
-        return
-      case "failure":
-        this.options.onRecoveryError(outcome.error)
-        return
-      default:
-        return assertNever(outcome)
-    }
   }
 }
