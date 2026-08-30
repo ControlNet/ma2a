@@ -2,6 +2,7 @@ import {
   beginResnapshot,
   installSnapshot,
   markDisconnected,
+  markResyncRequired,
   type RuntimeState,
   receiveRevision,
 } from "./state"
@@ -97,5 +98,18 @@ describe("runtime revision state", () => {
 
     expect(uncertain.kind).toBe("uncertain")
     expect(receiveRevision(when, 21).accepted).toBe(true)
+  })
+
+  test("marks an explicit server resync signal uncertain", () => {
+    const given = installSnapshot(10)
+
+    const when = markResyncRequired(given)
+
+    expect(when.state).toEqual({
+      kind: "uncertain",
+      lastRevision: 10,
+      reason: "server_resync_required",
+      resnapshot: "required",
+    })
   })
 })
