@@ -124,7 +124,10 @@ impl AddressPublisher {
             }
             let refresh_due =
                 request.now_ms - signed.record().issued_at_ms() >= ADDRESS_REFRESH_INTERVAL_MS;
-            if signed.record().endpoint_data() == &endpoint_data && !refresh_due {
+            if signed.record().endpoint_data() == &endpoint_data
+                && !refresh_due
+                && !request.force_advance
+            {
                 return Ok(None);
             }
         }
@@ -166,6 +169,7 @@ impl fmt::Debug for AddressPublisher {
 pub struct AddressPublishRequest<'a> {
     authorization: &'a SpaceAuthorizationView,
     now_ms: u64,
+    force_advance: bool,
 }
 
 impl<'a> AddressPublishRequest<'a> {
@@ -174,7 +178,15 @@ impl<'a> AddressPublishRequest<'a> {
         Self {
             authorization,
             now_ms,
+            force_advance: false,
         }
+    }
+
+    /// Forces a new sequence while preserving the actual observed Endpoint data.
+    #[must_use]
+    pub const fn force_advance(mut self) -> Self {
+        self.force_advance = true;
+        self
     }
 }
 
