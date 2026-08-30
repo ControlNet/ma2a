@@ -1,5 +1,7 @@
 //! Endpoint-centric independent-Space authorization matrix.
 
+#[path = "authorization_matrix/echo.rs"]
+mod echo;
 #[path = "authorization_matrix/fixtures.rs"]
 mod fixtures;
 #[path = "authorization_matrix/operations.rs"]
