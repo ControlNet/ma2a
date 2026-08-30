@@ -5,6 +5,7 @@ const ENDPOINT_ID = "test-endpoint-alpha-00000000000000000000000000000001"
 export const EMPTY_RUNTIME_FIXTURE = {
   revision: 8,
   connection: "online",
+  runtimeVersion: "0.1.0",
   endpoint: {
     id: ENDPOINT_ID,
     status: "active",
@@ -12,12 +13,15 @@ export const EMPTY_RUNTIME_FIXTURE = {
   },
   spaces: [],
   relays: [],
+  observedRelayState: { private_relay_online: false, public_relay_online: false },
   reachability: {
     status: "unknown",
     path: "No target selected",
     detail: "Run an Echo test to observe a target-specific path.",
   },
-  echoHistory: [],
+  controlSync: { peer_endpoint_ids: [], synchronized: true },
+  echoTotals: { successes: 0, failures: 0 },
+  uiAuth: { initialized: true, password_set: true, active_sessions: 1 },
 } satisfies RuntimeViewData
 
 export const ONE_RUNTIME_FIXTURE = {
@@ -33,10 +37,8 @@ export const ONE_RUNTIME_FIXTURE = {
   ],
   relays: [
     {
-      id: "test-relay-local",
-      url: "https://relay.test.invalid",
+      endpointId: "11".repeat(32),
       kind: "private",
-      compatibility: "home-compatible",
       status: "eligible",
     },
   ],
@@ -68,17 +70,13 @@ export const MANY_RUNTIME_FIXTURE = {
   relays: [
     ...ONE_RUNTIME_FIXTURE.relays,
     {
-      id: "test-relay-space-only",
-      url: "https://space-relay.test.invalid",
+      endpointId: "22".repeat(32),
       kind: "private",
-      compatibility: "space-only",
       status: "eligible",
     },
     {
-      id: "test-relay-public",
-      url: "https://public-relay.test.invalid",
+      endpointId: "33".repeat(32),
       kind: "public",
-      compatibility: "fallback",
       status: "disabled",
     },
   ],
@@ -87,18 +85,7 @@ export const MANY_RUNTIME_FIXTURE = {
     path: "Relay observed by Iroh",
     detail: "No Private Relay is compatible with every active Space.",
   },
-  echoHistory: [
-    {
-      requestId: "test-request-01",
-      target: "test-endpoint-bravo",
-      status: "echoed",
-      path: "relay",
-    },
-    {
-      requestId: "test-request-02",
-      target: "test-endpoint-charlie",
-      status: "denied",
-      path: "unknown",
-    },
-  ],
+  observedRelayState: { private_relay_online: true, public_relay_online: false },
+  controlSync: { peer_endpoint_ids: ["44".repeat(32)], synchronized: false },
+  echoTotals: { successes: 1, failures: 1 },
 } satisfies RuntimeViewData
