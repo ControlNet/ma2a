@@ -5,6 +5,7 @@
 mod address;
 mod authorization;
 mod codec;
+mod control;
 mod enrollment_page;
 mod error;
 mod ids;
@@ -32,6 +33,11 @@ pub use authorization::{
     authorize_endpoint,
 };
 pub use codec::{decode_request, decode_response, encode_request, encode_response};
+pub use control::{
+    ControlArtifactKind, ControlArtifactV1, ControlCursorEntryV1, ControlCursorV1, ControlPageV1,
+    ControlRequestV1, ControlResponseV1, MAX_CONTROL_ARTIFACTS_PER_PAGE, MAX_CONTROL_BATCH_BYTES,
+    MAX_CONTROL_CURSOR_ENTRIES, MAX_CONTROL_SPACES_PER_REQUEST,
+};
 pub use enrollment_page::{
     EnrollmentPage, MAX_ENROLLMENT_ARTIFACTS_PER_PAGE, MAX_ENROLLMENT_PAGE_BYTES,
     MAX_ENROLLMENT_PAGES, validate_enrollment_pages,
