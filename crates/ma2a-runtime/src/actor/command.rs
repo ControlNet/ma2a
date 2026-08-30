@@ -1,4 +1,4 @@
-use ma2a_core::{SignedInviteTicket, SpaceId};
+use ma2a_core::{EchoError, EchoResponse, EndpointId, RequestId, SignedInviteTicket, SpaceId};
 use tokio::sync::oneshot;
 
 use super::ShutdownAck;
@@ -46,6 +46,12 @@ pub(crate) enum Command {
         config: ma2a_net::PrivateRelayProviderConfig,
         expires_at_ms: u64,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    Echo {
+        request_id: RequestId,
+        target: EndpointId,
+        payload: Vec<u8>,
+        reply: oneshot::Sender<Result<EchoResponse<'static>, EchoError>>,
     },
     Shutdown(oneshot::Sender<ShutdownAck>),
 }
