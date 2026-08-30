@@ -22,6 +22,10 @@ use crate::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the integration scenario keeps setup, observation, persistence, and cleanup visible"
+)]
 async fn active_space_filters_connected_rogue_home_from_status_and_repository() -> TestResult {
     // Given
     let state_dir = TempState::new()?;
@@ -51,11 +55,13 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     let lookup = SpaceAddressLookup::default();
     let (enrollment_sender, enrollment_calls) = mpsc::channel(1);
     let (control_sender, control_calls) = mpsc::channel(1);
+    let (echo_sender, echo_calls) = mpsc::channel(1);
     let endpoint = RuntimeEndpoint::bind_with_lookup(
         identity.secret,
         lookup.clone(),
         EndpointBindOptions::new(enrollment_sender, identity.bind_port)
             .with_control(control_sender, true)
+            .with_echo(echo_sender)
             .with_relay_map(relay_map.clone()),
     )
     .await?;
@@ -74,12 +80,15 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     };
     let awaiting = RelayReachability::AwaitingIrohHome;
     assert_eq!(status.relay_reachability(), awaiting);
+    let echo_metrics = endpoint.echo_metrics();
     let (mut actor, _handle, _cancellation) = Actor::new(
         status,
         endpoint,
         store,
         enrollment_calls,
         control_calls,
+        echo_calls,
+        echo_metrics,
         lookup,
         Arc::new(FixedClock),
     );

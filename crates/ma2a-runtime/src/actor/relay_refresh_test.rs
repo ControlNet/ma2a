@@ -40,11 +40,13 @@ async fn actor_relay_refresh_automatically_publishes_next_address_record() -> Te
     let lookup = SpaceAddressLookup::default();
     let (enrollment_sender, enrollment_calls) = mpsc::channel(1);
     let (control_sender, control_calls) = mpsc::channel(1);
+    let (echo_sender, echo_calls) = mpsc::channel(1);
     let endpoint = RuntimeEndpoint::bind_with_lookup(
         identity.secret,
         lookup.clone(),
         EndpointBindOptions::new(enrollment_sender, identity.bind_port)
             .with_control(control_sender, true)
+            .with_echo(echo_sender)
             .with_relay_map(initial_map.clone()),
     )
     .await?;
@@ -59,12 +61,15 @@ async fn actor_relay_refresh_automatically_publishes_next_address_record() -> Te
         connectivity: Connectivity::DIRECT_ONLY,
         relay: crate::reachability::RelayReachabilityState::new(initial_map),
     };
+    let echo_metrics = endpoint.echo_metrics();
     let (mut actor, _handle, _cancellation) = Actor::new(
         status,
         endpoint,
         store,
         enrollment_calls,
         control_calls,
+        echo_calls,
+        echo_metrics,
         lookup,
         Arc::new(FixedClock),
     );
