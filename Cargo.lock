@@ -2148,6 +2148,7 @@ dependencies = [
  "blake3",
  "getrandom 0.4.3",
  "interprocess",
+ "iroh",
  "iroh-tickets",
  "ma2a-core",
  "ma2a-net",

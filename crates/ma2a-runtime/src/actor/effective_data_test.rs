@@ -26,6 +26,9 @@ use crate::{
     store::{STORE_CAPACITY, StoreBackend, StoreClient},
 };
 
+#[path = "relay_reachability_test.rs"]
+mod relay_reachability_test;
+
 type TestError = Box<dyn Error + Send + Sync>;
 type TestResult = Result<(), TestError>;
 const NOW_MS: i64 = 1_700_000_000_000;
