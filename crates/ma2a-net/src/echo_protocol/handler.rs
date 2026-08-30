@@ -1,9 +1,9 @@
 use std::{
-    future::Future,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use iroh::{
@@ -11,9 +11,12 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use ma2a_core::{EchoError, EndpointId, MAX_WIRE_LEN};
-use tokio::{sync::mpsc, task::JoinSet, time::error::Elapsed};
+use tokio::{sync::mpsc, task::JoinSet};
 
 use super::{ECHO_DEADLINE, EchoCall, EchoServiceResponse, frame, limit::EchoLimiter};
+
+const ECHO_RESPONSE_WRITE_BUDGET: Duration = Duration::from_millis(100);
+const ECHO_PROCESS_DEADLINE: Duration = ECHO_DEADLINE.saturating_sub(ECHO_RESPONSE_WRITE_BUDGET);
 
 /// Body-processing counters used to prove authorization precedes reads and decoding.
 #[derive(Clone, Debug, Default)]
@@ -128,16 +131,20 @@ impl EchoHandler {
         receive: iroh::endpoint::RecvStream,
     ) {
         let local_endpoint_id = self.local_endpoint_id;
-        let _completed = run_with_deadline(async move {
-            let (duration_ms, response) = match self.process(peer, receive).await {
-                Ok(response) => {
+        let stream_deadline = tokio::time::Instant::now() + ECHO_DEADLINE;
+        let (duration_ms, response) =
+            match tokio::time::timeout(ECHO_PROCESS_DEADLINE, self.process(peer, receive)).await {
+                Ok(Ok(response)) => {
                     let (body, duration_ms) = response.into_parts();
                     (duration_ms, Ok(body))
                 }
-                Err(error) => (0, Err(error)),
+                Ok(Err(error)) => (0, Err(error)),
+                Err(_) => (ma2a_core::MAX_ECHO_DURATION_MS, Err(EchoError::TimedOut)),
             };
-            frame::write(&mut send, local_endpoint_id, duration_ms, response).await
-        })
+        let _completed = tokio::time::timeout_at(
+            stream_deadline,
+            frame::write(&mut send, local_endpoint_id, duration_ms, response),
+        )
         .await;
     }
 
@@ -160,13 +167,6 @@ impl EchoHandler {
         request.send(body).map_err(|_| EchoError::Cancelled)?;
         response.await.map_err(|_| EchoError::Cancelled)?
     }
-}
-
-async fn run_with_deadline<F, T>(operation: F) -> Result<T, Elapsed>
-where
-    F: Future<Output = T>,
-{
-    tokio::time::timeout(ECHO_DEADLINE, operation).await
 }
 
 async fn read_body(receive: &mut iroh::endpoint::RecvStream) -> Result<Vec<u8>, EchoError> {
@@ -193,24 +193,4 @@ async fn read_body(receive: &mut iroh::endpoint::RecvStream) -> Result<Vec<u8>, 
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::{ECHO_DEADLINE, run_with_deadline};
-
-    #[tokio::test(start_paused = true)]
-    async fn server_deadline_covers_all_phases_once() {
-        // Given
-        let operation = tokio::spawn(run_with_deadline(async {
-            tokio::time::sleep(Duration::from_secs(6)).await;
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }));
-
-        // When
-        tokio::time::advance(ECHO_DEADLINE).await;
-        let result = operation.await.expect("deadline task joins");
-
-        // Then
-        assert!(result.is_err());
-    }
-}
+mod tests;
