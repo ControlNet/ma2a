@@ -39,6 +39,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 http.workspace = true
+iroh = { workspace = true, features = ["test-utils"] }
 iroh-dns.workspace = true
 rcgen.workspace = true
 tokio-rustls.workspace = true
