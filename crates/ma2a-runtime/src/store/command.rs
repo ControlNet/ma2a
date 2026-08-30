@@ -47,6 +47,26 @@ pub(crate) enum StoreCommand {
         chain: ma2a_core::SpaceChain,
         reply: oneshot::Sender<Result<(u64, ma2a_core::SpaceChain), RuntimeError>>,
     },
+    AdvanceOwnedSpace {
+        update: ma2a_store::OwnedSpaceUpdate,
+        local_endpoint_id: ma2a_core::EndpointId,
+        reply: oneshot::Sender<
+            Result<(u64, std::collections::BTreeSet<ma2a_core::SpaceId>), RuntimeError>,
+        >,
+    },
+    PublishAddress {
+        publisher: ma2a_net::AddressPublisher,
+        local_endpoint_id: ma2a_core::EndpointId,
+        now_ms: u64,
+        reply: oneshot::Sender<Result<(u64, bool), RuntimeError>>,
+    },
+    PublishRelayAdvertisements {
+        publisher: ma2a_net::PrivateRelayAdvertisementPublisher,
+        local_endpoint_id: ma2a_core::EndpointId,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+        reply: oneshot::Sender<Result<(u64, bool), RuntimeError>>,
+    },
     LoadControlLookup {
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,

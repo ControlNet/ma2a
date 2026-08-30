@@ -1,4 +1,5 @@
 mod command;
+mod local_control;
 
 use std::collections::BTreeSet;
 
@@ -41,6 +42,10 @@ impl StoreBackend {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single dispatcher preserves store command ordering"
+    )]
     pub(crate) fn run(mut self, mut commands: mpsc::Receiver<StoreCommand>) {
         while let Some(command) = commands.blocking_recv() {
             match command {
@@ -110,6 +115,45 @@ impl StoreBackend {
                 }
                 StoreCommand::PersistEnrollment { chain, reply } => {
                     let _unsent = reply.send(self.persist_enrollment(chain));
+                }
+                StoreCommand::AdvanceOwnedSpace {
+                    update,
+                    local_endpoint_id,
+                    reply,
+                } => {
+                    let result =
+                        self.repository
+                            .advance_owned_space(&update)
+                            .and_then(|advanced| {
+                                Ok((
+                                    advanced.revision(),
+                                    self.repository.memberships_for(local_endpoint_id)?,
+                                ))
+                            });
+                    let _unsent = reply.send(result.map_err(Into::into));
+                }
+                StoreCommand::PublishAddress {
+                    publisher,
+                    local_endpoint_id,
+                    now_ms,
+                    reply,
+                } => {
+                    let _unsent =
+                        reply.send(self.publish_address(&publisher, local_endpoint_id, now_ms));
+                }
+                StoreCommand::PublishRelayAdvertisements {
+                    publisher,
+                    local_endpoint_id,
+                    issued_at_ms,
+                    expires_at_ms,
+                    reply,
+                } => {
+                    let _unsent = reply.send(self.publish_relay_advertisements(
+                        &publisher,
+                        local_endpoint_id,
+                        issued_at_ms,
+                        expires_at_ms,
+                    ));
                 }
                 StoreCommand::LoadControlLookup {
                     local_endpoint_id,
