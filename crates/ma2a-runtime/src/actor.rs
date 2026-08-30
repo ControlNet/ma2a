@@ -1,58 +1,24 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use ma2a_core::{SignedInviteTicket, SpaceId};
+use ma2a_core::SpaceId;
 use ma2a_net::{ControlCall, EnrollmentCall, RuntimeEndpoint, SpaceAddressLookup};
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc},
     task::JoinSet,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EstablishedEnrollment,
-    error::RuntimeError,
-    state::{RuntimeEvent, RuntimeStatus},
-    store::StoreClient,
-};
+use crate::state::{RuntimeEvent, RuntimeStatus};
+use crate::{enrollment::EnrollmentError, error::RuntimeError, store::StoreClient};
 
+mod command;
 mod handle;
+mod local_control;
+pub(crate) use command::Command;
 pub use handle::RuntimeHandle;
 
 pub(crate) const COMMAND_CAPACITY: usize = 32;
 pub(crate) const EVENT_CAPACITY: usize = 32;
-
-pub(crate) enum Command {
-    Status(oneshot::Sender<RuntimeStatus>),
-    ObserveMemberships {
-        memberships: Vec<SpaceId>,
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
-    },
-    CreateEnrollmentInvite {
-        creation: EnrollmentCreation,
-        reply: oneshot::Sender<Result<SignedInviteTicket, EnrollmentError>>,
-    },
-    RedeemEnrollment {
-        attempt: Box<EnrollmentAttempt>,
-        reply: oneshot::Sender<Result<EstablishedEnrollment, EnrollmentError>>,
-    },
-    CancelEnrollmentInvite {
-        invitation_id: [u8; 16],
-        reply: oneshot::Sender<Result<(), EnrollmentError>>,
-    },
-    AdoptRevision {
-        revision: u64,
-        reply: oneshot::Sender<u64>,
-    },
-    ControlSyncStatus {
-        peer: ma2a_core::EndpointId,
-        reply: oneshot::Sender<bool>,
-    },
-    SyncControl {
-        peer: Option<ma2a_core::EndpointId>,
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
-    },
-    Shutdown(oneshot::Sender<ShutdownAck>),
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ShutdownAck {
@@ -76,6 +42,9 @@ pub(crate) struct Actor {
     )>,
     pub(crate) control_queue: crate::control_actor::ControlRoundQueue,
     pub(crate) synchronized_control_peers: BTreeSet<ma2a_core::EndpointId>,
+    #[cfg(test)]
+    pub(crate) control_schedule_events:
+        Arc<std::sync::Mutex<Vec<crate::control_sync::ControlRoundTrigger>>>,
     cancellation: CancellationToken,
 }
 
@@ -95,8 +64,15 @@ impl Actor {
     ) -> (Self, RuntimeHandle, CancellationToken) {
         let (command_sender, commands) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        #[cfg(test)]
+        let control_schedule_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let cancellation = CancellationToken::new();
-        let handle = RuntimeHandle::new(command_sender, events.clone());
+        let handle = RuntimeHandle::new(
+            command_sender,
+            events.clone(),
+            #[cfg(test)]
+            Arc::clone(&control_schedule_events),
+        );
         let actor = Self {
             state,
             endpoint,
@@ -110,11 +86,17 @@ impl Actor {
             control_rounds: JoinSet::new(),
             control_queue: crate::control_actor::ControlRoundQueue::default(),
             synchronized_control_peers: BTreeSet::new(),
+            #[cfg(test)]
+            control_schedule_events,
             cancellation: cancellation.child_token(),
         };
         (actor, handle, cancellation)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single select loop keeps actor command ordering explicit"
+    )]
     pub(crate) async fn run(mut self) -> Result<ShutdownAck, RuntimeError> {
         let _receiver_count = self.events.send(RuntimeEvent::ready(self.state.revision));
         self.schedule_control_round(crate::control_sync::ControlRoundTrigger::Startup, None);
@@ -172,6 +154,37 @@ impl Actor {
                             crate::control_sync::ControlRoundTrigger::Explicit(scope),
                             Some(reply),
                         );
+                    }
+                    Some(Command::AdvanceOwnedSpace { update, reply }) => {
+                        let result = match self
+                            .store
+                            .advance_owned_space(update, self.state.endpoint_id)
+                            .await
+                        {
+                            Ok((revision, memberships)) => {
+                                self.state.revision = revision;
+                                self.state.memberships = memberships;
+                                self.endpoint
+                                    .set_control_enabled(!self.state.memberships.is_empty());
+                                self.refresh_control_lookup().await.map(|()| {
+                                    self.schedule_control_round(
+                                        crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
+                                        None,
+                                    );
+                                    revision
+                                })
+                            }
+                            Err(error) => Err(error),
+                        };
+                        let _unsent = reply.send(result);
+                    }
+                    Some(Command::PublishAddress(reply)) => {
+                        let result = self.publish_local_address().await;
+                        let _unsent = reply.send(result);
+                    }
+                    Some(Command::PublishRelayAdvertisements { config, expires_at_ms, reply }) => {
+                        let result = self.publish_local_relay(config, expires_at_ms).await;
+                        let _unsent = reply.send(result);
                     }
                     Some(Command::Shutdown(reply)) => {
                         let result = self.finish(true).await;
