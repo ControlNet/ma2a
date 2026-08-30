@@ -14,6 +14,7 @@ mod manifest;
 mod manifest_inputs;
 mod ontology;
 mod policy;
+mod reachability;
 mod relay;
 mod space;
 mod space_chain;
@@ -57,6 +58,7 @@ pub use policy::{
     Capability, MAX_MEMBER_LABEL_LEN, MAX_SPACE_MEMBERS, MemberCapabilities, SpaceMemberV1,
     SpacePolicyV1, SpaceRevocationV1,
 };
+pub use reachability::RelayReachability;
 pub use relay::{
     MAX_PRIVATE_RELAY_ADVERTISEMENT_LEN, MAX_PRIVATE_RELAY_ADVERTISEMENT_VALIDITY_MS,
     MAX_PRIVATE_RELAY_URL_LEN, PRIVATE_RELAY_ADVERTISEMENT_HASH_DOMAIN,
