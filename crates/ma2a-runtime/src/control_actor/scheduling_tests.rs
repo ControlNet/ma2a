@@ -222,3 +222,23 @@ async fn explicit_peer_without_a_prepared_exchange_is_not_reported_as_synchroniz
     assert!(result.is_err());
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_peer_without_any_membership_is_not_reported_as_synchronized() -> TestResult {
+    // Given
+    let state = TempState::new("empty-membership")?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let requested = EndpointSecret::parse(&[0x71; 32])?.endpoint_id();
+
+    // When
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.handle().sync_control_with(requested),
+    )
+    .await?;
+    runtime.shutdown().await?;
+
+    // Then
+    assert!(result.is_err());
+    Ok(())
+}
