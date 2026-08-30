@@ -226,6 +226,13 @@ async fn snapshot_fetch_returns_the_authoritative_runtime_projection() -> TestRe
     assert_eq!(response_revision, snapshot_revision);
     assert_eq!(
         response
+            .get("runtime_boot_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::len),
+        Some(32)
+    );
+    assert_eq!(
+        response
             .pointer("/result/payload/endpoint/online")
             .and_then(serde_json::Value::as_bool),
         Some(true)
