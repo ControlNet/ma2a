@@ -28,6 +28,8 @@ use crate::{
 
 #[path = "relay_reachability_test.rs"]
 mod relay_reachability_test;
+#[path = "relay_refresh_test.rs"]
+mod relay_refresh_test;
 
 type TestError = Box<dyn Error + Send + Sync>;
 type TestResult = Result<(), TestError>;

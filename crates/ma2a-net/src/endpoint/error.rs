@@ -42,6 +42,7 @@ enum NetErrorKind {
     Shutdown,
     Enrollment,
     Control(ControlFailure),
+    Reconfigure(crate::RelayReconfigureError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,7 @@ impl fmt::Display for NetError {
             NetErrorKind::Shutdown => formatter.write_str("Iroh Endpoint shutdown task failed"),
             NetErrorKind::Enrollment => formatter.write_str("Iroh enrollment exchange failed"),
             NetErrorKind::Control(_) => formatter.write_str("Iroh control exchange failed"),
+            NetErrorKind::Reconfigure(error) => error.fmt(formatter),
         }
     }
 }
@@ -89,6 +91,23 @@ impl NetError {
         Self(NetErrorKind::Control(ControlFailure::Permanent))
     }
 
+    pub(crate) const fn control_from_dial(error: &crate::DialFailure) -> Self {
+        match error.class() {
+            crate::ConnectionErrorClass::Transient | crate::ConnectionErrorClass::Cancelled => {
+                Self::control_transient()
+            }
+            crate::ConnectionErrorClass::Authorization
+            | crate::ConnectionErrorClass::Version
+            | crate::ConnectionErrorClass::Revocation
+            | crate::ConnectionErrorClass::MalformedInput
+            | crate::ConnectionErrorClass::Policy => Self::control_permanent(),
+        }
+    }
+
+    pub(crate) const fn reconfigure(error: crate::RelayReconfigureError) -> Self {
+        Self(NetErrorKind::Reconfigure(error))
+    }
+
     pub(crate) const fn is_transient_control(&self) -> bool {
         matches!(self.0, NetErrorKind::Control(ControlFailure::Transient))
     }
@@ -99,6 +118,7 @@ impl Error for NetError {
         match &self.0 {
             NetErrorKind::Bind(error) => Some(error),
             NetErrorKind::Observation(error) => Some(error),
+            NetErrorKind::Reconfigure(error) => Some(error),
             NetErrorKind::Shutdown | NetErrorKind::Enrollment | NetErrorKind::Control(_) => None,
         }
     }

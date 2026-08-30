@@ -105,7 +105,7 @@ impl Actor {
         if !self.state.relay.replace_candidates(candidates.clone()) {
             return Ok(false);
         }
-        self.endpoint.replace_relay_map(&candidates).await;
+        self.endpoint.replace_relay_map(&candidates).await?;
         self.persist_relay_observations().await?;
         self.publish_local_address_with_mode(true).await?;
         Ok(true)

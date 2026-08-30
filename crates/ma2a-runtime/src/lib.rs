@@ -14,6 +14,7 @@ pub mod web;
 mod actor;
 mod authz;
 mod clock;
+mod connections;
 mod control_actor;
 mod control_sync;
 mod enrollment;
@@ -28,6 +29,7 @@ mod store_client;
 pub use actor::RuntimeHandle;
 pub use authz::authorize_remote;
 pub use clock::RuntimeClock;
+pub use connections::RuntimeConnections;
 pub use enrollment::{
     EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EnrollmentErrorCode,
     EstablishedEnrollment,

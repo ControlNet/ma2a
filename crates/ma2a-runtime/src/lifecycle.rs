@@ -22,6 +22,7 @@ enum TaskExit {
 #[derive(Debug)]
 pub struct Runtime {
     handle: RuntimeHandle,
+    connections: crate::RuntimeConnections,
     cancellation: CancellationToken,
     tasks: JoinSet<Result<TaskExit, RuntimeError>>,
 }
@@ -76,6 +77,7 @@ impl Runtime {
             let port = endpoint.bind_port()?;
             store.set_endpoint_bind_port(port).await?;
         }
+        let connections = crate::RuntimeConnections::new(&endpoint.connection_manager());
         let boot_id = boot_id()?;
         let boot_revision = store.begin_boot(boot_id).await?;
         let relay_observation_revision = store.record_relay_observations(Vec::new()).await?;
@@ -106,6 +108,7 @@ impl Runtime {
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
         Ok(Self {
             handle,
+            connections,
             cancellation,
             tasks,
         })
@@ -114,6 +117,11 @@ impl Runtime {
     /// Returns a cloneable bounded actor handle.
     pub fn handle(&self) -> RuntimeHandle {
         self.handle.clone()
+    }
+
+    /// Returns bounded observational Iroh connection telemetry.
+    pub const fn connections(&self) -> &crate::RuntimeConnections {
+        &self.connections
     }
 
     /// Gracefully closes Iroh and joins the actor plus blocking store owner.
@@ -202,6 +210,7 @@ mod tests {
             handle,
             cancellation,
             mut tasks,
+            connections: _,
         } = Runtime::start(config.clone()).await?;
 
         // When

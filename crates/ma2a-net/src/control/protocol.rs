@@ -1,5 +1,5 @@
 use iroh::{
-    Endpoint, EndpointAddr,
+    EndpointAddr,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
 };
@@ -7,7 +7,7 @@ use ma2a_core::{EndpointId, MAX_CONTROL_BATCH_BYTES};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, timeout};
 
-use crate::NetError;
+use crate::{ConnectionManager, NetError};
 
 /// Existing-member control synchronization ALPN.
 pub const CONTROL_ALPN: &[u8] = b"ma2a/control/1";
@@ -133,12 +133,12 @@ impl ProtocolHandler for ControlHandler {
 /// Cloneable active-dial client backed by the running Runtime Endpoint.
 #[derive(Clone, Debug)]
 pub struct ControlClient {
-    endpoint: Endpoint,
+    connections: ConnectionManager,
 }
 
 impl ControlClient {
-    pub(crate) const fn new(endpoint: Endpoint) -> Self {
-        Self { endpoint }
+    pub(crate) const fn new(connections: ConnectionManager) -> Self {
+        Self { connections }
     }
 
     /// Exchanges one bounded request with an exact resolved Endpoint address.
@@ -176,13 +176,14 @@ impl ControlClient {
         if request.len() > MAX_CONTROL_BATCH_BYTES {
             return Err(NetError::control_permanent());
         }
+        let target = target.into();
         let connection = timeout(
             CONTROL_IO_TIMEOUT,
-            self.endpoint.connect(target, CONTROL_ALPN),
+            self.connections.connect_addr(target, CONTROL_ALPN),
         )
         .await
         .map_err(|_| NetError::control_transient())?
-        .map_err(|_| NetError::control_transient())?;
+        .map_err(|error| NetError::control_from_dial(&error))?;
         let (mut send, mut receive) = timeout(CONTROL_IO_TIMEOUT, connection.open_bi())
             .await
             .map_err(|_| NetError::control_transient())?

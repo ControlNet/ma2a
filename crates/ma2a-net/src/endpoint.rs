@@ -72,7 +72,7 @@ impl fmt::Debug for EndpointSecret {
 pub struct RuntimeEndpoint {
     router: Router,
     observation: crate::address_observation::AddressObservation,
-    configured_relays: std::collections::BTreeSet<iroh_base::RelayUrl>,
+    connections: crate::ConnectionManager,
 }
 
 impl RuntimeEndpoint {
@@ -139,6 +139,8 @@ impl RuntimeEndpoint {
             endpoint.close().await;
             return Err(NetError::observation(error));
         }
+        let connections =
+            crate::ConnectionManager::with_relays(endpoint.clone(), configured_relays);
         let router = Router::builder(endpoint)
             .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
             .accept(CONTROL_ALPN, ControlHandler::new(control_calls))
@@ -149,7 +151,7 @@ impl RuntimeEndpoint {
         Ok(Self {
             router,
             observation,
-            configured_relays,
+            connections,
         })
     }
 
@@ -201,28 +203,18 @@ impl RuntimeEndpoint {
     }
 
     /// Replaces the safe runtime relay candidates through Iroh's mutation APIs.
-    pub async fn replace_relay_map(&mut self, relay_map: &crate::LocalIrohRelayMap) -> bool {
-        let desired = relay_map
-            .relay_urls()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        if desired == self.configured_relays {
-            return false;
-        }
-        let configurations = relay_map.relay_map();
-        for relay_url in desired.difference(&self.configured_relays) {
-            if let Some(configuration) = configurations.get(relay_url) {
-                self.router
-                    .endpoint()
-                    .insert_relay(relay_url.clone(), configuration)
-                    .await;
-            }
-        }
-        for relay_url in self.configured_relays.difference(&desired) {
-            self.router.endpoint().remove_relay(relay_url).await;
-        }
-        self.configured_relays = desired;
-        true
+    ///
+    /// # Errors
+    /// Returns [`NetError`] when the running Endpoint cannot apply the desired relay map.
+    pub async fn replace_relay_map(
+        &mut self,
+        relay_map: &crate::LocalIrohRelayMap,
+    ) -> Result<bool, NetError> {
+        self.connections
+            .reconfigure(relay_map)
+            .await
+            .map(crate::RelayReconfigureOutcome::changed)
+            .map_err(NetError::reconfigure)
     }
 
     /// Exchanges one bounded enrollment request over the reserved ALPN.
@@ -252,7 +244,12 @@ impl RuntimeEndpoint {
 
     /// Returns a cloneable active control dial client.
     pub fn control_client(&self) -> ControlClient {
-        ControlClient::new(self.router.endpoint().clone())
+        ControlClient::new(self.connections.clone())
+    }
+
+    /// Returns the bounded connection manager for target dials and telemetry.
+    pub fn connection_manager(&self) -> crate::ConnectionManager {
+        self.connections.clone()
     }
 
     /// Enables or disables control ALPN negotiation for new incoming connections.
@@ -304,6 +301,7 @@ impl RuntimeEndpoint {
     /// Returns [`NetError`] when the router task fails during shutdown.
     pub async fn shutdown(self) -> Result<bool, NetError> {
         let endpoint = self.router.endpoint().clone();
+        self.connections.shutdown().await;
         self.router
             .shutdown()
             .await
