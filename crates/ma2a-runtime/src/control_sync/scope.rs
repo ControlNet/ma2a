@@ -3,10 +3,12 @@ use std::collections::BTreeSet;
 use ma2a_core::EndpointId;
 use ma2a_net::select_peer_window;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ControlRoundScope {
-    All,
-    Peers(BTreeSet<EndpointId>),
+const MAX_TARGETED_PEERS_PER_ROUND: usize = 4;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ControlRoundScope {
+    global: bool,
+    peers: BTreeSet<EndpointId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,35 +40,71 @@ pub(crate) struct ControlRoundOutcome {
 
 impl ControlRoundScope {
     pub(crate) const fn all() -> Self {
-        Self::All
+        Self {
+            global: true,
+            peers: BTreeSet::new(),
+        }
     }
 
     pub(crate) fn peer(peer: EndpointId) -> Self {
-        Self::Peers(BTreeSet::from([peer]))
+        Self {
+            global: false,
+            peers: BTreeSet::from([peer]),
+        }
     }
 
     pub(crate) fn merge(&mut self, other: Self) {
-        match (&mut *self, other) {
-            (Self::All, Self::All | Self::Peers(_)) | (Self::Peers(_), Self::All) => {
-                *self = Self::All;
-            }
-            (Self::Peers(current), Self::Peers(peers)) => current.extend(peers),
+        self.global |= other.global;
+        self.peers.extend(other.peers);
+    }
+
+    pub(crate) fn waiter_peer(&self) -> Option<EndpointId> {
+        if self.global || self.peers.len() != 1 {
+            return None;
         }
+        self.peers.iter().next().copied()
+    }
+
+    pub(crate) fn contains_peer(&self, peer: EndpointId) -> bool {
+        self.peers.contains(&peer)
+    }
+
+    pub(crate) fn take_round(&mut self) -> Option<Self> {
+        if !self.peers.is_empty() {
+            let selected = self
+                .peers
+                .iter()
+                .copied()
+                .take(MAX_TARGETED_PEERS_PER_ROUND)
+                .collect::<BTreeSet<_>>();
+            self.peers.retain(|peer| !selected.contains(peer));
+            return Some(Self {
+                global: false,
+                peers: selected,
+            });
+        }
+        if self.global {
+            self.global = false;
+            return Some(Self::all());
+        }
+        None
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.global && self.peers.is_empty()
     }
 }
 
 impl ControlRoundRequest {
     pub(crate) fn select(&self, eligible: &[EndpointId]) -> Vec<EndpointId> {
-        match &self.scope {
-            ControlRoundScope::All => {
-                select_peer_window(self.local_endpoint_id, eligible, self.rotation)
-            }
-            ControlRoundScope::Peers(requested) => eligible
-                .iter()
-                .copied()
-                .filter(|peer| requested.contains(peer))
-                .collect(),
+        if self.scope.global {
+            return select_peer_window(self.local_endpoint_id, eligible, self.rotation);
         }
+        eligible
+            .iter()
+            .copied()
+            .filter(|peer| self.scope.peers.contains(peer))
+            .collect()
     }
 }
 
