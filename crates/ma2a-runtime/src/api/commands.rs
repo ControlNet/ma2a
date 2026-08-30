@@ -255,4 +255,32 @@ impl Command {
             | CommandKind::GracefulShutdown(_) => None,
         }
     }
+
+    pub(crate) fn echo_call(&self) -> Option<(RequestId, EndpointId, &str)> {
+        match &self.kind {
+            CommandKind::EchoCall(request_id, target, payload) => {
+                Some((*request_id, *target, payload.as_str()))
+            }
+            CommandKind::Handshake
+            | CommandKind::Status
+            | CommandKind::EndpointInfo
+            | CommandKind::SpaceCreate(_, _)
+            | CommandKind::SpaceList
+            | CommandKind::SpaceShow(_)
+            | CommandKind::SpaceInvite(_, _, _)
+            | CommandKind::SpaceRedeem(_, _)
+            | CommandKind::SpaceRevoke(_, _, _)
+            | CommandKind::ControlSyncStatus(_)
+            | CommandKind::ControlSyncTrigger(_, _)
+            | CommandKind::PrivateRelayConfigure(_, _, _, _)
+            | CommandKind::PrivateRelayStatus
+            | CommandKind::PublicRelayConfigure(_, _)
+            | CommandKind::PublicRelayStatus
+            | CommandKind::UiPasswordSet(_, _)
+            | CommandKind::UiPasswordReset(_, _)
+            | CommandKind::SessionRevokeAll(_)
+            | CommandKind::SnapshotFetch
+            | CommandKind::GracefulShutdown(_) => None,
+        }
+    }
 }

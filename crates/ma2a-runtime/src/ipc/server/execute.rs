@@ -1,11 +1,11 @@
-use ma2a_core::ProtocolError;
+use ma2a_core::{EchoError, ProtocolError};
 
 use crate::{
     RuntimeStatus,
     api::{
-        CapabilityFlags, Command, CommandResult, ControlSyncView, EndpointView, HandshakeAuth,
-        HandshakeState, HandshakeView, InteractionCapabilities, ManagementCapabilities,
-        RelayCapabilities, RuntimeStatusView,
+        CapabilityFlags, Command, CommandResult, ControlSyncView, EchoReplyView, EndpointView,
+        HandshakeAuth, HandshakeState, HandshakeView, InteractionCapabilities,
+        ManagementCapabilities, RelayCapabilities, RuntimeStatusView,
     },
 };
 
@@ -114,6 +114,21 @@ pub(super) async fn execute(
                     .map_err(|_| ProtocolError::INTERNAL)?,
             )
         }
+        "echo_call" => {
+            let (request_id, target, payload) =
+                command.echo_call().ok_or(ProtocolError::INVALID_INPUT)?;
+            let response = context
+                .handle
+                .echo(request_id, target, payload.as_bytes())
+                .await
+                .map_err(echo_protocol_error)?;
+            let echoed = std::str::from_utf8(response.payload())
+                .map_err(|_| ProtocolError::INVALID_INPUT)?;
+            CommandResult::echo(
+                EchoReplyView::new(response.responder_endpoint_id(), echoed)
+                    .map_err(|_| ProtocolError::INTERNAL)?,
+            )
+        }
         "graceful_shutdown" => CommandResult::shutting_down(),
         "ui_password_set" | "ui_password_reset" | "session_revoke_all" => context
             .control
@@ -122,4 +137,17 @@ pub(super) async fn execute(
             .map_err(|_| ProtocolError::INTERNAL)?,
         _ => return Err(ProtocolError::UNAVAILABLE),
     })
+}
+
+const fn echo_protocol_error(error: EchoError) -> ProtocolError {
+    match error {
+        EchoError::VersionMismatch => ProtocolError::VERSION_MISMATCH,
+        EchoError::InvalidInput => ProtocolError::INVALID_INPUT,
+        EchoError::Unauthorized => ProtocolError::UNAUTHORIZED,
+        EchoError::ConcurrencyExceeded => ProtocolError::CONFLICT,
+        EchoError::TimedOut | EchoError::Cancelled | EchoError::Unavailable => {
+            ProtocolError::UNAVAILABLE
+        }
+        EchoError::Internal => ProtocolError::INTERNAL,
+    }
 }
