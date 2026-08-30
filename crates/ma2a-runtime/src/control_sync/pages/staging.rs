@@ -7,7 +7,7 @@ use ma2a_net::{
     AddressRecordTarget, AddressRecordValidator, AdvertisementValidationContext, ControlRejection,
     PrivateRelayAdvertisementValidator,
 };
-use ma2a_store::{AddressAdvance, ControlBatch, Repository, ValidatedRelayAdvertisement};
+use ma2a_store::{ControlBatch, Repository, ValidatedAddressRecord, ValidatedRelayAdvertisement};
 
 use super::PageApplication;
 
@@ -26,6 +26,19 @@ impl ControlChanges {
         self.manifest |= other.manifest;
         self.address |= other.address;
         self.relay |= other.relay;
+    }
+
+    pub(crate) fn triggers(self) -> impl Iterator<Item = crate::control_sync::ControlRoundTrigger> {
+        [
+            self.manifest
+                .then_some(crate::control_sync::ControlRoundTrigger::ManifestAdvanced),
+            self.address
+                .then_some(crate::control_sync::ControlRoundTrigger::AddressAdvanced),
+            self.relay
+                .then_some(crate::control_sync::ControlRoundTrigger::RelayAdvanced),
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 
@@ -90,7 +103,7 @@ pub(crate) fn apply_pages(
                         target.validation(&authorization, application.now_ms),
                     )
                     .map_err(|_| ControlRejection::Invalid)?;
-                    stage_address(repository, &mut addresses, validated.advance().clone())?;
+                    stage_address(repository, &mut addresses, validated)?;
                 }
                 kind if kind == ControlArtifactKind::RELAY_ADVERTISEMENT => {
                     let validated = PrivateRelayAdvertisementValidator::validate(
@@ -121,10 +134,13 @@ pub(crate) fn apply_pages(
 
 fn stage_address(
     repository: &Repository,
-    staged: &mut BTreeMap<(ma2a_core::SpaceId, ma2a_core::EndpointId), AddressAdvance>,
-    advance: AddressAdvance,
+    staged: &mut BTreeMap<(ma2a_core::SpaceId, ma2a_core::EndpointId), ValidatedAddressRecord>,
+    advance: ValidatedAddressRecord,
 ) -> Result<(), ControlRejection> {
-    let key = (advance.space_id, advance.endpoint_id);
+    let key = (
+        advance.record().record().space_id(),
+        advance.record().record().endpoint_id(),
+    );
     let current = staged.get(&key).map_or_else(
         || {
             repository
@@ -142,17 +158,18 @@ fn stage_address(
         },
         |record| {
             Ok(Some((
-                record.sequence,
-                record.record_hash,
-                record.signed_record.clone(),
+                record.record().record().sequence(),
+                record.record().record_hash(),
+                record.record().canonical_bytes().to_vec(),
             )))
         },
     )?;
     if let Some((sequence, hash, signed)) = current {
-        match advance.sequence.cmp(&sequence) {
+        match advance.record().record().sequence().cmp(&sequence) {
             std::cmp::Ordering::Less => return Err(ControlRejection::Invalid),
             std::cmp::Ordering::Equal
-                if hash != advance.record_hash || signed != advance.signed_record =>
+                if hash != advance.record().record_hash()
+                    || signed != advance.record().canonical_bytes() =>
             {
                 return Err(ControlRejection::Invalid);
             }
