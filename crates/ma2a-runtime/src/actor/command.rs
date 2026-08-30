@@ -9,6 +9,7 @@ use crate::{
 
 pub(crate) enum Command {
     Status(oneshot::Sender<RuntimeStatus>),
+    Snapshot(oneshot::Sender<Result<crate::api::RuntimeSnapshot, RuntimeError>>),
     ObserveMemberships {
         memberships: Vec<SpaceId>,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,

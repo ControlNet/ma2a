@@ -21,6 +21,7 @@ mod handle;
 mod local_control;
 mod membership;
 mod shutdown;
+mod snapshot;
 pub(crate) use command::Command;
 pub use handle::RuntimeHandle;
 pub(crate) use shutdown::ShutdownAck;
@@ -132,6 +133,7 @@ impl Actor {
                     Some(Command::Status(reply)) => {
                         let _unsent = reply.send(self.state.clone());
                     }
+                    Some(Command::Snapshot(reply)) => self.handle_snapshot(reply).await,
                     Some(Command::ObserveMemberships { memberships, reply }) => {
                         let result = self.observe_memberships(memberships).await;
                         let _unsent = reply.send(result);

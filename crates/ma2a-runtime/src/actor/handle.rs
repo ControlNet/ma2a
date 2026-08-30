@@ -59,6 +59,21 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))
     }
 
+    /// Returns the authoritative public Runtime snapshot through the actor mailbox.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] when persistence or the Runtime actor is unavailable.
+    pub async fn snapshot(&self) -> Result<crate::api::RuntimeSnapshot, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::Snapshot(reply))
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
+        response
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
+    }
+
     /// Replaces the observed valid membership set without rebuilding the Endpoint.
     ///
     /// # Errors
