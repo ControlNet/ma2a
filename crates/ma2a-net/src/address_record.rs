@@ -56,12 +56,20 @@ impl<'a> AddressValidationContext<'a> {
 
 /// A canonical, authorized, current, signed, and persistently accepted address record.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValidatedAddressRecord(SignedSpaceAddressRecordV1);
+pub struct ValidatedAddressRecord {
+    signed: SignedSpaceAddressRecordV1,
+    advance: AddressAdvance,
+}
 
 impl ValidatedAddressRecord {
     /// Returns the accepted signed record.
     pub const fn record(&self) -> &SignedSpaceAddressRecordV1 {
-        &self.0
+        &self.signed
+    }
+
+    /// Returns the validated persistence representation.
+    pub const fn advance(&self) -> &AddressAdvance {
+        &self.advance
     }
 }
 
@@ -138,12 +146,11 @@ impl Error for AddressRecordValidationError {
 pub struct AddressRecordValidator;
 
 impl AddressRecordValidator {
-    /// Validates and persistently accepts one exact target record.
+    /// Validates one exact target record without mutating persistent state.
     ///
     /// # Errors
-    /// Returns the first failure in canonical, identity, membership, clock, signature, and sequence order.
-    pub fn validate_and_store(
-        repository: &mut Repository,
+    /// Returns the first canonical, identity, membership, clock, or signature failure.
+    pub fn validate(
         bytes: &[u8],
         context: AddressValidationContext<'_>,
     ) -> Result<ValidatedAddressRecord, AddressRecordValidationError> {
@@ -183,24 +190,36 @@ impl AddressRecordValidator {
             metrics.record_validation(AddressValidationOutcome::InvalidSignature);
             AddressRecordValidationError::InvalidSignature
         })?;
-        let issued_at_ms = i64::try_from(record.issued_at_ms()).map_err(|_| {
-            metrics.record_validation(AddressValidationOutcome::InvalidEncoding);
-            AddressRecordValidationError::InvalidEncoding
-        })?;
-        let expires_at_ms = i64::try_from(record.expires_at_ms()).map_err(|_| {
-            metrics.record_validation(AddressValidationOutcome::InvalidEncoding);
-            AddressRecordValidationError::InvalidEncoding
-        })?;
+        let issued_at_ms = i64::try_from(record.issued_at_ms())
+            .map_err(|_| AddressRecordValidationError::InvalidEncoding)?;
+        let expires_at_ms = i64::try_from(record.expires_at_ms())
+            .map_err(|_| AddressRecordValidationError::InvalidEncoding)?;
+        let advance = AddressAdvance {
+            space_id: record.space_id(),
+            endpoint_id: record.endpoint_id(),
+            sequence: record.sequence(),
+            issued_at_ms,
+            expires_at_ms,
+            record_hash: signed.record_hash(),
+            signed_record: signed.canonical_bytes().to_vec(),
+        };
+        Ok(ValidatedAddressRecord { signed, advance })
+    }
+
+    /// Validates and persistently accepts one exact target record.
+    ///
+    /// # Errors
+    /// Returns the first failure in canonical, identity, membership, clock, signature, and sequence order.
+    pub fn validate_and_store(
+        repository: &mut Repository,
+        bytes: &[u8],
+        context: AddressValidationContext<'_>,
+    ) -> Result<ValidatedAddressRecord, AddressRecordValidationError> {
+        let validated = Self::validate(bytes, context)?;
+        let default_metrics = AddressMetrics::default();
+        let metrics = context.metrics.unwrap_or(&default_metrics);
         let outcome = repository
-            .advance_address(&AddressAdvance {
-                space_id: record.space_id(),
-                endpoint_id: record.endpoint_id(),
-                sequence: record.sequence(),
-                issued_at_ms,
-                expires_at_ms,
-                record_hash: signed.record_hash(),
-                signed_record: signed.canonical_bytes().to_vec(),
-            })
+            .advance_address(validated.advance())
             .map_err(|error| {
                 metrics.record_validation(AddressValidationOutcome::StoreError);
                 AddressRecordValidationError::Store(error)
@@ -209,12 +228,12 @@ impl AddressRecordValidator {
             AddressRecordOutcome::Advanced { .. } => {
                 metrics.record_persistence(AddressPersistenceOutcome::Advanced);
                 metrics.record_validation(AddressValidationOutcome::Accepted);
-                Ok(ValidatedAddressRecord(signed))
+                Ok(validated)
             }
             AddressRecordOutcome::Idempotent { .. } => {
                 metrics.record_persistence(AddressPersistenceOutcome::Idempotent);
                 metrics.record_validation(AddressValidationOutcome::Accepted);
-                Ok(ValidatedAddressRecord(signed))
+                Ok(validated)
             }
             AddressRecordOutcome::Rollback { .. } => {
                 metrics.record_persistence(AddressPersistenceOutcome::Rollback);
