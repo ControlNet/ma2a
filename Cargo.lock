@@ -2086,6 +2086,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "iroh",
+ "iroh-base",
+ "iroh-relay",
  "iroh-tickets",
  "ma2a-core",
  "ma2a-net",
