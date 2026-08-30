@@ -49,9 +49,9 @@ impl<'a> RequestOperation<'a> {
         })
     }
 
-    /// Returns `ServiceKind::ECHO`, the only Phase 1 operation discriminant.
+    /// Returns `ServiceKind::Echo`, the only Phase 1 operation discriminant.
     pub const fn service_kind(&self) -> ServiceKind {
-        ServiceKind::ECHO
+        ServiceKind::Echo
     }
 
     /// Returns the bounded Echo payload.
