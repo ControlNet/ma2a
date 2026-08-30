@@ -1,4 +1,6 @@
-use std::{error::Error, fmt, net::Ipv4Addr, time::Duration};
+mod error;
+
+use std::{fmt, net::Ipv4Addr, time::Duration};
 
 use iroh::{
     Endpoint, EndpointAddr, RelayMode, SecretKey, address_lookup::UserData, endpoint::presets,
@@ -12,10 +14,12 @@ use tokio::sync::mpsc;
 use crate::{
     AddressPublisher, AddressPublisherError, PublicRelayFallbackConfig, SpaceAddressLookup,
     address_lookup::RuntimeAddressLookup,
-    address_observation::AddressObservationWaitError,
+    control::{CONTROL_ALPN, ControlCall, ControlClient, ControlHandler},
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
     protocols::ENROLLMENT_ALPN,
 };
+
+pub use error::{InvalidEndpointSecret, NetError};
 
 const INITIAL_ADDRESS_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -36,7 +40,7 @@ impl EndpointSecret {
     pub fn parse(bytes: &[u8]) -> Result<Self, InvalidEndpointSecret> {
         SecretKey::try_from(bytes)
             .map(Self)
-            .map_err(|_| InvalidEndpointSecret { found: bytes.len() })
+            .map_err(|_| InvalidEndpointSecret::new(bytes.len()))
     }
 
     /// Returns the public Endpoint identity derived from this secret.
@@ -60,72 +64,6 @@ impl fmt::Debug for EndpointSecret {
     }
 }
 
-/// Invalid protected Endpoint key material.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InvalidEndpointSecret {
-    found: usize,
-}
-
-impl InvalidEndpointSecret {
-    /// Returns the invalid byte length without exposing key material.
-    pub const fn found_length(self) -> usize {
-        self.found
-    }
-}
-
-impl fmt::Display for InvalidEndpointSecret {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "protected Endpoint key has invalid length {}; expected 32 bytes",
-            self.found
-        )
-    }
-}
-
-impl Error for InvalidEndpointSecret {}
-
-/// Failures while binding or shutting down the Iroh Endpoint.
-#[derive(Debug)]
-pub struct NetError(NetErrorKind);
-
-#[derive(Debug)]
-enum NetErrorKind {
-    Bind(iroh::endpoint::BindError),
-    Observation(AddressObservationWaitError),
-    Shutdown,
-    Enrollment,
-}
-
-impl fmt::Display for NetError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.0 {
-            NetErrorKind::Bind(error) => write!(formatter, "Iroh Endpoint bind failed: {error}"),
-            NetErrorKind::Observation(error) => {
-                write!(formatter, "Iroh Endpoint observation failed: {error}")
-            }
-            NetErrorKind::Shutdown => formatter.write_str("Iroh Endpoint shutdown task failed"),
-            NetErrorKind::Enrollment => formatter.write_str("Iroh enrollment exchange failed"),
-        }
-    }
-}
-
-impl NetError {
-    pub(crate) const fn enrollment() -> Self {
-        Self(NetErrorKind::Enrollment)
-    }
-}
-
-impl Error for NetError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match &self.0 {
-            NetErrorKind::Bind(error) => Some(error),
-            NetErrorKind::Observation(error) => Some(error),
-            NetErrorKind::Shutdown | NetErrorKind::Enrollment => None,
-        }
-    }
-}
-
 /// One long-lived privacy-preserving Iroh Endpoint and its enrollment-only router.
 #[derive(Debug)]
 pub struct RuntimeEndpoint {
@@ -139,6 +77,8 @@ pub struct EndpointBindOptions {
     enrollment_calls: mpsc::Sender<EnrollmentCall>,
     bind_port: Option<u16>,
     public_relay_fallback: Option<PublicRelayFallbackConfig>,
+    control_calls: Option<mpsc::Sender<ControlCall>>,
+    control_enabled: bool,
 }
 
 impl EndpointBindOptions {
@@ -151,6 +91,8 @@ impl EndpointBindOptions {
             enrollment_calls,
             bind_port,
             public_relay_fallback: None,
+            control_calls: None,
+            control_enabled: false,
         }
     }
 
@@ -161,6 +103,14 @@ impl EndpointBindOptions {
         public_relay_fallback: PublicRelayFallbackConfig,
     ) -> Self {
         self.public_relay_fallback = Some(public_relay_fallback);
+        self
+    }
+
+    /// Registers the existing-member control handler and initial ALPN eligibility.
+    #[must_use]
+    pub fn with_control(mut self, control_calls: mpsc::Sender<ControlCall>, enabled: bool) -> Self {
+        self.control_calls = Some(control_calls);
+        self.control_enabled = enabled;
         self
     }
 }
@@ -198,6 +148,8 @@ impl RuntimeEndpoint {
             enrollment_calls,
             bind_port,
             public_relay_fallback,
+            control_calls,
+            control_enabled,
         } = options;
         let runtime_lookup = RuntimeAddressLookup::new(lookup);
         let observation = runtime_lookup.observation();
@@ -212,24 +164,25 @@ impl RuntimeEndpoint {
         let builder = if let Some(port) = bind_port {
             builder
                 .bind_addr((Ipv4Addr::UNSPECIFIED, port))
-                .map_err(|_| NetError(NetErrorKind::Enrollment))?
+                .map_err(|_| NetError::enrollment())?
         } else {
             builder
         };
-        let endpoint = builder
-            .bind()
-            .await
-            .map_err(|error| NetError(NetErrorKind::Bind(error)))?;
+        let endpoint = builder.bind().await.map_err(NetError::bind)?;
         if let Err(error) = observation
             .wait_for_initial(INITIAL_ADDRESS_OBSERVATION_TIMEOUT)
             .await
         {
             endpoint.close().await;
-            return Err(NetError(NetErrorKind::Observation(error)));
+            return Err(NetError::observation(error));
         }
         let router = Router::builder(endpoint)
             .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
+            .accept(CONTROL_ALPN, ControlHandler::new(control_calls))
             .spawn();
+        if !control_enabled {
+            router.endpoint().set_alpns(vec![ENROLLMENT_ALPN.to_vec()]);
+        }
         Ok(Self {
             router,
             observation,
@@ -273,6 +226,33 @@ impl RuntimeEndpoint {
         exchange(self.router.endpoint(), owner, request).await
     }
 
+    /// Exchanges one bounded control request over the existing-member ALPN.
+    ///
+    /// # Errors
+    /// Returns [`NetError`] when connection, framing, timeout, or peer validation fails.
+    pub async fn exchange_control(
+        &self,
+        peer: EndpointAddr,
+        request: &[u8],
+    ) -> Result<Vec<u8>, NetError> {
+        self.control_client().exchange_addr(peer, request).await
+    }
+
+    /// Returns a cloneable active control dial client.
+    pub fn control_client(&self) -> ControlClient {
+        ControlClient::new(self.router.endpoint().clone())
+    }
+
+    /// Enables or disables control ALPN negotiation for new incoming connections.
+    pub fn set_control_enabled(&self, enabled: bool) {
+        let alpns = if enabled {
+            vec![ENROLLMENT_ALPN.to_vec(), CONTROL_ALPN.to_vec()]
+        } else {
+            vec![ENROLLMENT_ALPN.to_vec()]
+        };
+        self.router.endpoint().set_alpns(alpns);
+    }
+
     /// Creates a publisher backed by this running Endpoint's current observations.
     ///
     /// Live publisher construction is provenance-bound to this Runtime Endpoint:
@@ -304,7 +284,7 @@ impl RuntimeEndpoint {
         self.router
             .shutdown()
             .await
-            .map_err(|_| NetError(NetErrorKind::Shutdown))?;
+            .map_err(|_| NetError::shutdown())?;
         Ok(endpoint.is_closed())
     }
 }
