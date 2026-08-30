@@ -59,6 +59,10 @@ async fn no_password_state_exposes_setup_without_a_browser_mutation() -> TestRes
         script.headers.get("content-type").map(String::as_str),
         Some("text/javascript; charset=utf-8")
     );
+    assert_eq!(
+        script.headers.get("cache-control").map(String::as_str),
+        Some("public, max-age=31536000, immutable")
+    );
     server.stop().await
 }
 

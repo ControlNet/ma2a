@@ -18,10 +18,16 @@ impl WebAssets {
 }
 
 pub(super) fn asset_response(assets: &WebAssets, requested: &str) -> Response {
-    let Some((_, bytes)) = assets.files.iter().find(|(name, _)| *name == requested) else {
+    let requested_asset = assets.files.iter().find(|(name, _)| *name == requested);
+    let fallback = !requested.contains('.') && !requested.starts_with("assets/");
+    let Some((name, bytes)) = requested_asset.or_else(|| {
+        fallback
+            .then(|| assets.files.iter().find(|(name, _)| *name == "index.html"))
+            .flatten()
+    }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let extension = std::path::Path::new(requested)
+    let extension = std::path::Path::new(name)
         .extension()
         .and_then(std::ffi::OsStr::to_str);
     let content_type = match extension {
@@ -31,5 +37,64 @@ pub(super) fn asset_response(assets: &WebAssets, requested: &str) -> Response {
         Some(value) if value.eq_ignore_ascii_case("svg") => "image/svg+xml",
         Some(_) | None => "application/octet-stream",
     };
-    ([(header::CONTENT_TYPE, content_type)], bytes.to_vec()).into_response()
+    let cache_control = if *name == "index.html" {
+        "no-cache"
+    } else if name.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, cache_control),
+        ],
+        bytes.to_vec(),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::to_bytes, http::header};
+
+    use super::{WebAssets, asset_response};
+
+    static FILES: &[(&str, &[u8])] = &[
+        ("index.html", b"<main>console</main>"),
+        ("assets/app-a1b2c3.js", b"export{}"),
+    ];
+
+    #[tokio::test]
+    async fn falls_back_to_index_for_a_deep_spa_route() {
+        let response = asset_response(&WebAssets::new(FILES), "spaces/operations");
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&header::HeaderValue::from_static("no-cache"))
+        );
+        let body = to_bytes(response.into_body(), 1_024).await.expect("body");
+        assert_eq!(&body[..], b"<main>console</main>");
+    }
+
+    #[test]
+    fn serves_hashed_assets_with_immutable_caching() {
+        let response = asset_response(&WebAssets::new(FILES), "assets/app-a1b2c3.js");
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&header::HeaderValue::from_static(
+                "public, max-age=31536000, immutable"
+            ))
+        );
+    }
+
+    #[test]
+    fn does_not_fall_back_for_a_missing_asset_path() {
+        let response = asset_response(&WebAssets::new(FILES), "assets/missing.js");
+
+        assert_eq!(response.status(), 404);
+    }
 }
