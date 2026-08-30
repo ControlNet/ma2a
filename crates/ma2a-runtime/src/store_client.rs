@@ -126,6 +126,65 @@ impl StoreClient {
         response.await.map_err(channel_error)?
     }
 
+    pub(crate) async fn advance_owned_space(
+        &self,
+        update: ma2a_store::OwnedSpaceUpdate,
+        local_endpoint_id: ma2a_core::EndpointId,
+    ) -> Result<(u64, std::collections::BTreeSet<ma2a_core::SpaceId>), RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::AdvanceOwnedSpace {
+            update,
+            local_endpoint_id,
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mailbox method mirrors its command payload"
+    )]
+    pub(crate) async fn publish_address(
+        &self,
+        publisher: ma2a_net::AddressPublisher,
+        local_endpoint_id: ma2a_core::EndpointId,
+        now_ms: u64,
+    ) -> Result<(u64, bool), RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::PublishAddress {
+            publisher,
+            local_endpoint_id,
+            now_ms,
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mailbox method mirrors its command payload"
+    )]
+    pub(crate) async fn publish_relay_advertisements(
+        &self,
+        publisher: ma2a_net::PrivateRelayAdvertisementPublisher,
+        local_endpoint_id: ma2a_core::EndpointId,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+    ) -> Result<(u64, bool), RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::PublishRelayAdvertisements {
+            publisher,
+            local_endpoint_id,
+            issued_at_ms,
+            expires_at_ms,
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
+
     pub(crate) async fn load_control_lookup(
         &self,
         local_endpoint_id: ma2a_core::EndpointId,
