@@ -29,6 +29,7 @@ mod repository_models;
 mod repository_mutations;
 mod repository_state;
 mod repository_state_models;
+mod revision;
 mod session_mutations;
 mod sessions;
 mod space_rows;
@@ -61,6 +62,7 @@ pub use repository_state_models::{
     EndpointObservationUpdate, RelayConfiguration, RelayObservation, RelayTransportConfiguration,
     RuntimeMetadata, RuntimeMetadataUpdate,
 };
+pub use revision::{SnapshotSpace, SnapshotState};
 pub use sessions::{
     SessionAdmission, SessionCreate, SessionDigests, SessionRecord, SessionTimestamps, SessionTouch,
 };
