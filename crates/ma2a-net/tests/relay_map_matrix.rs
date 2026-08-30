@@ -83,7 +83,8 @@ fn one_space_private_relay_is_both_eligible_and_home_compatible() -> TestResult 
 }
 
 #[test]
-fn multi_space_map_contains_only_common_private_and_public_relays() -> TestResult {
+fn multi_space_map_requires_one_provider_to_cover_every_space_even_for_the_same_url() -> TestResult
+{
     // Given
     let state = TempState::new("relay-map-many-spaces")?;
     let config = StoreConfig::new(state.path());
@@ -91,8 +92,7 @@ fn multi_space_map_contains_only_common_private_and_public_relays() -> TestResul
     let relay_personal = SecretKey::from_bytes(&[0x31; 32]);
     let relay_lab = SecretKey::from_bytes(&[0x32; 32]);
     let relay_common = SecretKey::from_bytes(&[0x33; 32]);
-    let personal_url: RelayUrl = "https://personal.example.invalid".parse()?;
-    let lab_url: RelayUrl = "https://lab.example.invalid".parse()?;
+    let shared_url: RelayUrl = "https://shared.example.invalid".parse()?;
     let common_url: RelayUrl = "https://common.example.invalid".parse()?;
     let public_url: RelayUrl = "https://public.example.invalid".parse()?;
     let fallback = PublicRelayFallbackConfig::new(vec![public_url.clone()])?;
@@ -118,7 +118,7 @@ fn multi_space_map_contains_only_common_private_and_public_relays() -> TestResul
         AdvertisementFixture {
             authorization: &personal,
             relay: &relay_personal,
-            relay_url: personal_url.clone(),
+            relay_url: shared_url.clone(),
             sequence: 1,
         },
     )?;
@@ -136,7 +136,7 @@ fn multi_space_map_contains_only_common_private_and_public_relays() -> TestResul
         AdvertisementFixture {
             authorization: &lab,
             relay: &relay_lab,
-            relay_url: lab_url.clone(),
+            relay_url: shared_url.clone(),
             sequence: 1,
         },
     )?;
@@ -155,10 +155,10 @@ fn multi_space_map_contains_only_common_private_and_public_relays() -> TestResul
     let map = LocalIrohRelayMap::from_control_spaces(&spaces, Some(&fallback), NOW_MS);
 
     // Then
-    assert!(map.private_relay_eligible(relay_personal.public().into(), &personal_url));
-    assert!(map.private_relay_eligible(relay_lab.public().into(), &lab_url));
-    assert!(!map.home_relay_compatible(relay_personal.public().into(), &personal_url));
-    assert!(!map.home_relay_compatible(relay_lab.public().into(), &lab_url));
+    assert!(map.private_relay_eligible(relay_personal.public().into(), &shared_url));
+    assert!(map.private_relay_eligible(relay_lab.public().into(), &shared_url));
+    assert!(!map.home_relay_compatible(relay_personal.public().into(), &shared_url));
+    assert!(!map.home_relay_compatible(relay_lab.public().into(), &shared_url));
     assert!(map.home_relay_compatible(relay_common.public().into(), &common_url));
     assert_eq!(
         map.relay_urls().cloned().collect::<BTreeSet<_>>(),
