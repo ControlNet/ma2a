@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use ma2a_core::EndpointId;
 use ma2a_net::ControlCall;
@@ -17,6 +17,8 @@ pub(crate) use queue::{ControlRoundQueue, ScheduledControlRound};
 
 #[cfg(test)]
 mod scheduling_tests;
+#[cfg(test)]
+mod source_tests;
 
 const CONTROL_PERIOD_BASE_SECS: u64 = 60;
 const CONTROL_PERIOD_JITTER_SECS: u64 = 30;
@@ -43,6 +45,11 @@ impl Actor {
             }
             return;
         }
+        #[cfg(test)]
+        self.control_schedule_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(trigger.clone());
         let Some(scheduled) = self.control_queue.request(trigger.scope(), reply) else {
             return;
         };
@@ -53,7 +60,7 @@ impl Actor {
         let Ok(now_ms) = self.clock.now_ms().and_then(|value| {
             u64::try_from(value).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
         }) else {
-            self.complete_control_waiters(scheduled.id(), false);
+            self.complete_control_waiters(scheduled.id(), false, &BTreeSet::new());
             return;
         };
         let store = self.store.clone();
@@ -130,39 +137,53 @@ impl Actor {
             let Some(round_id) = self.control_queue.active_id() else {
                 return;
             };
-            self.complete_control_waiters(round_id, false);
+            self.complete_control_waiters(round_id, false, &BTreeSet::new());
             return;
         };
         let round_id = scheduled.id();
-        let succeeded = match outcome {
+        let (succeeded, synchronized_peers) = match outcome {
             Ok(Some(outcome)) => {
                 let changes = outcome.changes;
+                let synchronized_peers = outcome.synchronized_peers;
                 if self.state.memberships != outcome.memberships {
                     self.synchronized_control_peers.clear();
                 }
                 self.state.revision = self.state.revision.max(outcome.revision);
                 self.state.memberships = outcome.memberships;
                 self.synchronized_control_peers
-                    .extend(outcome.synchronized_peers);
+                    .extend(synchronized_peers.iter().copied());
                 self.endpoint
                     .set_control_enabled(!self.state.memberships.is_empty());
                 self.schedule_control_changes(changes);
-                true
+                (true, synchronized_peers)
             }
-            Ok(None) => true,
-            Err(_) => false,
+            Ok(None) => (true, BTreeSet::new()),
+            Err(_) => (false, BTreeSet::new()),
         };
-        self.complete_control_waiters(round_id, succeeded);
+        self.complete_control_waiters(round_id, succeeded, &synchronized_peers);
     }
 
-    fn complete_control_waiters(&mut self, round_id: queue::ControlRoundId, succeeded: bool) {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "waiter completion requires the complete round outcome"
+    )]
+    fn complete_control_waiters(
+        &mut self,
+        round_id: queue::ControlRoundId,
+        succeeded: bool,
+        synchronized_peers: &BTreeSet<EndpointId>,
+    ) {
         for waiter in self.control_queue.complete(round_id) {
-            let result = if succeeded {
+            let waiter_succeeded = succeeded
+                && waiter
+                    .peer()
+                    .is_none_or(|peer| synchronized_peers.contains(&peer));
+            let result = if waiter_succeeded {
                 Ok(self.state.revision)
             } else {
                 Err(RuntimeError::new(RuntimeErrorKind::Control))
             };
-            let _unsent = waiter.send(result);
+            waiter.send(result);
         }
         if let Some(scheduled) = self.control_queue.take_pending() {
             self.spawn_control_round(scheduled);
@@ -170,14 +191,8 @@ impl Actor {
     }
 
     fn schedule_control_changes(&mut self, changes: ControlChanges) {
-        if changes.manifest {
-            self.schedule_control_round(ControlRoundTrigger::ManifestAdvanced, None);
-        }
-        if changes.address {
-            self.schedule_control_round(ControlRoundTrigger::AddressAdvanced, None);
-        }
-        if changes.relay {
-            self.schedule_control_round(ControlRoundTrigger::RelayAdvanced, None);
+        for trigger in changes.triggers() {
+            self.schedule_control_round(trigger, None);
         }
     }
 
