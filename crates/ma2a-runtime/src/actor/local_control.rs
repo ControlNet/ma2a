@@ -3,6 +3,13 @@ use crate::error::{RuntimeError, RuntimeErrorKind};
 
 impl Actor {
     pub(super) async fn publish_local_address(&mut self) -> Result<u64, RuntimeError> {
+        self.publish_local_address_with_mode(false).await
+    }
+
+    pub(crate) async fn publish_local_address_with_mode(
+        &mut self,
+        force_advance: bool,
+    ) -> Result<u64, RuntimeError> {
         let now_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
         let publisher = self
@@ -11,7 +18,7 @@ impl Actor {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         let (revision, advanced) = self
             .store
-            .publish_address(publisher, self.state.endpoint_id, now_ms)
+            .publish_address(publisher, self.state.endpoint_id, now_ms, force_advance)
             .await?;
         self.state.revision = revision;
         if advanced {
@@ -43,6 +50,7 @@ impl Actor {
             .await?;
         self.state.revision = revision;
         if advanced {
+            self.refresh_relay_candidates().await?;
             self.schedule_control_round(
                 crate::control_sync::ControlRoundTrigger::RelayAdvanced,
                 None,

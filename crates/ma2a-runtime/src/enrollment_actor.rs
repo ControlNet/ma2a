@@ -112,6 +112,9 @@ impl Actor {
         self.refresh_control_lookup()
             .await
             .map_err(|_| EnrollmentError::internal())?;
+        self.refresh_relay_candidates()
+            .await
+            .map_err(|_| EnrollmentError::internal())?;
         self.schedule_control_round(
             crate::control_sync::ControlRoundTrigger::EnrollmentCompleted,
             None,
@@ -137,7 +140,9 @@ impl Actor {
         match self.store.redeem_enrollment(authorized).await {
             Ok(EnrollmentOutcome::Redeemed { revision, chain }) => {
                 self.state.revision = revision;
-                if self.refresh_control_lookup().await.is_ok() {
+                if self.refresh_control_lookup().await.is_ok()
+                    && self.refresh_relay_candidates().await.is_ok()
+                {
                     self.schedule_control_round(
                         crate::control_sync::ControlRoundTrigger::EnrollmentCompleted,
                         None,
