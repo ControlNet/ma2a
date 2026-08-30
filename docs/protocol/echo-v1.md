@@ -35,14 +35,14 @@ The client rejects a responder identity different from the requested target and 
 - Per authenticated peer: at most 16 concurrent streams.
 - Across the Runtime: at most 128 concurrent streams.
 - Aggregate client exchange deadline: 10 seconds.
-- Aggregate server stream deadline: 10 seconds.
+- Aggregate server stream deadline: 10 seconds, including response-frame writing.
 - Duration metadata: saturated at 10,000 milliseconds.
 - Semantic retries: none.
 
-Concurrency permits use deterministic lifetime ownership and are released on success, rejection, timeout, cancellation, or task shutdown.
+Concurrency permits use deterministic lifetime ownership and are released on success, rejection, timeout, cancellation, or task shutdown. Runtime metrics expose the current admitted-stream count so saturation and release can be observed without timing assumptions.
 
 ## Audit And Metrics
 
-Echo audit records contain only request ID, authenticated peer Endpoint ID, bounded result class, byte count, and bounded duration. Payload bytes, Space IDs, and authorization details are structurally absent. The in-memory audit retains at most 128 records.
+Echo audit records contain only request ID, authenticated peer Endpoint ID, bounded result class, byte count, and bounded duration. Payload bytes, Space IDs, and authorization details are structurally absent. The in-memory audit retains at most 128 records. Outbound failures and inbound failures after canonical request decoding are recorded with their known request ID. Pre-body authorization failures, oversized frames, and malformed bodies without a decodable request ID intentionally cannot create an audit record.
 
 Runtime exposes counters for bodies read after admission and canonical requests decoded. These counters allow tests to prove that unauthorized traffic is rejected before body processing.
