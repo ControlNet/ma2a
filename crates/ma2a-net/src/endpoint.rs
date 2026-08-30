@@ -235,9 +235,22 @@ impl RuntimeEndpoint {
         &self,
         sender: mpsc::Sender<crate::IrohRelayObservation>,
     ) -> tokio::task::JoinHandle<()> {
-        let observer =
-            crate::connection_state::IrohRelayObserver::new(self.router.endpoint().clone());
+        let observer = crate::connection_state::IrohRelayObserver::new(
+            self.router.endpoint().clone(),
+            self.observation.clone(),
+        );
         tokio::spawn(observer.run(sender))
+    }
+
+    /// Returns the complete current bounded endpoint data used by the live publisher.
+    ///
+    /// # Errors
+    /// Returns [`AddressPublisherError`] when the current observation is unavailable or invalid.
+    pub fn endpoint_data(&self) -> Result<ma2a_core::AddressEndpointDataV1, AddressPublisherError> {
+        self.observation
+            .current()
+            .map(|(_, data)| data)
+            .map_err(AddressPublisherError::from)
     }
 
     /// Replaces the safe runtime relay candidates through Iroh's mutation APIs.
