@@ -96,7 +96,7 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
         identity.endpoint_id,
         endpoint_data,
         vec![
-            IrohHomeRelayObservation::new(allowed_url.clone(), false),
+            IrohHomeRelayObservation::new(allowed_url.clone(), true),
             IrohHomeRelayObservation::new(rogue_url.clone(), true),
         ],
     )?;
@@ -105,9 +105,13 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     actor.observe_iroh_relay(observation).await?;
     let observed_status = actor.state.clone();
     let persisted = repository.relay_observations()?;
+    let snapshot = actor.snapshot().await?.to_value();
 
     // Then
-    assert_eq!(observed_status.relay_reachability(), awaiting);
+    assert_eq!(
+        observed_status.relay_reachability(),
+        RelayReachability::IrohHomeConnected
+    );
     let observed_homes = observed_status
         .observed_home_relays()
         .collect::<BTreeSet<_>>();
@@ -121,7 +125,22 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
         .iter()
         .find(|item| item.relay_url == allowed_url.as_str())
         .ok_or("allowed relay observation was not persisted")?;
-    assert!(!allowed.reachable);
+    assert!(allowed.reachable);
+    assert_eq!(
+        snapshot.pointer("/relay_candidates"),
+        Some(&serde_json::json!([{
+            "endpoint_id": crate::api::encode_hex(relay.public().as_bytes()),
+            "relay_kind": "private",
+            "eligible": true,
+        }]))
+    );
+    assert_eq!(
+        snapshot.pointer("/observed_relay_state"),
+        Some(&serde_json::json!({
+            "private_relay_online": true,
+            "public_relay_online": false,
+        }))
+    );
 
     actor.control_rounds.shutdown().await;
     let Actor {

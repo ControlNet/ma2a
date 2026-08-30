@@ -128,6 +128,23 @@ impl LocalIrohRelayMap {
         self.home_private.iter()
     }
 
+    /// Iterates every fresh private candidate authorized by at least one current Space.
+    pub fn private_relays(&self) -> impl Iterator<Item = &PrivateRelayCandidate> {
+        self.eligible_private.iter()
+    }
+
+    /// Returns whether the URL identifies a private candidate compatible with every Space.
+    pub fn is_private_home_relay(&self, relay_url: &RelayUrl) -> bool {
+        self.home_private
+            .iter()
+            .any(|candidate| candidate.relay_url() == relay_url)
+    }
+
+    /// Returns whether the URL is an explicitly configured public fallback.
+    pub fn is_public_relay(&self, relay_url: &RelayUrl) -> bool {
+        self.public_relays.contains(relay_url)
+    }
+
     /// Returns explicitly enabled public fallback URLs.
     pub fn public_relays(&self) -> &[RelayUrl] {
         &self.public_relays
