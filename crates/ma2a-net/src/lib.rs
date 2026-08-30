@@ -7,6 +7,7 @@ mod address_data;
 mod address_lookup;
 mod address_observation;
 mod address_record;
+mod connection_state;
 mod control;
 mod endpoint;
 mod enrollment;
@@ -17,6 +18,7 @@ mod publisher;
 mod relay_access;
 mod relay_advertisement;
 mod relay_config;
+mod relay_map;
 mod relay_tls;
 #[cfg(windows)]
 mod relay_tls_windows;
@@ -27,6 +29,7 @@ pub use address_record::{
     AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator,
     AddressValidationContext,
 };
+pub use connection_state::{IrohHomeRelayObservation, IrohRelayObservation};
 pub use control::{
     CONTROL_ALPN, CONTROL_DIAL_CONCURRENCY, CONTROL_MAX_ATTEMPTS, CONTROL_ROUND_DEADLINE,
     ControlCall, ControlClient, ControlRejection, cursor_sequence, exchange_control_with_retry,
@@ -56,4 +59,5 @@ pub use relay_config::{
     PrivateRelayProviderConfig, PrivateRelayProviderLocation, PrivateRelayTransport,
     PublicRelayFallbackConfig, RelayConfigError, RuntimeRelayConfiguration,
 };
+pub use relay_map::{LocalIrohRelayMap, PrivateRelayCandidate};
 pub use relay_tls::{NativeRelayTlsConfig, RelayTlsError};

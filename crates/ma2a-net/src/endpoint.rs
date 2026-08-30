@@ -70,6 +70,7 @@ impl fmt::Debug for EndpointSecret {
 pub struct RuntimeEndpoint {
     router: Router,
     observation: crate::address_observation::AddressObservation,
+    configured_relays: std::collections::BTreeSet<iroh_base::RelayUrl>,
 }
 
 /// Enrollment routing inputs for a lookup-aware Runtime Endpoint bind.
@@ -77,7 +78,7 @@ pub struct RuntimeEndpoint {
 pub struct EndpointBindOptions {
     enrollment_calls: mpsc::Sender<EnrollmentCall>,
     bind_port: Option<u16>,
-    public_relay_fallback: Option<PublicRelayFallbackConfig>,
+    relay_map: Option<crate::LocalIrohRelayMap>,
     control_calls: Option<mpsc::Sender<ControlCall>>,
     control_enabled: bool,
 }
@@ -91,7 +92,7 @@ impl EndpointBindOptions {
         Self {
             enrollment_calls,
             bind_port,
-            public_relay_fallback: None,
+            relay_map: None,
             control_calls: None,
             control_enabled: false,
         }
@@ -101,9 +102,20 @@ impl EndpointBindOptions {
     #[must_use]
     pub fn with_public_relay_fallback(
         mut self,
-        public_relay_fallback: PublicRelayFallbackConfig,
+        public_relay_fallback: &PublicRelayFallbackConfig,
     ) -> Self {
-        self.public_relay_fallback = Some(public_relay_fallback);
+        self.relay_map = Some(crate::LocalIrohRelayMap::from_control_spaces(
+            &[],
+            Some(public_relay_fallback),
+            0,
+        ));
+        self
+    }
+
+    /// Supplies the complete safe private and public relay candidate map.
+    #[must_use]
+    pub fn with_relay_map(mut self, relay_map: crate::LocalIrohRelayMap) -> Self {
+        self.relay_map = Some(relay_map);
         self
     }
 
@@ -148,14 +160,17 @@ impl RuntimeEndpoint {
         let EndpointBindOptions {
             enrollment_calls,
             bind_port,
-            public_relay_fallback,
+            relay_map,
             control_calls,
             control_enabled,
         } = options;
         let runtime_lookup = RuntimeAddressLookup::new(lookup);
         let observation = runtime_lookup.observation();
-        let relay_mode =
-            public_relay_fallback.map_or(RelayMode::Disabled, |fallback| fallback.relay_mode());
+        let configured_relays = relay_map
+            .as_ref()
+            .map(|map| map.relay_urls().cloned().collect())
+            .unwrap_or_default();
+        let relay_mode = relay_map.map_or(RelayMode::Disabled, |map| map.relay_mode());
         let builder = Endpoint::builder(presets::Minimal)
             .secret_key(secret.0)
             .relay_mode(relay_mode)
@@ -187,6 +202,7 @@ impl RuntimeEndpoint {
         Ok(Self {
             router,
             observation,
+            configured_relays,
         })
     }
 
@@ -212,6 +228,41 @@ impl RuntimeEndpoint {
     /// Returns current direct and relay addressing observations.
     pub fn endpoint_addr(&self) -> EndpointAddr {
         self.router.endpoint().addr()
+    }
+
+    /// Spawns observation of Iroh's effective address and home-relay state.
+    pub fn spawn_relay_observer(
+        &self,
+        sender: mpsc::Sender<crate::IrohRelayObservation>,
+    ) -> tokio::task::JoinHandle<()> {
+        let observer =
+            crate::connection_state::IrohRelayObserver::new(self.router.endpoint().clone());
+        tokio::spawn(observer.run(sender))
+    }
+
+    /// Replaces the safe runtime relay candidates through Iroh's mutation APIs.
+    pub async fn replace_relay_map(&mut self, relay_map: &crate::LocalIrohRelayMap) -> bool {
+        let desired = relay_map
+            .relay_urls()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        if desired == self.configured_relays {
+            return false;
+        }
+        let configurations = relay_map.relay_map();
+        for relay_url in desired.difference(&self.configured_relays) {
+            if let Some(configuration) = configurations.get(relay_url) {
+                self.router
+                    .endpoint()
+                    .insert_relay(relay_url.clone(), configuration)
+                    .await;
+            }
+        }
+        for relay_url in self.configured_relays.difference(&desired) {
+            self.router.endpoint().remove_relay(relay_url).await;
+        }
+        self.configured_relays = desired;
+        true
     }
 
     /// Exchanges one bounded enrollment request over the reserved ALPN.
