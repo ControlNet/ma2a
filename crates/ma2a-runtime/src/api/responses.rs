@@ -18,7 +18,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ResultKind {
+pub(super) enum ResultKind {
     Handshake(HandshakeView),
     Status(RuntimeStatusView),
     EndpointInfo(EndpointView),
@@ -44,7 +44,7 @@ enum ResultKind {
 
 /// One member of the exact local API v1 result set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandResult(ResultKind);
+pub struct CommandResult(pub(super) ResultKind);
 
 /// Typed UI credential result returned through current-user local control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

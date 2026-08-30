@@ -5,12 +5,15 @@ mod codec_fields;
 mod commands;
 mod events;
 mod response_decode;
+mod response_revision;
 mod responses;
 mod result_data;
 mod schema;
 mod snapshot;
 mod snapshot_state;
 mod strict_json;
+
+pub(crate) use codec_fields::encode_hex;
 
 use ma2a_core::{ProtocolError, RequestId};
 
@@ -20,6 +23,7 @@ pub use events::{
     EVENT_NAMES, EventContinuity, RuntimeEvent, classify_event_revision, encode_event,
 };
 pub use response_decode::decode_ui_control_response;
+pub(crate) use response_revision::snapshot_revision;
 pub use responses::{ApiResponse, CommandResult, UiControlResult, encode_error, encode_response};
 pub use result_data::{
     CapabilityFlags, EchoReplyView, HandshakeAuth, HandshakeState, HandshakeView,
