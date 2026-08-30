@@ -1,5 +1,10 @@
 //! Real-Iroh Echo v1 authorization and round-trip integration tests.
 
+#[path = "echo_e2e/adversarial.rs"]
+mod echo_e2e_adversarial;
+#[path = "echo_e2e/concurrency.rs"]
+mod echo_e2e_concurrency;
+
 use std::{
     error::Error,
     fs,
