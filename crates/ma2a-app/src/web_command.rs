@@ -2,7 +2,11 @@ use std::{io::Write as _, path::Path, sync::Arc};
 
 use ma2a_runtime::{
     current_user::CurrentUserRuntime,
-    web::{LoopbackWebServer, SystemClock, WebAssets, WebAuthConfig, WebServerConfig},
+    ipc::{IpcPaths, LocalApiClient},
+    web::{
+        LoopbackWebServer, SystemClock, WebAssets, WebAuthConfig, WebRuntimeDependencies,
+        WebServerConfig,
+    },
 };
 
 use crate::{AppError, embedded_web};
@@ -15,9 +19,12 @@ pub(crate) async fn run(state_dir: &Path) -> Result<(), AppError> {
     )
     .await
     .map_err(AppError::CurrentUser)?;
-    let server = LoopbackWebServer::bind(
-        runtime.web_auth().clone(),
-        WebAssets::new(embedded_web::WEB_ASSETS),
+    let server = LoopbackWebServer::bind_with_runtime(
+        WebRuntimeDependencies::new(
+            runtime.web_auth().clone(),
+            WebAssets::new(embedded_web::WEB_ASSETS),
+            LocalApiClient::new(IpcPaths::new(state_dir).map_err(AppError::Ipc)?),
+        ),
         WebServerConfig::default(),
     )
     .await
