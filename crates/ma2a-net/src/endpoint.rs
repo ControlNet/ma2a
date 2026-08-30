@@ -17,6 +17,7 @@ use crate::{
     PrivateRelayProviderConfig, SpaceAddressLookup,
     address_lookup::RuntimeAddressLookup,
     control::{CONTROL_ALPN, ControlClient, ControlHandler},
+    echo_protocol::{ECHO_ALPN, EchoClient, EchoHandler, EchoMetrics},
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
     protocols::ENROLLMENT_ALPN,
 };
@@ -73,6 +74,7 @@ pub struct RuntimeEndpoint {
     router: Router,
     observation: crate::address_observation::AddressObservation,
     connections: crate::ConnectionManager,
+    echo_metrics: EchoMetrics,
 }
 
 impl RuntimeEndpoint {
@@ -110,6 +112,7 @@ impl RuntimeEndpoint {
             relay_map,
             control_calls,
             control_enabled,
+            echo_calls,
         } = options;
         let runtime_lookup = RuntimeAddressLookup::new(lookup);
         let observation = runtime_lookup.observation();
@@ -141,8 +144,14 @@ impl RuntimeEndpoint {
         }
         let connections =
             crate::ConnectionManager::with_relays(endpoint.clone(), configured_relays);
+        let echo_metrics = EchoMetrics::default();
+        let endpoint_id = endpoint.id().into();
         let router = Router::builder(endpoint)
             .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
+            .accept(
+                ECHO_ALPN,
+                EchoHandler::new(endpoint_id, echo_calls, echo_metrics.clone()),
+            )
             .accept(CONTROL_ALPN, ControlHandler::new(control_calls))
             .spawn();
         if !control_enabled {
@@ -152,6 +161,7 @@ impl RuntimeEndpoint {
             router,
             observation,
             connections,
+            echo_metrics,
         })
     }
 
@@ -247,6 +257,16 @@ impl RuntimeEndpoint {
         ControlClient::new(self.connections.clone())
     }
 
+    /// Returns a cloneable single-attempt Echo client.
+    pub fn echo_client(&self) -> EchoClient {
+        EchoClient::new(self.connections.clone())
+    }
+
+    /// Returns body-processing metrics for authorization-ordering evidence.
+    pub fn echo_metrics(&self) -> EchoMetrics {
+        self.echo_metrics.clone()
+    }
+
     /// Returns the bounded connection manager for target dials and telemetry.
     pub fn connection_manager(&self) -> crate::ConnectionManager {
         self.connections.clone()
@@ -255,7 +275,11 @@ impl RuntimeEndpoint {
     /// Enables or disables control ALPN negotiation for new incoming connections.
     pub fn set_control_enabled(&self, enabled: bool) {
         let alpns = if enabled {
-            vec![ENROLLMENT_ALPN.to_vec(), CONTROL_ALPN.to_vec()]
+            vec![
+                ENROLLMENT_ALPN.to_vec(),
+                ECHO_ALPN.to_vec(),
+                CONTROL_ALPN.to_vec(),
+            ]
         } else {
             vec![ENROLLMENT_ALPN.to_vec()]
         };
