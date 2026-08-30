@@ -23,6 +23,7 @@ mod permissions;
 mod relay_advertisement;
 mod relay_config;
 mod relay_settings;
+mod relay_state;
 mod repository;
 mod repository_models;
 mod repository_mutations;
