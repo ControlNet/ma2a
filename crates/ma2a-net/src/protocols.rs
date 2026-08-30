@@ -1,5 +1,7 @@
 use ma2a_core::RemoteOperation;
 
+use crate::control::CONTROL_ALPN;
+
 /// Reserved bootstrap-only enrollment ALPN.
 pub const ENROLLMENT_ALPN: &[u8] = b"ma2a/enrollment/1";
 /// The complete ALPN set exposed by an Endpoint with no current Space memberships.
@@ -7,7 +9,7 @@ pub const ZERO_SPACE_ALPNS: [&[u8]; 1] = [ENROLLMENT_ALPN];
 /// Normal MA2A ALPNs rejected by a zero-Space Runtime during TLS negotiation.
 pub const NORMAL_PROTOCOL_ALPNS: [&[u8]; 5] = [
     b"ma2a/echo/1",
-    b"ma2a/control/1",
+    CONTROL_ALPN,
     b"ma2a/metadata/1",
     b"ma2a/address/1",
     b"ma2a/relay/1",
