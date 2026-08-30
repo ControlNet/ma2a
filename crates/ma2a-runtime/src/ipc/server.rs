@@ -8,12 +8,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    RuntimeHandle, RuntimeStatus,
-    api::{
-        self, CapabilityFlags, Command, CommandResult, EndpointView, HandshakeAuth, HandshakeState,
-        HandshakeView, InteractionCapabilities, ManagementCapabilities, RelayCapabilities,
-        RuntimeStatusView,
-    },
+    RuntimeHandle,
+    api::{self, CommandResult},
     current_user::CurrentUserRuntime,
 };
 
@@ -22,6 +18,9 @@ use super::{
     framing::{FrameRef, read_frame, write_frame},
     platform,
 };
+
+mod execute;
+use execute::{authoritative_revision, execute};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -168,7 +167,7 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                 ));
             }
             None => {
-                let result = match execute(&command, &status, &context.control).await {
+                let result = match execute(&command, &status, context).await {
                     Ok(result) => result,
                     Err(error) => {
                         return Ok((api::encode_error(api::ApiError::new(error))?, false));
@@ -186,7 +185,7 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                 (result, revision)
             }
         },
-        None => match execute(&command, &status, &context.control).await {
+        None => match execute(&command, &status, context).await {
             Ok(result) => (result, status.revision()),
             Err(error) => return Ok((api::encode_error(api::ApiError::new(error))?, false)),
         },
@@ -204,78 +203,6 @@ struct ReplayEntry {
     fingerprint: [u8; 32],
     result: CommandResult,
     revision: u64,
-}
-
-async fn authoritative_revision(
-    command: &Command,
-    current_revision: u64,
-    context: &ConnectionContext,
-) -> Result<u64, IpcError> {
-    match command.operation() {
-        "ui_password_set" | "ui_password_reset" | "session_revoke_all" => {
-            let persisted = context
-                .control
-                .state_revision()
-                .await
-                .map_err(|_| IpcError::InvalidFrame)?;
-            context
-                .handle
-                .adopt_revision(persisted)
-                .await
-                .map_err(IpcError::from)
-        }
-        _ => Ok(current_revision),
-    }
-}
-
-const fn capabilities() -> CapabilityFlags {
-    CapabilityFlags::new(
-        ManagementCapabilities::new(false, false),
-        RelayCapabilities::new(false, false),
-        InteractionCapabilities::new(false, false),
-    )
-}
-
-async fn execute(
-    command: &Command,
-    status: &RuntimeStatus,
-    control: &CurrentUserRuntime,
-) -> Result<CommandResult, ProtocolError> {
-    Ok(match command.operation() {
-        "handshake" => CommandResult::handshake(
-            HandshakeView::new(
-                env!("CARGO_PKG_VERSION"),
-                status.endpoint_id(),
-                HandshakeState::new(
-                    status.revision(),
-                    HandshakeAuth::new(
-                        true,
-                        control
-                            .password_is_set()
-                            .await
-                            .map_err(|_| ProtocolError::INTERNAL)?,
-                    ),
-                    capabilities(),
-                ),
-            )
-            .map_err(|_| ProtocolError::INTERNAL)?,
-        ),
-        "status" => CommandResult::status(RuntimeStatusView::new(status.revision(), true, false)),
-        "endpoint_info" => CommandResult::endpoint_info(
-            EndpointView::new(
-                status.endpoint_id(),
-                env!("CARGO_PKG_VERSION"),
-                status.is_ready(),
-            )
-            .map_err(|_| ProtocolError::INTERNAL)?,
-        ),
-        "graceful_shutdown" => CommandResult::shutting_down(),
-        "ui_password_set" | "ui_password_reset" | "session_revoke_all" => control
-            .send(command.clone())
-            .await
-            .map_err(|_| ProtocolError::INTERNAL)?,
-        _ => return Err(ProtocolError::UNAVAILABLE),
-    })
 }
 
 #[cfg(test)]

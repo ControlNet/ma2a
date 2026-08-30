@@ -108,6 +108,11 @@ impl Actor {
             .map_err(|_| EnrollmentError::internal())?;
         self.state.memberships.insert(chain.space_id());
         self.state.revision = revision;
+        self.endpoint.set_control_enabled(true);
+        self.refresh_control_lookup()
+            .await
+            .map_err(|_| EnrollmentError::internal())?;
+        self.schedule_control_round();
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
@@ -129,6 +134,9 @@ impl Actor {
         match self.store.redeem_enrollment(authorized).await {
             Ok(EnrollmentOutcome::Redeemed { revision, chain }) => {
                 self.state.revision = revision;
+                if self.refresh_control_lookup().await.is_ok() {
+                    self.schedule_control_round();
+                }
                 respond_with_chain(call, &chain);
             }
             Ok(EnrollmentOutcome::Retry { chain }) => respond_with_chain(call, &chain),

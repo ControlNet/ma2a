@@ -1,16 +1,22 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use ma2a_core::{SignedInviteTicket, SpaceId};
-use ma2a_net::{EnrollmentCall, RuntimeEndpoint};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use ma2a_net::{ControlCall, EnrollmentCall, RuntimeEndpoint, SpaceAddressLookup};
+use tokio::{
+    sync::{broadcast, mpsc, oneshot},
+    task::JoinSet,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EstablishedEnrollment,
-    error::{RuntimeError, RuntimeErrorKind},
+    error::RuntimeError,
     state::{RuntimeEvent, RuntimeStatus},
     store::StoreClient,
 };
+
+mod handle;
+pub use handle::RuntimeHandle;
 
 pub(crate) const COMMAND_CAPACITY: usize = 32;
 pub(crate) const EVENT_CAPACITY: usize = 32;
@@ -37,83 +43,12 @@ pub(crate) enum Command {
         revision: u64,
         reply: oneshot::Sender<u64>,
     },
+    ControlSyncStatus {
+        peer: ma2a_core::EndpointId,
+        reply: oneshot::Sender<bool>,
+    },
+    SyncControl(oneshot::Sender<Result<u64, RuntimeError>>),
     Shutdown(oneshot::Sender<ShutdownAck>),
-}
-
-/// Bounded command and event handle for the single-owner Runtime actor.
-#[derive(Clone, Debug)]
-pub struct RuntimeHandle {
-    pub(crate) commands: mpsc::Sender<Command>,
-    events: broadcast::Sender<RuntimeEvent>,
-}
-
-impl RuntimeHandle {
-    pub(crate) const fn new(
-        commands: mpsc::Sender<Command>,
-        events: broadcast::Sender<RuntimeEvent>,
-    ) -> Self {
-        Self { commands, events }
-    }
-
-    /// Returns an authoritative state snapshot through the actor mailbox.
-    ///
-    /// # Errors
-    /// Returns [`RuntimeError`] when the Runtime actor has stopped.
-    pub async fn status(&self) -> Result<RuntimeStatus, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Status(reply))
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
-        response
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))
-    }
-
-    /// Replaces the observed valid membership set without rebuilding the Endpoint.
-    ///
-    /// # Errors
-    /// Returns [`RuntimeError`] when persistence fails or the Runtime actor has stopped.
-    pub async fn observe_memberships(
-        &self,
-        memberships: Vec<SpaceId>,
-    ) -> Result<u64, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::ObserveMemberships { memberships, reply })
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
-        response
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
-    }
-
-    pub(crate) async fn adopt_revision(&self, revision: u64) -> Result<u64, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::AdoptRevision { revision, reply })
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
-        response
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))
-    }
-
-    /// Subscribes to bounded best-effort Runtime events.
-    pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
-        self.events.subscribe()
-    }
-
-    pub(crate) async fn shutdown(&self) -> Result<ShutdownAck, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Shutdown(reply))
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
-        response
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +65,14 @@ pub(crate) struct Actor {
     pub(crate) events: broadcast::Sender<RuntimeEvent>,
     pub(crate) clock: Arc<dyn crate::RuntimeClock>,
     enrollment_calls: mpsc::Receiver<EnrollmentCall>,
+    pub(crate) control_calls: mpsc::Receiver<ControlCall>,
+    pub(crate) lookup: SpaceAddressLookup,
+    pub(crate) control_rounds:
+        JoinSet<Result<Option<crate::control_sync::ControlRoundOutcome>, RuntimeError>>,
+    pub(crate) control_rotation: usize,
+    pub(crate) control_pending: bool,
+    pub(crate) control_waiters: Vec<oneshot::Sender<Result<u64, RuntimeError>>>,
+    pub(crate) synchronized_control_peers: BTreeSet<ma2a_core::EndpointId>,
     cancellation: CancellationToken,
 }
 
@@ -143,6 +86,8 @@ impl Actor {
         endpoint: RuntimeEndpoint,
         store: StoreClient,
         enrollment_calls: mpsc::Receiver<EnrollmentCall>,
+        control_calls: mpsc::Receiver<ControlCall>,
+        lookup: SpaceAddressLookup,
         clock: Arc<dyn crate::RuntimeClock>,
     ) -> (Self, RuntimeHandle, CancellationToken) {
         let (command_sender, commands) = mpsc::channel(COMMAND_CAPACITY);
@@ -157,6 +102,13 @@ impl Actor {
             events,
             clock,
             enrollment_calls,
+            control_calls,
+            lookup,
+            control_rounds: JoinSet::new(),
+            control_rotation: 0,
+            control_pending: false,
+            control_waiters: Vec::new(),
+            synchronized_control_peers: BTreeSet::new(),
             cancellation: cancellation.child_token(),
         };
         (actor, handle, cancellation)
@@ -164,6 +116,10 @@ impl Actor {
 
     pub(crate) async fn run(mut self) -> Result<ShutdownAck, RuntimeError> {
         let _receiver_count = self.events.send(RuntimeEvent::ready(self.state.revision));
+        self.schedule_control_round();
+        let control_period = crate::control_actor::control_period(self.state.endpoint_id);
+        let mut periodic =
+            tokio::time::interval_at(tokio::time::Instant::now() + control_period, control_period);
         loop {
             tokio::select! {
                 biased;
@@ -203,6 +159,17 @@ impl Actor {
                         self.state.revision = self.state.revision.max(revision);
                         let _unsent = reply.send(self.state.revision);
                     }
+                    Some(Command::ControlSyncStatus { peer, reply }) => {
+                        let _unsent = reply.send(self.synchronized_control_peers.contains(&peer));
+                    }
+                    Some(Command::SyncControl(reply)) => {
+                        if self.state.memberships.is_empty() {
+                            let _unsent = reply.send(Ok(self.state.revision));
+                        } else {
+                            self.control_waiters.push(reply);
+                            self.schedule_control_round();
+                        }
+                    }
                     Some(Command::Shutdown(reply)) => {
                         let result = self.finish(true).await;
                         if let Ok(ack) = result {
@@ -215,7 +182,16 @@ impl Actor {
                 },
                 call = self.enrollment_calls.recv() => if let Some(call) = call {
                     self.handle_enrollment_call(call).await;
-                }
+                },
+                call = self.control_calls.recv() => if let Some(call) = call {
+                    self.handle_control_call(call).await;
+                },
+                joined = self.control_rounds.join_next(), if !self.control_rounds.is_empty() => {
+                    if let Some(result) = joined {
+                        self.finish_control_round(result);
+                    }
+                },
+                _ = periodic.tick() => self.schedule_control_round(),
             }
         }
     }
@@ -229,6 +205,11 @@ impl Actor {
         let revision = self.store.observe(&candidate).await?;
         candidate.revision = revision;
         self.state = candidate;
+        self.synchronized_control_peers.clear();
+        self.endpoint
+            .set_control_enabled(!self.state.memberships.is_empty());
+        self.refresh_control_lookup().await?;
+        self.schedule_control_round();
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
@@ -240,6 +221,7 @@ impl Actor {
         let _receiver_count = self
             .events
             .send(RuntimeEvent::shutting_down(self.state.revision));
+        self.control_rounds.shutdown().await;
         let endpoint_closed = self.endpoint.shutdown().await?;
         let observation = self.store.observe(&self.state).await;
         let clean_shutdown = if clean {

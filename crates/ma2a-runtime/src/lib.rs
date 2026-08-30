@@ -14,6 +14,8 @@ pub mod web;
 mod actor;
 mod authz;
 mod clock;
+mod control_actor;
+mod control_sync;
 mod enrollment;
 mod enrollment_actor;
 mod error;
