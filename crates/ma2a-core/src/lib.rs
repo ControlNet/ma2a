@@ -6,6 +6,7 @@ mod address;
 mod authorization;
 mod codec;
 mod control;
+mod echo;
 mod enrollment_page;
 mod error;
 mod ids;
@@ -38,6 +39,10 @@ pub use control::{
     ControlArtifactKind, ControlArtifactV1, ControlCursorEntryV1, ControlCursorV1, ControlPageV1,
     ControlRequestV1, ControlResponseV1, MAX_CONTROL_ARTIFACTS_PER_PAGE, MAX_CONTROL_BATCH_BYTES,
     MAX_CONTROL_CURSOR_ENTRIES, MAX_CONTROL_SPACES_PER_REQUEST,
+};
+pub use echo::{
+    EchoError, EchoRequest, EchoResponse, EchoResultClass, EchoStatus, MAX_ECHO_DURATION_MS,
+    MAX_ECHO_PAYLOAD_LEN,
 };
 pub use enrollment_page::{
     EnrollmentPage, MAX_ENROLLMENT_ARTIFACTS_PER_PAGE, MAX_ENROLLMENT_PAGE_BYTES,
