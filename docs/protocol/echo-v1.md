@@ -35,11 +35,13 @@ The client rejects a responder identity different from the requested target and 
 - Per authenticated peer: at most 16 concurrent streams.
 - Across the Runtime: at most 128 concurrent streams.
 - Aggregate client exchange deadline: 10 seconds.
-- Aggregate server stream deadline: 10 seconds, including response-frame writing.
+- Aggregate server stream deadline: 10 seconds. Processing owns at most 9.9 seconds, reserving the final 100 milliseconds for bounded response-frame writing.
 - Duration metadata: saturated at 10,000 milliseconds.
 - Semantic retries: none.
 
 Concurrency permits use deterministic lifetime ownership and are released on success, rejection, timeout, cancellation, or task shutdown. Runtime metrics expose the current admitted-stream count so saturation and release can be observed without timing assumptions.
+
+Runtime shutdown aborts owned Echo service work before closing the Iroh Endpoint. A cancellation status may be delivered only when the handler still has enough time and transport capacity to complete that frame; shutdown guarantees stream or connection closure, not delivery of status `6`.
 
 ## Audit And Metrics
 

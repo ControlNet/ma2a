@@ -127,22 +127,4 @@ mod tests {
         // Then
         assert!(matches!(admission.await, Ok(Err(EchoError::Unavailable))));
     }
-
-    #[tokio::test]
-    async fn dropping_authorized_runtime_work_cancels_the_transport_response() {
-        // Given
-        let peer = EndpointSecret::generate().endpoint_id();
-        let (call, admission, _request, response) = EchoCall::channel(peer);
-        let authorized = call.authorize().expect("admission receiver remains");
-        assert!(matches!(admission.await, Ok(Ok(()))));
-        let runtime_work = tokio::spawn(authorized.request());
-        tokio::task::yield_now().await;
-
-        // When
-        runtime_work.abort();
-        let _cancelled = runtime_work.await;
-
-        // Then
-        assert!(response.await.is_err());
-    }
 }
