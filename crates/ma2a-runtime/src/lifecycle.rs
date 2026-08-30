@@ -79,9 +79,13 @@ impl Runtime {
         let boot_id = boot_id()?;
         let boot_revision = store.begin_boot(boot_id).await?;
         let relay_observation_revision = store.record_relay_observations(Vec::new()).await?;
+        let endpoint_data = endpoint
+            .endpoint_data()
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         let mut state = RuntimeStatus {
             endpoint_id: identity.endpoint_id,
             endpoint_addr: endpoint.endpoint_addr(),
+            endpoint_data,
             boot_id,
             revision: boot_revision.max(relay_observation_revision),
             memberships: identity.memberships,

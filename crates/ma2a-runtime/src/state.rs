@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use ma2a_core::{EndpointId, SpaceId};
+use ma2a_core::{AddressEndpointDataV1, EndpointId, SpaceId};
 use ma2a_net::EndpointAddr;
 
 use crate::reachability::RelayReachabilityState;
@@ -28,6 +28,7 @@ impl Connectivity {
 pub struct RuntimeStatus {
     pub(crate) endpoint_id: EndpointId,
     pub(crate) endpoint_addr: EndpointAddr,
+    pub(crate) endpoint_data: AddressEndpointDataV1,
     pub(crate) boot_id: [u8; 16],
     pub(crate) revision: u64,
     pub(crate) memberships: BTreeSet<SpaceId>,

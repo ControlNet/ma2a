@@ -39,7 +39,7 @@ pub use endpoint::{
     EndpointBindOptions, EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpoint,
 };
 pub use enrollment::EnrollmentCall;
-pub use iroh::EndpointAddr;
+pub use iroh::{EndpointAddr, RelayUrl, address_lookup::UserData};
 pub use ma2a_store::ValidatedAddressRecord;
 pub use metrics::{
     AddressCacheOutcome, AddressLookupExclusion, AddressMetrics, AddressMetricsSnapshot,

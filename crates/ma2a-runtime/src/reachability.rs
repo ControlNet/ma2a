@@ -115,12 +115,13 @@ impl Actor {
         &mut self,
         observation: IrohRelayObservation,
     ) -> Result<(), RuntimeError> {
-        let endpoint_changed = self.state.endpoint_addr != *observation.endpoint_addr();
+        let endpoint_changed = self.state.endpoint_data != *observation.endpoint_data();
         let relay_changed = self.state.relay.observe(&observation);
         if !endpoint_changed && !relay_changed {
             return Ok(());
         }
         self.state.endpoint_addr = observation.endpoint_addr().clone();
+        self.state.endpoint_data = observation.endpoint_data().clone();
         self.persist_relay_observations().await?;
         self.state.revision = self.store.observe(&self.state).await?;
         if endpoint_changed {
@@ -150,5 +151,54 @@ fn derive_reachability(
         RelayReachability::IrohHomeConnected
     } else {
         RelayReachability::AwaitingIrohHome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::{AddressEndpointDataV1, RelayReachability};
+    use ma2a_net::{
+        EndpointSecret, IrohHomeRelayObservation, IrohRelayObservation, LocalIrohRelayMap,
+        PublicRelayFallbackConfig, RelayUrl,
+    };
+
+    use super::RelayReachabilityState;
+
+    #[test]
+    fn connected_home_outside_candidate_map_is_excluded_everywhere()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Given
+        let configured: RelayUrl = "https://configured.example.invalid".parse()?;
+        let outside: RelayUrl = "https://outside.example.invalid".parse()?;
+        let fallback = PublicRelayFallbackConfig::new(vec![configured.clone()])?;
+        let candidates = LocalIrohRelayMap::from_control_spaces(&[], Some(&fallback), 0);
+        let observation = IrohRelayObservation::new(
+            EndpointSecret::generate().endpoint_id(),
+            AddressEndpointDataV1::new(Vec::new())?,
+            vec![
+                IrohHomeRelayObservation::new(configured.clone(), false),
+                IrohHomeRelayObservation::new(outside, true),
+            ],
+        )?;
+        let mut state = RelayReachabilityState::new(candidates);
+
+        // When
+        state.observe(&observation);
+        let persisted = state.persisted_observations(1_000)?;
+
+        // Then
+        assert_eq!(state.reachability(), RelayReachability::NoActiveSpaces);
+        assert_ne!(state.reachability(), RelayReachability::IrohHomeConnected);
+        assert_eq!(
+            state.observed_home_relays().collect::<Vec<_>>(),
+            vec![configured.as_str()]
+        );
+        assert_eq!(persisted.len(), 1);
+        let persisted_home = persisted
+            .first()
+            .ok_or("configured home was not persisted")?;
+        assert_eq!(persisted_home.relay_url, configured.to_string());
+        assert!(!persisted_home.reachable);
+        Ok(())
     }
 }
