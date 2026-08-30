@@ -9,6 +9,7 @@ use axum::{
 };
 use ma2a_runtime::{
     Runtime,
+    api::Command,
     current_user::CurrentUserRuntime,
     ipc::{IpcPaths, LocalApiClient, LocalApiServer},
     web::{
@@ -17,6 +18,7 @@ use ma2a_runtime::{
     },
 };
 use ma2a_store::StoreConfig;
+use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt as _;
 use zeroize::Zeroizing;
@@ -53,6 +55,10 @@ impl Drop for TempState {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one live daemon scenario proves authentication, connection limits, permit release, revocation, and teardown"
+)]
 async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> TestResult {
     // Given
     let state = TempState::new()?;
@@ -111,11 +117,12 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
         )
         .await?;
     let stale_events = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/events?since=0")
                 .header("host", "127.0.0.1:43210")
-                .header("cookie", cookie)
+                .header("cookie", &cookie)
                 .body(Body::empty())?,
         )
         .await?;
@@ -125,12 +132,10 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
     assert_eq!(snapshot.status(), StatusCode::OK);
     let snapshot: serde_json::Value =
         serde_json::from_slice(&to_bytes(snapshot.into_body(), 65_536).await?)?;
-    assert!(
-        snapshot
-            .get("revision")
-            .and_then(serde_json::Value::as_u64)
-            .is_some()
-    );
+    let revision = snapshot
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("snapshot revision missing")?;
     assert_eq!(stale_events.status(), StatusCode::OK);
     let events = to_bytes(stale_events.into_body(), 16_384).await?;
     assert!(
@@ -138,6 +143,68 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
             .windows(22)
             .any(|window| window == b"event: resync-required")
     );
+
+    let mut streams = Vec::new();
+    for _ in 0..8 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/events?since={revision}"))
+                    .header("host", "127.0.0.1:43210")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        streams.push(response);
+    }
+    let limited = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/events?since={revision}"))
+                .header("host", "127.0.0.1:43210")
+                .header("cookie", &cookie)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    drop(streams.pop());
+    let replacement = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/v1/events?since={revision}"))
+                        .header("host", "127.0.0.1:43210")
+                        .header("cookie", &cookie)
+                        .body(Body::empty())?,
+                )
+                .await?;
+            if response.status() == StatusCode::OK {
+                return TestResult::Ok(response);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    streams.push(replacement);
+
+    control.send(Command::session_revoke_all()?).await?;
+    let revoked = streams.pop().ok_or("active event stream missing")?;
+    let mut revoked_body = revoked.into_body().into_data_stream();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), revoked_body.next())
+        .await?
+        .ok_or("revoked event stream closed without recovery event")??;
+    assert!(
+        frame
+            .windows(22)
+            .any(|window| window == b"event: resync-required")
+    );
+    drop(streams);
     cancellation.cancel();
     api_task.await??;
     runtime.shutdown().await?;
