@@ -47,6 +47,10 @@ export function EndpointScreen({
                 <dt>Snapshot revision</dt>
                 <dd>{runtime.revision}</dd>
               </div>
+              <div>
+                <dt>Runtime version</dt>
+                <dd>{runtime.runtimeVersion}</dd>
+              </div>
             </dl>
           </aside>
         </div>
