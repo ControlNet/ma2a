@@ -39,12 +39,6 @@ impl Actor {
         trigger: ControlRoundTrigger,
         reply: Option<tokio::sync::oneshot::Sender<Result<u64, RuntimeError>>>,
     ) {
-        if self.state.memberships.is_empty() {
-            if let Some(reply) = reply {
-                let _unsent = reply.send(Ok(self.state.revision));
-            }
-            return;
-        }
         #[cfg(test)]
         self.control_schedule_events
             .lock()

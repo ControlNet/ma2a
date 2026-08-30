@@ -193,13 +193,9 @@ async fn control_sync_commands_report_unsynchronized_without_spaces() -> TestRes
     );
     assert_eq!(
         trigger_response
-            .pointer("/result/type")
+            .get("error")
             .and_then(serde_json::Value::as_str),
-        Some("control_sync_triggered")
-    );
-    assert_eq!(
-        trigger_response.pointer("/result/payload/synchronized"),
-        Some(&serde_json::Value::Bool(false))
+        Some(ProtocolError::UNAVAILABLE.name())
     );
     assert_eq!(live_server.cancel().await?, ServerExit::Cancelled);
     runtime.shutdown().await?;
