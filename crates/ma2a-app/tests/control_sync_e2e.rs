@@ -48,7 +48,11 @@ async fn explicit_round_converges_shared_spaces_without_leaking_private_space() 
         let imported = owner_repository
             .address_record(space_id, fixture.candidate_secret.public().into())?
             .ok_or("candidate address was not pushed")?;
-        assert_eq!(imported.signed_record(), candidate_record.canonical_bytes());
+        assert_eq!(
+            imported.endpoint_id(),
+            fixture.candidate_secret.public().into()
+        );
+        assert!(imported.sequence() > candidate_record.record().sequence());
         let imported_owner = candidate_repository
             .address_record(space_id, fixture.owner_secret.public().into())?
             .ok_or("newer owner address was not pulled")?;

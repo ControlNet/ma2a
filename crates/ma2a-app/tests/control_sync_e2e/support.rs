@@ -174,8 +174,26 @@ fn prepare_owner(
         .endpoint_bind_port()?
         .ok_or("owner bind port missing")?;
     let secret = endpoint_secret(&state.0)?;
-    let initial = address_records(spaces, &secret, AddressFixture { port, sequence: 1 })?;
-    let advanced = address_records(spaces, &secret, AddressFixture { port, sequence: 2 })?;
+    let initial_sequence = next_address_sequence(&repository, spaces, secret.public().into())?;
+    let advanced_sequence = initial_sequence
+        .checked_add(1)
+        .ok_or("owner address sequence exhausted")?;
+    let initial = address_records(
+        spaces,
+        &secret,
+        AddressFixture {
+            port,
+            sequence: initial_sequence,
+        },
+    )?;
+    let advanced = address_records(
+        spaces,
+        &secret,
+        AddressFixture {
+            port,
+            sequence: advanced_sequence,
+        },
+    )?;
     let advertisements = spaces
         .into_iter()
         .map(|space_id| relay_advertisement(space_id, &secret))
@@ -202,11 +220,31 @@ fn prepare_candidate(
         .endpoint_bind_port()?
         .ok_or("candidate bind port missing")?;
     let secret = endpoint_secret(&state.0)?;
-    let records = address_records(spaces, &secret, AddressFixture { port, sequence: 1 })?;
+    let sequence = next_address_sequence(&repository, spaces, secret.public().into())?;
+    let records = address_records(spaces, &secret, AddressFixture { port, sequence })?;
     for record in &records {
         persist_address(&mut repository, record, u64::try_from(NOW_MS)?)?;
     }
     Ok((secret, records))
+}
+
+fn next_address_sequence(
+    repository: &Repository,
+    spaces: [ma2a_core::SpaceId; 2],
+    endpoint_id: ma2a_core::EndpointId,
+) -> TestResultValue<u64> {
+    let mut next = 0;
+    for space_id in spaces {
+        if let Some(record) = repository.address_record(space_id, endpoint_id)? {
+            next = next.max(
+                record
+                    .sequence()
+                    .checked_add(1)
+                    .ok_or("address sequence exhausted")?,
+            );
+        }
+    }
+    Ok(next)
 }
 
 async fn enroll_spaces(
