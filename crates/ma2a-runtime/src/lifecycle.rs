@@ -55,6 +55,7 @@ impl Runtime {
         let identity = store.initialize().await?;
         let (enrollment_sender, enrollment_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
         let (control_sender, control_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
+        let (echo_sender, echo_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
         let lookup = SpaceAddressLookup::with_clock(Arc::new(RuntimeAddressLookupClock::new(
             Arc::clone(&clock),
         )));
@@ -67,6 +68,7 @@ impl Runtime {
         let relay_map = store.load_relay_map(identity.endpoint_id, now_ms).await?;
         let options = EndpointBindOptions::new(enrollment_sender, identity.bind_port)
             .with_control(control_sender, !identity.memberships.is_empty())
+            .with_echo(echo_sender)
             .with_relay_map(relay_map.clone());
         let endpoint =
             RuntimeEndpoint::bind_with_lookup(identity.secret, lookup.clone(), options).await?;
@@ -78,6 +80,7 @@ impl Runtime {
             store.set_endpoint_bind_port(port).await?;
         }
         let connections = crate::RuntimeConnections::new(&endpoint.connection_manager());
+        let echo_metrics = endpoint.echo_metrics();
         let boot_id = boot_id()?;
         let boot_revision = store.begin_boot(boot_id).await?;
         let relay_observation_revision = store.record_relay_observations(Vec::new()).await?;
@@ -102,6 +105,8 @@ impl Runtime {
             store,
             enrollment_calls,
             control_calls,
+            echo_calls,
+            echo_metrics,
             lookup,
             clock,
         );

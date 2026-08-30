@@ -2,7 +2,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use ma2a_core::SpaceId;
 use ma2a_net::{
-    ControlCall, EnrollmentCall, IrohRelayObservation, RuntimeEndpoint, SpaceAddressLookup,
+    ControlCall, EchoCall, EchoMetrics, EnrollmentCall, IrohRelayObservation, RuntimeEndpoint,
+    SpaceAddressLookup,
 };
 use tokio::{
     sync::{broadcast, mpsc},
@@ -14,6 +15,7 @@ use crate::state::{RuntimeEvent, RuntimeStatus};
 use crate::{enrollment::EnrollmentError, error::RuntimeError, store::StoreClient};
 
 mod command;
+mod echo;
 #[cfg(test)]
 mod effective_data_test;
 mod handle;
@@ -35,6 +37,10 @@ pub(crate) struct Actor {
     pub(crate) clock: Arc<dyn crate::RuntimeClock>,
     enrollment_calls: mpsc::Receiver<EnrollmentCall>,
     pub(crate) control_calls: mpsc::Receiver<ControlCall>,
+    echo_calls: mpsc::Receiver<EchoCall>,
+    pub(crate) echo_tasks: JoinSet<()>,
+    pub(crate) echo_audit: crate::echo_audit::EchoAuditLog,
+    pub(crate) echo_metrics: EchoMetrics,
     pub(crate) lookup: SpaceAddressLookup,
     relay_observations: mpsc::Receiver<IrohRelayObservation>,
     relay_observer: tokio::task::JoinHandle<()>,
@@ -61,6 +67,8 @@ impl Actor {
         store: StoreClient,
         enrollment_calls: mpsc::Receiver<EnrollmentCall>,
         control_calls: mpsc::Receiver<ControlCall>,
+        echo_calls: mpsc::Receiver<EchoCall>,
+        echo_metrics: EchoMetrics,
         lookup: SpaceAddressLookup,
         clock: Arc<dyn crate::RuntimeClock>,
     ) -> (Self, RuntimeHandle, CancellationToken) {
@@ -69,11 +77,14 @@ impl Actor {
         #[cfg(test)]
         let control_schedule_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let cancellation = CancellationToken::new();
+        let echo_audit = crate::echo_audit::EchoAuditLog::default();
         let (relay_observation_sender, relay_observations) = mpsc::channel(COMMAND_CAPACITY);
         let relay_observer = endpoint.spawn_relay_observer(relay_observation_sender);
         let handle = RuntimeHandle::new(
             command_sender,
             events.clone(),
+            echo_audit.clone(),
+            echo_metrics.clone(),
             #[cfg(test)]
             Arc::clone(&control_schedule_events),
         );
@@ -86,6 +97,10 @@ impl Actor {
             clock,
             enrollment_calls,
             control_calls,
+            echo_calls,
+            echo_tasks: JoinSet::new(),
+            echo_audit,
+            echo_metrics,
             lookup,
             relay_observations,
             relay_observer,
@@ -198,6 +213,12 @@ impl Actor {
                         let result = self.publish_local_relay(config, expires_at_ms).await;
                         let _unsent = reply.send(result);
                     }
+                    Some(Command::Echo { request_id, target, payload, reply }) => {
+                        self.spawn_outbound_echo(
+                            echo::OutboundEchoRequest { request_id, target, payload },
+                            reply,
+                        );
+                    }
                     Some(Command::Shutdown(reply)) => {
                         let result = self.finish(true).await;
                         if let Ok(ack) = result {
@@ -213,6 +234,12 @@ impl Actor {
                 },
                 call = self.control_calls.recv() => if let Some(call) = call {
                     self.handle_control_call(call).await;
+                },
+                call = self.echo_calls.recv() => if let Some(call) = call {
+                    self.handle_echo_call(call).await;
+                },
+                joined = self.echo_tasks.join_next(), if !self.echo_tasks.is_empty() => {
+                    let _completed = joined;
                 },
                 observation = self.relay_observations.recv() => if let Some(observation) = observation {
                     self.observe_iroh_relay(observation).await?;

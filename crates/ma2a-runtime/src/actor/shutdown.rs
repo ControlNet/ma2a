@@ -14,6 +14,7 @@ impl Actor {
             .events
             .send(RuntimeEvent::shutting_down(self.state.revision));
         self.control_rounds.shutdown().await;
+        self.echo_tasks.shutdown().await;
         let endpoint_closed = self.endpoint.shutdown().await?;
         self.relay_observer.await?;
         let observation = self.store.observe(&self.state).await;
