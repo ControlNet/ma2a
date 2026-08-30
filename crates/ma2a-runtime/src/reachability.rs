@@ -35,30 +35,6 @@ impl RelayReachabilityState {
             .map(|observation| observation.relay_url().as_str())
     }
 
-    pub(crate) fn private_candidates(
-        &self,
-    ) -> impl Iterator<Item = (&ma2a_net::PrivateRelayCandidate, bool)> {
-        self.candidates.private_relays().map(|candidate| {
-            (
-                candidate,
-                self.candidates
-                    .home_relay_compatible(candidate.provider_endpoint_id(), candidate.relay_url()),
-            )
-        })
-    }
-
-    pub(crate) fn observed_relay_state(&self) -> (bool, bool) {
-        self.observed_home_relays
-            .iter()
-            .filter(|home| home.is_connected())
-            .fold((false, false), |(private, public), home| {
-                (
-                    private || self.candidates.is_private_home_relay(home.relay_url()),
-                    public || self.candidates.is_public_relay(home.relay_url()),
-                )
-            })
-    }
-
     pub(crate) fn replace_candidates(&mut self, candidates: LocalIrohRelayMap) -> bool {
         if self.candidates == candidates {
             return false;

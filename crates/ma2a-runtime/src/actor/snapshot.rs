@@ -1,12 +1,11 @@
-use ma2a_core::{EchoResultClass, RelayReachability};
 use tokio::sync::oneshot;
 
 use super::Actor;
 use crate::{
     api::{
         ClientSnapshotState, ControlSyncView, EchoSummaryView, EndpointView, NetworkSnapshotState,
-        ObservedRelayStateView, ReachabilityView, RelayCandidateView, RuntimeSnapshot,
-        SnapshotCollections, SnapshotHeader, SnapshotState, SpaceView, UiAuthView,
+        ObservedRelayStateView, ReachabilityView, RuntimeSnapshot, SnapshotCollections,
+        SnapshotHeader, SnapshotState, SpaceView, UiAuthView,
     },
     error::{RuntimeError, RuntimeErrorKind},
 };
@@ -36,61 +35,23 @@ impl Actor {
                 .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let control_peers = self
-            .synchronized_control_peers
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        let audit = self.echo_audit.snapshot();
-        let successes = u32::try_from(
-            audit
-                .iter()
-                .filter(|record| record.result_class() == EchoResultClass::Succeeded)
-                .count(),
-        )
-        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-        let failures = u32::try_from(audit.len())
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?
-            .saturating_sub(successes);
-        let relay_connected = matches!(
-            self.state.relay_reachability(),
-            RelayReachability::IrohHomeConnected
-        );
-        let (private_relay_online, public_relay_online) = self.state.relay.observed_relay_state();
-        let relay_candidates = self
-            .state
-            .relay
-            .private_candidates()
-            .map(|(candidate, eligible)| {
-                RelayCandidateView::new(candidate.provider_endpoint_id(), "private", eligible)
-                    .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let endpoint = EndpointView::new(
-            self.state.endpoint_id,
-            env!("CARGO_PKG_VERSION"),
-            self.state.ready,
-        )
-        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let endpoint = EndpointView::new(self.state.endpoint_id, env!("CARGO_PKG_VERSION"), true)
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         let collections = SnapshotCollections::new(
             spaces,
-            ControlSyncView::new(control_peers, self.control_queue.is_synchronized())
+            ControlSyncView::new(Vec::new(), false)
                 .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?,
-            relay_candidates,
+            Vec::new(),
         )
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         let state = SnapshotState::new(
             NetworkSnapshotState::new(
-                ObservedRelayStateView::new(private_relay_online, public_relay_online),
-                ReachabilityView::new(false, relay_connected),
+                ObservedRelayStateView::new(false, false),
+                ReachabilityView::new(false, false),
             ),
             ClientSnapshotState::new(
-                EchoSummaryView::new(successes, failures),
-                UiAuthView::new(
-                    self.state.ready,
-                    durable.password_set(),
-                    durable.active_sessions(),
-                ),
+                EchoSummaryView::new(0, 0),
+                UiAuthView::new(true, durable.password_set(), 0),
             ),
         );
         RuntimeSnapshot::new(

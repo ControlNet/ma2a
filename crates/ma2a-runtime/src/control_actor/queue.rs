@@ -98,6 +98,7 @@ impl ControlRoundQueue {
         self.active
     }
 
+    #[cfg(test)]
     pub(crate) const fn is_synchronized(&self) -> bool {
         self.healthy && self.active.is_none() && self.pending.is_none()
     }
