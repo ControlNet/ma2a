@@ -186,7 +186,10 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
             }
         },
         None => match execute(&command, &status, context).await {
-            Ok(result) => (result, status.revision()),
+            Ok(result) => {
+                let revision = api::snapshot_revision(&result).unwrap_or_else(|| status.revision());
+                (result, revision)
+            }
             Err(error) => return Ok((api::encode_error(api::ApiError::new(error))?, false)),
         },
     };
