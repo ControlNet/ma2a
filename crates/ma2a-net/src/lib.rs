@@ -12,6 +12,7 @@ mod connection_options;
 mod connection_state;
 mod control;
 mod dial;
+mod echo_protocol;
 mod endpoint;
 mod enrollment;
 mod metrics;
@@ -45,6 +46,10 @@ pub use control::{
 pub use dial::{
     DialCancellation, DialClock, DialDriver, DialFailure, DialJitter, DialPolicyError, DialRequest,
     DialRetryPolicy,
+};
+pub use echo_protocol::{
+    ECHO_ALPN, ECHO_DEADLINE, ECHO_GLOBAL_LIMIT, ECHO_PER_PEER_LIMIT, EchoAuthorizedCall, EchoCall,
+    EchoClient, EchoMetrics, EchoMetricsSnapshot, EchoServiceResponse,
 };
 pub use endpoint::{
     EndpointBindOptions, EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpoint,
