@@ -42,13 +42,26 @@ impl ControlWaiter {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct ControlRoundQueue {
     next_id: u64,
     rotation: usize,
     active: Option<ControlRoundId>,
     pending: Option<ControlRoundScope>,
     waiters: Vec<ControlWaiter>,
+    healthy: bool,
+}
+
+impl Default for ControlRoundQueue {
+    fn default() -> Self {
+        Self {
+            next_id: 0,
+            rotation: 0,
+            active: None,
+            pending: None,
+            waiters: Vec::new(),
+            healthy: true,
+        }
+    }
 }
 
 impl ControlRoundQueue {
@@ -57,6 +70,7 @@ impl ControlRoundQueue {
         scope: ControlRoundScope,
         reply: Option<oneshot::Sender<Result<u64, RuntimeError>>>,
     ) -> Option<ScheduledControlRound> {
+        self.healthy = false;
         let waiter_peer = scope.waiter_peer();
         if self.active.is_some() {
             match &mut self.pending {
@@ -84,9 +98,18 @@ impl ControlRoundQueue {
         self.active
     }
 
-    pub(super) fn complete(&mut self, round_id: ControlRoundId) -> Vec<ControlWaiter> {
+    pub(crate) const fn is_synchronized(&self) -> bool {
+        self.healthy && self.active.is_none() && self.pending.is_none()
+    }
+
+    pub(super) fn complete(
+        &mut self,
+        round_id: ControlRoundId,
+        succeeded: bool,
+    ) -> Vec<ControlWaiter> {
         if self.active == Some(round_id) {
             self.active = None;
+            self.healthy = succeeded;
         }
         let mut completed = Vec::new();
         let mut pending = Vec::new();
