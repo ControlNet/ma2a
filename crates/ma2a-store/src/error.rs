@@ -54,6 +54,8 @@ pub enum StoreError {
     PasswordHash,
     /// Stored credential or session bytes violate the schema contract.
     InvalidAuthState,
+    /// A control batch attempted a sequence rollback or same-sequence fork.
+    ControlConflict,
     /// The Windows permission helper failed closed.
     WindowsAcl {
         /// Whether DACL application or validation failed.
@@ -103,6 +105,9 @@ impl fmt::Display for StoreError {
             Self::InvalidAuthState => {
                 formatter.write_str("stored Web authentication state is invalid")
             }
+            Self::ControlConflict => formatter.write_str(
+                "control batch conflicts with accepted address or relay high-water state",
+            ),
             Self::WindowsAcl { operation } => write!(
                 formatter,
                 "Windows current-user-and-SYSTEM DACL {operation} failed; state remains unavailable"
@@ -130,6 +135,7 @@ impl Error for StoreError {
             | Self::InvalidPasswordLength
             | Self::PasswordHash
             | Self::InvalidAuthState
+            | Self::ControlConflict
             | Self::WindowsAcl { .. } => None,
         }
     }
