@@ -1,58 +1,20 @@
+mod command;
+
 use std::collections::BTreeSet;
 
 use ma2a_net::EndpointSecret;
 use ma2a_store::{
-    AuthorizedEnrollmentRedemption, EndpointObservationUpdate, EndpointRecord, EnrollmentOutcome,
-    KeyKind, KeyMaterial, KeyReference, KeyStore, Repository, RuntimeMetadataUpdate, StoreConfig,
-    StoreError,
+    EndpointRecord, KeyKind, KeyMaterial, KeyReference, KeyStore, Repository,
+    RuntimeMetadataUpdate, StoreConfig, StoreError,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
+pub(crate) use command::StoreCommand;
+
 pub(crate) const STORE_CAPACITY: usize = 8;
 const ENDPOINT_KEY_REFERENCE: &str = "endpoint-identity-v1";
-
-pub(crate) enum StoreCommand {
-    Initialize(oneshot::Sender<Result<Identity, RuntimeError>>),
-    SetEndpointBindPort {
-        port: u16,
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
-    },
-    BeginBoot {
-        boot_id: [u8; 16],
-        observed_at_ms: i64,
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
-    },
-    Observe {
-        observation: EndpointObservationUpdate,
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
-    },
-    CleanShutdown {
-        boot_id: [u8; 16],
-        observed_at_ms: i64,
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
-    },
-    CreateEnrollmentInvite {
-        creation: crate::enrollment::IssuedEnrollmentCreation,
-        creator: ma2a_core::EndpointId,
-        owner_addr: ma2a_net::EndpointAddr,
-        reply: oneshot::Sender<Result<ma2a_core::SignedInviteTicket, RuntimeError>>,
-    },
-    CancelEnrollmentInvite {
-        invitation_id: [u8; 16],
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
-    },
-    RedeemEnrollment {
-        authorized: AuthorizedEnrollmentRedemption,
-        reply: oneshot::Sender<Result<EnrollmentOutcome, RuntimeError>>,
-    },
-    PersistEnrollment {
-        chain: ma2a_core::SpaceChain,
-        reply: oneshot::Sender<Result<(u64, ma2a_core::SpaceChain), RuntimeError>>,
-    },
-    Stop(oneshot::Sender<()>),
-}
 
 pub(crate) struct Identity {
     pub(crate) secret: EndpointSecret,
@@ -86,25 +48,18 @@ impl StoreBackend {
                     let _unsent = reply.send(self.initialize());
                 }
                 StoreCommand::SetEndpointBindPort { port, reply } => {
-                    let _unsent = reply.send(
-                        self.repository
-                            .set_endpoint_bind_port(port)
-                            .map_err(Into::into),
-                    );
+                    let _unsent = reply.send(self.set_endpoint_bind_port(port));
                 }
                 StoreCommand::BeginBoot {
                     boot_id,
                     observed_at_ms,
                     reply,
                 } => {
-                    let result = self
-                        .repository
-                        .record_runtime_metadata(&RuntimeMetadataUpdate {
-                            boot_id,
-                            last_shutdown_clean: false,
-                            observed_at_ms,
-                        });
-                    let _unsent = reply.send(result.map_err(Into::into));
+                    let _unsent = reply.send(self.record_metadata(RuntimeMetadataUpdate {
+                        boot_id,
+                        last_shutdown_clean: false,
+                        observed_at_ms,
+                    }));
                 }
                 StoreCommand::Observe { observation, reply } => {
                     let result = self.repository.record_endpoint_observation(&observation);
@@ -115,14 +70,11 @@ impl StoreBackend {
                     observed_at_ms,
                     reply,
                 } => {
-                    let result = self
-                        .repository
-                        .record_runtime_metadata(&RuntimeMetadataUpdate {
-                            boot_id,
-                            last_shutdown_clean: true,
-                            observed_at_ms,
-                        });
-                    let _unsent = reply.send(result.map_err(Into::into));
+                    let _unsent = reply.send(self.record_metadata(RuntimeMetadataUpdate {
+                        boot_id,
+                        last_shutdown_clean: true,
+                        observed_at_ms,
+                    }));
                 }
                 StoreCommand::CreateEnrollmentInvite {
                     creation,
@@ -157,16 +109,31 @@ impl StoreBackend {
                     );
                 }
                 StoreCommand::PersistEnrollment { chain, reply } => {
-                    let result: Result<(u64, ma2a_core::SpaceChain), ma2a_store::StoreError> =
-                        (|| {
-                            let revision = self
-                                .repository
-                                .persist_space_chain(&chain)?
-                                .revision()
-                                .map_or_else(|| self.repository.revision(), Ok)?;
-                            Ok((revision, chain))
-                        })();
-                    let _unsent = reply.send(result.map_err(Into::into));
+                    let _unsent = reply.send(self.persist_enrollment(chain));
+                }
+                StoreCommand::LoadControlLookup {
+                    local_endpoint_id,
+                    now_ms,
+                    reply,
+                } => {
+                    let result = crate::control_sync::load_lookup(
+                        &mut self.repository,
+                        local_endpoint_id,
+                        now_ms,
+                    );
+                    let _unsent = reply.send(result);
+                }
+                StoreCommand::PrepareControlRound { input, reply } => {
+                    let result = crate::control_sync::prepare_round(&self.repository, &input);
+                    let _unsent = reply.send(result);
+                }
+                StoreCommand::RespondControl { input, reply } => {
+                    let result = crate::control_sync::respond(&mut self.repository, &input);
+                    let _unsent = reply.send(result);
+                }
+                StoreCommand::ApplyControlResponse { input, reply } => {
+                    let result = crate::control_sync::apply_response(&mut self.repository, &input);
+                    let _unsent = reply.send(result);
                 }
                 StoreCommand::Stop(reply) => {
                     let _unsent = reply.send(());
@@ -174,6 +141,30 @@ impl StoreBackend {
                 }
             }
         }
+    }
+
+    fn set_endpoint_bind_port(&mut self, port: u16) -> Result<u64, RuntimeError> {
+        self.repository
+            .set_endpoint_bind_port(port)
+            .map_err(Into::into)
+    }
+
+    fn record_metadata(&mut self, update: RuntimeMetadataUpdate) -> Result<u64, RuntimeError> {
+        self.repository
+            .record_runtime_metadata(&update)
+            .map_err(Into::into)
+    }
+
+    fn persist_enrollment(
+        &mut self,
+        chain: ma2a_core::SpaceChain,
+    ) -> Result<(u64, ma2a_core::SpaceChain), RuntimeError> {
+        let revision = self
+            .repository
+            .persist_space_chain(&chain)?
+            .revision()
+            .map_or_else(|| self.repository.revision(), Ok)?;
+        Ok((revision, chain))
     }
 
     fn initialize(&mut self) -> Result<Identity, RuntimeError> {

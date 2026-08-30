@@ -4,6 +4,9 @@ use tokio::sync::oneshot;
 use crate::{
     RuntimeClock as _,
     clock::SystemClock,
+    control_sync::{
+        ControlApplyOutcome, ControlLookupState, ControlRespondOutcome, PreparedControlPeer,
+    },
     error::RuntimeError,
     state::RuntimeStatus,
     store::{Identity, StoreClient, StoreCommand, channel_error, count},
@@ -119,6 +122,54 @@ impl StoreClient {
     ) -> Result<(u64, ma2a_core::SpaceChain), RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PersistEnrollment { chain, reply })
+            .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    pub(crate) async fn load_control_lookup(
+        &self,
+        local_endpoint_id: ma2a_core::EndpointId,
+        now_ms: u64,
+    ) -> Result<ControlLookupState, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::LoadControlLookup {
+            local_endpoint_id,
+            now_ms,
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    pub(crate) async fn prepare_control_round(
+        &self,
+        input: crate::control_sync::ControlRoundRequest,
+    ) -> Result<Vec<PreparedControlPeer>, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::PrepareControlRound { input, reply })
+            .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    pub(crate) async fn respond_control(
+        &self,
+        input: crate::control_sync::ControlExchangeInput,
+    ) -> Result<ControlRespondOutcome, ma2a_net::ControlRejection> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::RespondControl { input, reply })
+            .await
+            .map_err(|_| ma2a_net::ControlRejection::Unavailable)?;
+        response
+            .await
+            .map_err(|_| ma2a_net::ControlRejection::Unavailable)?
+    }
+
+    pub(crate) async fn apply_control_response(
+        &self,
+        input: crate::control_sync::ControlExchangeInput,
+    ) -> Result<ControlApplyOutcome, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::ApplyControlResponse { input, reply })
             .await?;
         response.await.map_err(channel_error)?
     }
