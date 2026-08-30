@@ -61,6 +61,7 @@ pub(crate) struct ControlRespondOutcome {
 pub(crate) struct ControlRoundOutcome {
     pub(crate) revision: u64,
     pub(crate) memberships: BTreeSet<ma2a_core::SpaceId>,
+    pub(crate) synchronized_peers: BTreeSet<EndpointId>,
 }
 
 pub(crate) use scheduler::ControlRoundRunner;

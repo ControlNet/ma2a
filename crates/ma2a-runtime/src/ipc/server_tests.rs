@@ -23,6 +23,7 @@ use crate::{
 use super::{LocalApiServer, ReplayEntry};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+const PEER_ENDPOINT_ID: &str = "5866666666666666666666666666666666666666666666666666666666666666";
 
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
 
@@ -142,5 +143,65 @@ async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResul
     let shutdown = runtime.shutdown().await?;
     assert_eq!(shutdown.joined_tasks(), 2);
     assert!(shutdown.endpoint_closed());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_sync_commands_report_unsynchronized_without_spaces() -> TestResult {
+    // Given
+    let state = TempState::new()?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let live_server = LiveServer::spawn(server);
+    let client = LocalApiClient::new(paths);
+    client.probe().await?;
+    let status = api::decode_command(
+        format!(
+            r#"{{"version":1,"operation":"control_sync_status","peer_endpoint_id":"{PEER_ENDPOINT_ID}"}}"#
+        )
+        .as_bytes(),
+    )?;
+    let trigger = api::decode_command(
+        format!(
+            r#"{{"version":1,"operation":"control_sync_trigger","request_id":"01010101010101010101010101010101","peer_endpoint_id":"{PEER_ENDPOINT_ID}"}}"#
+        )
+        .as_bytes(),
+    )?;
+
+    // When
+    let status_response: serde_json::Value = serde_json::from_slice(&client.call(&status).await?)?;
+    let trigger_response: serde_json::Value =
+        serde_json::from_slice(&client.call(&trigger).await?)?;
+
+    // Then
+    assert_eq!(
+        status_response
+            .pointer("/result/type")
+            .and_then(serde_json::Value::as_str),
+        Some("control_sync_status")
+    );
+    assert_eq!(
+        status_response.pointer("/result/payload/synchronized"),
+        Some(&serde_json::Value::Bool(false))
+    );
+    assert_eq!(
+        trigger_response
+            .pointer("/result/type")
+            .and_then(serde_json::Value::as_str),
+        Some("control_sync_triggered")
+    );
+    assert_eq!(
+        trigger_response.pointer("/result/payload/synchronized"),
+        Some(&serde_json::Value::Bool(false))
+    );
+    assert_eq!(live_server.cancel().await?, ServerExit::Cancelled);
+    runtime.shutdown().await?;
     Ok(())
 }

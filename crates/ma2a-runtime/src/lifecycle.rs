@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use ma2a_net::RuntimeEndpoint;
+use ma2a_net::{EndpointBindOptions, RuntimeEndpoint, SpaceAddressLookup};
 use ma2a_store::StoreConfig;
 use tokio::{sync::mpsc, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     actor::{Actor, RuntimeHandle, ShutdownAck},
-    clock::SystemClock,
+    clock::{RuntimeAddressLookupClock, SystemClock},
     error::{RuntimeError, RuntimeErrorKind},
     state::{Connectivity, RuntimeStatus, ShutdownReport},
     store::{STORE_CAPACITY, StoreBackend, StoreClient},
@@ -53,8 +53,20 @@ impl Runtime {
         });
         let identity = store.initialize().await?;
         let (enrollment_sender, enrollment_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
+        let (control_sender, control_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
+        let lookup = SpaceAddressLookup::with_clock(Arc::new(RuntimeAddressLookupClock::new(
+            Arc::clone(&clock),
+        )));
+        let now_ms = u64::try_from(clock.now_ms()?)
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
+        let lookup_state = store
+            .load_control_lookup(identity.endpoint_id, now_ms)
+            .await?;
+        crate::control_sync::install_lookup(&lookup, lookup_state)?;
+        let options = EndpointBindOptions::new(enrollment_sender, identity.bind_port)
+            .with_control(control_sender, !identity.memberships.is_empty());
         let endpoint =
-            RuntimeEndpoint::bind(identity.secret, enrollment_sender, identity.bind_port).await?;
+            RuntimeEndpoint::bind_with_lookup(identity.secret, lookup.clone(), options).await?;
         if endpoint.endpoint_id() != identity.endpoint_id {
             return Err(RuntimeError::new(RuntimeErrorKind::IdentityMismatch));
         }
@@ -74,8 +86,15 @@ impl Runtime {
             connectivity: Connectivity::DIRECT_ONLY,
         };
         state.revision = store.observe(&state).await?.max(boot_revision);
-        let (actor, handle, cancellation) =
-            Actor::new(state, endpoint, store, enrollment_calls, clock);
+        let (actor, handle, cancellation) = Actor::new(
+            state,
+            endpoint,
+            store,
+            enrollment_calls,
+            control_calls,
+            lookup,
+            clock,
+        );
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
         Ok(Self {
             handle,

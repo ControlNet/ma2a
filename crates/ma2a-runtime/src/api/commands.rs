@@ -228,4 +228,31 @@ impl Command {
             | CommandKind::GracefulShutdown(id) => Some(id),
         }
     }
+
+    pub(crate) const fn control_sync_peer(&self) -> Option<EndpointId> {
+        match self.kind {
+            CommandKind::ControlSyncStatus(peer) | CommandKind::ControlSyncTrigger(_, peer) => {
+                Some(peer)
+            }
+            CommandKind::Handshake
+            | CommandKind::Status
+            | CommandKind::EndpointInfo
+            | CommandKind::SpaceCreate(_, _)
+            | CommandKind::SpaceList
+            | CommandKind::SpaceShow(_)
+            | CommandKind::SpaceInvite(_, _, _)
+            | CommandKind::SpaceRedeem(_, _)
+            | CommandKind::SpaceRevoke(_, _, _)
+            | CommandKind::PrivateRelayConfigure(_, _, _, _)
+            | CommandKind::PrivateRelayStatus
+            | CommandKind::PublicRelayConfigure(_, _)
+            | CommandKind::PublicRelayStatus
+            | CommandKind::EchoCall(_, _, _)
+            | CommandKind::UiPasswordSet(_, _)
+            | CommandKind::UiPasswordReset(_, _)
+            | CommandKind::SessionRevokeAll(_)
+            | CommandKind::SnapshotFetch
+            | CommandKind::GracefulShutdown(_) => None,
+        }
+    }
 }

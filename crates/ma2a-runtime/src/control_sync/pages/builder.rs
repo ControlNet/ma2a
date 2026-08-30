@@ -51,3 +51,46 @@ impl PageBuilder {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::{ControlArtifactKind, MAX_CONTROL_ARTIFACTS_PER_PAGE, MAX_CONTROL_BATCH_BYTES};
+
+    use super::{ARTIFACT_OVERHEAD, PageBuilder};
+
+    #[test]
+    fn page_builder_omits_artifacts_after_the_count_limit() {
+        // Given
+        let mut builder = PageBuilder::new();
+
+        // When
+        for _ in 0..MAX_CONTROL_ARTIFACTS_PER_PAGE {
+            assert!(
+                builder
+                    .add_control(ControlArtifactKind::MANIFEST, &[1])
+                    .is_ok_and(|added| added)
+            );
+        }
+        let overflow = builder.add_control(ControlArtifactKind::MANIFEST, &[1]);
+
+        // Then
+        assert!(overflow.is_ok_and(|added| !added));
+        assert_eq!(builder.artifacts.len(), MAX_CONTROL_ARTIFACTS_PER_PAGE);
+    }
+
+    #[test]
+    fn page_builder_uses_the_complete_byte_budget_without_exceeding_it() {
+        // Given
+        let mut builder = PageBuilder::new();
+        let exact = vec![1_u8; MAX_CONTROL_BATCH_BYTES - ARTIFACT_OVERHEAD];
+
+        // When
+        let accepted = builder.add_control(ControlArtifactKind::MANIFEST, &exact);
+        let overflow = builder.add_control(ControlArtifactKind::MANIFEST, &[2]);
+
+        // Then
+        assert!(accepted.is_ok_and(|added| added));
+        assert!(overflow.is_ok_and(|added| !added));
+        assert_eq!(builder.artifacts.len(), 1);
+    }
+}
