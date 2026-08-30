@@ -15,6 +15,7 @@ enum ErrorCodeKind {
     Clock,
     ObservationOverflow,
     Shutdown,
+    Control,
 }
 
 /// Stable classification for Runtime failures without secret-bearing details.
@@ -49,6 +50,7 @@ pub(crate) enum RuntimeErrorKind {
     Clock,
     ObservationOverflow,
     Shutdown,
+    Control,
 }
 
 impl RuntimeError {
@@ -71,6 +73,7 @@ impl RuntimeError {
             RuntimeErrorKind::Clock => ErrorCodeKind::Clock,
             RuntimeErrorKind::ObservationOverflow => ErrorCodeKind::ObservationOverflow,
             RuntimeErrorKind::Shutdown => ErrorCodeKind::Shutdown,
+            RuntimeErrorKind::Control => ErrorCodeKind::Control,
         };
         RuntimeErrorCode(kind)
     }
@@ -103,6 +106,9 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::Shutdown => {
                 formatter.write_str("Runtime shutdown did not join every owned task")
             }
+            RuntimeErrorKind::Control => {
+                formatter.write_str("Runtime control synchronization failed")
+            }
         }
     }
 }
@@ -120,7 +126,8 @@ impl Error for RuntimeError {
             | RuntimeErrorKind::Random
             | RuntimeErrorKind::Clock
             | RuntimeErrorKind::ObservationOverflow
-            | RuntimeErrorKind::Shutdown => None,
+            | RuntimeErrorKind::Shutdown
+            | RuntimeErrorKind::Control => None,
         }
     }
 }
