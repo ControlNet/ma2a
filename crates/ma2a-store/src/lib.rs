@@ -11,6 +11,7 @@ mod address_record_queries;
 mod address_records;
 mod backup;
 mod config;
+mod control_batch;
 mod control_state;
 mod enrollment;
 mod enrollment_models;
@@ -36,6 +37,7 @@ mod web_auth;
 pub use address_record_queries::PersistedAddressRecord;
 pub use address_records::AddressRecordOutcome;
 pub use config::StoreConfig;
+pub use control_batch::ControlBatch;
 pub use control_state::ControlSpaceState;
 pub use enrollment_models::{
     AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption,
