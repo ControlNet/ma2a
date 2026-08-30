@@ -169,6 +169,18 @@ impl ValidatedPrivateRelayAdvertisement {
 pub struct PrivateRelayAdvertisementValidator;
 
 impl PrivateRelayAdvertisementValidator {
+    /// Validates one advertisement without mutating persistent state.
+    ///
+    /// # Errors
+    /// Returns a trust-boundary rejection for malformed or unauthorized input.
+    pub fn validate(
+        bytes: &[u8],
+        context: AdvertisementValidationContext<'_>,
+    ) -> Result<ValidatedRelayAdvertisement, PrivateRelayAdvertisementValidationError> {
+        ValidatedRelayAdvertisement::parse(bytes, context.authorization, context.now_ms)
+            .map_err(Into::into)
+    }
+
     /// Validates exact-Space provider authority before persistent high-water advancement.
     ///
     /// # Errors
@@ -178,8 +190,7 @@ impl PrivateRelayAdvertisementValidator {
         bytes: &[u8],
         context: AdvertisementValidationContext<'_>,
     ) -> Result<ValidatedPrivateRelayAdvertisement, PrivateRelayAdvertisementValidationError> {
-        let advance =
-            ValidatedRelayAdvertisement::parse(bytes, context.authorization, context.now_ms)?;
+        let advance = Self::validate(bytes, context)?;
         let signed = advance.signed().clone();
         match repository.advance_private_relay_advertisement(&advance)? {
             RelayAdvertisementOutcome::Advanced { .. }
