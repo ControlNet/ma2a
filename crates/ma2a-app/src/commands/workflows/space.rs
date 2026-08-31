@@ -15,6 +15,10 @@ use crate::{AppError, cli};
 #[path = "space_windows.rs"]
 mod space_windows;
 
+#[cfg(unix)]
+#[path = "space_unix.rs"]
+mod space_unix;
+
 #[cfg(any(windows, test))]
 #[path = "space_windows_policy.rs"]
 mod space_windows_policy;
@@ -137,44 +141,7 @@ async fn invite(
 }
 
 #[cfg(unix)]
-fn read_owner_only_invitation(path: &Path) -> Result<String, AppError> {
-    use rustix::fs::{Mode, OFlags};
-    use std::{
-        fs::File,
-        os::unix::fs::{MetadataExt as _, PermissionsExt as _},
-    };
-
-    if !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file()) {
-        return Err(AppError::Usage(
-            "invite file must be an owner-only regular file",
-        ));
-    }
-    let mut file = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|_| AppError::Usage("invite file must be an owner-only regular file"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| AppError::Usage("invite file must be an owner-only regular file"))?;
-    if !metadata.is_file()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.permissions().mode() & 0o7777 != 0o600
-    {
-        return Err(AppError::Usage(
-            "invite file must be an owner-only regular file",
-        ));
-    }
-    let mut invitation = String::new();
-    io::Read::read_to_string(&mut io::Read::take(&mut file, 65_537), &mut invitation)
-        .map_err(|_| AppError::Usage("invite file is unreadable or oversized"))?;
-    if invitation.len() > 65_536 {
-        return Err(AppError::Usage("invite file is unreadable or oversized"));
-    }
-    Ok(invitation)
-}
+use space_unix::read_owner_only_invitation;
 
 #[cfg(windows)]
 fn read_owner_only_invitation(path: &Path) -> Result<String, AppError> {
