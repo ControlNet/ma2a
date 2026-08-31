@@ -1,0 +1,27 @@
+[dist]
+cargo-dist-version = "0.32.0"
+packages = ["ma2a-app"]
+targets = [
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+installers = []
+ci = []
+hosting = []
+checksum = "sha256"
+unix-archive = ".tar.xz"
+windows-archive = ".zip"
+source-tarball = false
+auto-includes = false
+include = [
+    "README.md",
+    "docs/quickstart.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "NOTICE",
+]
+precise-builds = true
+
+[workspace]
+members = ["cargo:crates/ma2a-app"]

@@ -1,0 +1,6 @@
+MA2A
+Copyright (c) MA2A contributors.
+
+This distribution includes third-party Rust and frontend dependencies. Their
+package names, versions, sources, and detected license expressions are emitted
+with every release as dependency-license-report.json and ma2a.cdx.json.

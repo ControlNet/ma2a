@@ -21,10 +21,13 @@ cargo install --locked cargo-nextest@0.9.143 cargo-deny@0.20.2 cargo-machete@0.9
 ./scripts/dist.sh
 ```
 
-`cargo dist` performs a frozen frontend install/build and then builds the release `ma2a`
-binary. The app build script embeds every file from `web/dist`; generated assets remain ignored
-and are never runtime source-tree dependencies.
+`cargo dist` validates the release policy and invokes pinned cargo-dist 0.32.0 for the current host
+target. The app build script performs the frozen frontend install/build and embeds every file from
+`web/dist`; generated assets remain ignored and are never runtime source-tree dependencies. The
+archive and checksum are written below `target/distrib`.
 
 The architecture contract is checked by `cargo xtask check-support` against
 `docs/platform-support.json`. CI runs native x86_64 jobs for Linux, macOS, and Windows and
-records non-blocking ARM64 compile probes until native/QEMU smoke runners are available.
+records non-blocking ARM64 compile probes until native/QEMU smoke runners are available. Tag builds
+derive their release matrix directly from the targets marked `supported` and require archive,
+checksum, clean-room smoke, SPDX SBOM, dependency/license, and provenance gates before publication.

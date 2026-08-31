@@ -18,6 +18,35 @@ impl PasswordReader for TerminalPasswordReader {
     }
 }
 
+pub(crate) struct InheritedStdinPasswordReader<R> {
+    input: R,
+}
+
+impl<R> InheritedStdinPasswordReader<R> {
+    pub(crate) const fn new(input: R) -> Self {
+        Self { input }
+    }
+}
+
+impl<R: std::io::BufRead + Send> PasswordReader for InheritedStdinPasswordReader<R> {
+    fn read(&mut self, _prompt: &str) -> std::io::Result<Zeroizing<String>> {
+        let mut value = Zeroizing::new(String::new());
+        if self.input.read_line(&mut value)? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "password input ended before a newline-delimited value",
+            ));
+        }
+        if value.ends_with('\n') {
+            value.pop();
+            if value.ends_with('\r') {
+                value.pop();
+            }
+        }
+        Ok(value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PasswordCommand {
     Set,
@@ -104,7 +133,7 @@ pub(crate) async fn revoke_all_sessions(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, io::Cursor};
 
     use ma2a_runtime::api::{CommandResult, UiAuthView, encode_command};
 
@@ -127,6 +156,38 @@ mod tests {
     struct RecordingClient {
         commands: Vec<Command>,
         results: VecDeque<CommandResult>,
+    }
+
+    #[test]
+    fn inherited_stdin_reader_returns_newline_delimited_secrets() -> Result<(), std::io::Error> {
+        // Given
+        let input = Cursor::new(b"first secret\r\nsecond secret\n".to_vec());
+        let mut reader = InheritedStdinPasswordReader::new(input);
+
+        // When
+        let first = reader.read("ignored")?;
+        let second = reader.read("ignored")?;
+
+        // Then
+        assert_eq!(first.as_str(), "first secret");
+        assert_eq!(second.as_str(), "second secret");
+        Ok(())
+    }
+
+    #[test]
+    fn inherited_stdin_reader_rejects_premature_eof() {
+        // Given
+        let input = Cursor::new(Vec::<u8>::new());
+        let mut reader = InheritedStdinPasswordReader::new(input);
+
+        // When
+        let result = reader.read("ignored");
+
+        // Then
+        assert_eq!(
+            result.err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::UnexpectedEof)
+        );
     }
 
     impl CurrentUserControlClient for RecordingClient {
