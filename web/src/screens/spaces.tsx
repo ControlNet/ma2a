@@ -39,20 +39,32 @@ export function SpacesScreen({
       event.currentTarget.reset()
     }
   }
-  const peerAction = (event: FormEvent<HTMLFormElement>, kind: "invite" | "revoke"): void => {
+  const invite = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    const values = new FormData(event.currentTarget)
+    const spaceId = values.get("space-id")
+    const ttlMs = values.get("ttl-ms")
+    const outputPath = values.get("output-path")
+    if (
+      typeof spaceId !== "string" ||
+      typeof ttlMs !== "string" ||
+      typeof outputPath !== "string" ||
+      actions === undefined
+    )
+      return
+    submit(
+      () => actions.createInvitation(spaceId, Number(ttlMs), outputPath),
+      `Invitation ticket written by the Runtime to ${outputPath}.`,
+    )
+  }
+  const revoke = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const values = new FormData(event.currentTarget)
     const spaceId = values.get("space-id")
     const endpointId = values.get("endpoint-id")
     if (typeof spaceId !== "string" || typeof endpointId !== "string" || actions === undefined)
       return
-    const operation = kind === "invite" ? actions.inviteEndpoint : actions.revokeEndpoint
-    submit(
-      () => operation(spaceId, endpointId),
-      kind === "invite"
-        ? "Endpoint invitation recorded. The Web API does not expose invite secret material."
-        : "Endpoint revocation recorded.",
-    )
+    submit(() => actions.revokeEndpoint(spaceId, endpointId), "Endpoint revocation recorded.")
   }
   return (
     <div className="page-stack">
@@ -69,17 +81,23 @@ export function SpacesScreen({
             Create
           </button>
         </form>
-        <form className="form-stack" onSubmit={(event) => peerAction(event, "invite")}>
-          <h2>Invite Endpoint</h2>
+        <form className="form-stack" onSubmit={invite}>
+          <h2>Create Invitation</h2>
           <label htmlFor="invite-space">Space ID</label>
           <input id="invite-space" name="space-id" pattern="[0-9a-f]{64}" required />
-          <label htmlFor="invite-endpoint">Endpoint ID</label>
-          <input id="invite-endpoint" name="endpoint-id" pattern="[0-9a-f]{64}" required />
+          <label htmlFor="invite-ttl">Lifetime in milliseconds</label>
+          <input id="invite-ttl" max={300000} min={1} name="ttl-ms" required type="number" />
+          <label htmlFor="invite-output">Local output path</label>
+          <input id="invite-output" maxLength={4096} name="output-path" required />
+          <p className="field-help">
+            The Runtime creates a new owner-only ticket file and never returns its secret to the
+            browser.
+          </p>
           <button disabled={actions === undefined} type="submit">
-            Invite
+            Create ticket
           </button>
         </form>
-        <form className="form-stack" onSubmit={(event) => peerAction(event, "revoke")}>
+        <form className="form-stack" onSubmit={revoke}>
           <h2>Revoke Endpoint</h2>
           <label htmlFor="revoke-space">Space ID</label>
           <input id="revoke-space" name="space-id" pattern="[0-9a-f]{64}" required />

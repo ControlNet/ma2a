@@ -2,18 +2,17 @@ import type {
   MutationEchoReplyView,
   MutationPrivateRelayView,
   MutationPublicRelayView,
+  PrivateRelayConfiguration,
   RuntimeMutationClient,
 } from "./api/mutations"
 
 export type RuntimeActions = {
   readonly createSpace: (name: string) => Promise<void>
-  readonly inviteEndpoint: (spaceId: string, endpointId: string) => Promise<void>
+  readonly createInvitation: (spaceId: string, ttlMs: number, outputPath: string) => Promise<void>
   readonly revokeEndpoint: (spaceId: string, endpointId: string) => Promise<void>
   readonly triggerSync: (endpointId: string) => Promise<void>
   readonly configurePrivateRelay: (
-    mode: "native_tls" | "external_termination",
-    host: string,
-    port: number,
+    configuration: PrivateRelayConfiguration,
   ) => Promise<MutationPrivateRelayView>
   readonly configurePublicRelay: (url: string) => Promise<MutationPublicRelayView>
   readonly echo: (endpointId: string, payload: string) => Promise<MutationEchoReplyView>
@@ -31,13 +30,13 @@ export function createRuntimeActions(
   }
   return {
     createSpace: async (name) => void (await mutate(() => client.createSpace(name))),
-    inviteEndpoint: async (spaceId, endpointId) =>
-      void (await mutate(() => client.inviteEndpoint(spaceId, endpointId))),
+    createInvitation: async (spaceId, ttlMs, outputPath) =>
+      void (await mutate(() => client.createInvitation(spaceId, ttlMs, outputPath))),
     revokeEndpoint: async (spaceId, endpointId) =>
       void (await mutate(() => client.revokeEndpoint(spaceId, endpointId))),
     triggerSync: async (endpointId) => void (await mutate(() => client.triggerSync(endpointId))),
-    configurePrivateRelay: (mode, host, port) =>
-      mutate(() => client.configurePrivateRelay(mode, host, port)),
+    configurePrivateRelay: (configuration) =>
+      mutate(() => client.configurePrivateRelay(configuration)),
     configurePublicRelay: (url) => mutate(() => client.configurePublicRelay(url)),
     echo: (endpointId, payload) => mutate(() => client.echo(endpointId, payload)),
     revokeSessions: async () => void (await client.revokeSessions()),

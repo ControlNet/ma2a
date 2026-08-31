@@ -9,6 +9,7 @@ Object.defineProperties(globalThis, {
   DocumentFragment: { configurable: true, value: dom.window.DocumentFragment },
   Element: { configurable: true, value: dom.window.Element },
   Event: { configurable: true, value: dom.window.Event },
+  FormData: { configurable: true, value: dom.window.FormData },
   HTMLElement: { configurable: true, value: dom.window.HTMLElement },
   KeyboardEvent: { configurable: true, value: dom.window.KeyboardEvent },
   MouseEvent: { configurable: true, value: dom.window.MouseEvent },

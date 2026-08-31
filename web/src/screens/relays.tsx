@@ -1,5 +1,5 @@
 import { type FormEvent, type ReactNode, useState } from "react"
-
+import type { PrivateRelayConfiguration } from "../api/mutations"
 import { CodeValue, EmptyState, PageHeader, Section, StatusText } from "../components/primitives"
 import { PendingRuntime } from "../components/runtime-status"
 import type { RuntimeActions } from "../runtime-actions"
@@ -22,21 +22,48 @@ export function RelaysScreen({
   readonly actions: RuntimeActions | undefined
 }): ReactNode {
   const [message, setMessage] = useState<string | undefined>()
+  const [relayMode, setRelayMode] = useState<PrivateRelayConfiguration["mode"]>("native_tls")
   const privateRelay = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const values = new FormData(event.currentTarget)
-    const mode = values.get("mode")
-    const host = values.get("host")
-    const port = values.get("port")
+    const listen = values.get("listen")
+    const publicUrl = values.get("public-url")
+    const servedSpaces = values.get("served-spaces")
+    const certificatePath = values.get("certificate-path")
+    const privateKeyPath = values.get("private-key-path")
     if (
-      (mode !== "native_tls" && mode !== "external_termination") ||
-      typeof host !== "string" ||
-      typeof port !== "string" ||
+      typeof listen !== "string" ||
+      typeof publicUrl !== "string" ||
+      typeof servedSpaces !== "string" ||
+      typeof certificatePath !== "string" ||
+      typeof privateKeyPath !== "string" ||
       actions === undefined
     )
       return
+    const servedSpaceIds = servedSpaces
+      .split(/[\s,]+/u)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+    const configuration =
+      relayMode === "native_tls"
+        ? {
+            mode: relayMode,
+            listen,
+            publicUrl,
+            servedSpaceIds,
+            certificatePath,
+            privateKeyPath,
+          }
+        : {
+            mode: relayMode,
+            listen,
+            publicUrl,
+            servedSpaceIds,
+            certificatePath: null,
+            privateKeyPath: null,
+          }
     setMessage("Configuring Private Relay...")
-    void actions.configurePrivateRelay(mode, host, Number(port)).then(
+    void actions.configurePrivateRelay(configuration).then(
       (relay) => setMessage(`Private Relay configured at ${relay.host}:${relay.port}.`),
       () => setMessage("Private Relay configuration failed."),
     )
@@ -61,14 +88,43 @@ export function RelaysScreen({
         <form className="form-stack" onSubmit={privateRelay}>
           <h2>Private Provider</h2>
           <label htmlFor="private-mode">TLS termination</label>
-          <select id="private-mode" name="mode">
+          <select
+            id="private-mode"
+            name="mode"
+            onChange={(event) =>
+              setRelayMode(
+                event.currentTarget.value === "native_tls" ? "native_tls" : "external_termination",
+              )
+            }
+            value={relayMode}
+          >
             <option value="native_tls">Native embedded TLS</option>
             <option value="external_termination">Optional external termination</option>
           </select>
-          <label htmlFor="private-host">Host</label>
-          <input id="private-host" name="host" required />
-          <label htmlFor="private-port">Port</label>
-          <input id="private-port" max={65535} min={0} name="port" required type="number" />
+          <label htmlFor="private-listen">Listen address</label>
+          <input id="private-listen" name="listen" required />
+          <label htmlFor="private-public-url">Public HTTPS URL</label>
+          <input
+            id="private-public-url"
+            name="public-url"
+            pattern="https://.*"
+            required
+            type="url"
+          />
+          <label htmlFor="private-spaces">Served Space IDs</label>
+          <textarea id="private-spaces" name="served-spaces" required rows={3} />
+          <p className="field-help">Separate multiple Space IDs with commas or line breaks.</p>
+          <label htmlFor="private-certificate">TLS certificate path</label>
+          <input
+            id="private-certificate"
+            name="certificate-path"
+            required={relayMode === "native_tls"}
+          />
+          <label htmlFor="private-key">TLS private key path</label>
+          <input id="private-key" name="private-key-path" required={relayMode === "native_tls"} />
+          <p className="field-help">
+            Native TLS requires both local paths. External termination ignores both fields.
+          </p>
           <button disabled={actions === undefined} type="submit">
             Configure Private
           </button>
