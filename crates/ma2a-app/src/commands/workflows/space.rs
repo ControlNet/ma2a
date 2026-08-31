@@ -140,6 +140,11 @@ fn read_owner_only_invitation(path: &Path) -> Result<String, AppError> {
         os::unix::fs::{MetadataExt as _, PermissionsExt as _},
     };
 
+    if !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file()) {
+        return Err(AppError::Usage(
+            "invite file must be an owner-only regular file",
+        ));
+    }
     let mut file = rustix::fs::open(
         path,
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
@@ -150,9 +155,8 @@ fn read_owner_only_invitation(path: &Path) -> Result<String, AppError> {
     let metadata = file
         .metadata()
         .map_err(|_| AppError::Usage("invite file must be an owner-only regular file"))?;
-    let current_user = rustix::process::geteuid().as_raw();
     if !metadata.is_file()
-        || metadata.uid() != current_user
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.permissions().mode() & 0o7777 != 0o600
     {
         return Err(AppError::Usage(
