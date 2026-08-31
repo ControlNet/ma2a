@@ -11,7 +11,7 @@ pub(super) async fn create(
 ) -> Result<CommandResult, ProtocolError> {
     let space_id = context
         .handle
-        .create_owned_space()
+        .create_owned_space(name.to_owned())
         .await
         .map_err(|_| ProtocolError::INTERNAL)?;
     Ok(CommandResult::space_created(

@@ -92,10 +92,10 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
     }
 
-    pub(crate) async fn create_owned_space(&self) -> Result<SpaceId, RuntimeError> {
+    pub(crate) async fn create_owned_space(&self, name: String) -> Result<SpaceId, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(Command::CreateOwnedSpace { reply })
+            .send(Command::CreateOwnedSpace { name, reply })
             .await
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
         response
