@@ -3,6 +3,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use serde_json::json;
+
 use crate::release;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -25,23 +27,39 @@ fn release_policy_accepts_the_exact_six_target_contract() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn release_policy_rejects_a_silently_removed_target() -> TestResult {
-    // Given
-    let root = fixture_root()?;
-    write_support_matrix(&root, true)?;
-    write_dist_config(&root, false)?;
-
-    // When
-    let error = release::check(&root)
-        .err()
-        .ok_or("release policy unexpectedly passed")?;
-
-    // Then
-    assert!(error.to_string().contains("aarch64-pc-windows-msvc"));
-    fs::remove_dir_all(root)?;
-    Ok(())
+macro_rules! missing_target_test {
+    ($name:ident, $target:literal) => {
+        #[test]
+        fn $name() -> TestResult {
+            assert_missing_target_rejected($target)
+        }
+    };
 }
+
+missing_target_test!(
+    release_policy_rejects_missing_arm64_macos_target,
+    "aarch64-apple-darwin"
+);
+missing_target_test!(
+    release_policy_rejects_missing_arm64_windows_target,
+    "aarch64-pc-windows-msvc"
+);
+missing_target_test!(
+    release_policy_rejects_missing_arm64_linux_target,
+    "aarch64-unknown-linux-gnu"
+);
+missing_target_test!(
+    release_policy_rejects_missing_x86_64_macos_target,
+    "x86_64-apple-darwin"
+);
+missing_target_test!(
+    release_policy_rejects_missing_x86_64_windows_target,
+    "x86_64-pc-windows-msvc"
+);
+missing_target_test!(
+    release_policy_rejects_missing_x86_64_linux_target,
+    "x86_64-unknown-linux-gnu"
+);
 
 #[test]
 fn release_policy_rejects_installers() -> TestResult {
@@ -107,28 +125,71 @@ fn fixture_root() -> Result<std::path::PathBuf, std::io::Error> {
     Ok(root)
 }
 
-fn write_support_matrix(
-    root: &std::path::Path,
-    support_windows_arm64: bool,
-) -> Result<(), std::io::Error> {
+fn assert_missing_target_rejected(missing_target: &str) -> TestResult {
+    // Given
+    let root = fixture_root()?;
+    write_support_matrix(&root, false)?;
+    write_dist_config(&root, false)?;
+    let path = root.join("docs/platform-support.json");
+    let mut matrix = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&path)?)?;
+    let entries = matrix
+        .get_mut("targets")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or("support matrix targets are not an array")?;
+    entries.retain(|entry| {
+        entry.get("target").and_then(serde_json::Value::as_str) != Some(missing_target)
+    });
+    fs::write(path, serde_json::to_vec(&matrix)?)?;
+
+    // When
+    let error = release::check(&root)
+        .err()
+        .ok_or("release policy unexpectedly passed")?;
+
+    // Then
+    assert!(error.to_string().contains(missing_target));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn write_support_matrix(root: &std::path::Path, support_windows_arm64: bool) -> TestResult {
     let targets = targets()
         .into_iter()
         .map(|target| {
-            let status = if target.starts_with("x86_64")
-                || (support_windows_arm64 && target == "aarch64-pc-windows-msvc")
-            {
-                "supported"
+            let supported = target.starts_with("x86_64")
+                || (support_windows_arm64 && target == "aarch64-pc-windows-msvc");
+            let probe = if supported {
+                json!({
+                    "command": "cargo check --target example",
+                    "exit_code": 0,
+                    "outcome": "passed",
+                    "output": "Finished successfully on the target runner"
+                })
             } else {
-                "deferred"
+                json!({
+                    "command": "cargo check --target example",
+                    "exit_code": 101,
+                    "outcome": "host-limited",
+                    "output": "Observed target toolchain is unavailable on this host"
+                })
             };
-            format!(r#"{{"target":"{target}","status":"{status}"}}"#)
+            json!({
+                "target": target,
+                "status": if supported { "supported" } else { "deferred" },
+                "evidence_host": "x86_64-unknown-linux-gnu",
+                "compile": &probe,
+                "smoke": &probe,
+                "package": probe,
+                "blocker": if supported { "none" } else { "Observed host toolchain limitation" },
+                "re_evaluate": "Run on the matching native target runner"
+            })
         })
-        .collect::<Vec<_>>()
-        .join(",");
+        .collect::<Vec<_>>();
     fs::write(
         root.join("docs/platform-support.json"),
-        format!(r#"{{"schema_version":2,"targets":[{targets}]}}"#),
-    )
+        serde_json::to_vec(&json!({"schema_version": 2, "targets": targets}))?,
+    )?;
+    Ok(())
 }
 
 fn write_dist_config(

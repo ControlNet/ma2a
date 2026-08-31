@@ -26,6 +26,8 @@ codes and captured blocker output are in `platform-support.json`. Linux ARM64 is
 installing the GNU cross-compiler and QEMU. Apple ARM64 is re-evaluated on a native Apple ARM64
 runner. Windows ARM64 is re-evaluated only when both packaging and reliable execution are available.
 
-`cargo xtask check-release` rejects a configured release target that differs from the supported set
-and rejects a six-target matrix entry without either supported evidence or a concrete deferred
-blocker and re-evaluation condition.
+`cargo xtask check-support` requires this exact six-target set and rejects every entry without
+supported evidence or a concrete deferred blocker and re-evaluation condition. `cargo xtask
+check-release` runs that support check first, then rejects cargo-dist targets that differ from the
+validated supported subset. Release CI runs `check-support` before deriving its build matrix, so a
+missing supported or deferred architecture cannot silently remove a release job.

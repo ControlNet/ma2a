@@ -26,8 +26,10 @@ target. The app build script performs the frozen frontend install/build and embe
 `web/dist`; generated assets remain ignored and are never runtime source-tree dependencies. The
 archive and checksum are written below `target/distrib`.
 
-The architecture contract is checked by `cargo xtask check-support` against
-`docs/platform-support.json`. CI runs native x86_64 jobs for Linux, macOS, and Windows and
-records non-blocking ARM64 compile probes until native/QEMU smoke runners are available. Tag builds
-derive their release matrix directly from the targets marked `supported` and require archive,
-checksum, clean-room smoke, SPDX SBOM, dependency/license, and provenance gates before publication.
+The exact six-target architecture and evidence contract is checked by `cargo xtask check-support`
+against `docs/platform-support.json`; `check-release` composes that gate with cargo-dist policy.
+Release CI runs `check-support` before deriving native x86_64 jobs for Linux, macOS, and Windows.
+ARM64 targets remain evidenced as deferred until native/QEMU smoke runners are available. Tag builds
+then derive their release matrix from the validated targets marked `supported` and require archive,
+checksum, authenticated clean-room smoke, offline embedded-asset traversal, SPDX SBOM,
+dependency/license, and provenance gates before publication.

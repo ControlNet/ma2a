@@ -19,6 +19,12 @@ jobs:
       include: ${{ steps.targets.outputs.include }}
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+      - name: Validate six-target support contract
+        shell: bash
+        run: cargo run --locked -p xtask -- check-support
       - name: Derive supported release targets
         id: targets
         shell: bash

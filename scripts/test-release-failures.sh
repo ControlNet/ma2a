@@ -34,6 +34,25 @@ if ./scripts/validate-release.sh "$missing" "$target" >/dev/null 2>&1; then
   exit 1
 fi
 
+mkdir "$temporary/external-extracted"
+tar -xJf "$archive" -C "$temporary/external-extracted"
+external_prefix=$(find "$temporary/external-extracted" -mindepth 1 -maxdepth 1 -type d -print -quit)
+external_binary="$external_prefix/ma2a"
+reference_count=$(perl -0777 -ne '$count = () = m{/favicon\.svg}g; print $count' "$external_binary")
+[[ "$reference_count" -eq 1 ]] || {
+  printf 'expected one embedded favicon reference, observed %s\n' "$reference_count" >&2
+  exit 1
+}
+perl -0777 -pi -e 's{/favicon\.svg}{//bad.test/x}' "$external_binary"
+external="$temporary/external-reference.tar.xz"
+tar -cJf "$external" -C "$temporary/external-extracted" "$(basename "$external_prefix")"
+printf '%s *%s\n' "$(sha256sum "$external" | awk '{print $1}')" "$(basename "$external")" > "${external}.sha256"
+./scripts/validate-release.sh "$external" "$target" >/dev/null
+if ./scripts/smoke-release.sh "$external" "$target" >/dev/null 2>&1; then
+  printf 'archive with an external runtime asset reference unexpectedly passed smoke\n' >&2
+  exit 1
+fi
+
 incomplete="$temporary/incomplete.spdx.json"
 jq '.packages |= map(select(.name != "react"))' "$sbom" > "$incomplete"
 if ./scripts/validate-release-metadata.sh "$archive" "$incomplete" "$report" >/dev/null 2>&1; then
