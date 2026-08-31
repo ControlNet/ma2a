@@ -69,6 +69,9 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::ui_password_set(ui_auth.clone()),
         CommandResult::ui_password_reset(ui_auth.clone()),
         CommandResult::sessions_revoked(ui_auth),
+        CommandResult::ui_opened(ma2a_runtime::api::UiOpenView::new(
+            "http://127.0.0.1:12345",
+        )?),
         CommandResult::snapshot(snapshot),
         CommandResult::shutting_down(),
     ])
@@ -137,7 +140,7 @@ fn command_json() -> Vec<String> {
         r#"{"version":1,"operation":"space_list"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"space_show","space_id":"{SPACE_ID}"}}"#),
         format!(
-            r#"{{"version":1,"operation":"space_invite","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}"}}"#
+            r#"{{"version":1,"operation":"space_invite","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","ttl_ms":300000,"output_path":"/tmp/invite.ticket"}}"#
         ),
         format!(
             r#"{{"version":1,"operation":"space_redeem","request_id":"{REQUEST_ID}","invitation":"ticket"}}"#
@@ -152,11 +155,17 @@ fn command_json() -> Vec<String> {
             r#"{{"version":1,"operation":"control_sync_trigger","request_id":"{REQUEST_ID}","peer_endpoint_id":"{ENDPOINT_ID}"}}"#
         ),
         format!(
-            r#"{{"version":1,"operation":"private_relay_configure","request_id":"{REQUEST_ID}","mode":"native_tls","host":"relay.example","port":443}}"#
+            r#"{{"version":1,"operation":"private_relay_configure","request_id":"{REQUEST_ID}","mode":"native_tls","listen":"127.0.0.1:443","public_url":"https://relay.example","served_space_ids":["{SPACE_ID}"],"certificate_path":"/tmp/relay.cert.pem","private_key_path":"/tmp/relay.key.pem"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"private_relay_disable","request_id":"{REQUEST_ID}"}}"#
         ),
         r#"{"version":1,"operation":"private_relay_status"}"#.to_owned(),
         format!(
             r#"{{"version":1,"operation":"public_relay_configure","request_id":"{REQUEST_ID}","url":"https://relay.example"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"public_relay_disable","request_id":"{REQUEST_ID}"}}"#
         ),
         r#"{"version":1,"operation":"public_relay_status"}"#.to_owned(),
         format!(
@@ -169,6 +178,7 @@ fn command_json() -> Vec<String> {
             r#"{{"version":1,"operation":"ui_password_reset","request_id":"{REQUEST_ID}","password":"new correct horse battery staple"}}"#
         ),
         format!(r#"{{"version":1,"operation":"session_revoke_all","request_id":"{REQUEST_ID}"}}"#),
+        r#"{"version":1,"operation":"ui_open"}"#.to_owned(),
         r#"{"version":1,"operation":"snapshot_fetch"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
     ]
