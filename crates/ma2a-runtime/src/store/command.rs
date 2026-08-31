@@ -48,7 +48,7 @@ pub(crate) enum StoreCommand {
         creation: crate::enrollment::IssuedEnrollmentCreation,
         creator: ma2a_core::EndpointId,
         owner_addr: ma2a_net::EndpointAddr,
-        reply: oneshot::Sender<Result<ma2a_core::SignedInviteTicket, RuntimeError>>,
+        reply: oneshot::Sender<Result<ma2a_store::CreatedEnrollmentInvite, RuntimeError>>,
     },
     CancelEnrollmentInvite {
         invitation_id: [u8; 16],
