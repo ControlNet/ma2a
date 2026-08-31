@@ -77,6 +77,22 @@ fn invitation_redeem_help_is_handled_by_clap() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn invitation_value_with_help_is_rejected_without_echoing_it() -> TestResult {
+    // Given
+    let probe = "argv-probe-marker-with-help";
+
+    // When
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "invite", "redeem", probe, "--help"])
+        .output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    assert_probe_absent(probe, &output.stdout, &output.stderr)?;
+    Ok(())
+}
+
 fn assert_probe_absent(probe: &str, stdout: &[u8], stderr: &[u8]) -> TestResult {
     let stdout = String::from_utf8(stdout.to_vec())?;
     let stderr = String::from_utf8(stderr.to_vec())?;
