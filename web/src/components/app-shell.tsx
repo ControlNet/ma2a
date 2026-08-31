@@ -1,4 +1,4 @@
-import type { MouseEvent, ReactNode } from "react"
+import { type MouseEvent, type ReactNode, useEffect, useRef } from "react"
 
 import { type RoutePath, RUNTIME_ROUTES, type RuntimeRoutePath } from "../routes"
 import type { RuntimeViewData } from "../view-model"
@@ -19,6 +19,16 @@ export function AppShell({
   readonly onNavigate: (path: RoutePath) => void
   readonly children: ReactNode
 }): ReactNode {
+  const navigationRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const navigation = navigationRef.current
+    const activeRoute = navigation?.querySelector<HTMLElement>(`a[href="${path}"]`)
+    if (navigation === null || activeRoute === undefined || activeRoute === null) return
+    navigation.scrollLeft = Math.max(
+      0,
+      activeRoute.offsetLeft - (navigation.clientWidth - activeRoute.clientWidth) / 2,
+    )
+  }, [path])
   const navigate = (event: MouseEvent<HTMLAnchorElement>, target: RoutePath): void => {
     event.preventDefault()
     onNavigate(target)
@@ -41,7 +51,7 @@ export function AppShell({
           </span>
         </a>
         <div className="route-navigation">
-          <nav aria-describedby="route-scroll-hint" aria-label="Runtime">
+          <nav aria-describedby="route-scroll-hint" aria-label="Runtime" ref={navigationRef}>
             {RUNTIME_ROUTES.map((route) => (
               <a
                 aria-current={path === route.path ? "page" : undefined}
