@@ -85,18 +85,7 @@ async fn scenario_a_target_resolution_uses_only_the_targets_signed_r2_data() -> 
         .address_lookup(lookup)
         .bind()
         .await?;
-    let accept = tokio::spawn({
-        let server = server.clone();
-        async move {
-            let incoming = server
-                .accept()
-                .await
-                .ok_or_else(|| std::io::Error::other("server stopped"))?;
-            incoming
-                .await
-                .map_err(|error| std::io::Error::other(error.to_string()))
-        }
-    });
+    let accept = accept_one(server.clone());
 
     // When
     let connection = tokio::time::timeout(
@@ -122,7 +111,10 @@ async fn scenario_a_target_resolution_uses_only_the_targets_signed_r2_data() -> 
         "record_sequences": [7],
         "supplied_relay_candidates": [r2.to_string()],
         "excluded_space_relay": r1.to_string(),
+        "iroh_observed_effective_home": r2.to_string(),
+        "iroh_observed_path": selected_relay.as_ref().map(ToString::to_string),
         "iroh_selected_relay_path": selected_relay.map(|url| url.to_string()),
+        "reachability_state": "RelayPathObserved",
         "connection_remote": connection.remote_id().to_string()
     }));
     connection.close(0_u8.into(), b"");
@@ -130,4 +122,18 @@ async fn scenario_a_target_resolution_uses_only_the_targets_signed_r2_data() -> 
     server.close().await;
     let _accepted = accept.await??;
     Ok(())
+}
+
+fn accept_one(
+    server: Endpoint,
+) -> tokio::task::JoinHandle<Result<iroh::endpoint::Connection, std::io::Error>> {
+    tokio::spawn(async move {
+        let incoming = server
+            .accept()
+            .await
+            .ok_or_else(|| std::io::Error::other("server stopped"))?;
+        incoming
+            .await
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    })
 }
