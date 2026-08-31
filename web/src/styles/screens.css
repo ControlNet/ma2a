@@ -139,6 +139,7 @@ tbody th {
 
 .operation-grid {
   display: grid;
+  align-items: start;
   gap: var(--space-6);
   grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
   padding-block: var(--space-5);

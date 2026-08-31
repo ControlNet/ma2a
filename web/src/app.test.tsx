@@ -78,6 +78,30 @@ test("describes the narrow route navigation affordance", () => {
   expect(screen.getByText("Scroll for more routes")).toBeInTheDocument()
 })
 
+test("scrolls the current narrow route into the visible navigation strip without moving focus", () => {
+  const clientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth")
+  const offsetLeft = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetLeft")
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get() {
+      return this.tagName === "NAV" ? 375 : 90
+    },
+  })
+  Object.defineProperty(HTMLElement.prototype, "offsetLeft", {
+    configurable: true,
+    get() {
+      return this.getAttribute("aria-current") === "page" ? 500 : 0
+    },
+  })
+
+  render(<App initialPath="/settings" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(screen.getByRole("navigation", { name: "Runtime" }).scrollLeft).toBe(357.5)
+  expect(document.activeElement).toBe(document.body)
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidth ?? { configurable: true })
+  Object.defineProperty(HTMLElement.prototype, "offsetLeft", offsetLeft ?? { configurable: true })
+})
+
 test.each([
   [EMPTY_RUNTIME_FIXTURE, "No Spaces yet"],
   [ONE_RUNTIME_FIXTURE, "Operations"],
