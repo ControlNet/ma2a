@@ -15,6 +15,11 @@ impl Actor {
             .send(RuntimeEvent::shutting_down(self.state.revision));
         self.control_rounds.shutdown().await;
         self.echo_tasks.shutdown().await;
+        if let Some(server) = self.private_relay_server.take() {
+            server.shutdown().await.map_err(|_| {
+                crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Shutdown)
+            })?;
+        }
         let endpoint_closed = self.endpoint.shutdown().await?;
         self.relay_observer.await?;
         let observation = self.store.observe(&self.state).await;

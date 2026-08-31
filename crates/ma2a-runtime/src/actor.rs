@@ -18,8 +18,11 @@ mod echo;
 #[cfg(test)]
 mod effective_data_test;
 mod handle;
+mod handle_relay;
+mod invite;
 mod local_control;
 mod membership;
+mod relay_configuration;
 mod shutdown;
 mod snapshot;
 pub(crate) use command::Command;
@@ -27,7 +30,6 @@ pub use handle::RuntimeHandle;
 pub(crate) use shutdown::ShutdownAck;
 
 pub(crate) const COMMAND_CAPACITY: usize = 32;
-pub(crate) const EVENT_CAPACITY: usize = 32;
 
 pub(crate) struct Actor {
     pub(crate) state: RuntimeStatus,
@@ -45,6 +47,7 @@ pub(crate) struct Actor {
     pub(crate) lookup: SpaceAddressLookup,
     relay_observations: mpsc::Receiver<IrohRelayObservation>,
     relay_observer: tokio::task::JoinHandle<()>,
+    private_relay_server: Option<ma2a_net::PrivateRelayServer>,
     pub(crate) control_rounds: JoinSet<(
         crate::control_actor::ScheduledControlRound,
         Result<Option<crate::control_sync::ControlRoundOutcome>, RuntimeError>,
@@ -74,7 +77,7 @@ impl Actor {
         clock: Arc<dyn crate::RuntimeClock>,
     ) -> (Self, RuntimeHandle, CancellationToken) {
         let (command_sender, commands) = mpsc::channel(COMMAND_CAPACITY);
-        let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let (events, _) = broadcast::channel(COMMAND_CAPACITY);
         #[cfg(test)]
         let control_schedule_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let cancellation = CancellationToken::new();
@@ -105,6 +108,7 @@ impl Actor {
             lookup,
             relay_observations,
             relay_observer,
+            private_relay_server: None,
             control_rounds: JoinSet::new(),
             control_queue: crate::control_actor::ControlRoundQueue::default(),
             synchronized_control_peers: BTreeSet::new(),
@@ -115,10 +119,7 @@ impl Actor {
         (actor, handle, cancellation)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "single select loop keeps actor command ordering explicit"
-    )]
+    #[expect(clippy::too_many_lines, reason = "actor command ordering is explicit")]
     pub(crate) async fn run(mut self) -> Result<ShutdownAck, RuntimeError> {
         let _receiver_count = self.events.send(RuntimeEvent::ready(self.state.revision));
         self.schedule_control_round(crate::control_sync::ControlRoundTrigger::Startup, None);
@@ -135,25 +136,19 @@ impl Actor {
                     }
                     Some(Command::Snapshot(reply)) => self.handle_snapshot(reply).await,
                     Some(Command::ObserveMemberships { memberships, reply }) => {
-                        let result = self.observe_memberships(memberships).await;
-                        let _unsent = reply.send(result);
+                        let _unsent = reply.send(self.observe_memberships(memberships).await);
+                    }
+                    Some(Command::CreateOwnedSpace { reply }) => {
+                        let _unsent = reply.send(self.create_owned_space().await);
+                    }
+                    Some(Command::RevokeOwnedSpaceMember { space_id, endpoint_id, reply }) => {
+                        let _unsent = reply.send(self.revoke_owned_space_member(space_id, endpoint_id).await);
                     }
                     Some(Command::CreateEnrollmentInvite { creation, reply }) => {
-                        let result = match self.clock.now_ms()
-                            .ok()
-                            .and_then(|value| u64::try_from(value).ok())
-                            .and_then(|now_ms| creation.issue_at(now_ms).ok())
-                        {
-                            Some(creation) => self.store.create_enrollment_invite(
-                                creation, self.state.endpoint_id, self.state.endpoint_addr.clone(),
-                            ).await.map_err(|_| EnrollmentError::internal()),
-                            None => Err(EnrollmentError::internal()),
-                        };
-                        let _unsent = reply.send(result);
+                        let _unsent = reply.send(self.create_enrollment_invite(creation).await);
                     }
                     Some(Command::RedeemEnrollment { attempt, reply }) => {
-                        let result = self.redeem_enrollment(*attempt).await;
-                        let _unsent = reply.send(result);
+                        let _unsent = reply.send(self.redeem_enrollment(*attempt).await);
                     }
                     Some(Command::CancelEnrollmentInvite { invitation_id, reply }) => {
                         let result = self.store.cancel_enrollment_invite(invitation_id).await
@@ -214,6 +209,12 @@ impl Actor {
                     Some(Command::PublishRelayAdvertisements { config, expires_at_ms, reply }) => {
                         let result = self.publish_local_relay(config, expires_at_ms).await;
                         let _unsent = reply.send(result);
+                    }
+                    Some(Command::RelayConfiguration { reply }) => {
+                        let _unsent = reply.send(self.store.relay_configuration().await);
+                    }
+                    Some(Command::SetRelayConfiguration { configuration, reply }) => {
+                        let _unsent = reply.send(self.set_relay_configuration(configuration).await);
                     }
                     Some(Command::Echo { request_id, target, payload, reply }) => {
                         self.spawn_outbound_echo(

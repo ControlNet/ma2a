@@ -92,6 +92,36 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
     }
 
+    pub(crate) async fn create_owned_space(&self) -> Result<SpaceId, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::CreateOwnedSpace { reply })
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
+        response
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
+    }
+
+    pub(crate) async fn revoke_owned_space_member(
+        &self,
+        space_id: SpaceId,
+        endpoint_id: EndpointId,
+    ) -> Result<u64, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::RevokeOwnedSpaceMember {
+                space_id,
+                endpoint_id,
+                reply,
+            })
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
+        response
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
+    }
+
     pub(crate) async fn adopt_revision(&self, revision: u64) -> Result<u64, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.commands
