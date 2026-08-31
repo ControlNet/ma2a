@@ -49,6 +49,10 @@ fn status_json_uses_the_local_api_envelope() -> TestResult {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the process scenario keeps creation, restart, and durable label proofs visible"
+)]
 fn space_create_commits_membership_through_the_runtime() -> TestResult {
     // Given
     let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
@@ -126,6 +130,30 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
             .and_then(Value::as_array)
             .map(Vec::len),
         Some(1)
+    );
+    assert_eq!(
+        snapshot
+            .pointer("/result/payload/spaces/0/name")
+            .and_then(Value::as_str),
+        Some("Personal")
+    );
+
+    let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("shutdown")
+        .output();
+    let restarted = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .args(["space", "list", "--json"])
+        .output()?;
+    let restarted_response: Value = serde_json::from_slice(&restarted.stdout)?;
+    assert_eq!(
+        restarted_response
+            .pointer("/result/payload/0/name")
+            .and_then(Value::as_str),
+        Some("Personal")
     );
 
     let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
