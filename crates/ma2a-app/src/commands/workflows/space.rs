@@ -15,6 +15,10 @@ use crate::{AppError, cli};
 #[path = "space_windows.rs"]
 mod space_windows;
 
+#[cfg(any(windows, test))]
+#[path = "space_windows_policy.rs"]
+mod space_windows_policy;
+
 pub(crate) async fn run(
     state_dir: &Path,
     paths: IpcPaths,
