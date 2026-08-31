@@ -47,7 +47,7 @@ only confirms navigation, disclosure, and state replacement.
 | Elevated surface | `--surface-elevated` | `#ffffff` | Menus and focused overlays only |
 | Ink | `--text-primary` | `#17202a` | Headings, values, body text |
 | Secondary ink | `--text-secondary` | `#465565` | Descriptions and metadata |
-| Muted ink | `--text-muted` | `#697787` | Disabled and tertiary metadata |
+| Muted ink | `--text-muted` | `#5f6d7c` | Disabled and tertiary metadata |
 | Rule | `--border-default` | `#cfd7df` | Structural dividers and fields |
 | Subtle rule | `--border-subtle` | `#e2e7ec` | Row separators |
 | Accent | `--accent-primary` | `#185fa7` | Links, selected navigation, primary actions |

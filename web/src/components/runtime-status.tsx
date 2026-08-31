@@ -75,3 +75,15 @@ export function PendingRuntime(): ReactNode {
     </div>
   )
 }
+
+export function RuntimeLoadError({ onRetry }: { readonly onRetry: () => void }): ReactNode {
+  return (
+    <div className="runtime-load-error" role="alert">
+      <strong>Runtime snapshot is unavailable</strong>
+      <span>The console could not load authoritative Runtime state.</span>
+      <button onClick={onRetry} type="button">
+        Retry
+      </button>
+    </div>
+  )
+}

@@ -7,6 +7,7 @@ import {
   type WebSession,
 } from "./api/web-auth"
 import { AppShell } from "./components/app-shell"
+import { RuntimeLoadError } from "./components/runtime-status"
 import { isRoutePath, ROUTE_PATHS, type RoutePath } from "./routes"
 import { createRuntimeActions, type RuntimeActions } from "./runtime-actions"
 import { RuntimeController } from "./runtime-controller"
@@ -58,6 +59,7 @@ export function App({
   const [path, setPath] = useState<RoutePath>(initialPath ?? browserPath)
   const [session, setSession] = useState<WebSession | undefined>(currentWebSession)
   const [liveRuntime, setLiveRuntime] = useState<RuntimeViewData | undefined>(runtime)
+  const [runtimeLoadFailed, setRuntimeLoadFailed] = useState(false)
   const [controller, setController] = useState<RuntimeController | undefined>()
   const controlled = initialPath !== undefined
   const displayedRuntime = controlled ? runtime : liveRuntime
@@ -91,13 +93,16 @@ export function App({
   useEffect(() => {
     if (controlled || session === undefined) return
     const active = new RuntimeController({
-      onRuntime: setLiveRuntime,
+      onRuntime: (nextRuntime) => {
+        setRuntimeLoadFailed(false)
+        setLiveRuntime(nextRuntime)
+      },
       onSessionExpired: () => {
         setSession(undefined)
         setLiveRuntime(undefined)
         navigate(ROUTE_PATHS.login)
       },
-      onError: () => undefined,
+      onError: () => setRuntimeLoadFailed(true),
     })
     setController(active)
     void active.start()
@@ -124,6 +129,14 @@ export function App({
           navigate(ROUTE_PATHS.login)
         }
 
+  const sessionsRevoked = (): void => {
+    controller?.stop()
+    setSession(undefined)
+    setLiveRuntime(undefined)
+    setRuntimeLoadFailed(false)
+    navigate(ROUTE_PATHS.login)
+  }
+
   if (path === ROUTE_PATHS.login) {
     return <LoginScreen onLogin={login} />
   }
@@ -133,7 +146,14 @@ export function App({
   return (
     <AppShell onNavigate={navigate} path={path} runtime={displayedRuntime}>
       {path === ROUTE_PATHS.settings ? (
-        <SettingsScreen actions={actions} onLogout={logout} runtime={displayedRuntime} />
+        <SettingsScreen
+          actions={actions}
+          onLogout={logout}
+          onSessionsRevoked={sessionsRevoked}
+          runtime={displayedRuntime}
+        />
+      ) : displayedRuntime === undefined && runtimeLoadFailed ? (
+        <RuntimeLoadError onRetry={() => void controller?.refresh()} />
       ) : (
         routeContent(path, displayedRuntime, actions)
       )}

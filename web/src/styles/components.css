@@ -130,7 +130,8 @@
 }
 
 .empty-state,
-.pending-runtime {
+.pending-runtime,
+.runtime-load-error {
   display: grid;
   gap: var(--space-2);
   min-block-size: 10rem;
@@ -141,11 +142,23 @@
 }
 
 .empty-state p,
-.pending-runtime span {
+.pending-runtime span,
+.runtime-load-error span {
   max-inline-size: 42rem;
   margin: 0;
   color: var(--text-secondary);
   line-height: 1.55;
+}
+
+.runtime-load-error {
+  background: var(--status-error-surface);
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.runtime-load-error button {
+  justify-self: start;
+  margin-block-start: var(--space-3);
 }
 
 .skeleton-lines {
