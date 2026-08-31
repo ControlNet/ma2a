@@ -11,6 +11,9 @@ use crate::{
 
 use super::{ConnectionContext, IpcError};
 
+mod relay;
+mod space;
+
 pub(super) async fn authoritative_revision(
     command: &Command,
     current_revision: u64,
@@ -29,7 +32,15 @@ pub(super) async fn authoritative_revision(
                 .await
                 .map_err(IpcError::from)
         }
-        "control_sync_trigger" => context
+        "space_create"
+        | "space_invite"
+        | "space_redeem"
+        | "space_revoke"
+        | "private_relay_configure"
+        | "private_relay_disable"
+        | "public_relay_configure"
+        | "public_relay_disable"
+        | "control_sync_trigger" => context
             .handle
             .status()
             .await
@@ -47,6 +58,10 @@ const fn capabilities() -> CapabilityFlags {
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "closed local API dispatch remains explicit"
+)]
 pub(super) async fn execute(
     command: &Command,
     status: &RuntimeStatus,
@@ -81,6 +96,50 @@ pub(super) async fn execute(
             )
             .map_err(|_| ProtocolError::INTERNAL)?,
         ),
+        "space_create" => {
+            space::create(
+                context,
+                command
+                    .space_create_name()
+                    .ok_or(ProtocolError::INVALID_INPUT)?,
+            )
+            .await?
+        }
+        "space_list" => space::list(context).await?,
+        "space_show" => {
+            space::show(
+                context,
+                command
+                    .space_show_id()
+                    .ok_or(ProtocolError::INVALID_INPUT)?,
+            )
+            .await?
+        }
+        "space_invite" => space::invite(context, command).await?,
+        "space_redeem" => {
+            let (request_id, invitation) =
+                command.space_redeem().ok_or(ProtocolError::INVALID_INPUT)?;
+            space::redeem(context, request_id, invitation).await?
+        }
+        "space_revoke" => {
+            let (space_id, endpoint_id) =
+                command.space_revoke().ok_or(ProtocolError::INVALID_INPUT)?;
+            space::revoke(context, space_id, endpoint_id).await?
+        }
+        "private_relay_configure" => relay::private_configure(context, command).await?,
+        "private_relay_disable" => relay::private_disable(context).await?,
+        "private_relay_status" => relay::private_status(context).await?,
+        "public_relay_configure" => {
+            relay::public_configure(
+                context,
+                command
+                    .public_relay_url()
+                    .ok_or(ProtocolError::INVALID_INPUT)?,
+            )
+            .await?
+        }
+        "public_relay_disable" => relay::public_disable(context).await?,
+        "public_relay_status" => relay::public_status(context).await?,
         "control_sync_status" => {
             let peer = command
                 .control_sync_peer()
@@ -136,6 +195,25 @@ pub(super) async fn execute(
                 .await
                 .map_err(|_| ProtocolError::UNAVAILABLE)?,
         ),
+        "ui_open" => {
+            if !context
+                .control
+                .password_is_set()
+                .await
+                .map_err(|_| ProtocolError::INTERNAL)?
+            {
+                return Err(ProtocolError::CONFLICT);
+            }
+            CommandResult::ui_opened(
+                crate::api::UiOpenView::new(
+                    context
+                        .web_url
+                        .as_deref()
+                        .ok_or(ProtocolError::UNAVAILABLE)?,
+                )
+                .map_err(|_| ProtocolError::INTERNAL)?,
+            )
+        }
         "graceful_shutdown" => CommandResult::shutting_down(),
         "ui_password_set" | "ui_password_reset" | "session_revoke_all" => context
             .control
