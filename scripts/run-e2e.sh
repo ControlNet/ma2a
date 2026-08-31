@@ -4,8 +4,8 @@ set -eu
 runs=${MA2A_E2E_RUNS:-3}
 output=${MA2A_E2E_OUTPUT:-target/e2e-evidence}
 junit=target/nextest/ci/junit.xml
-expected_tests=42
-expected_records=9
+expected_tests=46
+expected_records=13
 
 case "$runs" in
   ''|*[!0-9]*|0) printf 'MA2A_E2E_RUNS must be a positive integer\n' >&2; exit 2 ;;
@@ -43,8 +43,8 @@ while [ "$run" -le "$runs" ]; do
     def ids: (.endpoint_ids | type == "object" and length > 0 and all(.[]; type == "string" and length > 0));
     def strings: type == "array" and all(.[]; type == "string" and length > 0);
     def numbers: type == "array" and length > 0 and all(.[]; type == "number");
-    length == 9 and
-    ([.[].scenario] | sort) == (["A","B","C","D","E","F","control-sync-active-dial","persistent-identity-restart","signer-claim-mismatch"] | sort) and
+    length == 13 and
+    ([.[].scenario] | sort) == (["A","B","C","D","E","F","control-sync-active-dial","persistent-identity-restart","relay-outage-recovery","signer-claim-mismatch","slow-ipc-frame","sse-overflow-receiver-cleanup","store-process-kill-recovery"] | sort) and
     (group_by(.scenario) | all(length == 1)) and
     all(.[]; ids) and
     all(.[];
@@ -77,8 +77,32 @@ while [ "$run" -le "$runs" ]; do
         .private_space_leaked == false and (.address_high_water | numbers) and
         (.manifest_high_water | numbers) and (.relay_high_water | numbers)
       elif .scenario == "persistent-identity-restart" then
-        exact(["endpoint_ids","revision_after","revision_before","scenario"]) and
-        .endpoint_ids.before == .endpoint_ids.after and .revision_after >= .revision_before
+        exact(["control_high_water_after","control_high_water_before","endpoint_ids","scenario"]) and
+        .endpoint_ids.before == .endpoint_ids.after and
+        .control_high_water_before == .control_high_water_after and
+        (.control_high_water_before | type == "array" and length == 2 and all(.[];
+          exact(["address_hash","address_sequence","manifest_generation","manifest_hash","relay_hash","relay_sequence","space_id"]) and
+          (.manifest_generation | type == "number" and . > 0) and
+          (.address_sequence | type == "number" and . > 0) and
+          (.relay_sequence | type == "number" and . > 0) and
+          (.manifest_hash | type == "string" and length == 64) and
+          (.address_hash | type == "string" and length == 64) and
+          (.relay_hash | type == "string" and length == 64)))
+      elif .scenario == "slow-ipc-frame" then
+        exact(["bounded_rejection","declared_payload_bytes","endpoint_ids","partial_payload_bytes","scenario","unrelated_client_progressed"]) and
+        .bounded_rejection == true and .unrelated_client_progressed == true and
+        .partial_payload_bytes == 1 and .declared_payload_bytes > .partial_payload_bytes
+      elif .scenario == "store-process-kill-recovery" then
+        exact(["all_or_none","endpoint_ids","integrity_check","revision","scenario","space_rows"]) and
+        .all_or_none == true and .integrity_check == "ok" and .revision == 0 and .space_rows == 0
+      elif .scenario == "sse-overflow-receiver-cleanup" then
+        exact(["dropped_receiver_permit_reused","endpoint_ids","queued_revisions","resync_required","scenario"]) and
+        .dropped_receiver_permit_reused == true and .resync_required == true and .queued_revisions > 8
+      elif .scenario == "relay-outage-recovery" then
+        exact(["endpoint_ids","failed_relay","public_internet_used","recovered","recovered_relay","scenario"]) and
+        .recovered == true and .public_internet_used == false and
+        (.failed_relay | type == "string" and length > 0) and
+        (.recovered_relay | type == "string" and length > 0) and .failed_relay != .recovered_relay
       elif .scenario == "signer-claim-mismatch" then
         exact(["accepted","address_high_water","endpoint_ids","relay_high_water","revision","scenario"]) and
         .accepted == false
@@ -86,7 +110,13 @@ while [ "$run" -le "$runs" ]; do
   ' "$evidence" >/dev/null
   records=$(wc -l < "$evidence")
   sha256sum "$log" "$report" "$evidence" > "$output/run-$run.sha256"
+  sha256sum -c "$output/run-$run.sha256" >/dev/null
   printf 'run=%s exit=0 tests=%s records=%s junit=%s evidence=%s\n' \
     "$run" "$expected_tests" "$records" "$report" "$evidence" >> "$output/summary.txt"
   run=$((run + 1))
 done
+
+test "$(grep -c '^run=[0-9][0-9]* exit=0 ' "$output/summary.txt")" -eq "$runs"
+test "$(find "$output" -maxdepth 1 -name 'run-*.junit.xml' -type f | wc -l)" -eq "$runs"
+test "$(find "$output" -maxdepth 1 -name 'run-*.jsonl' -type f | wc -l)" -eq "$runs"
+test "$(find "$output" -maxdepth 1 -name 'run-*.sha256' -type f | wc -l)" -eq "$runs"
