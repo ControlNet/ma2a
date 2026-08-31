@@ -67,7 +67,7 @@ fn round_trips_every_command_variant_through_the_transport_neutral_codec() {
         r#"{"version":1,"operation":"space_list"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"space_show","space_id":"{SPACE_ID}"}}"#),
         format!(
-            r#"{{"version":1,"operation":"space_invite","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}"}}"#
+            r#"{{"version":1,"operation":"space_invite","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","ttl_ms":300000,"output_path":"/tmp/invite.ticket"}}"#
         ),
         format!(
             r#"{{"version":1,"operation":"space_redeem","request_id":"{REQUEST_ID}","invitation":"ticket"}}"#
@@ -82,11 +82,17 @@ fn round_trips_every_command_variant_through_the_transport_neutral_codec() {
             r#"{{"version":1,"operation":"control_sync_trigger","request_id":"{REQUEST_ID}","peer_endpoint_id":"{ENDPOINT_ID}"}}"#
         ),
         format!(
-            r#"{{"version":1,"operation":"private_relay_configure","request_id":"{REQUEST_ID}","mode":"native_tls","host":"relay.example","port":443}}"#
+            r#"{{"version":1,"operation":"private_relay_configure","request_id":"{REQUEST_ID}","mode":"native_tls","listen":"127.0.0.1:443","public_url":"https://relay.example","served_space_ids":["{SPACE_ID}"],"certificate_path":"/tmp/relay.cert.pem","private_key_path":"/tmp/relay.key.pem"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"private_relay_disable","request_id":"{REQUEST_ID}"}}"#
         ),
         r#"{"version":1,"operation":"private_relay_status"}"#.to_owned(),
         format!(
             r#"{{"version":1,"operation":"public_relay_configure","request_id":"{REQUEST_ID}","url":"https://relay.example"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"public_relay_disable","request_id":"{REQUEST_ID}"}}"#
         ),
         r#"{"version":1,"operation":"public_relay_status"}"#.to_owned(),
         format!(
@@ -99,6 +105,7 @@ fn round_trips_every_command_variant_through_the_transport_neutral_codec() {
             r#"{{"version":1,"operation":"ui_password_reset","request_id":"{REQUEST_ID}","password":"new correct horse battery staple"}}"#
         ),
         format!(r#"{{"version":1,"operation":"session_revoke_all","request_id":"{REQUEST_ID}"}}"#),
+        r#"{"version":1,"operation":"ui_open"}"#.to_owned(),
         r#"{"version":1,"operation":"snapshot_fetch"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
     ];
@@ -215,8 +222,8 @@ fn rejects_oversize_input_before_parsing_or_callbacks() {
 #[test]
 fn freezes_version_variants_gap_policy_and_schema_hash() {
     assert_eq!(LOCAL_API_VERSION, 1);
-    assert_eq!(COMMAND_NAMES.len(), 21);
-    assert_eq!(RESULT_NAMES.len(), 21);
+    assert_eq!(COMMAND_NAMES.len(), 24);
+    assert_eq!(RESULT_NAMES.len(), 22);
     assert_eq!(ERROR_NAMES.len(), 9);
     assert_eq!(
         ERROR_NAMES,
@@ -267,7 +274,7 @@ fn generated_types_embed_the_exact_machine_contract() {
     }
     let generated_types = generated.replacen(LOCAL_API_SCHEMA_JSON, "", 1);
     assert!(!generated_types.contains("authorized_via"));
-    assert!(!generated_types.contains("private_key"));
+    assert!(!generated_types.contains("\"private_key\""));
     assert!(!generated_types.contains("session_bearer"));
     assert!(!generated_types.contains("invite_secret"));
 }
