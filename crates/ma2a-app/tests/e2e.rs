@@ -8,6 +8,8 @@ mod control_sync_e2e_adversarial;
 mod control_sync_e2e_artifacts;
 #[path = "control_sync_e2e/support.rs"]
 mod control_sync_e2e_support;
+#[path = "daemon_lifecycle.rs"]
+mod daemon_lifecycle;
 #[path = "e2e/harness.rs"]
 mod harness;
 #[path = "e2e/ipc.rs"]
@@ -22,6 +24,8 @@ mod relay_lifecycle;
 mod relay_matrix;
 #[path = "e2e/relay_scenarios.rs"]
 mod relay_scenarios;
+#[path = "e2e/relay_sync.rs"]
+mod relay_sync;
 #[path = "e2e/relay_target.rs"]
 mod relay_target;
 
@@ -33,6 +37,8 @@ mod authorization_isolation;
 mod echo;
 #[path = "enrollment.rs"]
 mod enrollment;
+#[path = "enrollment_replay.rs"]
+mod enrollment_replay;
 #[path = "../../ma2a-net/tests/relay_tls_paths.rs"]
 mod relay_tls;
 #[path = "../../ma2a-runtime/tests/web_security.rs"]
