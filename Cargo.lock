@@ -2085,21 +2085,28 @@ name = "ma2a-app"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "axum",
  "iroh",
  "iroh-base",
+ "iroh-dns",
  "iroh-relay",
  "iroh-tickets",
  "ma2a-core",
  "ma2a-net",
  "ma2a-runtime",
  "ma2a-store",
+ "n0-future",
+ "rcgen",
  "rpassword",
  "rusqlite",
  "rustix",
+ "rustls-pki-types",
  "serde_json",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "windows-sys 0.61.2",
+ "tower",
  "zeroize",
 ]
 
