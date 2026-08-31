@@ -4,6 +4,20 @@ use super::Actor;
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
 impl Actor {
+    pub(super) async fn relay_runtime_status(
+        &self,
+    ) -> Result<super::RelayRuntimeStatus, RuntimeError> {
+        let configuration = self.store.relay_configuration().await?;
+        Ok(super::RelayRuntimeStatus {
+            configuration,
+            private_listen_addr: self
+                .private_relay_server
+                .as_ref()
+                .map(PrivateRelayServer::listen_addr),
+            public_relay_online: self.state.relay.public_relay_online(),
+        })
+    }
+
     pub(super) async fn set_relay_configuration(
         &mut self,
         configuration: ma2a_store::RelayConfiguration,

@@ -53,8 +53,11 @@ pub(super) async fn private_configure(
         .await
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
     Ok(CommandResult::private_relay_configured(private_view(
-        &configuration,
-        true,
+        &context
+            .handle
+            .relay_status()
+            .await
+            .map_err(|_| ProtocolError::INTERNAL)?,
     )?))
 }
 
@@ -77,23 +80,23 @@ pub(super) async fn private_disable(
         .await
         .map_err(|_| ProtocolError::INTERNAL)?;
     Ok(CommandResult::private_relay_status(private_view(
-        &configuration,
-        false,
+        &context
+            .handle
+            .relay_status()
+            .await
+            .map_err(|_| ProtocolError::INTERNAL)?,
     )?))
 }
 
 pub(super) async fn private_status(
     context: &ConnectionContext,
 ) -> Result<CommandResult, ProtocolError> {
-    let configuration = context
+    let status = context
         .handle
-        .relay_configuration()
+        .relay_status()
         .await
         .map_err(|_| ProtocolError::INTERNAL)?;
-    Ok(CommandResult::private_relay_status(private_view(
-        &configuration,
-        configuration.private_provider_enabled,
-    )?))
+    Ok(CommandResult::private_relay_status(private_view(&status)?))
 }
 
 pub(super) async fn public_configure(
@@ -112,8 +115,13 @@ pub(super) async fn public_configure(
         .set_relay_configuration(configuration)
         .await
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
+    let status = context
+        .handle
+        .relay_status()
+        .await
+        .map_err(|_| ProtocolError::INTERNAL)?;
     Ok(CommandResult::public_relay_configured(
-        PublicRelayView::new(true, Some(url.to_owned()), false)
+        PublicRelayView::new(true, Some(url.to_owned()), status.public_relay_online)
             .map_err(|_| ProtocolError::INVALID_INPUT)?,
     ))
 }
@@ -141,30 +149,37 @@ pub(super) async fn public_disable(
 pub(super) async fn public_status(
     context: &ConnectionContext,
 ) -> Result<CommandResult, ProtocolError> {
-    let configuration = context
+    let status = context
         .handle
-        .relay_configuration()
+        .relay_status()
         .await
         .map_err(|_| ProtocolError::INTERNAL)?;
     PublicRelayView::new(
-        configuration.public_fallback_enabled,
-        configuration.public_relay_urls.first().cloned(),
-        false,
+        status.configuration.public_fallback_enabled,
+        status.configuration.public_relay_urls.first().cloned(),
+        status.public_relay_online,
     )
     .map(CommandResult::public_relay_status)
     .map_err(|_| ProtocolError::INTERNAL)
 }
 
 fn private_view(
-    configuration: &RelayConfiguration,
-    online: bool,
+    status: &crate::actor::RelayRuntimeStatus,
 ) -> Result<PrivateRelayView, ProtocolError> {
+    let configuration: &RelayConfiguration = &status.configuration;
     let configured = configuration.private_provider_enabled;
-    let address: SocketAddr = configuration
-        .listener_address
-        .as_deref()
-        .unwrap_or("127.0.0.1:0")
-        .parse()
+    let address: SocketAddr = status
+        .private_listen_addr
+        .map_or_else(
+            || {
+                configuration
+                    .listener_address
+                    .as_deref()
+                    .unwrap_or("127.0.0.1:0")
+                    .parse()
+            },
+            Ok,
+        )
         .map_err(|_| ProtocolError::INTERNAL)?;
     let mode = match configuration.transport {
         Some(RelayTransportConfiguration::NativeTls { .. }) => "native_tls",
@@ -174,6 +189,6 @@ fn private_view(
         configured,
         RelayAddress::new(mode, &address.ip().to_string(), address.port())
             .map_err(|_| ProtocolError::INTERNAL)?,
-        online,
+        status.private_listen_addr.is_some(),
     ))
 }
