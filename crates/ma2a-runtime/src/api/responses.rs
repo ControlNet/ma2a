@@ -8,13 +8,9 @@ use super::{
     codec_fields::encode_hex,
     result_data::{
         EchoReplyView, HandshakeView, PrivateRelayView, PublicRelayView, RuntimeStatusView,
-        echo_reply_value, handshake_value, private_relay_value, public_relay_value, status_value,
-        ui_auth_result_value,
+        UiOpenView,
     },
-    snapshot::{
-        ControlSyncView, EndpointView, RuntimeSnapshot, SpaceView, UiAuthView, endpoint_value,
-        space_value,
-    },
+    snapshot::{ControlSyncView, EndpointView, RuntimeSnapshot, SpaceView, UiAuthView},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +34,7 @@ pub(super) enum ResultKind {
     UiPasswordSet(UiAuthView),
     UiPasswordReset(UiAuthView),
     SessionsRevoked(UiAuthView),
+    UiOpened(UiOpenView),
     Snapshot(RuntimeSnapshot),
     ShuttingDown,
 }
@@ -82,6 +79,7 @@ impl CommandResult {
             | ResultKind::PublicRelayConfigured(_)
             | ResultKind::PublicRelayStatus(_)
             | ResultKind::Echo(_)
+            | ResultKind::UiOpened(_)
             | ResultKind::Snapshot(_)
             | ResultKind::ShuttingDown => None,
         }
@@ -181,6 +179,10 @@ impl CommandResult {
     pub const fn sessions_revoked(value: UiAuthView) -> Self {
         Self(ResultKind::SessionsRevoked(value))
     }
+    /// Creates a daemon-owned loopback Web endpoint result.
+    pub const fn ui_opened(value: UiOpenView) -> Self {
+        Self(ResultKind::UiOpened(value))
+    }
 
     /// Returns the exact result discriminant.
     pub const fn result_type(&self) -> &'static str {
@@ -204,6 +206,7 @@ impl CommandResult {
             ResultKind::UiPasswordSet(_) => "ui_password_set",
             ResultKind::UiPasswordReset(_) => "ui_password_reset",
             ResultKind::SessionsRevoked(_) => "sessions_revoked",
+            ResultKind::UiOpened(_) => "ui_opened",
             ResultKind::Snapshot(_) => "snapshot",
             ResultKind::ShuttingDown => "shutting_down",
         }
@@ -257,7 +260,7 @@ pub fn encode_response(response: &ApiResponse) -> Result<Vec<u8>, ApiError> {
         "version": response.version,
         "request_id": response.request_id.map(|id| encode_hex(id.as_bytes())),
         "revision": response.revision,
-        "result": result_value(&response.result),
+        "result": super::response_value::result_value(&response.result),
     });
     bounded_json(&value)
 }
@@ -282,34 +285,4 @@ fn bounded_json(value: &Value) -> Result<Vec<u8>, ApiError> {
     } else {
         Ok(encoded)
     }
-}
-
-fn result_value(result: &CommandResult) -> Value {
-    let payload = match &result.0 {
-        ResultKind::Handshake(value) => handshake_value(value),
-        ResultKind::Status(value) => status_value(*value),
-        ResultKind::EndpointInfo(value) => endpoint_value(value),
-        ResultKind::SpaceCreated(value)
-        | ResultKind::Space(value)
-        | ResultKind::SpaceInvitationCreated(value)
-        | ResultKind::SpaceRedeemed(value)
-        | ResultKind::SpaceRevoked(value) => space_value(value),
-        ResultKind::Spaces(values) => Value::Array(values.iter().map(space_value).collect()),
-        ResultKind::ControlSyncStatus(value) | ResultKind::ControlSyncTriggered(value) => {
-            json!({"peer_endpoint_ids": value.peers.iter().map(|id| encode_hex(id.as_bytes())).collect::<Vec<_>>(), "synchronized": value.synchronized})
-        }
-        ResultKind::PrivateRelayConfigured(value) | ResultKind::PrivateRelayStatus(value) => {
-            private_relay_value(value)
-        }
-        ResultKind::PublicRelayConfigured(value) | ResultKind::PublicRelayStatus(value) => {
-            public_relay_value(value)
-        }
-        ResultKind::Echo(value) => echo_reply_value(value),
-        ResultKind::UiPasswordSet(value)
-        | ResultKind::UiPasswordReset(value)
-        | ResultKind::SessionsRevoked(value) => ui_auth_result_value(value),
-        ResultKind::Snapshot(value) => value.to_value(),
-        ResultKind::ShuttingDown => json!({}),
-    };
-    json!({"type": result.result_type(), "payload": payload})
 }

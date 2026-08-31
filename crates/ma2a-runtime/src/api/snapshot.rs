@@ -57,6 +57,10 @@ impl SpaceView {
             })
         }
     }
+
+    pub(crate) const fn id(&self) -> SpaceId {
+        self.id
+    }
 }
 
 /// Control synchronization state keyed only by peer Endpoint.
@@ -226,6 +230,10 @@ impl RuntimeSnapshot {
     /// Returns the authoritative state revision.
     pub const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub(crate) fn spaces(&self) -> &[SpaceView] {
+        &self.spaces
     }
 
     pub(crate) fn to_value(&self) -> Value {
