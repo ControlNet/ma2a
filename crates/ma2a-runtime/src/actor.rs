@@ -43,7 +43,7 @@ pub(crate) struct Actor {
     enrollment_calls: mpsc::Receiver<EnrollmentCall>,
     pub(crate) control_calls: mpsc::Receiver<ControlCall>,
     echo_calls: mpsc::Receiver<EchoCall>,
-    pub(crate) echo_tasks: JoinSet<()>,
+    echo_tasks: JoinSet<echo::EchoTaskCompletion>,
     pub(crate) echo_audit: crate::echo_audit::EchoAuditLog,
     pub(crate) echo_metrics: EchoMetrics,
     pub(crate) lookup: SpaceAddressLookup,
@@ -189,7 +189,9 @@ impl Actor {
                     self.handle_echo_call(call).await;
                 },
                 joined = self.echo_tasks.join_next(), if !self.echo_tasks.is_empty() => {
-                    let _completed = joined;
+                    if let Some(Ok(completion)) = joined {
+                        self.finish_echo(completion).await;
+                    }
                 },
                 observation = self.relay_observations.recv() => if let Some(observation) = observation {
                     self.observe_iroh_relay(observation).await?;
