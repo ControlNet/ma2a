@@ -44,6 +44,7 @@ pub use address_records::{
 pub use config::StoreConfig;
 pub use control_batch::ControlBatch;
 pub use control_state::ControlSpaceState;
+pub use enrollment::CreatedEnrollmentInvite;
 pub use enrollment_models::{
     AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption,
 };

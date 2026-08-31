@@ -13,6 +13,25 @@ use crate::{
     space_rows::{load_chain, replace_chain},
 };
 
+/// Signed invitation paired with the revision committed atomically with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreatedEnrollmentInvite {
+    revision: u64,
+    ticket: SignedInviteTicket,
+}
+
+impl CreatedEnrollmentInvite {
+    /// Returns the committed repository revision.
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the signed single-use invitation.
+    pub const fn ticket(&self) -> &SignedInviteTicket {
+        &self.ticket
+    }
+}
+
 impl Repository {
     /// Signs and durably records a single-use enrollment invitation.
     ///
@@ -30,7 +49,7 @@ impl Repository {
         owner_addr: EndpointAddr,
         validity: InviteValidity,
         entropy: &InviteEntropy,
-    ) -> Result<SignedInviteTicket, StoreError> {
+    ) -> Result<CreatedEnrollmentInvite, StoreError> {
         let chain = self
             .load_space_chain(space_id)?
             .ok_or(StoreError::SpaceNotFound)?;
@@ -52,7 +71,7 @@ impl Repository {
         }
         let ticket =
             SignedInviteTicket::sign(space_id, creator, owner_addr, validity, entropy, &secret)?;
-        self.create_invitation(&crate::InvitationRecord::new(
+        let revision = self.create_invitation(&crate::InvitationRecord::new(
             ticket.invitation_id(),
             space_id,
             ticket.secret_digest(),
@@ -65,7 +84,7 @@ impl Repository {
             })?,
             ticket.encoded_owner_addr().to_vec(),
         ))?;
-        Ok(ticket)
+        Ok(CreatedEnrollmentInvite { revision, ticket })
     }
 
     /// Atomically consumes an invitation and commits the candidate's authority generation.
