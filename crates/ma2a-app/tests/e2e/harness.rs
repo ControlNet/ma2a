@@ -142,9 +142,30 @@ pub(super) async fn observed_home_endpoint(
             {
                 break;
             }
-            tokio::task::yield_now().await;
+            homes.updated().await?;
+        }
+        TestValue::Ok(())
+    })
+    .await??;
+    Ok(endpoint)
+}
+
+pub(super) async fn wait_for_home_status(
+    endpoint: &Endpoint,
+    expected: &RelayUrl,
+) -> TestValue<bool> {
+    let mut homes = endpoint.home_relay_status();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if homes
+                .get()
+                .iter()
+                .any(|status| status.url() == expected && status.is_connected())
+            {
+                return TestValue::Ok(true);
+            }
+            homes.updated().await?;
         }
     })
-    .await?;
-    Ok(endpoint)
+    .await?
 }
