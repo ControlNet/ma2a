@@ -11,6 +11,10 @@ use serde_json::{Map, Value, json};
 
 use crate::{AppError, cli};
 
+#[cfg(windows)]
+#[path = "space_windows.rs"]
+mod space_windows;
+
 pub(crate) async fn run(
     state_dir: &Path,
     paths: IpcPaths,
@@ -105,7 +109,7 @@ async fn invite(
         }
         cli::InviteCommand::Redeem(arguments) => {
             let invitation = match arguments.file {
-                Some(path) => std::fs::read_to_string(path)?,
+                Some(path) => read_owner_only_invitation(&path)?,
                 None if arguments.stdin => {
                     let mut input = String::new();
                     io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
@@ -126,6 +130,47 @@ async fn invite(
             .await
         }
     }
+}
+
+#[cfg(unix)]
+fn read_owner_only_invitation(path: &Path) -> Result<String, AppError> {
+    use rustix::fs::{Mode, OFlags};
+    use std::{
+        fs::File,
+        os::unix::fs::{MetadataExt as _, PermissionsExt as _},
+    };
+
+    let mut file = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|_| AppError::Usage("invite file must be an owner-only regular file"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| AppError::Usage("invite file must be an owner-only regular file"))?;
+    let current_user = rustix::process::geteuid().as_raw();
+    if !metadata.is_file()
+        || metadata.uid() != current_user
+        || metadata.permissions().mode() & 0o7777 != 0o600
+    {
+        return Err(AppError::Usage(
+            "invite file must be an owner-only regular file",
+        ));
+    }
+    let mut invitation = String::new();
+    io::Read::read_to_string(&mut io::Read::take(&mut file, 65_537), &mut invitation)
+        .map_err(|_| AppError::Usage("invite file is unreadable or oversized"))?;
+    if invitation.len() > 65_536 {
+        return Err(AppError::Usage("invite file is unreadable or oversized"));
+    }
+    Ok(invitation)
+}
+
+#[cfg(windows)]
+fn read_owner_only_invitation(path: &Path) -> Result<String, AppError> {
+    space_windows::read_owner_only_invitation(path)
 }
 
 struct SyncRequest {
