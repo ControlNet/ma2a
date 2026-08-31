@@ -65,6 +65,18 @@ fn invitation_from_stdin_is_not_reflected_on_rejection() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn invitation_redeem_help_is_handled_by_clap() -> TestResult {
+    // Given / When
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "invite", "redeem", "--help"])
+        .output()?;
+
+    // Then
+    assert!(output.status.success());
+    Ok(())
+}
+
 fn assert_probe_absent(probe: &str, stdout: &[u8], stderr: &[u8]) -> TestResult {
     let stdout = String::from_utf8(stdout.to_vec())?;
     let stderr = String::from_utf8(stderr.to_vec())?;
