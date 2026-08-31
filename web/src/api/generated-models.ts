@@ -93,6 +93,10 @@ export type EchoReplyView = {
   readonly payload: string
 }
 
+export type UiOpenView = {
+  readonly url: string
+}
+
 export type CommandResult =
   | { readonly type: "handshake"; readonly payload: HandshakeView }
   | { readonly type: "status"; readonly payload: RuntimeStatusView }
@@ -113,5 +117,6 @@ export type CommandResult =
   | { readonly type: "ui_password_set"; readonly payload: UiAuthView }
   | { readonly type: "ui_password_reset"; readonly payload: UiAuthView }
   | { readonly type: "sessions_revoked"; readonly payload: UiAuthView }
+  | { readonly type: "ui_opened"; readonly payload: UiOpenView }
   | { readonly type: "snapshot"; readonly payload: RuntimeSnapshot }
   | { readonly type: "shutting_down"; readonly payload: Record<string, never> }
