@@ -127,6 +127,8 @@ impl Actor {
         &mut self,
         observation: IrohRelayObservation,
     ) -> Result<(), RuntimeError> {
+        let direct_reachable = observation.endpoint_addr().ip_addrs().next().is_some();
+        self.state.direct_reachable = direct_reachable;
         let endpoint_changed = self.state.endpoint_data != *observation.endpoint_data();
         let relay_changed = self.state.relay.observe(&observation);
         if !endpoint_changed && !relay_changed {

@@ -61,7 +61,7 @@ impl Actor {
                     self.state.relay.public_relay_online(),
                 ),
                 ReachabilityView::new(
-                    self.state.connectivity.is_direct_only(),
+                    self.state.direct_reachable,
                     matches!(
                         self.state.relay_reachability(),
                         ma2a_core::RelayReachability::IrohHomeConnected

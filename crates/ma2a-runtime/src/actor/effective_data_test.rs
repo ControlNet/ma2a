@@ -123,6 +123,7 @@ async fn actor_publishes_exact_next_record_to_every_space_for_user_data_only_cha
         memberships,
         ready: true,
         connectivity: Connectivity::DIRECT_ONLY,
+        direct_reachable: false,
         relay: crate::reachability::RelayReachabilityState::new(relay_map),
     };
     let echo_metrics = endpoint.echo_metrics();

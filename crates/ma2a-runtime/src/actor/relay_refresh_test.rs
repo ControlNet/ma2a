@@ -59,6 +59,7 @@ async fn actor_relay_refresh_automatically_publishes_next_address_record() -> Te
         memberships: repository.memberships_for(identity.endpoint_id)?,
         ready: true,
         connectivity: Connectivity::DIRECT_ONLY,
+        direct_reachable: false,
         relay: crate::reachability::RelayReachabilityState::new(initial_map),
     };
     let echo_metrics = endpoint.echo_metrics();

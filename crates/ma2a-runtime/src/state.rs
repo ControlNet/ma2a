@@ -34,6 +34,7 @@ pub struct RuntimeStatus {
     pub(crate) memberships: BTreeSet<SpaceId>,
     pub(crate) ready: bool,
     pub(crate) connectivity: Connectivity,
+    pub(crate) direct_reachable: bool,
     pub(crate) relay: RelayReachabilityState,
 }
 
