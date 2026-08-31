@@ -32,15 +32,7 @@ pub(super) async fn authoritative_revision(
                 .await
                 .map_err(IpcError::from)
         }
-        "space_create"
-        | "space_invite"
-        | "space_redeem"
-        | "space_revoke"
-        | "private_relay_configure"
-        | "private_relay_disable"
-        | "public_relay_configure"
-        | "public_relay_disable"
-        | "control_sync_trigger" => context
+        operation if uses_post_execution_actor_revision(operation) => context
             .handle
             .status()
             .await
@@ -48,6 +40,22 @@ pub(super) async fn authoritative_revision(
             .map_err(IpcError::from),
         _ => Ok(current_revision),
     }
+}
+
+fn uses_post_execution_actor_revision(operation: &str) -> bool {
+    matches!(
+        operation,
+        "space_create"
+            | "space_invite"
+            | "space_redeem"
+            | "space_revoke"
+            | "private_relay_configure"
+            | "private_relay_disable"
+            | "public_relay_configure"
+            | "public_relay_disable"
+            | "control_sync_trigger"
+            | "echo_call"
+    )
 }
 
 const fn capabilities() -> CapabilityFlags {
@@ -234,5 +242,15 @@ const fn echo_protocol_error(error: EchoError) -> ProtocolError {
             ProtocolError::UNAVAILABLE
         }
         EchoError::Internal => ProtocolError::INTERNAL,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uses_post_execution_actor_revision;
+
+    #[test]
+    fn echo_response_uses_post_execution_actor_revision() {
+        assert!(uses_post_execution_actor_revision("echo_call"));
     }
 }
