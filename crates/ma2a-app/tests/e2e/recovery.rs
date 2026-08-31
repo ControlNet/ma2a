@@ -29,6 +29,7 @@ fn stale_ipc_endpoint_is_recovered_by_a_real_daemon_process() -> TestResult {
         .arg("--state-dir")
         .arg(&state_path)
         .arg("status")
+        .arg("--json")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()?;
@@ -44,7 +45,7 @@ fn stale_ipc_endpoint_is_recovered_by_a_real_daemon_process() -> TestResult {
         response
             .pointer("/result/type")
             .and_then(serde_json::Value::as_str),
-        Some("status")
+        Some("snapshot")
     );
     #[cfg(unix)]
     {
