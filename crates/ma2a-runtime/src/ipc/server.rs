@@ -41,6 +41,7 @@ pub struct LocalApiServer {
     handle: RuntimeHandle,
     control: CurrentUserRuntime,
     replay: Arc<Mutex<BTreeMap<RequestId, ReplayEntry>>>,
+    web_url: Option<String>,
 }
 
 impl LocalApiServer {
@@ -60,7 +61,15 @@ impl LocalApiServer {
             handle,
             control,
             replay: Arc::new(Mutex::new(BTreeMap::new())),
+            web_url: None,
         })
+    }
+
+    /// Associates the already-bound daemon Web endpoint with local API discovery.
+    #[must_use]
+    pub fn with_web_url(mut self, web_url: String) -> Self {
+        self.web_url = Some(web_url);
+        self
     }
 
     /// Serves bounded concurrent connections until cancellation or graceful shutdown.
@@ -90,6 +99,7 @@ impl LocalApiServer {
                         control: self.control.clone(),
                         replay: Arc::clone(&self.replay),
                         shutdown_sender: shutdown_sender.clone(),
+                        web_url: self.web_url.clone(),
                     };
                     tasks.spawn(async move {
                         let _permit = permit;
@@ -120,6 +130,7 @@ struct ConnectionContext {
     control: CurrentUserRuntime,
     replay: Arc<Mutex<BTreeMap<RequestId, ReplayEntry>>>,
     shutdown_sender: mpsc::Sender<()>,
+    web_url: Option<String>,
 }
 
 async fn handle_connection(
