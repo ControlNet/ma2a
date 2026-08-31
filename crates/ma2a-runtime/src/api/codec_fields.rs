@@ -52,6 +52,22 @@ pub(crate) fn space_id(object: &Map<String, Value>, field: &str) -> Result<Space
     SpaceId::try_from(bytes.as_slice()).map_err(|_| ApiError::invalid_input())
 }
 
+pub(crate) fn space_ids(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Vec<SpaceId>, ApiError> {
+    object
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(ApiError::invalid_input)?
+        .iter()
+        .map(|value| {
+            let bytes = decode_hex::<32>(value.as_str().ok_or_else(ApiError::invalid_input)?)?;
+            SpaceId::try_from(bytes.as_slice()).map_err(|_| ApiError::invalid_input())
+        })
+        .collect()
+}
+
 pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
