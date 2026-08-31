@@ -115,6 +115,7 @@ impl Runtime {
             memberships: identity.memberships,
             ready: true,
             connectivity: Connectivity::DIRECT_ONLY,
+            direct_reachable: false,
             relay: crate::reachability::RelayReachabilityState::new(relay_map),
         };
         state.revision = store.observe(&state).await?.max(boot_revision);

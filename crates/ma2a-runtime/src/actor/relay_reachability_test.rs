@@ -76,6 +76,7 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
         memberships: repository.memberships_for(identity.endpoint_id)?,
         ready: true,
         connectivity: Connectivity::DIRECT_ONLY,
+        direct_reachable: false,
         relay: crate::reachability::RelayReachabilityState::new(relay_map),
     };
     let awaiting = RelayReachability::AwaitingIrohHome;
@@ -92,6 +93,11 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
         lookup,
         Arc::new(FixedClock),
         None,
+    );
+    let initial_snapshot = actor.snapshot().await?.to_value();
+    assert_eq!(
+        initial_snapshot.pointer("/reachability/direct"),
+        Some(&serde_json::json!(false))
     );
     let observation = IrohRelayObservation::new(
         identity.endpoint_id,
