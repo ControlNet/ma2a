@@ -6,12 +6,15 @@ use super::Actor;
 use crate::{error::RuntimeError, state::RuntimeEvent};
 
 impl Actor {
-    pub(super) async fn create_owned_space(&mut self) -> Result<SpaceId, RuntimeError> {
+    pub(super) async fn create_owned_space(
+        &mut self,
+        name: String,
+    ) -> Result<SpaceId, RuntimeError> {
         let created_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;
         let member = SpaceMemberV1::new(
             self.state.endpoint_id,
-            "local-endpoint".to_owned(),
+            name,
             MemberCapabilities::new(true, true),
         )
         .map_err(|_| crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Control))?;
