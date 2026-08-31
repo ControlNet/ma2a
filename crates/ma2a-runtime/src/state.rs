@@ -94,6 +94,7 @@ impl RuntimeStatus {
 enum EventKind {
     Ready,
     MembershipsChanged,
+    EchoSummaryChanged,
     ShuttingDown,
 }
 
@@ -116,6 +117,13 @@ impl RuntimeEvent {
         Self {
             revision,
             kind: EventKind::MembershipsChanged,
+        }
+    }
+
+    pub(crate) const fn echo_summary_changed(revision: u64) -> Self {
+        Self {
+            revision,
+            kind: EventKind::EchoSummaryChanged,
         }
     }
 
