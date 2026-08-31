@@ -93,6 +93,54 @@ fn invitation_value_with_help_is_rejected_without_echoing_it() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn invitation_value_after_stdin_is_rejected_without_echoing_it() -> TestResult {
+    // Given
+    let probe = "argv-probe-marker-after-stdin";
+
+    // When
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "invite", "redeem", "--stdin", probe])
+        .output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    assert_probe_absent(probe, &output.stdout, &output.stderr)?;
+    Ok(())
+}
+
+#[test]
+fn invitation_value_after_file_is_rejected_without_echoing_it() -> TestResult {
+    // Given
+    let probe = "argv-probe-marker-after-file";
+
+    // When
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "invite", "redeem", "--file", "safe.ticket", probe])
+        .output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    assert_probe_absent(probe, &output.stdout, &output.stderr)?;
+    Ok(())
+}
+
+#[test]
+fn inline_password_value_is_rejected_without_echoing_it() -> TestResult {
+    // Given
+    let probe = "argv-probe-marker-inline-password";
+
+    // When
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["ui", "password", "set", &format!("--password={probe}")])
+        .output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    assert_probe_absent(probe, &output.stdout, &output.stderr)?;
+    Ok(())
+}
+
 fn assert_probe_absent(probe: &str, stdout: &[u8], stderr: &[u8]) -> TestResult {
     let stdout = String::from_utf8(stdout.to_vec())?;
     let stderr = String::from_utf8(stderr.to_vec())?;
