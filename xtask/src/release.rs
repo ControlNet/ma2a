@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 use serde_json::Value as JsonValue;
 use toml::Value as TomlValue;
 
-use crate::error::XtaskError;
+use crate::{error::XtaskError, support};
 
 const REQUIRED_INCLUDES: [&str; 5] = [
     "LICENSE-APACHE",
@@ -16,6 +16,7 @@ const REQUIRED_INCLUDES: [&str; 5] = [
 pub(crate) fn check(root: &Path) -> Result<(), XtaskError> {
     let matrix_path = root.join("docs/platform-support.json");
     let config_path = root.join("dist-workspace.toml");
+    support::check(&matrix_path)?;
     let matrix = parse_json(&matrix_path)?;
     let config = parse_toml(&config_path)?;
     let mut violations = Vec::new();

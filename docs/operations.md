@@ -61,6 +61,7 @@ From a source checkout run:
 
 ```sh
 cargo run --locked -p xtask -- check-release
+cargo run --locked -p xtask -- check-support
 bunx @axodotdev/dist@0.32.0 plan --output-format=json --allow-dirty
 ./scripts/validate-release.sh target/distrib/ARCHIVE TARGET
 ./scripts/smoke-release.sh target/distrib/ARCHIVE TARGET
@@ -68,4 +69,7 @@ bunx @axodotdev/dist@0.32.0 plan --output-format=json --allow-dirty
 
 For downloaded assets, verify SHA-256 first and then run `gh attestation verify` as shown in
 [quickstart.md](quickstart.md). The SPDX SBOM must contain both Rust and production frontend
-packages, and the dependency/license report must have both `rust` and `frontend` sections.
+packages, and the dependency/license report must have both `rust` and `frontend` sections. The
+clean-room smoke logs only HTTP methods, paths, and statuses while proving failed unauthenticated
+access, browser login, authenticated snapshot access, logout revocation, and same-origin availability
+of every runtime asset referenced by the embedded HTML, CSS, and JavaScript graph.
