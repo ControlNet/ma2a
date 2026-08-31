@@ -109,14 +109,21 @@ async fn scenario_a_target_resolution_uses_only_the_targets_signed_r2_data() -> 
     assert_eq!(connection.remote_id(), target.public());
     assert_eq!(supplied, vec![TransportAddr::Relay(r2.clone())]);
     assert!(!supplied.contains(&TransportAddr::Relay(r1.clone())));
+    let selected_relay = connection.paths().iter().find_map(|path| {
+        (path.is_selected()).then(|| match path.remote_addr() {
+            TransportAddr::Relay(url) => Some(url.clone()),
+            TransportAddr::Ip(_) | TransportAddr::Custom(_) | _ => None,
+        })?
+    });
+    assert_eq!(selected_relay.as_ref(), Some(&r2));
     emit(&serde_json::json!({
         "scenario": "A",
         "endpoint_ids": {"target": target.public().to_string()},
         "record_sequences": [7],
         "supplied_relay_candidates": [r2.to_string()],
         "excluded_space_relay": r1.to_string(),
-        "iroh_observed_path": "relay",
-        "reachability_state": "connected"
+        "iroh_selected_relay_path": selected_relay.map(|url| url.to_string()),
+        "connection_remote": connection.remote_id().to_string()
     }));
     connection.close(0_u8.into(), b"");
     client.close().await;
