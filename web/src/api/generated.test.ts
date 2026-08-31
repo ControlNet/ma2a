@@ -49,11 +49,16 @@ test("machine schema describes nested commands, envelopes, results, and events",
   const schema = JSON.parse(LOCAL_API_SCHEMA_JSON)
 
   expect(schema.types.runtime_snapshot.fields.relay_candidates.items.ref).toBe("relay_candidate")
-  expect(schema.commands.space_invite.fields.peer_endpoint_id.ref).toBe("endpoint_id")
-  expect(schema.commands.private_relay_configure.fields.host.max_bytes).toBe(253)
+  expect(schema.commands.space_invite.fields.ttl_ms.maximum).toBe(300_000)
+  expect(schema.commands.space_invite.fields.output_path.ref).toBe("path")
+  expect(schema.commands.private_relay_configure.fields.served_space_ids.items.ref).toBe("space_id")
+  expect(schema.commands.private_relay_disable.fields.request_id.ref).toBe("request_id")
+  expect(schema.commands.public_relay_disable.fields.request_id.ref).toBe("request_id")
+  expect(schema.commands.ui_open.fields).toEqual({})
   expect(schema.responses.success.fields.request_id.nullable.ref).toBe("request_id")
   expect(schema.responses.error.fields.error.values).toEqual(ERROR_CODES)
   expect(schema.results.snapshot.payload.ref).toBe("runtime_snapshot")
+  expect(schema.results.ui_opened.payload.ref).toBe("ui_open")
   expect(schema.events.spaces_changed.fields.changed.ref).toBe("changed_space_ids")
 })
 
