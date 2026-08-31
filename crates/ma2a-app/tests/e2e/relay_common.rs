@@ -1,8 +1,12 @@
-use std::time::Duration;
+use std::{net::Ipv4Addr, time::Duration};
 
 use iroh::{Endpoint, EndpointAddr, RelayMode, endpoint::presets};
 use iroh_base::{SecretKey, TransportAddr};
 use ma2a_net::CONTROL_ALPN;
+use ma2a_net::{
+    PrivateRelayAccess, PrivateRelayProviderConfig, PrivateRelayProviderLocation,
+    PrivateRelayServer, PrivateRelayTransport,
+};
 
 use super::harness::{
     SpaceFixture, TempState, TestResult, create_space, emit, observed_home_endpoint,
@@ -12,7 +16,6 @@ use super::harness::{
 async fn scenario_c_members_of_either_space_connect_through_the_common_private_relay() -> TestResult
 {
     // Given
-    let (relay_map, relay_url, relay_server) = iroh::test_utils::run_relay_server().await?;
     let provider = SecretKey::from_bytes(&[0x77; 32]);
     let peer_x = SecretKey::from_bytes(&[0x7a; 32]);
     let peer_y = SecretKey::from_bytes(&[0x7b; 32]);
@@ -34,6 +37,23 @@ async fn scenario_c_members_of_either_space_connect_through_the_common_private_r
             issued_at_ms: 60,
         },
     )?;
+    let served_spaces = [authorization_x.space_id(), authorization_y.space_id()];
+    let access = PrivateRelayAccess::new(provider.public().into(), &served_spaces);
+    access.replace_from_spaces(&[authorization_x.clone(), authorization_y.clone()]);
+    assert!(access.admits(peer_x.public().into()));
+    assert!(access.admits(peer_y.public().into()));
+    let relay_config = PrivateRelayProviderConfig::new(
+        PrivateRelayProviderLocation::new(
+            (Ipv4Addr::LOCALHOST, 0).into(),
+            "https://relay.example.invalid".parse()?,
+        ),
+        served_spaces.to_vec(),
+        PrivateRelayTransport::ExternalTlsTermination,
+    )?;
+    let relay_server = PrivateRelayServer::spawn(&relay_config, access).await?;
+    let relay_url: iroh_base::RelayUrl =
+        format!("http://{}", relay_server.listen_addr()).parse()?;
+    let relay_map: iroh_relay::RelayMap = std::iter::once(relay_url.clone()).collect();
     let server = Endpoint::builder(presets::Minimal)
         .secret_key(provider.clone())
         .relay_mode(RelayMode::Custom(relay_map.clone()))
@@ -79,6 +99,11 @@ async fn scenario_c_members_of_either_space_connect_through_the_common_private_r
             "space_y_peer": peer_y.public().to_string()
         },
         "space_ids": [format!("{:?}", authorization_x.space_id()), format!("{:?}", authorization_y.space_id())],
+        "record_sequences": [],
+        "supplied_relay_candidates": [relay_url.to_string()],
+        "iroh_observed_effective_home": relay_url.to_string(),
+        "iroh_observed_path": relay_url.to_string(),
+        "reachability_state": "CommonPrivateRelayConnected",
         "public_fallback_enabled": false,
         "selected_relay_paths": [relay_url.to_string(), relay_url.to_string()]
     }));
@@ -87,7 +112,7 @@ async fn scenario_c_members_of_either_space_connect_through_the_common_private_r
     alice_client.close().await;
     bob_client.close().await;
     server.close().await;
-    drop(relay_server);
+    relay_server.shutdown().await?;
     Ok(())
 }
 
