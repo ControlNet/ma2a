@@ -26,12 +26,16 @@ mod relay_common;
 mod relay_lifecycle;
 #[path = "e2e/relay_matrix.rs"]
 mod relay_matrix;
+#[path = "e2e/relay_outage.rs"]
+mod relay_outage;
 #[path = "e2e/relay_scenarios.rs"]
 mod relay_scenarios;
 #[path = "e2e/relay_sync.rs"]
 mod relay_sync;
 #[path = "e2e/relay_target.rs"]
 mod relay_target;
+#[path = "e2e/web_sse.rs"]
+mod web_sse;
 
 #[path = "zero_space.rs"]
 mod authorization;

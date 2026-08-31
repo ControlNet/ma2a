@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt::Write as _, time::Duration};
 
 use iroh::SecretKey;
 use ma2a_core::{
@@ -88,10 +88,13 @@ async fn restart_preserves_endpoint_identity_and_control_high_water() -> TestRes
     // Given
     let fixture = support::control_fixture().await?;
     let config: StoreConfig = fixture.candidate_config();
+    let owner = Runtime::start_with_clock(fixture.owner_config(), support::clock()).await?;
     let first = Runtime::start_with_clock(config.clone(), support::clock()).await?;
     let first_id = first.handle().status().await?.endpoint_id();
+    tokio::time::timeout(Duration::from_secs(15), first.handle().sync_control()).await??;
     first.shutdown().await?;
-    let before = Repository::open(&config)?.revision()?;
+    owner.shutdown().await?;
+    let before = persisted_control_high_water(&config, &fixture)?;
 
     // When
     let restarted = Runtime::start_with_clock(config.clone(), support::clock()).await?;
@@ -99,19 +102,93 @@ async fn restart_preserves_endpoint_identity_and_control_high_water() -> TestRes
     restarted.shutdown().await?;
 
     // Then
-    let after = Repository::open(&config)?.revision()?;
+    let after = persisted_control_high_water(&config, &fixture)?;
     assert_eq!(second_id, first_id);
-    assert!(after >= before);
+    assert_eq!(after, before);
+    assert!(before.iter().all(|state| state.manifest_generation > 0));
+    assert!(before.iter().all(|state| state.address_sequence > 0));
+    assert!(before.iter().all(|state| state.relay_sequence > 0));
+    let before_evidence = before
+        .iter()
+        .map(PersistedControlHighWater::evidence)
+        .collect::<Vec<_>>();
+    let after_evidence = after
+        .iter()
+        .map(PersistedControlHighWater::evidence)
+        .collect::<Vec<_>>();
     emit(&serde_json::json!({
         "scenario": "persistent-identity-restart",
         "endpoint_ids": {
             "before": first_id.to_public_key()?.to_string(),
             "after": second_id.to_public_key()?.to_string()
         },
-        "revision_before": before,
-        "revision_after": after
+        "control_high_water_before": before_evidence,
+        "control_high_water_after": after_evidence
     }));
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PersistedControlHighWater {
+    space_id: String,
+    manifest_generation: u64,
+    manifest_hash: String,
+    address_sequence: u64,
+    address_hash: String,
+    relay_sequence: u64,
+    relay_hash: String,
+}
+
+impl PersistedControlHighWater {
+    fn evidence(&self) -> serde_json::Value {
+        serde_json::json!({
+            "space_id": self.space_id,
+            "manifest_generation": self.manifest_generation,
+            "manifest_hash": self.manifest_hash,
+            "address_sequence": self.address_sequence,
+            "address_hash": self.address_hash,
+            "relay_sequence": self.relay_sequence,
+            "relay_hash": self.relay_hash
+        })
+    }
+}
+
+fn persisted_control_high_water(
+    config: &StoreConfig,
+    fixture: &support::ControlFixture,
+) -> Result<Vec<PersistedControlHighWater>, Box<dyn std::error::Error + Send + Sync>> {
+    let repository = Repository::open(config)?;
+    fixture
+        .shared_spaces
+        .iter()
+        .map(|space_id| {
+            let chain = repository
+                .load_space_chain(*space_id)?
+                .ok_or("persisted manifest high-water missing")?;
+            let address = repository
+                .address_record(*space_id, fixture.owner_secret.public().into())?
+                .ok_or("persisted address high-water missing")?;
+            let relay = repository
+                .relay_advertisement(*space_id, fixture.owner_secret.public().into())?
+                .ok_or("persisted relay high-water missing")?;
+            Ok(PersistedControlHighWater {
+                space_id: format!("{space_id:?}"),
+                manifest_generation: chain.latest_generation(),
+                manifest_hash: hex(&chain.latest_hash()),
+                address_sequence: address.sequence(),
+                address_hash: hex(&address.record_hash()),
+                relay_sequence: relay.sequence(),
+                relay_hash: hex(&relay.advertisement_hash()),
+            })
+        })
+        .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut output, byte| {
+        let _result = write!(output, "{byte:02x}");
+        output
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
