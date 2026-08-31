@@ -91,6 +91,7 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
         echo_metrics,
         lookup,
         Arc::new(FixedClock),
+        None,
     );
     let observation = IrohRelayObservation::new(
         identity.endpoint_id,
@@ -128,7 +129,11 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     assert!(allowed.reachable);
     assert_eq!(
         snapshot.pointer("/relay_candidates"),
-        Some(&serde_json::json!([]))
+        Some(&serde_json::json!([{
+            "endpoint_id": crate::api::encode_hex(relay.public().as_bytes()),
+            "relay_kind": "private",
+            "eligible": true,
+        }]))
     );
     assert_eq!(
         snapshot.pointer("/observed_relay_state"),
@@ -143,7 +148,11 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     );
     assert_eq!(
         snapshot.pointer("/reachability/direct"),
-        Some(&serde_json::json!(false))
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        snapshot.pointer("/reachability/relayed"),
+        Some(&serde_json::json!(true))
     );
 
     actor.control_rounds.shutdown().await;

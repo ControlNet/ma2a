@@ -14,6 +14,7 @@ use crate::state::{RuntimeEvent, RuntimeStatus};
 use crate::{enrollment::EnrollmentError, error::RuntimeError, store::StoreClient};
 
 mod command;
+mod construction;
 mod echo;
 #[cfg(test)]
 mod effective_data_test;
@@ -27,6 +28,7 @@ mod shutdown;
 mod snapshot;
 pub(crate) use command::Command;
 pub use handle::RuntimeHandle;
+pub(crate) use handle_relay::RelayRuntimeStatus;
 pub(crate) use shutdown::ShutdownAck;
 
 pub(crate) const COMMAND_CAPACITY: usize = 32;
@@ -61,64 +63,6 @@ pub(crate) struct Actor {
 }
 
 impl Actor {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the actor owns each independently constructed runtime subsystem"
-    )]
-    pub(crate) fn new(
-        state: RuntimeStatus,
-        endpoint: RuntimeEndpoint,
-        store: StoreClient,
-        enrollment_calls: mpsc::Receiver<EnrollmentCall>,
-        control_calls: mpsc::Receiver<ControlCall>,
-        echo_calls: mpsc::Receiver<EchoCall>,
-        echo_metrics: EchoMetrics,
-        lookup: SpaceAddressLookup,
-        clock: Arc<dyn crate::RuntimeClock>,
-    ) -> (Self, RuntimeHandle, CancellationToken) {
-        let (command_sender, commands) = mpsc::channel(COMMAND_CAPACITY);
-        let (events, _) = broadcast::channel(COMMAND_CAPACITY);
-        #[cfg(test)]
-        let control_schedule_events = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let cancellation = CancellationToken::new();
-        let echo_audit = crate::echo_audit::EchoAuditLog::default();
-        let (relay_observation_sender, relay_observations) = mpsc::channel(COMMAND_CAPACITY);
-        let relay_observer = endpoint.spawn_relay_observer(relay_observation_sender);
-        let handle = RuntimeHandle::new(
-            command_sender,
-            events.clone(),
-            echo_audit.clone(),
-            echo_metrics.clone(),
-            #[cfg(test)]
-            Arc::clone(&control_schedule_events),
-        );
-        let actor = Self {
-            state,
-            endpoint,
-            store,
-            commands,
-            events,
-            clock,
-            enrollment_calls,
-            control_calls,
-            echo_calls,
-            echo_tasks: JoinSet::new(),
-            echo_audit,
-            echo_metrics,
-            lookup,
-            relay_observations,
-            relay_observer,
-            private_relay_server: None,
-            control_rounds: JoinSet::new(),
-            control_queue: crate::control_actor::ControlRoundQueue::default(),
-            synchronized_control_peers: BTreeSet::new(),
-            #[cfg(test)]
-            control_schedule_events,
-            cancellation: cancellation.child_token(),
-        };
-        (actor, handle, cancellation)
-    }
-
     #[expect(clippy::too_many_lines, reason = "actor command ordering is explicit")]
     pub(crate) async fn run(mut self) -> Result<ShutdownAck, RuntimeError> {
         let _receiver_count = self.events.send(RuntimeEvent::ready(self.state.revision));
@@ -138,8 +82,8 @@ impl Actor {
                     Some(Command::ObserveMemberships { memberships, reply }) => {
                         let _unsent = reply.send(self.observe_memberships(memberships).await);
                     }
-                    Some(Command::CreateOwnedSpace { reply }) => {
-                        let _unsent = reply.send(self.create_owned_space().await);
+                    Some(Command::CreateOwnedSpace { name, reply }) => {
+                        let _unsent = reply.send(self.create_owned_space(name).await);
                     }
                     Some(Command::RevokeOwnedSpaceMember { space_id, endpoint_id, reply }) => {
                         let _unsent = reply.send(self.revoke_owned_space_member(space_id, endpoint_id).await);
@@ -212,6 +156,9 @@ impl Actor {
                     }
                     Some(Command::RelayConfiguration { reply }) => {
                         let _unsent = reply.send(self.store.relay_configuration().await);
+                    }
+                    Some(Command::RelayStatus { reply }) => {
+                        let _unsent = reply.send(self.relay_runtime_status().await);
                     }
                     Some(Command::SetRelayConfiguration { configuration, reply }) => {
                         let _unsent = reply.send(self.set_relay_configuration(configuration).await);

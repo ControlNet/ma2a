@@ -136,6 +136,7 @@ async fn actor_publishes_exact_next_record_to_every_space_for_user_data_only_cha
         echo_metrics,
         lookup,
         Arc::new(FixedClock),
+        None,
     );
     let _initial_observation = tokio::time::timeout(
         std::time::Duration::from_secs(2),

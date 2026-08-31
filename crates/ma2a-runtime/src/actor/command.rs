@@ -15,6 +15,7 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
     CreateOwnedSpace {
+        name: String,
         reply: oneshot::Sender<Result<SpaceId, RuntimeError>>,
     },
     RevokeOwnedSpaceMember {
@@ -58,6 +59,9 @@ pub(crate) enum Command {
     },
     RelayConfiguration {
         reply: oneshot::Sender<Result<ma2a_store::RelayConfiguration, RuntimeError>>,
+    },
+    RelayStatus {
+        reply: oneshot::Sender<Result<super::RelayRuntimeStatus, RuntimeError>>,
     },
     SetRelayConfiguration {
         configuration: ma2a_store::RelayConfiguration,
