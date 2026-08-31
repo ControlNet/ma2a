@@ -5,8 +5,11 @@ use zeroize::Zeroizing;
 
 use super::{ApiError, MAX_TEXT_BYTES};
 
+#[path = "command_accessors.rs"]
+mod accessors;
+
 /// Exact ordered operation inventory carried by the schema and TypeScript contract.
-pub const COMMAND_NAMES: [&str; 21] = [
+pub const COMMAND_NAMES: [&str; 24] = [
     "handshake",
     "status",
     "endpoint_info",
@@ -19,13 +22,16 @@ pub const COMMAND_NAMES: [&str; 21] = [
     "control_sync_status",
     "control_sync_trigger",
     "private_relay_configure",
+    "private_relay_disable",
     "private_relay_status",
     "public_relay_configure",
+    "public_relay_disable",
     "public_relay_status",
     "echo_call",
     "ui_password_set",
     "ui_password_reset",
     "session_revoke_all",
+    "ui_open",
     "snapshot_fetch",
     "graceful_shutdown",
 ];
@@ -78,6 +84,16 @@ pub(crate) enum PrivateRelayMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrivateRelayConfiguration {
+    pub(crate) mode: PrivateRelayMode,
+    pub(crate) listen: BoundedText,
+    pub(crate) public_url: BoundedText,
+    pub(crate) served_spaces: Vec<SpaceId>,
+    pub(crate) certificate_path: Option<BoundedText>,
+    pub(crate) private_key_path: Option<BoundedText>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandKind {
     Handshake,
     Status,
@@ -85,19 +101,22 @@ pub(crate) enum CommandKind {
     SpaceCreate(RequestId, BoundedText),
     SpaceList,
     SpaceShow(SpaceId),
-    SpaceInvite(RequestId, SpaceId, EndpointId),
+    SpaceInvite(RequestId, SpaceId, u64, BoundedText),
     SpaceRedeem(RequestId, BoundedText),
     SpaceRevoke(RequestId, SpaceId, EndpointId),
     ControlSyncStatus(EndpointId),
     ControlSyncTrigger(RequestId, EndpointId),
-    PrivateRelayConfigure(RequestId, PrivateRelayMode, BoundedText, u16),
+    PrivateRelayConfigure(RequestId, PrivateRelayConfiguration),
+    PrivateRelayDisable(RequestId),
     PrivateRelayStatus,
     PublicRelayConfigure(RequestId, BoundedText),
+    PublicRelayDisable(RequestId),
     PublicRelayStatus,
     EchoCall(RequestId, EndpointId, BoundedText),
     UiPasswordSet(RequestId, BoundedText),
     UiPasswordReset(RequestId, BoundedText),
     SessionRevokeAll(RequestId),
+    UiOpen,
     SnapshotFetch,
     GracefulShutdown(RequestId),
 }
@@ -124,17 +143,20 @@ impl Command {
             | CommandKind::SpaceCreate(_, _)
             | CommandKind::SpaceList
             | CommandKind::SpaceShow(_)
-            | CommandKind::SpaceInvite(_, _, _)
+            | CommandKind::SpaceInvite(_, _, _, _)
             | CommandKind::SpaceRedeem(_, _)
             | CommandKind::SpaceRevoke(_, _, _)
             | CommandKind::ControlSyncStatus(_)
             | CommandKind::ControlSyncTrigger(_, _)
-            | CommandKind::PrivateRelayConfigure(_, _, _, _)
+            | CommandKind::PrivateRelayConfigure(_, _)
+            | CommandKind::PrivateRelayDisable(_)
             | CommandKind::PrivateRelayStatus
             | CommandKind::PublicRelayConfigure(_, _)
+            | CommandKind::PublicRelayDisable(_)
             | CommandKind::PublicRelayStatus
             | CommandKind::EchoCall(_, _, _)
             | CommandKind::SnapshotFetch
+            | CommandKind::UiOpen
             | CommandKind::GracefulShutdown(_) => Err(ApiError::invalid_input()),
         }
     }
@@ -191,19 +213,22 @@ impl Command {
             CommandKind::SpaceCreate(_, _) => "space_create",
             CommandKind::SpaceList => "space_list",
             CommandKind::SpaceShow(_) => "space_show",
-            CommandKind::SpaceInvite(_, _, _) => "space_invite",
+            CommandKind::SpaceInvite(_, _, _, _) => "space_invite",
             CommandKind::SpaceRedeem(_, _) => "space_redeem",
             CommandKind::SpaceRevoke(_, _, _) => "space_revoke",
             CommandKind::ControlSyncStatus(_) => "control_sync_status",
             CommandKind::ControlSyncTrigger(_, _) => "control_sync_trigger",
-            CommandKind::PrivateRelayConfigure(_, _, _, _) => "private_relay_configure",
+            CommandKind::PrivateRelayConfigure(_, _) => "private_relay_configure",
+            CommandKind::PrivateRelayDisable(_) => "private_relay_disable",
             CommandKind::PrivateRelayStatus => "private_relay_status",
             CommandKind::PublicRelayConfigure(_, _) => "public_relay_configure",
+            CommandKind::PublicRelayDisable(_) => "public_relay_disable",
             CommandKind::PublicRelayStatus => "public_relay_status",
             CommandKind::EchoCall(_, _, _) => "echo_call",
             CommandKind::UiPasswordSet(_, _) => "ui_password_set",
             CommandKind::UiPasswordReset(_, _) => "ui_password_reset",
             CommandKind::SessionRevokeAll(_) => "session_revoke_all",
+            CommandKind::UiOpen => "ui_open",
             CommandKind::SnapshotFetch => "snapshot_fetch",
             CommandKind::GracefulShutdown(_) => "graceful_shutdown",
         }
@@ -220,74 +245,22 @@ impl Command {
             | CommandKind::ControlSyncStatus(_)
             | CommandKind::PrivateRelayStatus
             | CommandKind::PublicRelayStatus
-            | CommandKind::SnapshotFetch => None,
+            | CommandKind::SnapshotFetch
+            | CommandKind::UiOpen => None,
             CommandKind::SpaceCreate(id, _)
-            | CommandKind::SpaceInvite(id, _, _)
+            | CommandKind::SpaceInvite(id, _, _, _)
             | CommandKind::SpaceRedeem(id, _)
             | CommandKind::SpaceRevoke(id, _, _)
             | CommandKind::ControlSyncTrigger(id, _)
-            | CommandKind::PrivateRelayConfigure(id, _, _, _)
+            | CommandKind::PrivateRelayConfigure(id, _)
+            | CommandKind::PrivateRelayDisable(id)
             | CommandKind::PublicRelayConfigure(id, _)
+            | CommandKind::PublicRelayDisable(id)
             | CommandKind::EchoCall(id, _, _)
             | CommandKind::UiPasswordSet(id, _)
             | CommandKind::UiPasswordReset(id, _)
             | CommandKind::SessionRevokeAll(id)
             | CommandKind::GracefulShutdown(id) => Some(id),
-        }
-    }
-
-    pub(crate) const fn control_sync_peer(&self) -> Option<EndpointId> {
-        match self.kind {
-            CommandKind::ControlSyncStatus(peer) | CommandKind::ControlSyncTrigger(_, peer) => {
-                Some(peer)
-            }
-            CommandKind::Handshake
-            | CommandKind::Status
-            | CommandKind::EndpointInfo
-            | CommandKind::SpaceCreate(_, _)
-            | CommandKind::SpaceList
-            | CommandKind::SpaceShow(_)
-            | CommandKind::SpaceInvite(_, _, _)
-            | CommandKind::SpaceRedeem(_, _)
-            | CommandKind::SpaceRevoke(_, _, _)
-            | CommandKind::PrivateRelayConfigure(_, _, _, _)
-            | CommandKind::PrivateRelayStatus
-            | CommandKind::PublicRelayConfigure(_, _)
-            | CommandKind::PublicRelayStatus
-            | CommandKind::EchoCall(_, _, _)
-            | CommandKind::UiPasswordSet(_, _)
-            | CommandKind::UiPasswordReset(_, _)
-            | CommandKind::SessionRevokeAll(_)
-            | CommandKind::SnapshotFetch
-            | CommandKind::GracefulShutdown(_) => None,
-        }
-    }
-
-    pub(crate) fn echo_call(&self) -> Option<(RequestId, EndpointId, &str)> {
-        match &self.kind {
-            CommandKind::EchoCall(request_id, target, payload) => {
-                Some((*request_id, *target, payload.as_str()))
-            }
-            CommandKind::Handshake
-            | CommandKind::Status
-            | CommandKind::EndpointInfo
-            | CommandKind::SpaceCreate(_, _)
-            | CommandKind::SpaceList
-            | CommandKind::SpaceShow(_)
-            | CommandKind::SpaceInvite(_, _, _)
-            | CommandKind::SpaceRedeem(_, _)
-            | CommandKind::SpaceRevoke(_, _, _)
-            | CommandKind::ControlSyncStatus(_)
-            | CommandKind::ControlSyncTrigger(_, _)
-            | CommandKind::PrivateRelayConfigure(_, _, _, _)
-            | CommandKind::PrivateRelayStatus
-            | CommandKind::PublicRelayConfigure(_, _)
-            | CommandKind::PublicRelayStatus
-            | CommandKind::UiPasswordSet(_, _)
-            | CommandKind::UiPasswordReset(_, _)
-            | CommandKind::SessionRevokeAll(_)
-            | CommandKind::SnapshotFetch
-            | CommandKind::GracefulShutdown(_) => None,
         }
     }
 }

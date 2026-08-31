@@ -227,6 +227,28 @@ pub struct PublicRelayView {
     pub(crate) online: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Credential-free loopback Web endpoint owned by the daemon.
+pub struct UiOpenView {
+    pub(crate) url: String,
+}
+
+impl UiOpenView {
+    /// Creates a bounded IPv4 loopback URL.
+    ///
+    /// # Errors
+    /// Returns invalid input for non-loopback or oversized URLs.
+    pub fn new(url: &str) -> Result<Self, super::ApiError> {
+        if !url.starts_with("http://127.0.0.1:") || url.len() > 64 {
+            Err(super::ApiError::invalid_input())
+        } else {
+            Ok(Self {
+                url: url.to_owned(),
+            })
+        }
+    }
+}
+
 impl PublicRelayView {
     /// Creates Public Relay configuration and observed status.
     ///
@@ -297,6 +319,10 @@ pub(crate) fn private_relay_value(value: &PrivateRelayView) -> Value {
 
 pub(crate) fn public_relay_value(value: &PublicRelayView) -> Value {
     json!({"configured": value.configured, "url": value.url, "online": value.online})
+}
+
+pub(crate) fn ui_open_value(value: &UiOpenView) -> Value {
+    json!({"url": value.url})
 }
 
 pub(crate) fn echo_reply_value(value: &EchoReplyView) -> Value {
