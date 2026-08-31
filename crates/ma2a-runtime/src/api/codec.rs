@@ -5,7 +5,7 @@ use super::{
     codec_fields::{
         bounded_text, encode_hex, endpoint_id, exact_fields, number, request_id, space_id, text,
     },
-    commands::{Command, CommandKind, PrivateRelayMode},
+    commands::{Command, CommandKind},
     strict_json,
 };
 
@@ -55,19 +55,26 @@ fn parse_command(object: &Map<String, Value>) -> Result<Command, ApiError> {
         "space_create" => space_create(object)?,
         "space_list" => unit(object, CommandKind::SpaceList)?,
         "space_show" => space_show(object)?,
-        "space_invite" => space_peer(object, true)?,
+        "space_invite" => space_invite(object)?,
         "space_redeem" => space_redeem(object)?,
-        "space_revoke" => space_peer(object, false)?,
+        "space_revoke" => space_revoke(object)?,
         "control_sync_status" => control_sync_status(object)?,
         "control_sync_trigger" => control_sync_trigger(object)?,
-        "private_relay_configure" => private_relay_configure(object)?,
+        "private_relay_configure" => super::codec_relay::private_configure(object)?,
+        "private_relay_disable" => {
+            super::codec_relay::request_only(object, CommandKind::PrivateRelayDisable)?
+        }
         "private_relay_status" => unit(object, CommandKind::PrivateRelayStatus)?,
-        "public_relay_configure" => public_relay_configure(object)?,
+        "public_relay_configure" => super::codec_relay::public_configure(object)?,
+        "public_relay_disable" => {
+            super::codec_relay::request_only(object, CommandKind::PublicRelayDisable)?
+        }
         "public_relay_status" => unit(object, CommandKind::PublicRelayStatus)?,
         "echo_call" => echo_call(object)?,
         "ui_password_set" => ui_password(object, true)?,
         "ui_password_reset" => ui_password(object, false)?,
         "session_revoke_all" => request_only(object, false)?,
+        "ui_open" => unit(object, CommandKind::UiOpen)?,
         "snapshot_fetch" => unit(object, CommandKind::SnapshotFetch)?,
         "graceful_shutdown" => request_only(object, true)?,
         _ => return Err(ApiError::invalid_input()),
@@ -93,7 +100,7 @@ fn space_show(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
     Ok(CommandKind::SpaceShow(space_id(object, "space_id")?))
 }
 
-fn space_peer(object: &Map<String, Value>, invite: bool) -> Result<CommandKind, ApiError> {
+fn space_revoke(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
     exact_fields(
         object,
         &[
@@ -107,11 +114,27 @@ fn space_peer(object: &Map<String, Value>, invite: bool) -> Result<CommandKind, 
     let id = request_id(object, "request_id")?;
     let space = space_id(object, "space_id")?;
     let peer = endpoint_id(object, "peer_endpoint_id")?;
-    if invite {
-        Ok(CommandKind::SpaceInvite(id, space, peer))
-    } else {
-        Ok(CommandKind::SpaceRevoke(id, space, peer))
-    }
+    Ok(CommandKind::SpaceRevoke(id, space, peer))
+}
+
+fn space_invite(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
+    exact_fields(
+        object,
+        &[
+            "version",
+            "operation",
+            "request_id",
+            "space_id",
+            "ttl_ms",
+            "output_path",
+        ],
+    )?;
+    Ok(CommandKind::SpaceInvite(
+        request_id(object, "request_id")?,
+        space_id(object, "space_id")?,
+        number(object, "ttl_ms")?,
+        bounded_text(object, "output_path", 4_096)?,
+    ))
 }
 
 fn space_redeem(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
@@ -141,42 +164,6 @@ fn control_sync_trigger(object: &Map<String, Value>) -> Result<CommandKind, ApiE
     Ok(CommandKind::ControlSyncTrigger(
         request_id(object, "request_id")?,
         endpoint_id(object, "peer_endpoint_id")?,
-    ))
-}
-
-fn private_relay_configure(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
-    exact_fields(
-        object,
-        &["version", "operation", "request_id", "mode", "host", "port"],
-    )?;
-    let mode = match text(object, "mode")? {
-        "native_tls" => PrivateRelayMode::NativeTls,
-        "external_termination" => PrivateRelayMode::ExternalTermination,
-        _ => return Err(ApiError::invalid_input()),
-    };
-    let port = u16::try_from(number(object, "port")?).map_err(|_| ApiError::invalid_input())?;
-    Ok(CommandKind::PrivateRelayConfigure(
-        request_id(object, "request_id")?,
-        mode,
-        bounded_text(object, "host", 253)?,
-        port,
-    ))
-}
-
-fn public_relay_configure(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
-    exact_fields(object, &["version", "operation", "request_id", "url"])?;
-    let url = bounded_text(object, "url", 2_048)?;
-    let authority = url
-        .as_str()
-        .strip_prefix("https://")
-        .and_then(|rest| rest.split('/').next())
-        .ok_or_else(ApiError::invalid_input)?;
-    if authority.contains('@') {
-        return Err(ApiError::invalid_input());
-    }
-    Ok(CommandKind::PublicRelayConfigure(
-        request_id(object, "request_id")?,
-        url,
     ))
 }
 
@@ -228,6 +215,7 @@ fn command_value(command: &Command) -> Value {
         | CommandKind::SpaceList
         | CommandKind::PrivateRelayStatus
         | CommandKind::PublicRelayStatus
+        | CommandKind::UiOpen
         | CommandKind::SnapshotFetch => json!({"operation": operation}),
         CommandKind::SpaceCreate(id, name) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "name": name.as_str()})
@@ -235,8 +223,11 @@ fn command_value(command: &Command) -> Value {
         CommandKind::SpaceShow(space) => {
             json!({"operation": operation, "space_id": encode_hex(space.as_bytes())})
         }
-        CommandKind::SpaceInvite(id, space, peer) | CommandKind::SpaceRevoke(id, space, peer) => {
+        CommandKind::SpaceRevoke(id, space, peer) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "space_id": encode_hex(space.as_bytes()), "peer_endpoint_id": encode_hex(peer.as_bytes())})
+        }
+        CommandKind::SpaceInvite(id, space, ttl_ms, output_path) => {
+            json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "space_id": encode_hex(space.as_bytes()), "ttl_ms": ttl_ms, "output_path": output_path.as_str()})
         }
         CommandKind::SpaceRedeem(id, invitation) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "invitation": invitation.as_str()})
@@ -247,8 +238,8 @@ fn command_value(command: &Command) -> Value {
         CommandKind::ControlSyncTrigger(id, peer) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "peer_endpoint_id": encode_hex(peer.as_bytes())})
         }
-        CommandKind::PrivateRelayConfigure(id, mode, host, port) => {
-            json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "mode": match mode { PrivateRelayMode::NativeTls => "native_tls", PrivateRelayMode::ExternalTermination => "external_termination" }, "host": host.as_str(), "port": port})
+        CommandKind::PrivateRelayConfigure(id, config) => {
+            super::codec_relay::private_value(operation, *id, config)
         }
         CommandKind::PublicRelayConfigure(id, url) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "url": url.as_str()})
@@ -259,7 +250,10 @@ fn command_value(command: &Command) -> Value {
         CommandKind::UiPasswordSet(id, password) | CommandKind::UiPasswordReset(id, password) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "password": password.as_str()})
         }
-        CommandKind::SessionRevokeAll(id) | CommandKind::GracefulShutdown(id) => {
+        CommandKind::PrivateRelayDisable(id)
+        | CommandKind::PublicRelayDisable(id)
+        | CommandKind::SessionRevokeAll(id)
+        | CommandKind::GracefulShutdown(id) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes())})
         }
     }

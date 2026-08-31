@@ -2,10 +2,12 @@
 
 mod codec;
 mod codec_fields;
+mod codec_relay;
 mod commands;
 mod events;
 mod response_decode;
 mod response_revision;
+mod response_value;
 mod responses;
 mod result_data;
 mod schema;
@@ -17,8 +19,8 @@ pub(crate) use codec_fields::encode_hex;
 
 use ma2a_core::{ProtocolError, RequestId};
 
-pub(crate) use commands::UiControlCommand;
 pub use commands::{COMMAND_NAMES, Command};
+pub(crate) use commands::{PrivateRelayMode, UiControlCommand};
 pub use events::{
     EVENT_NAMES, EventContinuity, RuntimeEvent, classify_event_revision, encode_event,
 };
@@ -28,7 +30,7 @@ pub use responses::{ApiResponse, CommandResult, UiControlResult, encode_error, e
 pub use result_data::{
     CapabilityFlags, EchoReplyView, HandshakeAuth, HandshakeState, HandshakeView,
     InteractionCapabilities, ManagementCapabilities, PrivateRelayView, PublicRelayView,
-    RelayAddress, RelayCapabilities, RuntimeStatusView,
+    RelayAddress, RelayCapabilities, RuntimeStatusView, UiOpenView,
 };
 pub use schema::{ERROR_NAMES, LOCAL_API_SCHEMA_JSON, LOCAL_API_SCHEMA_SHA256, RESULT_NAMES};
 pub use snapshot::{
