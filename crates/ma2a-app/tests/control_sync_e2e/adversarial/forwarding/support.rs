@@ -17,6 +17,7 @@ use ma2a_store::{
 use tokio::sync::mpsc;
 
 use super::super::super::control_sync_e2e_support::{ControlFixture, TestResult, clock};
+use crate::control_sync_e2e_artifacts::{AddressFixture, address_records, persist_address};
 
 const NOW_MS: u64 = 1_700_000_000_000;
 
@@ -46,21 +47,37 @@ pub(super) struct AddressArtifact {
 }
 
 pub(super) async fn reject_page(fixture: ControlFixture, page: ControlPageV1) -> TestResult {
-    let owner_config = fixture.owner_config();
     let candidate_config = fixture.candidate_config();
-    let owner_port = Repository::open(&owner_config)?
-        .endpoint_bind_port()?
-        .ok_or("owner port missing")?;
     let response = ControlResponseV1::new(vec![page])?.encode()?;
     let (enrollment_calls, _enrollment_receiver) = mpsc::channel(1);
     let (control_calls, mut control_receiver) = mpsc::channel(1);
     let malicious_owner = RuntimeEndpoint::bind_with_lookup(
         EndpointSecret::parse(&fixture.owner_secret.to_bytes())?,
         SpaceAddressLookup::default(),
-        EndpointBindOptions::new(enrollment_calls, Some(owner_port))
-            .with_control(control_calls, true),
+        EndpointBindOptions::new(enrollment_calls, None).with_control(control_calls, true),
     )
     .await?;
+    let owner_port = malicious_owner.bind_port()?;
+    let mut candidate_repository = Repository::open(&candidate_config)?;
+    let sequence = fixture
+        .owner_records
+        .iter()
+        .map(|record| record.record().sequence())
+        .max()
+        .ok_or("owner address fixture missing")?
+        .checked_add(1)
+        .ok_or("owner address sequence exhausted")?;
+    for record in address_records(
+        fixture.shared_spaces,
+        &fixture.owner_secret,
+        AddressFixture {
+            port: owner_port,
+            sequence,
+        },
+    )? {
+        persist_address(&mut candidate_repository, &record, NOW_MS)?;
+    }
+    drop(candidate_repository);
     let responder = tokio::spawn(async move {
         let call = control_receiver
             .recv()
