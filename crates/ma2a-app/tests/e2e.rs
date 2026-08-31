@@ -10,10 +10,40 @@ mod control_sync_e2e_artifacts;
 mod control_sync_e2e_support;
 #[path = "e2e/harness.rs"]
 mod harness;
+#[path = "e2e/ipc.rs"]
+mod ipc;
+#[path = "e2e/recovery.rs"]
+mod recovery;
+#[path = "e2e/relay_common.rs"]
+mod relay_common;
+#[path = "e2e/relay_lifecycle.rs"]
+mod relay_lifecycle;
+#[path = "e2e/relay_matrix.rs"]
+mod relay_matrix;
 #[path = "e2e/relay_scenarios.rs"]
 mod relay_scenarios;
 #[path = "e2e/relay_target.rs"]
 mod relay_target;
+
+#[path = "zero_space.rs"]
+mod authorization;
+#[path = "zero_space_isolation.rs"]
+mod authorization_isolation;
+#[path = "echo_e2e.rs"]
+mod echo;
+#[path = "enrollment.rs"]
+mod enrollment;
+#[path = "../../ma2a-net/tests/relay_tls_paths.rs"]
+mod relay_tls;
+#[path = "../../ma2a-runtime/tests/web_security.rs"]
+mod web;
+// CLIPPY-ALLOW: The release-gate binary composes two standalone Web integration targets.
+#[allow(
+    clippy::duplicate_mod,
+    reason = "release gate composes standalone Web integration targets"
+)]
+#[path = "../../ma2a-runtime/tests/web_session_mutation.rs"]
+mod web_session;
 
 async fn raw_endpoint(
     secret: &iroh::SecretKey,
