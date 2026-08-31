@@ -258,7 +258,10 @@ fn reject_secret_argv(arguments: &[OsString]) -> Result<(), clap::Error> {
     let supported_redeem_input = values
         .iter()
         .any(|value| value == "--stdin" || value == "--file");
-    if password_secret || (invite_redeem && !supported_redeem_input) {
+    let clap_information = values
+        .iter()
+        .any(|value| matches!(value.as_ref(), "--help" | "-h" | "--version" | "-V"));
+    if password_secret || (invite_redeem && !supported_redeem_input && !clap_information) {
         Err(clap::Error::raw(
             clap::error::ErrorKind::InvalidValue,
             "secret values are not accepted in argv; use secure input",
