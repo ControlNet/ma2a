@@ -6,7 +6,7 @@ use crate::{
     AppError,
     commands::{
         control::RuntimeControlClient,
-        ui::{self, PasswordCommand, TerminalPasswordReader},
+        ui::{self, InheritedStdinPasswordReader, PasswordCommand, TerminalPasswordReader},
     },
 };
 
@@ -16,10 +16,18 @@ pub(crate) async fn run_password(
 ) -> Result<(), AppError> {
     let paths = IpcPaths::new(state_dir)?;
     let mut client = RuntimeControlClient::new(state_dir.to_path_buf(), paths);
-    let mut reader = TerminalPasswordReader;
-    ui::change_password(action, &mut reader, &mut client)
-        .await
-        .map_err(AppError::Command)?;
+    if std::env::var_os("MA2A_PASSWORD_STDIN").is_some_and(|value| value == "1") {
+        let mut reader =
+            InheritedStdinPasswordReader::new(std::io::BufReader::new(std::io::stdin()));
+        ui::change_password(action, &mut reader, &mut client)
+            .await
+            .map_err(AppError::Command)?;
+    } else {
+        let mut reader = TerminalPasswordReader;
+        ui::change_password(action, &mut reader, &mut client)
+            .await
+            .map_err(AppError::Command)?;
+    }
     writeln!(std::io::stdout().lock(), "Web password updated").map_err(AppError::Io)
 }
 
