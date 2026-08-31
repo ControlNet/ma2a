@@ -72,6 +72,7 @@ async fn actor_relay_refresh_automatically_publishes_next_address_record() -> Te
         echo_metrics,
         lookup,
         Arc::new(FixedClock),
+        None,
     );
     let _initial_observation = tokio::time::timeout(
         std::time::Duration::from_secs(2),
