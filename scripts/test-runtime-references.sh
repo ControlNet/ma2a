@@ -17,6 +17,7 @@ import "/module.js";
 new URL("/worker.js", import.meta.url);
 new URL("/api/v1/snapshot", window.location.origin);
 fetch("https://api.invalid/data");
+new WebSocket("ws://socket.invalid/plain");
 new WebSocket("wss://socket.invalid/");
 new EventSource("//events.invalid/stream");
 new Worker("https://worker.invalid/worker.js");
@@ -37,6 +38,7 @@ grep -F $'asset\t/worker.js' <<<"$javascript" >/dev/null
 for reference in \
   /api/v1/snapshot \
   https://api.invalid/data \
+  ws://socket.invalid/plain \
   wss://socket.invalid/ \
   //events.invalid/stream \
   https://worker.invalid/worker.js \
