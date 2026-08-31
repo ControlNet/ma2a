@@ -163,4 +163,59 @@ mod tests {
         );
         Ok(())
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn echo_outcome_advances_the_authoritative_snapshot_revision() -> TestResult {
+        // Given
+        let state = TempState::new("echo-revision")?;
+        let runtime = Runtime::start(StoreConfig::new(state.path())).await?;
+        let before = runtime.handle().snapshot().await?.to_value();
+        let target = EndpointSecret::generate().endpoint_id();
+        let request_id = RequestId::try_from([0x74; 16].as_slice())?;
+
+        // When
+        let result = runtime.handle().echo(request_id, target, b"probe").await;
+        let after = runtime.handle().snapshot().await?.to_value();
+        runtime.shutdown().await?;
+
+        // Then
+        assert!(result.is_err());
+        assert!(
+            after
+                .pointer("/revision")
+                .and_then(serde_json::Value::as_u64)
+                > before
+                    .pointer("/revision")
+                    .and_then(serde_json::Value::as_u64)
+        );
+        assert_eq!(
+            after.pointer("/recent_echo_summary/failures"),
+            Some(&serde_json::json!(1))
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn equal_revision_snapshots_have_equal_echo_summaries() -> TestResult {
+        // Given
+        let state = TempState::new("echo-same-revision")?;
+        let runtime = Runtime::start(StoreConfig::new(state.path())).await?;
+        let before = runtime.handle().snapshot().await?.to_value();
+        let target = EndpointSecret::generate().endpoint_id();
+        let request_id = RequestId::try_from([0x75; 16].as_slice())?;
+
+        // When
+        let _result = runtime.handle().echo(request_id, target, b"probe").await;
+        let after = runtime.handle().snapshot().await?.to_value();
+        runtime.shutdown().await?;
+
+        // Then
+        if before.pointer("/revision") == after.pointer("/revision") {
+            assert_eq!(
+                before.pointer("/recent_echo_summary"),
+                after.pointer("/recent_echo_summary")
+            );
+        }
+        Ok(())
+    }
 }
