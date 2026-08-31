@@ -14,6 +14,14 @@ pub(crate) enum Command {
         memberships: Vec<SpaceId>,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
+    CreateOwnedSpace {
+        reply: oneshot::Sender<Result<SpaceId, RuntimeError>>,
+    },
+    RevokeOwnedSpaceMember {
+        space_id: SpaceId,
+        endpoint_id: EndpointId,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
     CreateEnrollmentInvite {
         creation: EnrollmentCreation,
         reply: oneshot::Sender<Result<SignedInviteTicket, EnrollmentError>>,
@@ -46,6 +54,13 @@ pub(crate) enum Command {
     PublishRelayAdvertisements {
         config: ma2a_net::PrivateRelayProviderConfig,
         expires_at_ms: u64,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    RelayConfiguration {
+        reply: oneshot::Sender<Result<ma2a_store::RelayConfiguration, RuntimeError>>,
+    },
+    SetRelayConfiguration {
+        configuration: ma2a_store::RelayConfiguration,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
     Echo {
