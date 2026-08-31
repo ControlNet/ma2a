@@ -2,10 +2,10 @@
 
 use std::{
     error::Error,
-    ffi::{OsStr, OsString},
     fmt::{self, Write as _},
     io::{self, Write as _},
     path::PathBuf,
+    process::ExitCode,
 };
 
 use ma2a_core::RequestId;
@@ -14,11 +14,13 @@ use ma2a_runtime::{
     current_user::CurrentUserError,
     ipc::{IpcError, IpcPaths, LocalApiClient},
 };
-
 mod autostart;
+mod browser;
+mod cli;
 mod commands;
 mod credential_command;
 mod daemon;
+mod output;
 mod web_command;
 
 mod embedded_web {
@@ -86,70 +88,93 @@ impl From<RuntimeError> for AppError {
     }
 }
 
-enum Command {
-    Daemon,
-    DaemonDetached,
-    Init,
-    Status,
-    Shutdown,
-    UiPasswordSet,
-    UiPasswordReset,
-    UiSessionRevokeAll,
-    Web,
-    Help,
-    Version,
-}
-
-struct Cli {
-    state_dir: PathBuf,
-    command: Command,
-}
-
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-async fn main() -> Result<(), AppError> {
+async fn main() -> ExitCode {
     std::hint::black_box(embedded_web::WEB_ASSETS);
-    let cli = parse_args(std::env::args_os().skip(1))?;
-    let paths = IpcPaths::new(&cli.state_dir)?;
-    match cli.command {
-        Command::Daemon => daemon::run(cli.state_dir, paths, false).await,
-        Command::DaemonDetached => daemon::run(cli.state_dir, paths, true).await,
-        Command::Init | Command::UiPasswordSet => {
-            credential_command::run_password(&cli.state_dir, commands::ui::PasswordCommand::Set)
-                .await
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let parsed = cli::Cli::parse_safe(arguments);
+    let cli = match parsed {
+        Ok(cli) => cli,
+        Err(error) if error.kind() == clap::error::ErrorKind::InvalidSubcommand => {
+            eprintln!("unknown command; run ma2a --help");
+            return ExitCode::from(2);
         }
-        Command::UiPasswordReset => {
-            credential_command::run_password(&cli.state_dir, commands::ui::PasswordCommand::Reset)
-                .await
+        Err(error) => {
+            let code = if error.use_stderr() { 2 } else { 0 };
+            let _rendered = error.print();
+            return ExitCode::from(code);
         }
-        Command::UiSessionRevokeAll => credential_command::run_revoke_all(&cli.state_dir).await,
-        Command::Web => web_command::run(&cli.state_dir).await,
-        Command::Status => {
-            call(
-                &cli.state_dir,
-                paths,
-                br#"{"version":1,"operation":"status"}"#,
-            )
-            .await
-        }
-        Command::Shutdown => call_shutdown(paths).await,
-        Command::Help => write_help(),
-        Command::Version => {
-            writeln!(io::stdout().lock(), "ma2a {}", env!("CARGO_PKG_VERSION"))?;
-            Ok(())
+    };
+    match run(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            match error {
+                AppError::Usage(_) => ExitCode::from(2),
+                AppError::Command(_)
+                | AppError::CurrentUser(_)
+                | AppError::Io(_)
+                | AppError::Ipc(_)
+                | AppError::Runtime(_)
+                | AppError::Web(_) => ExitCode::FAILURE,
+            }
         }
     }
 }
 
+async fn run(cli: cli::Cli) -> Result<(), AppError> {
+    let state_dir = match cli.state_dir {
+        Some(path) => path,
+        None => default_state_dir()?,
+    };
+    let paths = IpcPaths::new(&state_dir)?;
+    match cli.command {
+        cli::Command::Daemon => daemon::run(state_dir, paths, false).await,
+        cli::Command::DaemonDetached => daemon::run(state_dir, paths, true).await,
+        cli::Command::Init => {
+            credential_command::run_password(&state_dir, commands::ui::PasswordCommand::Set).await
+        }
+        cli::Command::Status { json } => {
+            call((&state_dir, paths), api::Command::snapshot_fetch(), json).await
+        }
+        cli::Command::Endpoint { command } => match command {
+            cli::EndpointCommand::Show { json } => {
+                call(
+                    (&state_dir, paths),
+                    commands::workflows::unit_command("endpoint_info")?,
+                    json,
+                )
+                .await
+            }
+        },
+        cli::Command::Space { command } => {
+            commands::workflows::run_space(&state_dir, paths, command).await
+        }
+        cli::Command::Relay { command } => {
+            commands::workflows::run_relay(&state_dir, paths, command).await
+        }
+        cli::Command::Echo(arguments) => {
+            commands::workflows::run_echo(&state_dir, paths, arguments).await
+        }
+        cli::Command::Ui { command } => commands::workflows::run_ui(&state_dir, command).await,
+        cli::Command::Web => web_command::run(&state_dir).await,
+        cli::Command::Shutdown => call_shutdown(paths).await,
+    }
+}
+
 async fn call(
-    state_dir: &std::path::Path,
-    paths: IpcPaths,
-    request: &[u8],
+    runtime: (&std::path::Path, IpcPaths),
+    command: api::Command,
+    json: bool,
 ) -> Result<(), AppError> {
+    let (state_dir, paths) = runtime;
     autostart::ensure_daemon(state_dir, &paths).await?;
-    let command = api::decode_command(request).map_err(IpcError::from)?;
     let response = LocalApiClient::new(paths).call(&command).await?;
-    io::stdout().lock().write_all(&response)?;
-    writeln!(io::stdout().lock())?;
+    if json {
+        output::write_json(&response)?;
+    } else {
+        output::write_human(&response)?;
+    }
     Ok(())
 }
 
@@ -175,55 +200,6 @@ fn shutdown_command() -> Result<api::Command, AppError> {
     Ok(api::decode_command(request.as_bytes()).map_err(IpcError::from)?)
 }
 
-fn parse_args(arguments: impl Iterator<Item = OsString>) -> Result<Cli, AppError> {
-    let arguments = arguments.collect::<Vec<_>>();
-    let (state_dir, command_arguments) = match arguments.as_slice() {
-        [flag, state_dir, command_arguments @ ..] if flag == OsStr::new("--state-dir") => {
-            (PathBuf::from(state_dir), command_arguments)
-        }
-        [flag] if flag == OsStr::new("--state-dir") => {
-            return Err(AppError::Usage("--state-dir requires a path"));
-        }
-        _ => (default_state_dir()?, arguments.as_slice()),
-    };
-    let command = match command_arguments {
-        [] => Command::Help,
-        [value] if value == OsStr::new("daemon") => Command::Daemon,
-        [value] if value == OsStr::new("daemon-detached") => Command::DaemonDetached,
-        [value] if value == OsStr::new("init") => Command::Init,
-        [value] if value == OsStr::new("status") => Command::Status,
-        [value] if value == OsStr::new("shutdown") => Command::Shutdown,
-        [value] if value == OsStr::new("web") => Command::Web,
-        [value] if value == OsStr::new("--help") || value == OsStr::new("-h") => Command::Help,
-        [value] if value == OsStr::new("--version") || value == OsStr::new("-V") => {
-            Command::Version
-        }
-        [ui, password, action]
-            if ui == OsStr::new("ui")
-                && password == OsStr::new("password")
-                && action == OsStr::new("set") =>
-        {
-            Command::UiPasswordSet
-        }
-        [ui, password, action]
-            if ui == OsStr::new("ui")
-                && password == OsStr::new("password")
-                && action == OsStr::new("reset") =>
-        {
-            Command::UiPasswordReset
-        }
-        [ui, session, action]
-            if ui == OsStr::new("ui")
-                && session == OsStr::new("session")
-                && action == OsStr::new("revoke-all") =>
-        {
-            Command::UiSessionRevokeAll
-        }
-        _ => return Err(AppError::Usage("unknown command; run ma2a --help")),
-    };
-    Ok(Cli { state_dir, command })
-}
-
 fn default_state_dir() -> Result<PathBuf, AppError> {
     #[cfg(windows)]
     let root = PathBuf::from(
@@ -236,14 +212,6 @@ fn default_state_dir() -> Result<PathBuf, AppError> {
             .join(".local/state"),
     };
     Ok(root.join("ma2a"))
-}
-
-fn write_help() -> Result<(), AppError> {
-    writeln!(
-        io::stdout().lock(),
-        "Usage:\n  ma2a [--state-dir PATH] <daemon|status|shutdown|web|init>\n  ma2a [--state-dir PATH] ui password <set|reset>\n  ma2a [--state-dir PATH] ui session revoke-all\n  ma2a --help\n  ma2a --version"
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]
