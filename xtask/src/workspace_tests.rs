@@ -134,3 +134,47 @@ fn unsafe_code_is_confined_to_audited_windows_boundary() -> Result<(), Box<dyn E
     }
     Ok(())
 }
+
+#[test]
+fn process_heavy_app_tests_have_a_bounded_nextest_group() -> Result<(), Box<dyn Error>> {
+    // Given
+    let root = root()?;
+    let configuration = fs::read_to_string(root.join(".config/nextest.toml"))?;
+    let document: toml::Value = toml::from_str(&configuration)?;
+
+    // When
+    let group = document
+        .get("test-groups")
+        .and_then(|groups| groups.get("ma2a-processes"))
+        .ok_or("ma2a-processes test group missing")?;
+    let max_threads = group.get("max-threads").and_then(toml::Value::as_integer);
+    let default_overrides = document
+        .get("profile")
+        .and_then(|profile| profile.get("default"))
+        .and_then(|default| default.get("overrides"))
+        .and_then(toml::Value::as_array)
+        .ok_or("default ma2a-processes override missing")?;
+    let default_threads = document
+        .get("profile")
+        .and_then(|profile| profile.get("default"))
+        .and_then(|default| default.get("test-threads"))
+        .and_then(toml::Value::as_integer);
+    let ci_threads = document
+        .get("profile")
+        .and_then(|profile| profile.get("ci"))
+        .and_then(|ci| ci.get("test-threads"))
+        .and_then(toml::Value::as_integer);
+
+    // Then
+    assert_eq!(default_threads, Some(4));
+    assert_eq!(ci_threads, Some(4));
+    assert_eq!(max_threads, Some(4));
+    assert!(default_overrides.iter().any(|override_value| {
+        override_value.get("filter").and_then(toml::Value::as_str) == Some("package(ma2a-app)")
+            && override_value
+                .get("test-group")
+                .and_then(toml::Value::as_str)
+                == Some("ma2a-processes")
+    }));
+    Ok(())
+}
