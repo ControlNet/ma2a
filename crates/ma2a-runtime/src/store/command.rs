@@ -16,6 +16,16 @@ pub(crate) enum StoreCommand {
         now_ms: i64,
         reply: oneshot::Sender<Result<ma2a_store::SnapshotState, RuntimeError>>,
     },
+    CreateOwnedSpace {
+        creation: ma2a_store::SpaceCreation,
+        reply: oneshot::Sender<Result<ma2a_store::CreatedSpace, RuntimeError>>,
+    },
+    RevokeOwnedSpaceMember {
+        request: super::OwnedMemberRevocation,
+        reply: oneshot::Sender<
+            Result<(u64, std::collections::BTreeSet<ma2a_core::SpaceId>), RuntimeError>,
+        >,
+    },
     SetEndpointBindPort {
         port: u16,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
@@ -86,6 +96,17 @@ pub(crate) enum StoreCommand {
     RecordRelayObservations {
         observations: Vec<ma2a_store::RelayObservation>,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    RelayConfiguration {
+        reply: oneshot::Sender<Result<ma2a_store::RelayConfiguration, RuntimeError>>,
+    },
+    SetRelayConfiguration {
+        configuration: ma2a_store::RelayConfiguration,
+        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+    },
+    RelayAuthorizations {
+        local_endpoint_id: ma2a_core::EndpointId,
+        reply: oneshot::Sender<Result<Vec<ma2a_core::SpaceAuthorizationView>, RuntimeError>>,
     },
     PrepareControlRound {
         input: ControlRoundRequest,
