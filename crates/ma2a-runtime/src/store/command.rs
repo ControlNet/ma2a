@@ -125,5 +125,6 @@ pub(crate) enum StoreCommand {
         peer_endpoint_id: ma2a_core::EndpointId,
         reply: oneshot::Sender<Result<(), ma2a_core::EchoError>>,
     },
+    AdvanceRevision(oneshot::Sender<Result<u64, RuntimeError>>),
     Stop(oneshot::Sender<()>),
 }

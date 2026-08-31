@@ -13,9 +13,13 @@ use crate::{
     control_sync::{
         ControlApplyOutcome, ControlLookupState, ControlRespondOutcome, PreparedControlPeer,
     },
-    error::RuntimeError,
-    store::{Identity, StoreClient, StoreCommand, channel_error},
+    error::{RuntimeError, RuntimeErrorKind},
+    store::{Identity, StoreClient, StoreCommand},
 };
+
+pub(crate) fn channel_error<T>(_error: T) -> RuntimeError {
+    RuntimeError::new(RuntimeErrorKind::Channel)
+}
 
 impl StoreClient {
     pub(crate) const fn new(sender: tokio::sync::mpsc::Sender<StoreCommand>) -> Self {
@@ -54,6 +58,12 @@ impl StoreClient {
             reply,
         })
         .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    pub(crate) async fn advance_revision(&self) -> Result<u64, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::AdvanceRevision(reply)).await?;
         response.await.map_err(channel_error)?
     }
 

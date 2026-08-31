@@ -7,7 +7,9 @@ mod relay_state;
 use ma2a_store::{KeyStore, Repository, RuntimeMetadataUpdate};
 use tokio::sync::mpsc;
 
-use crate::error::{RuntimeError, RuntimeErrorKind};
+use crate::error::RuntimeError;
+
+pub(crate) use crate::store_client::channel_error;
 
 pub(crate) use command::StoreCommand;
 pub(crate) use identity::Identity;
@@ -222,6 +224,10 @@ impl StoreBackend {
                     );
                     let _unsent = reply.send(result);
                 }
+                StoreCommand::AdvanceRevision(reply) => {
+                    let _unsent =
+                        reply.send(self.repository.advance_revision().map_err(Into::into));
+                }
                 StoreCommand::Stop(reply) => {
                     let _unsent = reply.send(());
                     break;
@@ -253,8 +259,4 @@ impl StoreBackend {
             .map_or_else(|| self.repository.revision(), Ok)?;
         Ok((revision, chain))
     }
-}
-
-pub(crate) fn channel_error<T>(_error: T) -> RuntimeError {
-    RuntimeError::new(RuntimeErrorKind::Channel)
 }
