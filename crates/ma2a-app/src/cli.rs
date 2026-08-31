@@ -251,18 +251,33 @@ fn reject_secret_argv(arguments: &[OsString]) -> Result<(), clap::Error> {
         .iter()
         .map(|value| value.to_string_lossy())
         .collect::<Vec<_>>();
-    let password_secret = values.iter().any(|value| value == "--password");
-    let invite_redeem = values
+    let password_secret = values
+        .iter()
+        .any(|value| value == "--password" || value.starts_with("--password="));
+    let redeem_index = values
         .windows(3)
-        .any(|window| window == ["space", "invite", "redeem"]);
+        .position(|window| window == ["space", "invite", "redeem"])
+        .map(|index| index + 3);
+    let invite_redeem = redeem_index.is_some();
     let supported_redeem_input = values
         .iter()
         .any(|value| value == "--stdin" || value == "--file");
-    let unsupported_redeem_value = values
-        .windows(4)
-        .any(|window| {
-            matches!(window, [space, invite, redeem, value] if space == "space" && invite == "invite" && redeem == "redeem" && !value.starts_with('-'))
-        });
+    let unsupported_redeem_value = redeem_index.is_some_and(|index| {
+        let mut skip_file_value = false;
+        values.get(index..).is_some_and(|redeem_values| {
+            redeem_values.iter().any(|value| {
+                if skip_file_value {
+                    skip_file_value = false;
+                    return false;
+                }
+                if value == "--file" {
+                    skip_file_value = true;
+                    return false;
+                }
+                !value.starts_with('-')
+            })
+        })
+    });
     let clap_information = values
         .iter()
         .any(|value| matches!(value.as_ref(), "--help" | "-h" | "--version" | "-V"));
