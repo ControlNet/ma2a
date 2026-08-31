@@ -3,20 +3,26 @@ use ma2a_core::{EndpointId, SpaceId};
 use crate::{Repository, StoreError};
 
 /// Public local-user-safe Space facts read from one `SQLite` snapshot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotSpace {
     space_id: SpaceId,
+    label: String,
     member_count: u32,
 }
 
 impl SnapshotSpace {
     /// Returns the verified Space identifier.
-    pub const fn space_id(self) -> SpaceId {
+    pub const fn space_id(&self) -> SpaceId {
         self.space_id
     }
 
+    /// Returns the current signed label for the local Endpoint in this Space.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
     /// Returns the current derived member count.
-    pub const fn member_count(self) -> u32 {
+    pub const fn member_count(&self) -> u32 {
         self.member_count
     }
 }
@@ -82,12 +88,27 @@ impl Repository {
             })?
             .map(|row| {
                 let (space_id, member_count) = row?;
+                let space_id = SpaceId::try_from(space_id.as_slice()).map_err(|_| {
+                    StoreError::SchemaMismatch {
+                        detail: "snapshot Space identifier is invalid",
+                    }
+                })?;
+                let chain = crate::space_rows::load_chain(&transaction, space_id)?.ok_or(
+                    StoreError::SchemaMismatch {
+                        detail: "snapshot Space chain is missing",
+                    },
+                )?;
+                let label = chain
+                    .members()
+                    .iter()
+                    .find(|member| member.endpoint_id() == endpoint_id)
+                    .map(|member| member.label().to_owned())
+                    .ok_or(StoreError::SchemaMismatch {
+                        detail: "snapshot local Space member is missing",
+                    })?;
                 Ok(SnapshotSpace {
-                    space_id: SpaceId::try_from(space_id.as_slice()).map_err(|_| {
-                        StoreError::SchemaMismatch {
-                            detail: "snapshot Space identifier is invalid",
-                        }
-                    })?,
+                    space_id,
+                    label,
                     member_count,
                 })
             })
