@@ -72,7 +72,7 @@ impl StoreClient {
         creation: crate::enrollment::IssuedEnrollmentCreation,
         creator: ma2a_core::EndpointId,
         owner_addr: ma2a_net::EndpointAddr,
-    ) -> Result<ma2a_core::SignedInviteTicket, RuntimeError> {
+    ) -> Result<ma2a_store::CreatedEnrollmentInvite, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::CreateEnrollmentInvite {
             creation,
