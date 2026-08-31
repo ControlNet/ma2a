@@ -57,7 +57,7 @@ impl Fixture {
     }
 
     fn run_status(&self) -> TestResultValue<Value> {
-        let output = self.run("status")?;
+        let output = self.command("status").arg("--json").output()?;
         assert!(
             output.status.success(),
             "{}",
@@ -111,7 +111,7 @@ fn status_autostarts_one_private_daemon() -> TestResult {
     // Then
     assert_eq!(
         response.pointer("/result/type").and_then(Value::as_str),
-        Some("status")
+        Some("snapshot")
     );
     let lock = OpenOptions::new()
         .read(true)
@@ -141,7 +141,7 @@ fn concurrent_status_calls_converge_on_one_daemon() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
     let children = (0..20)
-        .map(|_| fixture.command("status").spawn())
+        .map(|_| fixture.command("status").arg("--json").spawn())
         .collect::<Result<Vec<_>, _>>()?;
 
     // When
@@ -156,7 +156,7 @@ fn concurrent_status_calls_converge_on_one_daemon() -> TestResult {
         let response: Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(
             response.pointer("/result/type").and_then(Value::as_str),
-            Some("status")
+            Some("snapshot")
         );
     }
     let lock = OpenOptions::new()
@@ -186,7 +186,7 @@ fn autostart_reclaims_stale_socket_while_holding_startup_lock() -> TestResult {
     // Then
     assert_eq!(
         response.pointer("/result/type").and_then(Value::as_str),
-        Some("status")
+        Some("snapshot")
     );
     #[cfg(unix)]
     {
@@ -282,7 +282,7 @@ fn incompatible_daemon_reports_version_mismatch_without_startup_timeout() -> Tes
 
     // When
     let started = Instant::now();
-    let output = fixture.run("status")?;
+    let output = fixture.command("status").arg("--json").output()?;
 
     // Then
     stopped.store(true, Ordering::Relaxed);
