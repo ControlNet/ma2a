@@ -71,5 +71,6 @@ For downloaded assets, verify SHA-256 first and then run `gh attestation verify`
 [quickstart.md](quickstart.md). The SPDX SBOM must contain both Rust and production frontend
 packages, and the dependency/license report must have both `rust` and `frontend` sections. The
 clean-room smoke logs only HTTP methods, paths, and statuses while proving failed unauthenticated
-access, browser login, authenticated snapshot access, logout revocation, and same-origin availability
-of every runtime asset referenced by the embedded HTML, CSS, and JavaScript graph.
+access, browser login, authenticated snapshot access, server-side revocation of the original session
+after logout, same-origin availability of literal HTML/CSS/module assets, and rejection of external
+literal browser network sinks.

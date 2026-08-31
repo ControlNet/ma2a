@@ -13,6 +13,8 @@ report=$4
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 
+./scripts/test-runtime-references.sh >/dev/null
+
 tampered="$temporary/$(basename "$archive")"
 cp "$archive" "$tampered"
 cp "${archive}.sha256" "${tampered}.sha256"

@@ -14,6 +14,8 @@ state_dir="$workspace/state"
 binaries="$workspace/binaries"
 request_log="$workspace/requests.log"
 cookie_jar="$workspace/cookies"
+original_cookie_jar="$workspace/original-cookies"
+logout_cookie_jar="$workspace/logout-cookies"
 login_body="$workspace/login.json"
 wrong_login_body="$workspace/wrong-login.json"
 login_response="$workspace/login-response.json"
@@ -27,8 +29,8 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -m 700 "$state_dir"
-touch "$request_log" "$cookie_jar" "$login_body" "$wrong_login_body" "$login_response" "$csrf_config"
-chmod 600 "$request_log" "$cookie_jar" "$login_body" "$wrong_login_body" "$login_response" "$csrf_config"
+touch "$request_log" "$cookie_jar" "$original_cookie_jar" "$logout_cookie_jar" "$login_body" "$wrong_login_body" "$login_response" "$csrf_config"
+chmod 600 "$request_log" "$cookie_jar" "$original_cookie_jar" "$logout_cookie_jar" "$login_body" "$wrong_login_body" "$login_response" "$csrf_config"
 case "$target" in
   *-pc-windows-msvc)
     unzip -q "$archive" -d "$workspace/extracted"
@@ -89,34 +91,54 @@ while [[ ${#asset_queue[@]} -gt 0 ]]; do
   local_asset="$asset_root/$current"
   if [[ "$current" != index.html ]]; then
     mkdir -p "$(dirname "$local_asset")"
-    status=$(curl --silent --show-error --output "$local_asset" --write-out '%{http_code}' "$url/$current")
+    response=$(curl --silent --show-error --output "$local_asset" --write-out '%{http_code}\t%{content_type}' "$url/$current")
+    status=${response%%$'\t'*}
+    content_type=${response#*$'\t'}
     printf 'GET /%s %s\n' "$current" "$status" >> "$request_log"
     [[ "$status" == 200 ]] || { printf 'embedded asset /%s returned HTTP %s\n' "$current" "$status" >&2; exit 1; }
     [[ -s "$local_asset" ]] || { printf 'embedded asset /%s is empty\n' "$current" >&2; exit 1; }
+    case "$current" in
+      *.html) expected_type='text/html' ;;
+      *.js) expected_type='text/javascript' ;;
+      *.css) expected_type='text/css' ;;
+      *.svg) expected_type='image/svg+xml' ;;
+      *) expected_type='application/octet-stream' ;;
+    esac
+    [[ "$content_type" == "$expected_type"* ]] || {
+      printf 'embedded asset /%s returned unexpected content type %s\n' "$current" "$content_type" >&2
+      exit 1
+    }
   fi
   references="$workspace/references"
   : > "$references"
   case "$current" in
-    *.html|*.svg)
-      perl -0777 -ne 'while (/(?:src|href)\s*=\s*["\x27]([^"\x27]+)["\x27]/gi) { print "$1\n" }' "$local_asset" > "$references"
-      ;;
-    *.css)
-      perl -0777 -ne 'while (/url\(\s*["\x27]?([^)"\x27]+)["\x27]?\s*\)/gi) { print "$1\n" } while (/\@import\s+["\x27]([^"\x27]+)["\x27]/gi) { print "$1\n" }' "$local_asset" > "$references"
-      ;;
-    *.js)
-      perl -0777 -ne 'while (/(?:import\s*\(|from\s+|import\s+)["\x27]([^"\x27]+)["\x27]/g) { print "$1\n" } while (/new URL\(\s*["\x27]([^"\x27]+)["\x27]\s*,\s*import\.meta\.url/g) { print "$1\n" }' "$local_asset" > "$references"
-      ;;
+    *.html) ./scripts/extract-runtime-references.pl html "$local_asset" > "$references" ;;
+    *.svg) ./scripts/extract-runtime-references.pl svg "$local_asset" > "$references" ;;
+    *.css) ./scripts/extract-runtime-references.pl css "$local_asset" > "$references" ;;
+    *.js) ./scripts/extract-runtime-references.pl js "$local_asset" > "$references" ;;
   esac
-  while IFS= read -r reference; do
+  while IFS=$'\t' read -r reference_kind reference; do
     reference=${reference%%#*}
     reference=${reference%%\?*}
     [[ -n "$reference" ]] || continue
     case "$reference" in
-      http://*|https://*|//* )
-        printf 'external runtime asset reference rejected in %s: %s\n' "$current" "$reference" >&2
+      http://*|https://*|//*|ws://*|wss://*)
+        printf 'external runtime %s reference rejected in %s: %s\n' "$reference_kind" "$current" "$reference" >&2
         exit 1
         ;;
       data:*|blob:*|\#*) continue ;;
+    esac
+    if [[ "$reference_kind" == network ]]; then
+      case "$reference" in
+        /*) continue ;;
+        *:*)
+          printf 'unsupported runtime network scheme rejected in %s: %s\n' "$current" "$reference" >&2
+          exit 1
+          ;;
+        *) continue ;;
+      esac
+    fi
+    case "$reference" in
       /*) referenced_asset=${reference#/} ;;
       ./*) referenced_asset="$(dirname "$current")/${reference#./}" ;;
       *:*)
@@ -153,6 +175,7 @@ printf 'POST /api/v1/web/auth/login %s\n' "$status" >> "$request_log"
 [[ "$status" == 200 ]] || { printf 'authenticated login returned HTTP %s\n' "$status" >&2; exit 1; }
 jq -e '.csrf_token | select(test("^[0-9a-f]{64}$"))' "$login_response" >/dev/null
 jq -er '"header = \"x-csrf-token: \(.csrf_token)\""' "$login_response" > "$csrf_config"
+cp "$cookie_jar" "$original_cookie_jar"
 
 snapshot_file="$workspace/snapshot.json"
 status=$(curl --silent --show-error --output "$snapshot_file" --write-out '%{http_code}' \
@@ -162,13 +185,13 @@ printf 'GET /api/v1/snapshot %s\n' "$status" >> "$request_log"
 jq -e '.endpoint != null and (.spaces | length == 1)' "$snapshot_file" >/dev/null
 
 status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-  "${same_origin_headers[@]}" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
+  "${same_origin_headers[@]}" --cookie "$original_cookie_jar" --cookie-jar "$logout_cookie_jar" \
   --config "$csrf_config" --request POST "$url/api/v1/web/auth/logout")
 printf 'POST /api/v1/web/auth/logout %s\n' "$status" >> "$request_log"
 [[ "$status" == 204 ]] || { printf 'logout returned HTTP %s\n' "$status" >&2; exit 1; }
 
 status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-  --cookie "$cookie_jar" "$url/api/v1/snapshot")
+  --cookie "$original_cookie_jar" "$url/api/v1/snapshot")
 printf 'GET /api/v1/snapshot %s\n' "$status" >> "$request_log"
 [[ "$status" == 401 ]] || { printf 'logged-out snapshot returned HTTP %s\n' "$status" >&2; exit 1; }
 
