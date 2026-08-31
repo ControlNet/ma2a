@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use ma2a_net::EndpointSecret;
-use ma2a_store::{EndpointRecord, KeyKind, KeyMaterial, KeyReference, StoreError};
+use ma2a_store::{EndpointRecord, KeyKind, KeyMaterial, KeyReference, StoreConfig, StoreError};
 
 use super::StoreBackend;
 use crate::error::{RuntimeError, RuntimeErrorKind};
@@ -16,6 +16,13 @@ pub(crate) struct Identity {
 }
 
 impl StoreBackend {
+    pub(crate) fn open(config: &StoreConfig) -> Result<Self, RuntimeError> {
+        Ok(Self {
+            repository: ma2a_store::Repository::open(config)?,
+            key_store: ma2a_store::KeyStore::open(config.state_dir())?,
+        })
+    }
+
     pub(super) fn initialize(&mut self) -> Result<Identity, RuntimeError> {
         let reference = KeyReference::parse(ENDPOINT_KEY_REFERENCE)?;
         let record = self.repository.endpoint()?;
