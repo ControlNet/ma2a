@@ -1,44 +1,21 @@
-use std::{io::Write as _, path::Path, sync::Arc};
+use std::{io::Write as _, path::Path};
 
-use ma2a_runtime::{
-    current_user::CurrentUserRuntime,
-    ipc::{IpcPaths, LocalApiClient},
-    web::{
-        LoopbackWebServer, SystemClock, WebAssets, WebAuthConfig, WebRuntimeDependencies,
-        WebServerConfig,
-    },
-};
+use ma2a_runtime::ipc::{IpcPaths, LocalApiClient};
 
-use crate::{AppError, embedded_web};
+use crate::AppError;
 
 pub(crate) async fn run(state_dir: &Path) -> Result<(), AppError> {
-    let runtime = CurrentUserRuntime::open_at(
-        state_dir,
-        Arc::new(SystemClock::default()),
-        WebAuthConfig::default(),
-    )
-    .await
-    .map_err(AppError::CurrentUser)?;
-    let server = LoopbackWebServer::bind_with_runtime(
-        WebRuntimeDependencies::new(
-            runtime.web_auth().clone(),
-            WebAssets::new(embedded_web::WEB_ASSETS),
-            LocalApiClient::new(IpcPaths::new(state_dir).map_err(AppError::Ipc)?),
-        ),
-        WebServerConfig::default(),
-    )
-    .await
-    .map_err(AppError::Web)?;
-    writeln!(
-        std::io::stdout().lock(),
-        "MA2A Web: http://127.0.0.1:{}",
-        server.port()
-    )
-    .map_err(AppError::Io)?;
-    server
-        .serve(async {
-            let _result = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .map_err(AppError::Web)
+    let paths = IpcPaths::new(state_dir)?;
+    crate::autostart::ensure_daemon(state_dir, &paths).await?;
+    let response = LocalApiClient::new(paths)
+        .call(&crate::commands::workflows::unit_command("ui_open")?)
+        .await?;
+    let document: serde_json::Value =
+        serde_json::from_slice(&response).map_err(std::io::Error::other)?;
+    let url = document
+        .pointer("/result/payload/url")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| std::io::Error::other("Runtime response is missing the loopback UI URL"))?;
+    writeln!(std::io::stdout().lock(), "{url}")?;
+    Ok(())
 }
