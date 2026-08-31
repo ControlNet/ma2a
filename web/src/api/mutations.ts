@@ -32,6 +32,23 @@ export type MutationUiAuthView = {
   readonly password_set: boolean
   readonly active_sessions: number
 }
+export type PrivateRelayConfiguration =
+  | {
+      readonly mode: "native_tls"
+      readonly listen: string
+      readonly publicUrl: string
+      readonly servedSpaceIds: readonly string[]
+      readonly certificatePath: string
+      readonly privateKeyPath: string
+    }
+  | {
+      readonly mode: "external_termination"
+      readonly listen: string
+      readonly publicUrl: string
+      readonly servedSpaceIds: readonly string[]
+      readonly certificatePath: null
+      readonly privateKeyPath: null
+    }
 
 const RequestIdSchema = z.string().regex(/^[0-9a-f]{32}$/)
 const EndpointIdSchema = z.string().regex(/^[0-9a-f]{64}$/)
@@ -96,13 +113,15 @@ export class RuntimeMutationPayloadError extends Error {
 
 export type RuntimeMutationClient = {
   readonly createSpace: (name: string) => Promise<MutationSpaceView>
-  readonly inviteEndpoint: (spaceId: string, endpointId: string) => Promise<MutationSpaceView>
+  readonly createInvitation: (
+    spaceId: string,
+    ttlMs: number,
+    outputPath: string,
+  ) => Promise<MutationSpaceView>
   readonly revokeEndpoint: (spaceId: string, endpointId: string) => Promise<MutationSpaceView>
   readonly triggerSync: (endpointId: string) => Promise<MutationControlSyncView>
   readonly configurePrivateRelay: (
-    mode: "native_tls" | "external_termination",
-    host: string,
-    port: number,
+    configuration: PrivateRelayConfiguration,
   ) => Promise<MutationPrivateRelayView>
   readonly configurePublicRelay: (url: string) => Promise<MutationPublicRelayView>
   readonly echo: (endpointId: string, payload: string) => Promise<MutationEchoReplyView>
@@ -156,13 +175,14 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
       if (result.type !== "space_created") throw new RuntimeMutationPayloadError()
       return result.payload
     },
-    inviteEndpoint: async (spaceId, endpointId) => {
+    createInvitation: async (spaceId, ttlMs, outputPath) => {
       const result = await mutate("/api/v1/spaces/invite", {
         version: LOCAL_API_VERSION,
         operation: "space_invite",
         request_id: id(),
         space_id: space(spaceId),
-        peer_endpoint_id: endpoint(endpointId),
+        ttl_ms: ttlMs,
+        output_path: outputPath,
       })
       if (result.type !== "space_invitation_created") throw new RuntimeMutationPayloadError()
       return result.payload
@@ -188,14 +208,17 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
       if (result.type !== "control_sync_triggered") throw new RuntimeMutationPayloadError()
       return result.payload
     },
-    configurePrivateRelay: async (mode, host, port) => {
+    configurePrivateRelay: async (configuration) => {
       const result = await mutate("/api/v1/relays/private/configure", {
         version: LOCAL_API_VERSION,
         operation: "private_relay_configure",
         request_id: id(),
-        mode,
-        host,
-        port,
+        mode: configuration.mode,
+        listen: configuration.listen,
+        public_url: configuration.publicUrl,
+        served_space_ids: configuration.servedSpaceIds.map(space),
+        certificate_path: configuration.certificatePath,
+        private_key_path: configuration.privateKeyPath,
       })
       if (result.type !== "private_relay_configured") throw new RuntimeMutationPayloadError()
       return result.payload
