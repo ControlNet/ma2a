@@ -81,6 +81,25 @@ impl Runtime {
         }
         let connections = crate::RuntimeConnections::new(&endpoint.connection_manager());
         let echo_metrics = endpoint.echo_metrics();
+        let relay_configuration = store.relay_configuration().await?;
+        let runtime_relay = ma2a_net::RuntimeRelayConfiguration::try_from(relay_configuration)
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let private_relay_server = match runtime_relay.private_provider() {
+            Some(provider) => {
+                let access = ma2a_net::PrivateRelayAccess::new(
+                    identity.endpoint_id,
+                    provider.served_spaces(),
+                );
+                let authorizations = store.relay_authorizations(identity.endpoint_id).await?;
+                access.replace_from_spaces(&authorizations);
+                Some(
+                    ma2a_net::PrivateRelayServer::spawn(provider, access)
+                        .await
+                        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?,
+                )
+            }
+            None => None,
+        };
         let boot_id = boot_id()?;
         let boot_revision = store.begin_boot(boot_id).await?;
         let relay_observation_revision = store.record_relay_observations(Vec::new()).await?;
@@ -109,6 +128,7 @@ impl Runtime {
             echo_metrics,
             lookup,
             clock,
+            private_relay_server,
         );
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
         Ok(Self {

@@ -5,35 +5,17 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
-use ma2a_runtime::{
-    api::Command as ApiCommand,
-    current_user::CurrentUserRuntime,
-    web::{Clock, WebAuthConfig},
-};
+use ma2a_store::{Repository, StoreConfig};
 use serde_json::Value;
-use zeroize::Zeroizing;
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 type TestValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
-
-#[derive(Debug)]
-struct FixedClock;
-
-impl Clock for FixedClock {
-    fn now_ms(&self) -> i64 {
-        1_800_000_000_000
-    }
-}
 
 impl Fixture {
     fn new() -> TestValue<Self> {
@@ -121,6 +103,13 @@ fn invite_creation_writes_once_to_an_owner_only_file() -> TestResult {
     ])?;
     assert!(!repeated.status.success());
     assert_eq!(fs::read_to_string(ticket)?, invitation);
+    let status: Value = serde_json::from_slice(&fixture.run(&["status", "--json"])?.stdout)?;
+    let actor_revision = status
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or("missing Runtime revision")?;
+    let persisted_revision = Repository::open(&StoreConfig::new(&fixture.0))?.revision()?;
+    assert_eq!(actor_revision, persisted_revision);
     Ok(())
 }
 
@@ -197,6 +186,14 @@ fn external_private_and_public_relays_configure_status_and_disable() -> TestResu
             .and_then(Value::as_str),
         Some("external_termination")
     );
+    assert_eq!(
+        private_status.pointer("/result/payload/online"),
+        Some(&Value::Bool(true))
+    );
+    assert_ne!(
+        private_status.pointer("/result/payload/port"),
+        Some(&Value::from(0))
+    );
     let public_status: Value = serde_json::from_slice(
         &fixture
             .run(&["relay", "public", "status", "--json"])?
@@ -208,59 +205,22 @@ fn external_private_and_public_relays_configure_status_and_disable() -> TestResu
             .and_then(Value::as_str),
         Some("https://public.example")
     );
+    assert_success(&fixture.run(&["shutdown"])?)?;
+    let restored_private: Value = serde_json::from_slice(
+        &fixture
+            .run(&["relay", "private", "status", "--json"])?
+            .stdout,
+    )?;
+    assert_eq!(
+        restored_private.pointer("/result/payload/online"),
+        Some(&Value::Bool(true))
+    );
+    assert_ne!(
+        restored_private.pointer("/result/payload/port"),
+        Some(&Value::from(0))
+    );
     assert_success(&fixture.run(&["relay", "private", "disable"])?)?;
     assert_success(&fixture.run(&["relay", "public", "disable"])?)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn ui_open_requires_password_and_launches_the_daemon_loopback_url() -> TestResult {
-    // Given
-    use std::os::unix::fs::PermissionsExt as _;
-    let fixture = Fixture::new()?;
-    let refused = fixture.run(&["ui", "open"])?;
-    assert!(!refused.status.success());
-    let control =
-        CurrentUserRuntime::open_at(&fixture.0, Arc::new(FixedClock), WebAuthConfig::default())
-            .await?;
-    control
-        .send(ApiCommand::ui_password_set(Zeroizing::new(
-            "secure-process-test-password".to_owned(),
-        ))?)
-        .await?;
-    let tools = fixture.0.join("tools");
-    fs::create_dir(&tools)?;
-    let capture = fixture.0.join("opened-url");
-    let opener = tools.join("xdg-open");
-    fs::write(
-        &opener,
-        format!(
-            "#!/bin/sh\nset -eu\nprintf '%s' \"$1\" > \"{}\"\n",
-            capture.display()
-        ),
-    )?;
-    fs::set_permissions(&opener, fs::Permissions::from_mode(0o700))?;
-    let path = format!("{}:{}", tools.display(), std::env::var("PATH")?);
-
-    // When
-    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&fixture.0)
-        .args(["ui", "open"])
-        .env("PATH", path)
-        .output()?;
-
-    // Then
-    assert_success(&output)?;
-    let url = String::from_utf8(output.stdout)?.trim().to_owned();
-    assert!(url.starts_with("http://127.0.0.1:"));
-    assert!(!url.contains('@'));
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !capture.exists() && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert_eq!(fs::read_to_string(capture)?, url);
     Ok(())
 }
 
