@@ -33,3 +33,8 @@ ARM64 targets remain evidenced as deferred until native/QEMU smoke runners are a
 then derive their release matrix from the validated targets marked `supported` and require archive,
 checksum, authenticated clean-room smoke, offline embedded-asset traversal, SPDX SBOM,
 dependency/license, and provenance gates before publication.
+
+The smoke traverses literal HTML resource attributes, CSS `url()`/`@import`, and JavaScript module
+assets, and rejects external literal `fetch`, XHR, WebSocket, EventSource, worker, beacon, and
+same-origin `new URL` network sinks. Dynamic application URLs remain constrained by the Web
+Content-Security-Policy and the frontend API client's same-origin contract.
