@@ -9,7 +9,7 @@
   --surface-elevated: #ffffff;
   --text-primary: #17202a;
   --text-secondary: #465565;
-  --text-muted: #697787;
+  --text-muted: #5f6d7c;
   --border-default: #cfd7df;
   --border-subtle: #e2e7ec;
   --accent-primary: #185fa7;
@@ -49,6 +49,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }

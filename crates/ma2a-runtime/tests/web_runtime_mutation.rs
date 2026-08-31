@@ -140,6 +140,17 @@ async fn runtime_mutation_requires_authentication_csrf_and_typed_json() -> TestR
     assert_eq!(malformed.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(accepted.status(), StatusCode::OK);
+    let cookies = accepted.headers().get_all("set-cookie");
+    assert!(
+        cookies.iter().any(|value| {
+            value == "ma2a_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        })
+    );
+    assert!(
+        cookies
+            .iter()
+            .any(|value| value == "ma2a_csrf=; Path=/; SameSite=Strict; Max-Age=0")
+    );
     let response: serde_json::Value =
         serde_json::from_slice(&to_bytes(accepted.into_body(), 65_536).await?)?;
     assert_eq!(

@@ -6,10 +6,12 @@ import type { RuntimeViewData } from "../view-model"
 
 export function SettingsScreen({
   onLogout,
+  onSessionsRevoked,
   actions,
   runtime,
 }: {
   readonly onLogout?: (() => Promise<void>) | undefined
+  readonly onSessionsRevoked?: (() => void) | undefined
   readonly actions?: RuntimeActions | undefined
   readonly runtime?: RuntimeViewData | undefined
 }): ReactNode {
@@ -36,7 +38,7 @@ export function SettingsScreen({
     void actions.revokeSessions().then(
       () => {
         setRevokeMessage("All browser sessions were revoked. Sign in again.")
-        void onLogout?.()
+        onSessionsRevoked?.()
       },
       () => setRevokeMessage("Sessions could not be revoked."),
     )

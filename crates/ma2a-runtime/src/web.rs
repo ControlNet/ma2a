@@ -99,20 +99,24 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Response {
     match state.auth.logout(session).await {
         Ok(()) => {
             let mut response = StatusCode::NO_CONTENT.into_response();
-            response.headers_mut().append(
-                header::SET_COOKIE,
-                header::HeaderValue::from_static("ma2a_csrf=; Path=/; SameSite=Strict; Max-Age=0"),
-            );
-            response.headers_mut().append(
-                header::SET_COOKIE,
-                header::HeaderValue::from_static(
-                    "ma2a_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
-                ),
-            );
+            expire_session_cookies(&mut response);
             response
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+pub(super) fn expire_session_cookies(response: &mut Response) {
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        header::HeaderValue::from_static("ma2a_csrf=; Path=/; SameSite=Strict; Max-Age=0"),
+    );
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        header::HeaderValue::from_static(
+            "ma2a_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+        ),
+    );
 }
 
 async fn touch_session(State(state): State<WebState>, headers: HeaderMap) -> Response {
