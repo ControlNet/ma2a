@@ -1,3 +1,4 @@
+use ma2a_core::EchoResultClass;
 use tokio::sync::oneshot;
 
 use super::Actor;
@@ -54,6 +55,18 @@ impl Actor {
                 .collect::<Result<Vec<_>, _>>()?,
         )
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let (echo_successes, echo_failures) = self.echo_audit.snapshot().iter().fold(
+            (0_u32, 0_u32),
+            |(successes, failures), record| match record.result_class() {
+                EchoResultClass::Succeeded => (successes.saturating_add(1), failures),
+                EchoResultClass::Unauthorized
+                | EchoResultClass::InvalidInput
+                | EchoResultClass::TimedOut
+                | EchoResultClass::ConcurrencyExceeded
+                | EchoResultClass::Cancelled
+                | EchoResultClass::Unavailable => (successes, failures.saturating_add(1)),
+            },
+        );
         let state = SnapshotState::new(
             NetworkSnapshotState::new(
                 ObservedRelayStateView::new(
@@ -69,7 +82,7 @@ impl Actor {
                 ),
             ),
             ClientSnapshotState::new(
-                EchoSummaryView::new(0, 0),
+                EchoSummaryView::new(echo_successes, echo_failures),
                 UiAuthView::new(true, durable.password_set(), durable.active_sessions()),
             ),
         );
@@ -79,5 +92,75 @@ impl Actor {
             state,
         )
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        error::Error,
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use ma2a_core::RequestId;
+    use ma2a_net::EndpointSecret;
+    use ma2a_store::StoreConfig;
+
+    use crate::Runtime;
+
+    type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
+    static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+
+    struct TempState(PathBuf);
+
+    impl TempState {
+        fn new(name: &str) -> TestResult<Self> {
+            let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "ma2a-snapshot-{name}-{}-{serial}",
+                std::process::id()
+            ));
+            fs::create_dir(&path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+            }
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempState {
+        fn drop(&mut self) {
+            let _cleanup = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_echo_summary_uses_runtime_owned_outcomes() -> TestResult {
+        // Given
+        let state = TempState::new("echo-summary")?;
+        let runtime = Runtime::start(StoreConfig::new(state.path())).await?;
+        let target = EndpointSecret::generate().endpoint_id();
+        let request_id = RequestId::try_from([0x73; 16].as_slice())?;
+
+        // When
+        let result = runtime.handle().echo(request_id, target, b"probe").await;
+        let snapshot = runtime.handle().snapshot().await?.to_value();
+        runtime.shutdown().await?;
+
+        // Then
+        assert!(result.is_err());
+        assert_eq!(
+            snapshot.pointer("/recent_echo_summary/failures"),
+            Some(&serde_json::json!(1))
+        );
+        Ok(())
     }
 }
