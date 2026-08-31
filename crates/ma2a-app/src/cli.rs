@@ -2,6 +2,10 @@ use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
+mod secret_argv;
+
+use secret_argv::reject_secret_argv;
+
 #[derive(Debug, Parser)]
 #[command(name = "ma2a", version, about = "Endpoint-centric MA2A administration")]
 pub(crate) struct Cli {
@@ -243,53 +247,5 @@ impl Cli {
         argv.push(OsString::from("ma2a"));
         argv.extend(arguments);
         Self::try_parse_from(argv)
-    }
-}
-
-fn reject_secret_argv(arguments: &[OsString]) -> Result<(), clap::Error> {
-    let values = arguments
-        .iter()
-        .map(|value| value.to_string_lossy())
-        .collect::<Vec<_>>();
-    let password_secret = values
-        .iter()
-        .any(|value| value == "--password" || value.starts_with("--password="));
-    let redeem_index = values
-        .windows(3)
-        .position(|window| window == ["space", "invite", "redeem"])
-        .map(|index| index + 3);
-    let invite_redeem = redeem_index.is_some();
-    let supported_redeem_input = values
-        .iter()
-        .any(|value| value == "--stdin" || value == "--file");
-    let unsupported_redeem_value = redeem_index.is_some_and(|index| {
-        let mut skip_file_value = false;
-        values.get(index..).is_some_and(|redeem_values| {
-            redeem_values.iter().any(|value| {
-                if skip_file_value {
-                    skip_file_value = false;
-                    return false;
-                }
-                if value == "--file" {
-                    skip_file_value = true;
-                    return false;
-                }
-                !value.starts_with('-')
-            })
-        })
-    });
-    let clap_information = values
-        .iter()
-        .any(|value| matches!(value.as_ref(), "--help" | "-h" | "--version" | "-V"));
-    if password_secret
-        || unsupported_redeem_value
-        || (invite_redeem && !supported_redeem_input && !clap_information)
-    {
-        Err(clap::Error::raw(
-            clap::error::ErrorKind::InvalidValue,
-            "secret values are not accepted in argv; use secure input",
-        ))
-    } else {
-        Ok(())
     }
 }

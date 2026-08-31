@@ -141,6 +141,55 @@ fn inline_password_value_is_rejected_without_echoing_it() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn dash_prefixed_invitation_value_is_rejected_without_echoing_it() -> TestResult {
+    // Given
+    let probe = "--dash-invite-probe-marker";
+
+    // When
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "invite", "redeem", "--stdin", probe])
+        .output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    assert_probe_absent(probe, &output.stdout, &output.stderr)?;
+    Ok(())
+}
+
+#[test]
+fn dash_prefixed_password_value_is_rejected_without_echoing_it() -> TestResult {
+    // Given
+    let probe = "--dash-password-probe-marker";
+
+    // When
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["ui", "password", "set", probe])
+        .output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    assert_probe_absent(probe, &output.stdout, &output.stderr)?;
+    Ok(())
+}
+
+#[test]
+fn inline_file_value_reaches_file_validation() -> TestResult {
+    // Given
+    let generic_rejection = "secret values are not accepted in argv";
+
+    // When
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "invite", "redeem", "--file=missing.ticket"])
+        .output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(!stderr.contains(generic_rejection));
+    Ok(())
+}
+
 fn assert_probe_absent(probe: &str, stdout: &[u8], stderr: &[u8]) -> TestResult {
     let stdout = String::from_utf8(stdout.to_vec())?;
     let stderr = String::from_utf8(stderr.to_vec())?;
