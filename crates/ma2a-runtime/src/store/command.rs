@@ -16,6 +16,23 @@ pub(crate) enum StoreCommand {
         now_ms: i64,
         reply: oneshot::Sender<Result<ma2a_store::SnapshotState, RuntimeError>>,
     },
+    MutationReplay {
+        request_id: ma2a_core::RequestId,
+        reply: oneshot::Sender<Result<Option<ma2a_store::MutationReplayState>, RuntimeError>>,
+    },
+    ReserveMutationReplay {
+        request_id: ma2a_core::RequestId,
+        fingerprint: [u8; 32],
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
+    AbortMutationReplay {
+        request_id: ma2a_core::RequestId,
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
+    RecordMutationReplay {
+        record: ma2a_store::MutationReplayRecord,
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
     CreateOwnedSpace {
         creation: ma2a_store::SpaceCreation,
         reply: oneshot::Sender<Result<ma2a_store::CreatedSpace, RuntimeError>>,
