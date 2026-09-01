@@ -58,6 +58,7 @@ fn current_schema_is_idempotent_configured_and_contains_only_key_references() ->
         "relay_served_spaces",
         "relay_publication_state",
         "relay_observations",
+        "local_mutation_replay",
         "ui_credentials",
         "sessions",
     ] {
