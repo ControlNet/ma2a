@@ -4,6 +4,13 @@
 /web/node_modules/
 /.playwright-mcp/
 
+# OpenCode runtime state
+/.omo/boulder.json
+/.omo/evidence/
+/.omo/run-continuation/
+/.omo/runtime/
+/.omo/start-work/
+
 # Local environments and credentials
 .env
 .env.*
