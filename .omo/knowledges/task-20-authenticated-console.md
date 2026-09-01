@@ -1,0 +1,15 @@
+# Todo 20 Authenticated Console
+
+- Production UI state is projected only from the strict authenticated Runtime snapshot. The snapshot client replaces uncertain state after SSE invalidation, gaps, disconnects, or restarts; it never merges event payloads into authoritative state.
+- Browser mutations use the generated local API command shapes, same-origin credentials, per-session CSRF headers, strict response parsing, and an authoritative snapshot refresh after success.
+- Credentials, bearer cookies, CSRF values, invite material, and private key data must not enter browser storage, URLs, logs, fixtures, or evidence.
+- Snapshot summaries do not expose member identities, per-peer high-water detail, configured relay URLs, invite secret material, or detailed Echo history. The UI must state these limits instead of inventing values.
+- Embedded serving uses SPA fallback only for extensionless non-API paths. Missing `assets/*` remain 404. SPA documents use `no-cache`; content-hashed assets use one-year immutable caching; API and error responses default to `no-store`.
+- Global security middleware must preserve route-specific `Cache-Control` values rather than overwrite them.
+- Manual QA found that the current shared Runtime IPC executor still returns typed `unavailable` results for Space and relay configuration commands. The Web client sends valid commands and fails honestly; successful workflows require the pending shared Runtime executor implementation, not Web-specific business logic.
+- Verification evidence is archived at `.omo/evidence/task-20-ma2a-phase-0-1.zip` and intentionally excludes credentials, cookies, tokens, and isolated Runtime state.
+- The Linux `embedded_ui` acceptance test drives the production `ma2a` daemon across the process and HTTP boundaries. Keep `/proc` listener discovery isolated in the support module so the scenario remains under the repository's 250-pure-LOC policy.
+- Final correction verification passed the exact locked Nextest target, strict target Clippy, rustfmt, Rust no-excuse rules, the locked aggregate gate, and Secret Guard. Rust LSP remained unavailable at the daemon's 30-second timeout.
+- Snapshot recovery is controller-owned and deterministic: one initial attempt plus retries after 250, 1000, and 4000 milliseconds. Failed recovery preserves the last authoritative snapshot as offline, successful recovery replaces it, and `stop()` cancels pending retry and EventSource ownership.
+- Successful revoke-all expires both `ma2a_session` and `ma2a_csrf` in the mutation response. The client then clears local session state and navigates to `/login` without an additional authenticated logout call.
+- Fresh correction evidence is stored in `.omo/evidence/task-20-embedded-ui-correction/`: six desktop and six narrow viewport captures. Live browser checks found no horizontal overflow, no console warnings/errors, no non-loopback requests, inherited relay-select typography, empty browser storage, and complete cookie removal after revoke-all.
