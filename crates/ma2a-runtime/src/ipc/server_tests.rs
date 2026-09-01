@@ -7,20 +7,23 @@ use std::{
     },
 };
 
-use ma2a_core::{ProtocolError, RequestId};
-use ma2a_store::StoreConfig;
+use ma2a_core::ProtocolError;
+use ma2a_store::{MutationReplayRecord, MutationReplayRequest, StoreConfig};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     Runtime,
-    api::{self, CommandResult, RuntimeStatusView},
+    api::{self, ApiResponse, CommandResult, RuntimeStatusView},
     current_user::CurrentUserRuntime,
     ipc::{IpcError, IpcPaths, LocalApiClient, ServerExit},
     web::{SystemClock, WebAuthConfig},
 };
 
-use super::{LocalApiServer, ReplayEntry};
+use super::LocalApiServer;
+
+#[path = "server_tests/pending_replay.rs"]
+mod pending_replay;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PEER_ENDPOINT_ID: &str = "5866666666666666666666666666666666666666666666666666666666666666";
@@ -98,19 +101,28 @@ async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResul
     )
     .await?;
     let paths = IpcPaths::new(&state.0)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
-    let request_id = RequestId::try_from(&[1_u8; 16][..])?;
-    {
-        let mut replay = server.replay.lock().await;
-        replay.insert(
-            request_id,
-            ReplayEntry {
-                fingerprint: [0_u8; 32],
-                result: CommandResult::shutting_down(),
-                revision: 0,
-            },
-        );
-    }
+    let handle = runtime.handle();
+    let server = LocalApiServer::bind(paths.clone(), handle.clone(), control)?;
+    let seeded = api::decode_command(
+        br#"{"version":1,"operation":"space_create","request_id":"01010101010101010101010101010101","name":"seed"}"#,
+    )?;
+    let request_id = seeded.request_id().ok_or("seed request id missing")?;
+    let response = api::encode_response(&ApiResponse::new(
+        Some(request_id),
+        0,
+        CommandResult::shutting_down(),
+    ))?;
+    let fingerprint = api::command_fingerprint(&seeded)?;
+    handle
+        .reserve_mutation_replay(request_id, fingerprint)
+        .await?;
+    handle
+        .record_mutation_replay(MutationReplayRecord::new(
+            MutationReplayRequest::new(request_id, fingerprint),
+            0,
+            response,
+        )?)
+        .await?;
     let live_server = LiveServer::spawn(server);
     let client = LocalApiClient::new(paths);
     client.probe().await?;
@@ -143,6 +155,70 @@ async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResul
     let shutdown = runtime.shutdown().await?;
     assert_eq!(shutdown.joined_tasks(), 2);
     assert!(shutdown.endpoint_closed());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_mutation_replays_and_conflicts_after_runtime_restart() -> TestResult {
+    // Given
+    let state = TempState::new()?;
+    let paths = IpcPaths::new(&state.0)?;
+    let command = api::decode_command(
+        br#"{"version":1,"operation":"space_create","request_id":"02020202020202020202020202020202","name":"durable"}"#,
+    )?;
+    let first_runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let first_control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let first_server = LiveServer::spawn(LocalApiServer::bind(
+        paths.clone(),
+        first_runtime.handle(),
+        first_control,
+    )?);
+    let first_client = LocalApiClient::new(paths.clone());
+    first_client.probe().await?;
+    let committed = first_client.call(&command).await?;
+    assert_eq!(first_server.cancel().await?, ServerExit::Cancelled);
+    paths.remove_stale_endpoint()?;
+    first_runtime.shutdown().await?;
+    let second_runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let second_control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let second_server = LiveServer::spawn(LocalApiServer::bind(
+        paths.clone(),
+        second_runtime.handle(),
+        second_control,
+    )?);
+    let second_client = LocalApiClient::new(paths);
+    second_client.probe().await?;
+    let conflict = api::decode_command(
+        br#"{"version":1,"operation":"space_create","request_id":"02020202020202020202020202020202","name":"conflict"}"#,
+    )?;
+
+    // When
+    let replayed = second_client.call(&command).await?;
+    let rejected = second_client.call(&conflict).await?;
+
+    // Then
+    assert_eq!(replayed, committed);
+    let rejected_value: serde_json::Value = serde_json::from_slice(&rejected)?;
+    assert_eq!(
+        rejected_value
+            .get("error")
+            .and_then(serde_json::Value::as_str),
+        Some(ProtocolError::CONFLICT.name())
+    );
+    let snapshot = second_runtime.handle().snapshot().await?;
+    assert_eq!(snapshot.spaces().len(), 1);
+    assert_eq!(second_server.cancel().await?, ServerExit::Cancelled);
+    second_runtime.shutdown().await?;
     Ok(())
 }
 
