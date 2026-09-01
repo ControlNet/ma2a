@@ -68,7 +68,7 @@ printf '%s\n%s\n' "$smoke_credential" "$smoke_credential" |
 created=$($binary --state-dir "$state_dir" space create --name release-smoke --json)
 jq -e '.result.payload.space_id | type == "string"' <<<"$created" >/dev/null
 
-url=$($binary --state-dir "$state_dir" web)
+url=$($binary --state-dir "$state_dir" ui open)
 [[ "$url" == http://127.0.0.1:* ]] || { printf 'unexpected Web URL: %s\n' "$url" >&2; exit 1; }
 
 same_origin_headers=(--header "Origin: $url" --header "Sec-Fetch-Site: same-origin")
