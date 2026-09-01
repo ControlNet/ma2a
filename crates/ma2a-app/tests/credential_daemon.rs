@@ -51,12 +51,14 @@ impl Drop for Fixture {
 type TestResultValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[test]
-fn session_revoke_all_uses_the_autostarted_daemon_control_path() -> TestResult {
+fn sessions_revoke_all_uses_the_autostarted_daemon_control_path() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
 
     // When
-    let output = fixture.command(&["ui", "session", "revoke-all"]).output()?;
+    let output = fixture
+        .command(&["ui", "sessions", "revoke-all"])
+        .output()?;
 
     // Then
     assert!(
@@ -73,5 +75,20 @@ fn session_revoke_all_uses_the_autostarted_daemon_control_path() -> TestResult {
         .write(true)
         .open(fixture.0.join("run-v1/daemon.lock"))?;
     assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
+    Ok(())
+}
+
+#[test]
+fn singular_session_revoke_all_is_rejected_by_cli() -> TestResult {
+    // Given
+    let fixture = Fixture::new()?;
+
+    // When
+    let output = fixture.command(&["ui", "session", "revoke-all"]).output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert_eq!(stderr, "unknown command; run ma2a --help\n");
     Ok(())
 }

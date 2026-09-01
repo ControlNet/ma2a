@@ -219,11 +219,6 @@ pub(crate) enum UiCommand {
         #[command(subcommand)]
         command: SessionsCommand,
     },
-    #[command(hide = true)]
-    Session {
-        #[command(subcommand)]
-        command: SessionsCommand,
-    },
     Open,
 }
 

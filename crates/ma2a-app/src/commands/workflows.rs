@@ -60,9 +60,6 @@ pub(crate) async fn run_ui(state_dir: &Path, command: cli::UiCommand) -> Result<
         },
         cli::UiCommand::Sessions {
             command: cli::SessionsCommand::RevokeAll,
-        }
-        | cli::UiCommand::Session {
-            command: cli::SessionsCommand::RevokeAll,
         } => crate::credential_command::run_revoke_all(state_dir).await,
         cli::UiCommand::Open => {
             let paths = IpcPaths::new(state_dir)?;
