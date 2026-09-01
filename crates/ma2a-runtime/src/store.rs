@@ -1,13 +1,13 @@
+mod backend_state;
 mod command;
 mod identity;
 mod local_control;
 mod membership;
+mod mutation_replay;
 mod relay_state;
 
 use ma2a_store::{KeyStore, Repository, RuntimeMetadataUpdate};
 use tokio::sync::mpsc;
-
-use crate::error::RuntimeError;
 
 pub(crate) use crate::store_client::channel_error;
 
@@ -31,16 +31,34 @@ impl StoreBackend {
     pub(crate) fn run(mut self, mut commands: mpsc::Receiver<StoreCommand>) {
         while let Some(command) = commands.blocking_recv() {
             match command {
-                StoreCommand::Initialize(reply) => {
-                    let _unsent = reply.send(self.initialize());
-                }
+                StoreCommand::Initialize(reply) => drop(reply.send(self.initialize())),
                 StoreCommand::Snapshot {
                     endpoint_id,
                     now_ms,
                     reply,
                 } => {
                     let result = self.repository.snapshot_state(endpoint_id, now_ms);
-                    let _unsent = reply.send(result.map_err(Into::into));
+                    drop(reply.send(result.map_err(Into::into)));
+                }
+                StoreCommand::MutationReplay { request_id, reply } => {
+                    mutation_replay::lookup(&self.repository, request_id, reply);
+                }
+                StoreCommand::ReserveMutationReplay {
+                    request_id,
+                    fingerprint,
+                    reply,
+                } => {
+                    mutation_replay::reserve(
+                        &mut self.repository,
+                        ma2a_store::MutationReplayRequest::new(request_id, fingerprint),
+                        reply,
+                    );
+                }
+                StoreCommand::AbortMutationReplay { request_id, reply } => {
+                    mutation_replay::abort(&mut self.repository, request_id, reply);
+                }
+                StoreCommand::RecordMutationReplay { record, reply } => {
+                    mutation_replay::complete(&mut self.repository, &record, reply);
                 }
                 StoreCommand::CreateOwnedSpace { creation, reply } => {
                     let result = self
@@ -234,29 +252,5 @@ impl StoreBackend {
                 }
             }
         }
-    }
-
-    fn set_endpoint_bind_port(&mut self, port: u16) -> Result<u64, RuntimeError> {
-        self.repository
-            .set_endpoint_bind_port(port)
-            .map_err(Into::into)
-    }
-
-    fn record_metadata(&mut self, update: RuntimeMetadataUpdate) -> Result<u64, RuntimeError> {
-        self.repository
-            .record_runtime_metadata(&update)
-            .map_err(Into::into)
-    }
-
-    fn persist_enrollment(
-        &mut self,
-        chain: ma2a_core::SpaceChain,
-    ) -> Result<(u64, ma2a_core::SpaceChain), RuntimeError> {
-        let revision = self
-            .repository
-            .persist_space_chain(&chain)?
-            .revision()
-            .map_or_else(|| self.repository.revision(), Ok)?;
-        Ok((revision, chain))
     }
 }
