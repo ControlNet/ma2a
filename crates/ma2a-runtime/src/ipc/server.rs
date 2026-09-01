@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
-use ma2a_core::{ProtocolError, RequestId};
+use ma2a_core::ProtocolError;
 use serde_json::Value;
 use tokio::{
     sync::{Mutex, Semaphore, TryAcquireError, mpsc},
@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     RuntimeHandle,
-    api::{self, CommandResult},
+    api::{self},
     current_user::CurrentUserRuntime,
 };
 
@@ -40,7 +40,7 @@ pub struct LocalApiServer {
     paths: IpcPaths,
     handle: RuntimeHandle,
     control: CurrentUserRuntime,
-    replay: Arc<Mutex<BTreeMap<RequestId, ReplayEntry>>>,
+    replay: Arc<Mutex<()>>,
     web_url: Option<String>,
 }
 
@@ -60,7 +60,7 @@ impl LocalApiServer {
             paths,
             handle,
             control,
-            replay: Arc::new(Mutex::new(BTreeMap::new())),
+            replay: Arc::new(Mutex::new(())),
             web_url: None,
         })
     }
@@ -128,7 +128,7 @@ struct ConnectionContext {
     paths: IpcPaths,
     handle: RuntimeHandle,
     control: CurrentUserRuntime,
-    replay: Arc<Mutex<BTreeMap<RequestId, ReplayEntry>>>,
+    replay: Arc<Mutex<()>>,
     shutdown_sender: mpsc::Sender<()>,
     web_url: Option<String>,
 }
@@ -161,42 +161,59 @@ async fn handle_connection(
 
 async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>, bool), IpcError> {
     let command = api::decode_command(input)?;
-    let status = context.handle.status().await?;
-    let mut replay = context.replay.lock().await;
+    let _replay = context.replay.lock().await;
     let fingerprint = match command.request_id() {
         Some(request_id) => Some((request_id, api::command_fingerprint(&command)?)),
         None => None,
     };
+    if let Some((request_id, fingerprint)) = fingerprint {
+        if let Some(entry) = context.handle.mutation_replay(request_id).await? {
+            match entry {
+                ma2a_store::MutationReplayState::Pending(found) if found == fingerprint => {
+                    return Ok((
+                        api::encode_error(api::ApiError::new(ProtocolError::UNAVAILABLE))?,
+                        false,
+                    ));
+                }
+                ma2a_store::MutationReplayState::Completed(entry)
+                    if entry.fingerprint() == fingerprint =>
+                {
+                    let response = entry.response().to_vec();
+                    return Ok((response.clone(), response_requests_shutdown(&response)?));
+                }
+                ma2a_store::MutationReplayState::Pending(_)
+                | ma2a_store::MutationReplayState::Completed(_) => {
+                    return Ok((
+                        api::encode_error(api::ApiError::new(ProtocolError::CONFLICT))?,
+                        false,
+                    ));
+                }
+                _ => {
+                    return Ok((
+                        api::encode_error(api::ApiError::new(ProtocolError::UNAVAILABLE))?,
+                        false,
+                    ));
+                }
+            }
+        }
+        context
+            .handle
+            .reserve_mutation_replay(request_id, fingerprint)
+            .await?;
+    }
+    let status = context.handle.status().await?;
     let (result, response_revision) = match fingerprint {
-        Some((request_id, fingerprint)) => match replay.get(&request_id) {
-            Some(entry) if entry.fingerprint == fingerprint => {
-                (entry.result.clone(), entry.revision)
-            }
-            Some(_) => {
-                return Ok((
-                    api::encode_error(api::ApiError::new(ProtocolError::CONFLICT))?,
-                    false,
-                ));
-            }
-            None => {
-                let result = match execute(&command, &status, context).await {
-                    Ok(result) => result,
-                    Err(error) => {
-                        return Ok((api::encode_error(api::ApiError::new(error))?, false));
-                    }
-                };
-                let revision = authoritative_revision(&command, status.revision(), context).await?;
-                replay.insert(
-                    request_id,
-                    ReplayEntry {
-                        fingerprint,
-                        result: result.clone(),
-                        revision,
-                    },
-                );
-                (result, revision)
-            }
-        },
+        Some((request_id, _)) => {
+            let result = match execute(&command, &status, context).await {
+                Ok(result) => result,
+                Err(error) => {
+                    context.handle.abort_mutation_replay(request_id).await?;
+                    return Ok((api::encode_error(api::ApiError::new(error))?, false));
+                }
+            };
+            let revision = authoritative_revision(&command, status.revision(), context).await?;
+            (result, revision)
+        }
         None => match execute(&command, &status, context).await {
             Ok(result) => {
                 let revision = api::snapshot_revision(&result).unwrap_or_else(|| status.revision());
@@ -205,14 +222,27 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
             Err(error) => return Ok((api::encode_error(api::ApiError::new(error))?, false)),
         },
     };
-    drop(replay);
     let response = api::ApiResponse::new(command.request_id(), response_revision, result);
     let encoded = if command.operation() == "snapshot_fetch" {
         encode_stamped_snapshot_response(&response, status.boot_id())?
     } else {
         api::encode_response(&response)?
     };
+    if let Some((request_id, fingerprint)) = fingerprint {
+        let record = ma2a_store::MutationReplayRecord::new(
+            ma2a_store::MutationReplayRequest::new(request_id, fingerprint),
+            response_revision,
+            encoded.clone(),
+        )
+        .map_err(crate::RuntimeError::from)?;
+        context.handle.record_mutation_replay(record).await?;
+    }
     Ok((encoded, response.result_type() == "shutting_down"))
+}
+
+fn response_requests_shutdown(response: &[u8]) -> Result<bool, IpcError> {
+    let value: Value = serde_json::from_slice(response).map_err(|_| IpcError::InvalidFrame)?;
+    Ok(value.pointer("/result/type").and_then(Value::as_str) == Some("shutting_down"))
 }
 
 fn encode_stamped_snapshot_response(
@@ -231,13 +261,6 @@ fn encode_stamped_snapshot_response(
     } else {
         Ok(encoded)
     }
-}
-
-#[derive(Clone, Debug)]
-struct ReplayEntry {
-    fingerprint: [u8; 32],
-    result: CommandResult,
-    revision: u64,
 }
 
 #[cfg(test)]
