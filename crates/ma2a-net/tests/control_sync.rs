@@ -82,8 +82,15 @@ async fn control_handler_captures_tls_identity_and_preserves_bytes() -> TestResu
             .await
             .ok_or("missing control call")?;
         assert_eq!(call.remote_endpoint_id(), expected_client);
-        assert_eq!(call.request(), request);
-        call.respond(Ok(response.clone()));
+        let authorized = call
+            .authorize()
+            .ok_or("control admission receiver missing")?;
+        let (received, responder) = authorized
+            .request()
+            .await
+            .map_err(|rejection| format!("control request rejected: {rejection:?}"))?;
+        assert_eq!(received, request);
+        responder.respond(Ok(response.clone()));
         Ok::<(), Box<dyn Error + Send + Sync>>(())
     };
     let (received, handled) = tokio::join!(exchange, serve);

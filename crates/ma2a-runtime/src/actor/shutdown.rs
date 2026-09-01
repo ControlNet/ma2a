@@ -14,6 +14,7 @@ impl Actor {
             .events
             .send(RuntimeEvent::shutting_down(self.state.revision));
         self.control_rounds.shutdown().await;
+        self.control_tasks.shutdown().await;
         self.echo_tasks.shutdown().await;
         if let Some(server) = self.private_relay_server.take() {
             server.shutdown().await.map_err(|_| {

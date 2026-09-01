@@ -34,6 +34,12 @@ pub(crate) struct ControlExchangeInput {
     pub(crate) now_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ControlAuthorizationInput {
+    pub(crate) local_endpoint_id: EndpointId,
+    pub(crate) remote_endpoint_id: EndpointId,
+}
+
 #[derive(Debug)]
 pub(crate) struct ControlApplyOutcome {
     pub(crate) revision: u64,
@@ -51,7 +57,7 @@ pub(crate) struct ControlRespondOutcome {
     pub(crate) changes: ControlChanges,
 }
 
-pub(crate) use exchange::{apply_response, respond};
+pub(crate) use exchange::{apply_response, authorize, respond};
 pub(crate) use pages::ControlChanges;
 pub(crate) use scheduler::ControlRoundRunner;
 pub(crate) use scope::{

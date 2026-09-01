@@ -1,6 +1,7 @@
 use ma2a_store::{AuthorizedEnrollmentRedemption, EnrollmentOutcome};
 use tokio::sync::oneshot;
 
+mod control;
 mod echo;
 mod membership;
 mod mutation_replay;
@@ -11,9 +12,7 @@ mod snapshot;
 use crate::{
     RuntimeClock as _,
     clock::SystemClock,
-    control_sync::{
-        ControlApplyOutcome, ControlLookupState, ControlRespondOutcome, PreparedControlPeer,
-    },
+    control_sync::{ControlLookupState, PreparedControlPeer},
     error::{RuntimeError, RuntimeErrorKind},
     store::{Identity, StoreClient, StoreCommand},
 };
@@ -238,29 +237,6 @@ impl StoreClient {
     ) -> Result<Vec<PreparedControlPeer>, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PrepareControlRound { input, reply })
-            .await?;
-        response.await.map_err(channel_error)?
-    }
-
-    pub(crate) async fn respond_control(
-        &self,
-        input: crate::control_sync::ControlExchangeInput,
-    ) -> Result<ControlRespondOutcome, ma2a_net::ControlRejection> {
-        let (reply, response) = oneshot::channel();
-        self.send(StoreCommand::RespondControl { input, reply })
-            .await
-            .map_err(|_| ma2a_net::ControlRejection::Unavailable)?;
-        response
-            .await
-            .map_err(|_| ma2a_net::ControlRejection::Unavailable)?
-    }
-
-    pub(crate) async fn apply_control_response(
-        &self,
-        input: crate::control_sync::ControlExchangeInput,
-    ) -> Result<ControlApplyOutcome, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.send(StoreCommand::ApplyControlResponse { input, reply })
             .await?;
         response.await.map_err(channel_error)?
     }

@@ -83,7 +83,14 @@ pub(super) async fn reject_page(fixture: ControlFixture, page: ControlPageV1) ->
             .recv()
             .await
             .ok_or("control call missing")?;
-        call.respond(Ok(response));
+        let authorized = call
+            .authorize()
+            .ok_or("control admission receiver missing")?;
+        let (_request, responder) = authorized
+            .request()
+            .await
+            .map_err(|rejection| format!("control request rejected: {rejection:?}"))?;
+        responder.respond(Ok(response));
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     });
     let candidate = Runtime::start_with_clock(candidate_config.clone(), clock()).await?;

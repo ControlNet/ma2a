@@ -5,7 +5,10 @@ use ma2a_core::{
 use ma2a_net::ControlRejection;
 use ma2a_store::{ControlSpaceState, Repository};
 
-use super::{ControlApplyOutcome, ControlExchangeInput, ControlRespondOutcome, load_lookup, pages};
+use super::{
+    ControlApplyOutcome, ControlAuthorizationInput, ControlExchangeInput, ControlRespondOutcome,
+    load_lookup, pages,
+};
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
 pub(crate) fn respond(
@@ -15,24 +18,13 @@ pub(crate) fn respond(
     let mut shared = repository
         .control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)
         .map_err(|_| ControlRejection::Unavailable)?;
-    if shared.is_empty() {
-        return Err(ControlRejection::Unauthorized);
-    }
+    authorize_shared(&shared, input.local_endpoint_id, input.remote_endpoint_id)?;
+    let request =
+        ControlRequestV1::decode(&input.payload).map_err(|_| ControlRejection::Invalid)?;
     let authorizations = shared
         .iter()
         .map(ControlSpaceState::authorization)
         .collect::<Vec<_>>();
-    crate::authz::authorize_remote(
-        &AuthorizationRequest::new(
-            AuthorizationEndpoints::new(input.remote_endpoint_id, input.local_endpoint_id),
-            RemoteOperation::CONTROL_SYNC,
-            None,
-        ),
-        &authorizations,
-    )
-    .map_err(|_| ControlRejection::Unauthorized)?;
-    let request =
-        ControlRequestV1::decode(&input.payload).map_err(|_| ControlRejection::Invalid)?;
     for space_id in request
         .cursors()
         .iter()
@@ -94,6 +86,40 @@ pub(crate) fn respond(
         lookup,
         changes,
     })
+}
+
+pub(crate) fn authorize(
+    repository: &Repository,
+    input: &ControlAuthorizationInput,
+) -> Result<(), ControlRejection> {
+    let shared = repository
+        .control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)
+        .map_err(|_| ControlRejection::Unavailable)?;
+    authorize_shared(&shared, input.local_endpoint_id, input.remote_endpoint_id)
+}
+
+fn authorize_shared(
+    shared: &[ControlSpaceState],
+    local_endpoint_id: ma2a_core::EndpointId,
+    remote_endpoint_id: ma2a_core::EndpointId,
+) -> Result<(), ControlRejection> {
+    if shared.is_empty() {
+        return Err(ControlRejection::Unauthorized);
+    }
+    let authorizations = shared
+        .iter()
+        .map(ControlSpaceState::authorization)
+        .collect::<Vec<_>>();
+    crate::authz::authorize_remote(
+        &AuthorizationRequest::new(
+            AuthorizationEndpoints::new(remote_endpoint_id, local_endpoint_id),
+            RemoteOperation::CONTROL_SYNC,
+            None,
+        ),
+        &authorizations,
+    )
+    .map_err(|_| ControlRejection::Unauthorized)?;
+    Ok(())
 }
 
 pub(crate) fn apply_response(

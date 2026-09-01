@@ -223,8 +223,10 @@ impl StoreBackend {
                     let _unsent = reply.send(result);
                 }
                 StoreCommand::RespondControl { input, reply } => {
-                    let result = crate::control_sync::respond(&mut self.repository, &input);
-                    let _unsent = reply.send(result);
+                    local_control::respond(&mut self.repository, &input, reply);
+                }
+                StoreCommand::AuthorizeControl { input, reply } => {
+                    local_control::authorize(&self.repository, &input, reply);
                 }
                 StoreCommand::ApplyControlResponse { input, reply } => {
                     let result = crate::control_sync::apply_response(&mut self.repository, &input);

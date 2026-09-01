@@ -16,7 +16,7 @@ use crate::{
     AddressPublisher, AddressPublisherError, PrivateRelayAdvertisementPublisher,
     PrivateRelayProviderConfig, SpaceAddressLookup,
     address_lookup::RuntimeAddressLookup,
-    control::{CONTROL_ALPN, ControlClient, ControlHandler},
+    control::{CONTROL_ALPN, ControlClient, ControlHandler, ControlMetrics},
     echo_protocol::{ECHO_ALPN, EchoClient, EchoHandler, EchoMetrics},
     enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
     protocols::ENROLLMENT_ALPN,
@@ -74,6 +74,7 @@ pub struct RuntimeEndpoint {
     router: Router,
     observation: crate::address_observation::AddressObservation,
     connections: crate::ConnectionManager,
+    control_metrics: ControlMetrics,
     echo_metrics: EchoMetrics,
 }
 
@@ -144,6 +145,7 @@ impl RuntimeEndpoint {
         }
         let connections =
             crate::ConnectionManager::with_relays(endpoint.clone(), configured_relays);
+        let control_metrics = ControlMetrics::default();
         let echo_metrics = EchoMetrics::default();
         let endpoint_id = endpoint.id().into();
         let router = Router::builder(endpoint)
@@ -152,7 +154,10 @@ impl RuntimeEndpoint {
                 ECHO_ALPN,
                 EchoHandler::new(endpoint_id, echo_calls, echo_metrics.clone()),
             )
-            .accept(CONTROL_ALPN, ControlHandler::new(control_calls))
+            .accept(
+                CONTROL_ALPN,
+                ControlHandler::new(control_calls, control_metrics.clone()),
+            )
             .spawn();
         if !control_enabled {
             router.endpoint().set_alpns(vec![ENROLLMENT_ALPN.to_vec()]);
@@ -161,6 +166,7 @@ impl RuntimeEndpoint {
             router,
             observation,
             connections,
+            control_metrics,
             echo_metrics,
         })
     }
@@ -255,6 +261,11 @@ impl RuntimeEndpoint {
     /// Returns a cloneable active control dial client.
     pub fn control_client(&self) -> ControlClient {
         ControlClient::new(self.connections.clone())
+    }
+
+    /// Returns inbound control admission metrics for authorization-ordering evidence.
+    pub fn control_metrics(&self) -> ControlMetrics {
+        self.control_metrics.clone()
     }
 
     /// Returns a cloneable single-attempt Echo client.
