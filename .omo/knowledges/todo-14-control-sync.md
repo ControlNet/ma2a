@@ -1,0 +1,25 @@
+# Todo 14 Control Synchronization
+
+- Register `ma2a/control/1` permanently with Iroh, but gate acceptance from current shared-Space membership.
+- Use cryptographically sampled full jitter only for transient failures; permanent authorization, framing, validation, and status failures return immediately.
+- Bound a complete round to four peers per Space, eight concurrent dials, three attempts, and one 30-second aggregate deadline.
+- Track peers that completed authenticated exchanges so local `control_sync_status` and `control_sync_trigger` report actor-backed state.
+- Clear synchronized-peer state when memberships change and preserve exact canonical signed manifest and address bytes.
+- Verify through `cargo run --locked -p xtask -- check`, focused Runtime scheduling/staging tests, the Store atomic-batch integration test, and the real-Iroh E2E executable.
+- Keep task knowledge outside feature history: the completed branch ends at `9cf0905`, adds eight reviewable follow-up commits from `21d92a6`, and contains no committed `.omo` paths.
+- Inbound control must call `authorize_remote` for `RemoteOperation::CONTROL_SYNC` before decoding, then narrow each decoded cursor/page with `AuthorizationResource::control_space_cursor`; cursor resources never grant access independently.
+- Validate manifests, addresses, relay advertisements, and their high-water transitions into a staged batch before persistence. `Repository::persist_control_batch` writes every staged artifact and increments the Runtime revision once under one SQLite transaction.
+- Regression coverage must prove that a valid manifest followed by an invalid artifact leaves both the stored manifest generation and Runtime revision unchanged.
+- Model control scheduling with typed trigger and scope values. Targeted triggers select every requested eligible peer, while global triggers retain the rotating four-peer-per-Space window.
+- Index explicit waiters by scheduled round identity. A request received during an active round belongs to the merged pending round and cannot be completed by the older round.
+- Persisted manifest, address, and relay advancement flags should feed the same bounded scheduler, giving startup, manifest, address, relay, enrollment, explicit, and periodic work one coalescing path.
+- Real-Iroh E2E should include at least two shared Spaces and one owner-private Space, proving one explicit round converges both shared chains and never imports the non-shared chain.
+- Final handoff checks: tracked Secret Guard scan passes across 323 files, the branch worktree is clean, no test temp directories or matching Runtime/Cargo processes remain, and the branch has no configured upstream.
+- LSP diagnostics cannot inspect this `/tmp` worktree because the tool restricts paths to the primary request cwd; Rust compiler, strict Clippy, formatting, tests, E2E, LOC, and aggregate gates are the verification fallback.
+- Keep integration-test support modules below a directory named for the test target, such as `tests/control_sync_e2e/support.rs`; root-level `tests/*.rs` files are compiled by Cargo as independent integration crates under `--all-targets`.
+- Opportunistic control pushes must include only locally owned address and relay artifacts. Forwarding cached remote artifacts can replay stale high-water records to their owner and cause a permanent control rejection before response application.
+- Final correction proof is 268 locked all-target tests plus the aggregate `xtask check`; the latter also verifies dependency policy and the complete web toolchain.
+- Targeted sync requests must never bypass the round queue for empty memberships; only a successful authenticated outcome containing the exact requested Endpoint can complete the waiter.
+- `persist_control_batch` is a public persistence boundary, so it must preflight address and relay high-water state itself. Staging validation alone is insufficient for direct callers.
+- Batch preflight must model earlier candidates in the same batch, reject a later rollback/fork before writes, and skip identical replay without incrementing the Runtime revision.
+- A real-Iroh adversarial responder can bind the authenticated owner identity at its persisted port and return a crafted control response, proving invalid forwarded artifacts leave revision and high-water state unchanged.
