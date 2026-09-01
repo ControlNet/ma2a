@@ -45,7 +45,12 @@ fn invalid_sid() -> io::Error {
 
 #[cfg(windows)]
 mod ffi {
-    use std::{ffi::c_void, io, mem, os::windows::io::AsRawHandle as _, ptr};
+    use std::{
+        ffi::c_void,
+        io, mem,
+        os::windows::io::{AsHandle as _, AsRawHandle as _},
+        ptr,
+    };
 
     use interprocess::local_socket::tokio::Stream;
     use windows_sys::Win32::{
@@ -108,7 +113,7 @@ mod ffi {
         }
     }
 
-    pub(super) fn current_process_user_sid() -> io::Result<UserSid> {
+    pub(in super::super) fn current_process_user_sid() -> io::Result<UserSid> {
         // SAFETY: [Category 8 - FFI boundary] GetCurrentProcess has no pointer arguments and returns
         // a process pseudo-handle that remains valid for this process.
         let process = unsafe { GetCurrentProcess() };
@@ -121,9 +126,9 @@ mod ffi {
         token_user_sid(OwnedHandle(token))
     }
 
-    pub(super) fn impersonated_client_user_sid(stream: &Stream) -> io::Result<UserSid> {
+    pub(in super::super) fn impersonated_client_user_sid(stream: &Stream) -> io::Result<UserSid> {
         let pipe = match stream {
-            Stream::NamedPipe(pipe) => pipe.as_raw_handle(),
+            Stream::NamedPipe(pipe) => pipe.as_handle().as_raw_handle(),
         };
         let impersonation = ImpersonationGuard::start(pipe)?;
         let sid = current_thread_user_sid();
