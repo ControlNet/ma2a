@@ -36,6 +36,7 @@ impl Actor {
         let relay_observer = endpoint.spawn_relay_observer(relay_observation_sender);
         let handle = RuntimeHandle::new(
             command_sender,
+            store.clone(),
             events.clone(),
             echo_audit.clone(),
             echo_metrics.clone(),
