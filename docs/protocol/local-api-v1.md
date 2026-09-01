@@ -34,7 +34,9 @@ Every mutation carries a client-generated `request_id`. The Runtime fingerprints
 - Same identifier and same payload: return the prior result without executing again.
 - Same identifier and different payload: return `conflict` before mutation or revision read.
 
-Durable replay storage is implemented by the Runtime persistence layer, not this contract module.
+The Runtime persistence layer durably reserves a new identifier before execution and stores the exact encoded successful response after completion. A same-payload retry of an interrupted reservation returns `unavailable` rather than executing again; a changed payload still returns `conflict`. Failed commands that produced no successful side effect release their reservation.
+
+Completed replay decisions are retained in deterministic FIFO order, bounded to 1,024 entries, 8 MiB of aggregate encoded responses, and 65,536 bytes per response. Oldest completed decisions are evicted by persistent sequence and Request ID until both budgets hold. Pending reservations are not evicted, so capacity exhaustion fails closed instead of permitting duplicate execution. Replay rows contain only the Request ID, canonical fingerprint, revision, encoded response, sequence, and completion state; command payloads are not persisted.
 
 ## Snapshots And Events
 
