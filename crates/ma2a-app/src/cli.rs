@@ -198,13 +198,12 @@ pub(crate) enum PublicRelayCommand {
 }
 
 #[derive(Debug, Args)]
-#[group(required = true, multiple = false)]
 pub(crate) struct EchoArgs {
-    #[arg(long)]
+    #[arg(long, required = true)]
     pub(crate) endpoint: String,
-    #[arg(long)]
+    #[arg(long, required_unless_present = "stdin", conflicts_with = "stdin")]
     pub(crate) text: Option<String>,
-    #[arg(long)]
+    #[arg(long, required_unless_present = "text", conflicts_with = "text")]
     pub(crate) stdin: bool,
     #[arg(long)]
     pub(crate) json: bool,
