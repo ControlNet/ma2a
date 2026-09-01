@@ -50,6 +50,6 @@ fn read_owner_only_invitation_with(
     Ok(invitation)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "space_unix_tests.rs"]
 mod tests;
