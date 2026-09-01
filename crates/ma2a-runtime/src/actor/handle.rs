@@ -8,10 +8,13 @@ use crate::{
 
 use super::{Command, ShutdownAck};
 
+mod mutation_replay;
+
 /// Bounded command and event handle for the single-owner Runtime actor.
 #[derive(Clone, Debug)]
 pub struct RuntimeHandle {
     pub(crate) commands: mpsc::Sender<Command>,
+    pub(crate) store: crate::store::StoreClient,
     events: broadcast::Sender<RuntimeEvent>,
     echo_audit: crate::echo_audit::EchoAuditLog,
     echo_metrics: ma2a_net::EchoMetrics,
@@ -27,6 +30,7 @@ impl RuntimeHandle {
     )]
     pub(crate) const fn new(
         commands: mpsc::Sender<Command>,
+        store: crate::store::StoreClient,
         events: broadcast::Sender<RuntimeEvent>,
         echo_audit: crate::echo_audit::EchoAuditLog,
         echo_metrics: ma2a_net::EchoMetrics,
@@ -36,6 +40,7 @@ impl RuntimeHandle {
     ) -> Self {
         Self {
             commands,
+            store,
             events,
             echo_audit,
             echo_metrics,
