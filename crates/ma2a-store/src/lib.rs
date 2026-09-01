@@ -18,6 +18,7 @@ mod enrollment_models;
 mod error;
 mod key_store;
 mod migrations;
+mod mutation_replay;
 mod owned_spaces;
 mod permissions;
 mod relay_advertisement;
@@ -51,6 +52,11 @@ pub use enrollment_models::{
 pub use error::StoreError;
 pub use key_store::{KeyKind, KeyMaterial, KeyReference, KeyStore, ProtectedSecret};
 pub use migrations::SCHEMA_VERSION;
+pub use mutation_replay::{
+    LOCAL_MUTATION_REPLAY_MAX_BYTES, LOCAL_MUTATION_REPLAY_MAX_ENTRIES,
+    LOCAL_MUTATION_REPLAY_MAX_RESULT_BYTES, MutationReplayRecord, MutationReplayRequest,
+    MutationReplayState,
+};
 pub use owned_spaces::{AdvancedOwnedSpace, CreatedSpace, OwnedSpaceUpdate, SpaceCreation};
 pub use relay_advertisement::{RelayAdvertisementBoundaryError, ValidatedRelayAdvertisement};
 pub use relay_config::{PersistedRelayAdvertisement, RelayAdvertisementOutcome};
