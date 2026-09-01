@@ -1,10 +1,5 @@
-use iroh::{
-    EndpointAddr,
-    endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler},
-};
+use iroh::EndpointAddr;
 use ma2a_core::{EndpointId, MAX_CONTROL_BATCH_BYTES};
-use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, timeout};
 
 use crate::{ConnectionManager, NetError};
@@ -12,7 +7,7 @@ use crate::{ConnectionManager, NetError};
 /// Existing-member control synchronization ALPN.
 pub const CONTROL_ALPN: &[u8] = b"ma2a/control/1";
 
-const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Stable fail-closed response classification for an inbound control request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,106 +22,12 @@ pub enum ControlRejection {
 }
 
 impl ControlRejection {
-    const fn status(self) -> u8 {
+    pub(super) const fn status(self) -> u8 {
         match self {
             Self::Unauthorized => 1,
             Self::Invalid => 2,
             Self::Unavailable => 255,
         }
-    }
-}
-
-/// One TLS-authenticated bounded inbound control request.
-#[derive(Debug)]
-pub struct ControlCall {
-    remote_endpoint_id: EndpointId,
-    request: Vec<u8>,
-    reply: oneshot::Sender<Result<Vec<u8>, ControlRejection>>,
-}
-
-impl ControlCall {
-    /// Returns the Endpoint identity authenticated by Iroh TLS.
-    pub const fn remote_endpoint_id(&self) -> EndpointId {
-        self.remote_endpoint_id
-    }
-
-    /// Returns the bounded request bytes before application parsing.
-    pub fn request(&self) -> &[u8] {
-        &self.request
-    }
-
-    /// Completes the request with bounded bytes or a stable rejection.
-    pub fn respond(self, response: Result<Vec<u8>, ControlRejection>) {
-        let _unsent = self.reply.send(response);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ControlHandler {
-    calls: Option<mpsc::Sender<ControlCall>>,
-}
-
-impl ControlHandler {
-    pub(crate) const fn new(calls: Option<mpsc::Sender<ControlCall>>) -> Self {
-        Self { calls }
-    }
-}
-
-impl ProtocolHandler for ControlHandler {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let Some(calls) = &self.calls else {
-            connection.close(1_u8.into(), b"");
-            return Ok(());
-        };
-        let remote_endpoint_id = connection.remote_id().into();
-        let Ok(stream) = timeout(CONTROL_IO_TIMEOUT, connection.accept_bi()).await else {
-            connection.close(1_u8.into(), b"");
-            return Ok(());
-        };
-        let (mut send, mut receive) = stream?;
-        let request = timeout(
-            CONTROL_IO_TIMEOUT,
-            receive.read_to_end(MAX_CONTROL_BATCH_BYTES),
-        )
-        .await
-        .map_err(std::io::Error::other)?
-        .map_err(std::io::Error::other)?;
-        let (reply, response) = oneshot::channel();
-        if timeout(
-            CONTROL_IO_TIMEOUT,
-            calls.send(ControlCall {
-                remote_endpoint_id,
-                request,
-                reply,
-            }),
-        )
-        .await
-        .map_or(true, |result| result.is_err())
-        {
-            connection.close(1_u8.into(), b"");
-            return Ok(());
-        }
-        let result = timeout(CONTROL_IO_TIMEOUT, response)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or(Err(ControlRejection::Unavailable));
-        let (status, body) = match result {
-            Ok(body) if body.len() <= MAX_CONTROL_BATCH_BYTES => (0, body),
-            Ok(_) => (ControlRejection::Invalid.status(), Vec::new()),
-            Err(rejection) => (rejection.status(), Vec::new()),
-        };
-        send.write_all(&[status])
-            .await
-            .map_err(std::io::Error::other)?;
-        let length = u32::try_from(body.len()).map_err(std::io::Error::other)?;
-        send.write_all(&length.to_be_bytes())
-            .await
-            .map_err(std::io::Error::other)?;
-        send.write_all(&body).await.map_err(std::io::Error::other)?;
-        send.finish().map_err(std::io::Error::other)?;
-        let _closed = timeout(CONTROL_IO_TIMEOUT, connection.closed()).await;
-        Ok(())
     }
 }
 

@@ -42,6 +42,7 @@ pub(crate) struct Actor {
     pub(crate) clock: Arc<dyn crate::RuntimeClock>,
     enrollment_calls: mpsc::Receiver<EnrollmentCall>,
     pub(crate) control_calls: mpsc::Receiver<ControlCall>,
+    pub(crate) control_tasks: JoinSet<crate::control_actor::inbound::InboundControlCompletion>,
     echo_calls: mpsc::Receiver<EchoCall>,
     echo_tasks: JoinSet<echo::EchoTaskCompletion>,
     pub(crate) echo_audit: crate::echo_audit::EchoAuditLog,
@@ -184,6 +185,11 @@ impl Actor {
                 },
                 call = self.control_calls.recv() => if let Some(call) = call {
                     self.handle_control_call(call).await;
+                },
+                joined = self.control_tasks.join_next(), if !self.control_tasks.is_empty() => {
+                    if let Some(Ok(completion)) = joined {
+                        self.finish_control_call(completion).await;
+                    }
                 },
                 call = self.echo_calls.recv() => if let Some(call) = call {
                     self.handle_echo_call(call).await;

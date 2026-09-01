@@ -1,17 +1,17 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use ma2a_core::EndpointId;
-use ma2a_net::ControlCall;
 
 use crate::{
     actor::Actor,
     control_sync::{
-        ControlChanges, ControlExchangeInput, ControlRoundOutcome, ControlRoundRequest,
-        ControlRoundRunner, ControlRoundTrigger, install_lookup,
+        ControlChanges, ControlRoundOutcome, ControlRoundRequest, ControlRoundRunner,
+        ControlRoundTrigger, install_lookup,
     },
     error::{RuntimeError, RuntimeErrorKind},
 };
 
+pub(crate) mod inbound;
 mod queue;
 pub(crate) use queue::{ControlRoundQueue, ScheduledControlRound};
 
@@ -73,52 +73,6 @@ impl Actor {
                 .await;
             (task, result)
         });
-    }
-
-    pub(crate) async fn handle_control_call(&mut self, call: ControlCall) {
-        let result = self
-            .clock
-            .now_ms()
-            .ok()
-            .and_then(|value| u64::try_from(value).ok())
-            .map_or(Err(ma2a_net::ControlRejection::Unavailable), |now_ms| {
-                Ok((call.remote_endpoint_id(), call.request().to_vec(), now_ms))
-            });
-        match result {
-            Ok((remote_endpoint_id, request, now_ms)) => {
-                let response = self
-                    .store
-                    .respond_control(ControlExchangeInput {
-                        local_endpoint_id: self.state.endpoint_id,
-                        remote_endpoint_id,
-                        payload: request,
-                        now_ms,
-                    })
-                    .await;
-                match response {
-                    Ok(outcome) => {
-                        let response = outcome.response;
-                        if install_lookup(&self.lookup, outcome.lookup).is_err() {
-                            call.respond(Err(ma2a_net::ControlRejection::Unavailable));
-                            return;
-                        }
-                        self.state.revision = self.state.revision.max(outcome.revision);
-                        self.state.memberships = outcome.memberships;
-                        self.synchronized_control_peers.insert(remote_endpoint_id);
-                        self.endpoint
-                            .set_control_enabled(!self.state.memberships.is_empty());
-                        if self.refresh_relay_candidates().await.is_err() {
-                            call.respond(Err(ma2a_net::ControlRejection::Unavailable));
-                            return;
-                        }
-                        self.schedule_control_changes(outcome.changes);
-                        call.respond(Ok(response));
-                    }
-                    Err(rejection) => call.respond(Err(rejection)),
-                }
-            }
-            Err(rejection) => call.respond(Err(rejection)),
-        }
     }
 
     pub(crate) async fn finish_control_round(

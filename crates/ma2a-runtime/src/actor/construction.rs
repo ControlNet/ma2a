@@ -52,6 +52,7 @@ impl Actor {
             clock,
             enrollment_calls,
             control_calls,
+            control_tasks: tokio::task::JoinSet::new(),
             echo_calls,
             echo_tasks: tokio::task::JoinSet::new(),
             echo_audit,

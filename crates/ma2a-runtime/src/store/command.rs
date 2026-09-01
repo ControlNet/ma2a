@@ -3,8 +3,8 @@ use tokio::sync::oneshot;
 
 use crate::{
     control_sync::{
-        ControlApplyOutcome, ControlExchangeInput, ControlLookupState, ControlRespondOutcome,
-        ControlRoundRequest, PreparedControlPeer,
+        ControlApplyOutcome, ControlAuthorizationInput, ControlExchangeInput, ControlLookupState,
+        ControlRespondOutcome, ControlRoundRequest, PreparedControlPeer,
     },
     error::RuntimeError,
 };
@@ -132,6 +132,10 @@ pub(crate) enum StoreCommand {
     RespondControl {
         input: ControlExchangeInput,
         reply: oneshot::Sender<Result<ControlRespondOutcome, ma2a_net::ControlRejection>>,
+    },
+    AuthorizeControl {
+        input: ControlAuthorizationInput,
+        reply: oneshot::Sender<Result<(), ma2a_net::ControlRejection>>,
     },
     ApplyControlResponse {
         input: ControlExchangeInput,
