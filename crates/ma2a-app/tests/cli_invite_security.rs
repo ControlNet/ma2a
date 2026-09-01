@@ -94,7 +94,7 @@ fn invite_redemption_rejects_symbolic_link_inputs() -> TestResult {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn invite_redemption_rejects_fifo_without_blocking() -> TestResult {
     use rustix::fs::Mode;
