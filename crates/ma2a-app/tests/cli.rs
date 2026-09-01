@@ -25,6 +25,28 @@ fn help_lists_endpoint_centric_workflows() -> TestResult {
             "missing {workflow} in help:\n{stdout}"
         );
     }
+    assert!(
+        !stdout.contains("web"),
+        "unexpected web command in help:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn ui_help_lists_open_workflow() -> TestResult {
+    // Given
+    let mut command = ma2a();
+
+    // When
+    let output = command.args(["ui", "--help"]).output()?;
+
+    // Then
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        stdout.contains("open"),
+        "missing open in UI help:\n{stdout}"
+    );
     Ok(())
 }
 

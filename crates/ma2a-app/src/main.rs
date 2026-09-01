@@ -21,7 +21,6 @@ mod commands;
 mod credential_command;
 mod daemon;
 mod output;
-mod web_command;
 
 mod embedded_web {
     include!(concat!(env!("OUT_DIR"), "/embedded_web.rs"));
@@ -157,7 +156,6 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
             commands::workflows::run_echo(&state_dir, paths, arguments).await
         }
         cli::Command::Ui { command } => commands::workflows::run_ui(&state_dir, command).await,
-        cli::Command::Web => web_command::run(&state_dir).await,
         cli::Command::Shutdown => call_shutdown(paths).await,
     }
 }

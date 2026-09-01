@@ -46,8 +46,8 @@ wizard, cloud escrow, or automatic key replication.
 - `status` cannot start: verify the state directory is absolute, local, current-user owned, and not
   shared with another incompatible daemon.
 - Web UI redirects to setup: run `ma2a init`; browser-based password setup is intentionally absent.
-- Web UI cannot load: use the exact loopback URL returned by `ma2a web` or `ma2a ui open`; proxying
-  or rewriting Host/Origin values fails closed.
+- Web UI cannot load: use the exact loopback URL returned by `ma2a ui open`; proxying or rewriting
+  Host/Origin values fails closed.
 - Enrollment fails: confirm the ticket is unexpired, unused, intact, and intended for this Endpoint.
 - Echo fails after revocation: this is expected when no complete shared Space still authorizes it.
 - Private Relay is offline: verify TLS mode, certificate validity, key permissions, served-Space
