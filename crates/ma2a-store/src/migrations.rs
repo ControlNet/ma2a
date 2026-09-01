@@ -3,10 +3,11 @@ use rusqlite::{Connection, TransactionBehavior};
 use crate::StoreError;
 
 /// The newest schema version this Phase 1 store can read or write.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 const MIGRATION_V1: &str = include_str!("../migrations/0001_init.sql");
 const MIGRATION_V2: &str = include_str!("../migrations/0002_web_auth.sql");
 const MIGRATION_V3: &str = include_str!("../migrations/0003_relay_persistence.sql");
+const MIGRATION_V4: &str = include_str!("../migrations/0004_local_mutation_replay.sql");
 
 pub(crate) fn current_version(connection: &Connection) -> Result<u32, StoreError> {
     Ok(connection.query_row("PRAGMA user_version", [], |row| row.get(0))?)
@@ -31,6 +32,10 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     }
     if current_version(&transaction)? == 2 {
         transaction.execute_batch(MIGRATION_V3)?;
+        transaction.pragma_update(None, "user_version", 3_u32)?;
+    }
+    if current_version(&transaction)? == 3 {
+        transaction.execute_batch(MIGRATION_V4)?;
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     validate(&transaction)?;
@@ -47,7 +52,8 @@ fn validate(connection: &Connection) -> Result<(), StoreError> {
     let migration_count = connection.query_row(
         "SELECT COUNT(*) FROM schema_migrations WHERE (version = 1 AND name = 'initial')
          OR (version = 2 AND name = 'web_auth')
-         OR (version = 3 AND name = 'relay_persistence')",
+         OR (version = 3 AND name = 'relay_persistence')
+         OR (version = 4 AND name = 'local_mutation_replay')",
         [],
         |row| row.get::<_, u32>(0),
     )?;
