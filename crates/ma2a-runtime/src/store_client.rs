@@ -3,6 +3,7 @@ use tokio::sync::oneshot;
 
 mod echo;
 mod membership;
+mod mutation_replay;
 mod observation;
 mod relay;
 mod snapshot;
