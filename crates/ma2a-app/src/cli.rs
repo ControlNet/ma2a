@@ -42,7 +42,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: UiCommand,
     },
-    Web,
     Shutdown,
 }
 
