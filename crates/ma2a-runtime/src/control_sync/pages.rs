@@ -63,7 +63,7 @@ pub(super) fn push_page(
             omitted |= !page.add(ControlArtifactKind::ADDRESS_RECORD, record.signed_record())?;
         }
     }
-    for advertisement in state.relay_advertisements() {
+    for advertisement in state.active_relay_advertisements() {
         if advertisement.provider_endpoint_id() == request.local_endpoint_id
             && u64::try_from(advertisement.issued_at_ms())
                 .is_ok_and(|issued| issued <= request.now_ms)
@@ -107,7 +107,7 @@ pub(super) fn pull_page(
                 !page.add_control(ControlArtifactKind::ADDRESS_RECORD, record.signed_record())?;
         }
     }
-    for advertisement in state.relay_advertisements() {
+    for advertisement in state.active_relay_advertisements() {
         if advertisement.sequence()
             > cursor_sequence(cursor.relay_cursors(), advertisement.provider_endpoint_id())
             && u64::try_from(advertisement.issued_at_ms())
