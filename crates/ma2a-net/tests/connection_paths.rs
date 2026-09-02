@@ -13,8 +13,9 @@ use iroh::{Endpoint, RelayMode, endpoint::presets};
 use iroh_base::{SecretKey, TransportAddr};
 use ma2a_core::{AddressRecordScope, AddressRecordValidity, SpaceAddressRecordV1};
 use ma2a_net::{
-    AddressRecordTarget, AddressRecordValidator, CONTROL_ALPN, ConnectionPathState, DialRequest,
-    EndpointBindOptions, EndpointSecret, RuntimeEndpoint, SpaceAddressLookup,
+    AddressRecordTarget, AddressRecordValidator, CONTROL_ALPN, ConnectionManager,
+    ConnectionPathState, DialRequest, EndpointBindOptions, EndpointSecret, RuntimeEndpoint,
+    SpaceAddressLookup,
 };
 use ma2a_store::{Repository, SpaceRecord, StoreConfig};
 use support::{TempState, TestResult, space_fixture};
@@ -22,6 +23,10 @@ use support::{TempState, TestResult, space_fixture};
 const NOW_MS: u64 = 1_700_000_000_000;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end test keeps one bound Endpoint lifecycle contiguous"
+)]
 async fn fresh_endpoint_dials_exact_target_record_and_observes_direct_path() -> TestResult {
     // Given
     let server_secret = SecretKey::from_bytes(&[0x51; 32]);
@@ -91,6 +96,7 @@ async fn fresh_endpoint_dials_exact_target_record_and_observes_direct_path() -> 
             .iter()
             .all(|item| item.remote_endpoint_id() == server.endpoint_id())
     );
+    assert_direct_latest(&manager)?;
     let bind_port = server.bind_port()?;
     connection.close(0_u8.into(), b"");
     client.shutdown().await?;
@@ -130,6 +136,16 @@ async fn fresh_endpoint_dials_exact_target_record_and_observes_direct_path() -> 
     restarted_connection.close(0_u8.into(), b"");
     restarted_client.shutdown().await?;
     restarted_server.shutdown().await?;
+    Ok(())
+}
+
+fn assert_direct_latest(manager: &ConnectionManager) -> TestResult {
+    let latest = manager.telemetry().latest_observations();
+    let observation = latest
+        .first()
+        .ok_or("missing latest connection observation")?;
+    assert_eq!(observation.path_state(), ConnectionPathState::Direct);
+    assert!(observation.rtt_ms().is_some());
     Ok(())
 }
 
