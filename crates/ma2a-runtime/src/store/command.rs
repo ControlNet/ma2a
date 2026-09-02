@@ -77,7 +77,13 @@ pub(crate) enum StoreCommand {
     },
     PersistEnrollment {
         chain: ma2a_core::SpaceChain,
+        owner_address: Box<ma2a_store::ValidatedAddressRecord>,
         reply: oneshot::Sender<Result<(u64, ma2a_core::SpaceChain), RuntimeError>>,
+    },
+    AddressRecord {
+        space_id: ma2a_core::SpaceId,
+        endpoint_id: ma2a_core::EndpointId,
+        reply: oneshot::Sender<Result<Option<ma2a_store::PersistedAddressRecord>, RuntimeError>>,
     },
     AdvanceOwnedSpace {
         update: ma2a_store::OwnedSpaceUpdate,
@@ -98,6 +104,11 @@ pub(crate) enum StoreCommand {
         local_endpoint_id: ma2a_core::EndpointId,
         issued_at_ms: u64,
         expires_at_ms: u64,
+        reply: oneshot::Sender<Result<(u64, bool), RuntimeError>>,
+    },
+    ReconcileRelayActivity {
+        local_endpoint_id: ma2a_core::EndpointId,
+        active_spaces: Vec<ma2a_core::SpaceId>,
         reply: oneshot::Sender<Result<(u64, bool), RuntimeError>>,
     },
     LoadControlLookup {

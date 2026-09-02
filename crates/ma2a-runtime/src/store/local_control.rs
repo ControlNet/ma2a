@@ -22,6 +22,16 @@ pub(super) fn respond(
 }
 
 impl StoreBackend {
+    pub(super) fn reconcile_relay_activity(
+        &mut self,
+        local_endpoint_id: ma2a_core::EndpointId,
+        active_spaces: &[ma2a_core::SpaceId],
+    ) -> Result<(u64, bool), RuntimeError> {
+        self.repository
+            .reconcile_private_relay_activity(local_endpoint_id, active_spaces)
+            .map_err(Into::into)
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "publication inputs map directly to the signed record"
@@ -78,6 +88,10 @@ impl StoreBackend {
                 ),
             )
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let active_spaces = advertisements
+            .iter()
+            .map(|advertisement| advertisement.advertisement().space_id())
+            .collect::<Vec<_>>();
         let mut advanced = false;
         for advertisement in advertisements {
             let authorization = authorizations
@@ -98,6 +112,9 @@ impl StoreBackend {
                 ma2a_store::RelayAdvertisementOutcome::Advanced { .. }
             );
         }
-        Ok((self.repository.revision()?, advanced))
+        let (revision, activity_changed) = self
+            .repository
+            .reconcile_private_relay_activity(local_endpoint_id, &active_spaces)?;
+        Ok((revision, advanced || activity_changed))
     }
 }
