@@ -1,5 +1,6 @@
 //! End-to-end enrollment chain establishment coverage.
 
+use std::time::Duration;
 use std::{
     error::Error,
     fs,
@@ -11,11 +12,14 @@ use std::{
 };
 
 use ma2a_core::{
-    EnrollmentPage, InviteEntropy, MemberCapabilities, RequestId, SpaceManifestMembership,
-    SpaceMemberV1, SpacePolicyV1, SpaceRevocationV1, validate_enrollment_pages,
+    EnrollmentPage, InviteEntropy, MemberCapabilities, RequestId, SpaceAuthoritySecret,
+    SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1, SpaceMemberV1, SpacePolicyV1,
+    SpaceRevocationV1, validate_enrollment_pages,
 };
 use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock};
-use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
+use ma2a_store::{
+    KeyKind, KeyReference, KeyStore, OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig,
+};
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
@@ -77,39 +81,40 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
         owner_member.clone(),
         SpacePolicyV1::phase_one_default(),
     ))?;
+    let authority = authority_secret(&owner_config, created.space_id())?;
     let revoked = member(endpoint(0x42)?, "revoked")?;
     let mut first_members = vec![owner_member.clone(), revoked.clone()];
     first_members.sort_by_key(SpaceMemberV1::endpoint_id);
-    repository.advance_owned_space(&OwnedSpaceUpdate::new(
-        created.space_id(),
-        1_700_000_000_001,
-        SpaceManifestMembership::new(first_members, vec![]),
-    ))?;
-    repository.advance_owned_space(&OwnedSpaceUpdate::new(
-        created.space_id(),
-        1_700_000_000_002,
-        SpaceManifestMembership::new(
-            vec![owner_member.clone()],
-            vec![SpaceRevocationV1::new(revoked.endpoint_id())],
-        ),
-    ))?;
-    for generation in 3..=57 {
-        repository.advance_owned_space(&OwnedSpaceUpdate::new(
-            created.space_id(),
-            1_700_000_000_000 + generation,
+    let mut chain = created.chain().clone();
+    for generation in 1..=57 {
+        let membership = if generation == 1 {
+            SpaceManifestMembership::new(first_members.clone(), vec![])
+        } else {
             SpaceManifestMembership::new(
                 vec![owner_member.clone()],
                 vec![SpaceRevocationV1::new(revoked.endpoint_id())],
-            ),
-        ))?;
+            )
+        };
+        let manifest = SpaceManifestV1::new(
+            SpaceManifestLink::new(chain.space_id(), generation, chain.latest_hash()),
+            1_700_000_000_000 + generation,
+            membership,
+        )?
+        .sign(&authority)?;
+        chain.apply(&manifest)?;
     }
+    repository.persist_space_chain(&chain)?;
     drop(repository);
     let owner = Runtime::start_with_clock(
         owner_config.clone(),
         Arc::new(TestClock(AtomicI64::new(3_000))),
     )
     .await?;
-    let candidate = Runtime::start(candidate_config.clone()).await?;
+    let candidate = Runtime::start_with_clock(
+        candidate_config.clone(),
+        Arc::new(TestClock(AtomicI64::new(3_000))),
+    )
+    .await?;
     let ticket = owner
         .handle()
         .create_enrollment_invite(EnrollmentCreation::new(
@@ -162,6 +167,91 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cold_candidate_bootstraps_owner_reachability_and_completes_targeted_control_sync()
+-> TestResult {
+    // Given
+    let owner_state = TempState::new("cold-owner")?;
+    let candidate_state = TempState::new("cold-candidate")?;
+    let owner_config = StoreConfig::new(&owner_state.0);
+    let candidate_config = StoreConfig::new(&candidate_state.0);
+    let now_ms = 1_700_000_000_000;
+    let owner_bootstrap = Runtime::start_with_clock(
+        owner_config.clone(),
+        Arc::new(TestClock(AtomicI64::new(now_ms))),
+    )
+    .await?;
+    let owner_id = owner_bootstrap.handle().status().await?.endpoint_id();
+    owner_bootstrap.shutdown().await?;
+    let mut owner_repository = Repository::open(&owner_config)?;
+    let space_id = owner_repository
+        .create_owned_space(&SpaceCreation::new(
+            u64::try_from(now_ms)?,
+            member(owner_id, "cold-owner")?,
+            SpacePolicyV1::phase_one_default(),
+        ))?
+        .space_id();
+    drop(owner_repository);
+    let owner = Runtime::start_with_clock(
+        owner_config.clone(),
+        Arc::new(TestClock(AtomicI64::new(now_ms))),
+    )
+    .await?;
+    let owner_handle = owner.handle();
+    let candidate = Runtime::start_with_clock(
+        candidate_config.clone(),
+        Arc::new(TestClock(AtomicI64::new(now_ms))),
+    )
+    .await?;
+    let candidate_handle = candidate.handle();
+    let candidate_id = candidate_handle.status().await?.endpoint_id();
+    let ticket = owner_handle
+        .create_enrollment_invite(EnrollmentCreation::new(
+            space_id,
+            300_000,
+            InviteEntropy::from_bytes([0x61; 16], [0x62; 32]),
+        )?)
+        .await?;
+
+    // When
+    candidate_handle
+        .clone()
+        .redeem_enrollment(EnrollmentAttempt::new(
+            ticket,
+            RequestId::try_from([0x63; 16].as_slice())?,
+            "cold-candidate".to_owned(),
+        ))
+        .await?;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if Repository::open(&owner_config)?
+                .address_record(space_id, candidate_id)?
+                .is_some()
+            {
+                return Ok::<(), Box<dyn Error + Send + Sync>>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+
+    // Then
+    let candidate_repository = Repository::open(&candidate_config)?;
+    assert!(
+        candidate_repository
+            .address_record(space_id, owner_id)?
+            .is_some()
+    );
+    assert!(
+        Repository::open(&owner_config)?
+            .address_record(space_id, candidate_id)?
+            .is_some()
+    );
+    candidate.shutdown().await?;
+    owner.shutdown().await?;
+    Ok(())
+}
+
 #[test]
 fn missing_intermediate_and_genesis_latest_only_never_validate() -> TestResult {
     // Given
@@ -196,6 +286,20 @@ fn missing_intermediate_and_genesis_latest_only_never_validate() -> TestResult {
     assert!(validate_enrollment_pages(&missing).is_err());
     assert!(validate_enrollment_pages(&latest_only).is_err());
     Ok(())
+}
+
+fn authority_secret(
+    config: &StoreConfig,
+    space_id: ma2a_core::SpaceId,
+) -> TestResultValue<SpaceAuthoritySecret> {
+    let mut reference = String::from("space-");
+    for byte in space_id.as_bytes() {
+        use std::fmt::Write as _;
+        write!(&mut reference, "{byte:02x}")?;
+    }
+    let protected = KeyStore::open(config.state_dir())?
+        .read(KeyKind::SpaceAuthority, &KeyReference::parse(&reference)?)?;
+    Ok(SpaceAuthoritySecret::try_from_bytes(protected.as_bytes())?)
 }
 
 fn member(endpoint_id: ma2a_core::EndpointId, label: &str) -> TestResultValue<SpaceMemberV1> {
