@@ -12,6 +12,7 @@ pub struct PersistedRelayAdvertisement {
     sequence: u64,
     issued_at_ms: i64,
     expires_at_ms: i64,
+    active: bool,
     advertisement_hash: [u8; 32],
     signed_advertisement: Vec<u8>,
 }
@@ -40,6 +41,11 @@ impl PersistedRelayAdvertisement {
     /// Returns the signed expiry timestamp.
     pub const fn expires_at_ms(&self) -> i64 {
         self.expires_at_ms
+    }
+
+    /// Returns whether consumers may use this accepted advertisement.
+    pub const fn is_active(&self) -> bool {
+        self.active
     }
 
     /// Returns the signed advertisement hash.
@@ -147,7 +153,8 @@ impl Repository {
         let row = self
             .connection
             .query_row(
-                "SELECT sequence, issued_at_ms, expires_at_ms, advertisement_hash, signed_advertisement
+                "SELECT sequence, issued_at_ms, expires_at_ms, active,
+                        advertisement_hash, signed_advertisement
                  FROM relay_advertisement_state
                  WHERE space_id = ?1 AND relay_endpoint_id = ?2",
                 (
@@ -159,14 +166,15 @@ impl Repository {
                         row.get::<_, u64>(0)?,
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, bool>(3)?,
                         row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
                     ))
                 },
             )
             .optional()?;
         row.map(
-            |(sequence, issued_at_ms, expires_at_ms, hash, signed_advertisement)| {
+            |(sequence, issued_at_ms, expires_at_ms, active, hash, signed_advertisement)| {
                 let advertisement_hash =
                     <[u8; 32]>::try_from(hash).map_err(|_| StoreError::SchemaMismatch {
                         detail: "persisted relay advertisement hash has invalid length",
@@ -177,6 +185,7 @@ impl Repository {
                     sequence,
                     issued_at_ms,
                     expires_at_ms,
+                    active,
                     advertisement_hash,
                     signed_advertisement,
                 })
@@ -194,7 +203,7 @@ impl Repository {
         space_id: SpaceId,
     ) -> Result<Vec<PersistedRelayAdvertisement>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT relay_endpoint_id, sequence, issued_at_ms, expires_at_ms,
+            "SELECT relay_endpoint_id, sequence, issued_at_ms, expires_at_ms, active,
                     advertisement_hash, signed_advertisement
              FROM relay_advertisement_state WHERE space_id = ?1 ORDER BY relay_endpoint_id",
         )?;
@@ -204,14 +213,22 @@ impl Repository {
                 row.get::<_, u64>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, i64>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, bool>(4)?,
                 row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
             ))
         })?;
         let mut advertisements = Vec::new();
         for row in rows {
-            let (provider, sequence, issued_at_ms, expires_at_ms, hash, signed_advertisement) =
-                row?;
+            let (
+                provider,
+                sequence,
+                issued_at_ms,
+                expires_at_ms,
+                active,
+                hash,
+                signed_advertisement,
+            ) = row?;
             advertisements.push(PersistedRelayAdvertisement {
                 space_id,
                 provider_endpoint_id: EndpointId::try_from(provider.as_slice()).map_err(|_| {
@@ -222,6 +239,7 @@ impl Repository {
                 sequence,
                 issued_at_ms,
                 expires_at_ms,
+                active,
                 advertisement_hash: <[u8; 32]>::try_from(hash).map_err(|_| {
                     StoreError::SchemaMismatch {
                         detail: "persisted relay advertisement hash has invalid length",
@@ -240,10 +258,11 @@ fn commit_advertisement(
 ) -> Result<RelayAdvertisementOutcome, StoreError> {
     transaction.execute(
         "INSERT INTO relay_advertisement_state(space_id, relay_endpoint_id, sequence,
-         issued_at_ms, expires_at_ms, advertisement_hash, signed_advertisement)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         issued_at_ms, expires_at_ms, active, advertisement_hash, signed_advertisement)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)
          ON CONFLICT(space_id, relay_endpoint_id) DO UPDATE SET sequence = excluded.sequence,
          issued_at_ms = excluded.issued_at_ms, expires_at_ms = excluded.expires_at_ms,
+         active = 1,
          advertisement_hash = excluded.advertisement_hash,
          signed_advertisement = excluded.signed_advertisement",
         (

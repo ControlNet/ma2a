@@ -21,6 +21,7 @@ mod migrations;
 mod mutation_replay;
 mod owned_spaces;
 mod permissions;
+mod relay_activity;
 mod relay_advertisement;
 mod relay_config;
 mod relay_settings;
