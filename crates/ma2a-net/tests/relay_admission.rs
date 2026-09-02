@@ -28,7 +28,7 @@ fn authorization(
     let member = SpaceMemberV1::new(
         member.public().into(),
         format!("member-{marker:02x}"),
-        MemberCapabilities::new(true, true),
+        MemberCapabilities::new(true, false),
     )?;
     let genesis = SpaceGenesisV1::new(
         SpaceGenesisIdentity::new([marker.wrapping_add(1); 32], 1, authority.public_key())?,

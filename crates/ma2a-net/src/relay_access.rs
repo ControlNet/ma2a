@@ -5,7 +5,7 @@ use std::{
 
 use iroh_base::EndpointId as IrohEndpointId;
 use iroh_relay::server::{Access, AccessControl, ClientRequest, ConnectionId};
-use ma2a_core::{Capability, EndpointId, SpaceAuthorizationView, SpaceId};
+use ma2a_core::{EndpointId, SpaceAuthorizationView, SpaceId};
 
 #[derive(Debug, Default)]
 struct AccessState {
@@ -40,10 +40,7 @@ impl PrivateRelayAccess {
             .iter()
             .filter(|authorization| {
                 self.configured_spaces.contains(&authorization.space_id())
-                    && authorization.allows(
-                        self.provider_endpoint_id,
-                        Capability::PRIVATE_RELAY_PROVIDER,
-                    )
+                    && authorization.allows_private_relay_provider(self.provider_endpoint_id)
             })
             .flat_map(SpaceAuthorizationView::member_endpoint_ids)
             .collect::<BTreeSet<_>>();
