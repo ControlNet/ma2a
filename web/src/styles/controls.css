@@ -56,6 +56,11 @@ button:disabled {
   color: var(--accent-primary);
 }
 
+.button-secondary:hover:not(:disabled) {
+  background: var(--status-info-surface);
+  color: var(--accent-hover);
+}
+
 input,
 textarea,
 select {
