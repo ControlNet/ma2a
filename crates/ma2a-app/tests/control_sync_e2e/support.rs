@@ -6,7 +6,10 @@ use ma2a_core::{
     SpacePolicyV1,
 };
 use ma2a_runtime::{EnrollmentAttempt, EnrollmentCreation, Runtime};
-use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
+use ma2a_store::{
+    OwnedSpaceUpdate, RelayConfiguration, RelayTransportConfiguration, Repository, SpaceCreation,
+    StoreConfig,
+};
 
 use crate::control_sync_e2e_artifacts::{
     AddressFixture, address_records, endpoint_secret, persist_address, persist_relay,
@@ -163,6 +166,15 @@ fn prepare_owner(
     for advertisement in &advertisements {
         persist_relay(&mut repository, advertisement, u64::try_from(NOW_MS)?)?;
     }
+    repository.set_relay_configuration(&RelayConfiguration {
+        public_fallback_enabled: false,
+        public_relay_urls: Vec::new(),
+        private_provider_enabled: true,
+        listener_address: Some("127.0.0.1:0".to_owned()),
+        private_relay_url: Some("https://relay.example.invalid".to_owned()),
+        served_spaces: spaces.to_vec(),
+        transport: Some(RelayTransportConfiguration::ExternalTlsTermination),
+    })?;
     Ok((secret, initial, advanced, advertisements))
 }
 

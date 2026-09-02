@@ -19,14 +19,15 @@ async fn active_dial_propagates_manifest_address_and_relay_without_existing_conn
     let fixture = support::control_fixture().await?;
     let owner_config = fixture.owner_config();
     let candidate_config = fixture.candidate_config();
-    let owner = Runtime::start_with_clock(owner_config.clone(), support::clock()).await?;
     let candidate = Runtime::start_with_clock(candidate_config.clone(), support::clock()).await?;
     assert!(
         candidate
             .connections()
             .observations(fixture.owner_secret.public().into())
-            .is_empty()
+            .iter()
+            .all(|observation| observation.last_success_at_ms().is_none())
     );
+    let owner = Runtime::start_with_clock(owner_config.clone(), support::clock()).await?;
 
     // When
     tokio::time::timeout(Duration::from_secs(15), candidate.handle().sync_control()).await??;
