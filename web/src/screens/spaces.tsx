@@ -13,6 +13,8 @@ function syncTone(sync: SyncState): "success" | "warning" | "error" {
       return "warning"
     case "stalled":
       return "error"
+    case "unknown":
+      return "warning"
   }
 }
 
