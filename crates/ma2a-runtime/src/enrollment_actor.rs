@@ -1,5 +1,7 @@
 use ma2a_net::EnrollmentCall;
-use ma2a_store::EnrollmentOutcome;
+use ma2a_store::{
+    AddressRecordTarget, AddressRecordValidation, EnrollmentOutcome, ValidatedAddressRecord,
+};
 use tokio::sync::oneshot;
 
 use crate::{
@@ -74,22 +76,20 @@ impl Actor {
         attempt: EnrollmentAttempt,
     ) -> Result<EstablishedEnrollment, EnrollmentError> {
         let expected_space = attempt.space_id();
+        let owner_addr = attempt.owner_addr();
+        let owner_endpoint_id = owner_addr.id.into();
         let request = encode_attempt(&attempt)?;
         let (status, response_pages) = self
             .endpoint
-            .exchange_enrollment(attempt.owner_addr(), &request)
+            .exchange_enrollment(owner_addr, &request)
             .await
             .map_err(|_| EnrollmentError::internal())?;
         if status != 0 {
             return Err(EnrollmentError::from_status(status));
         }
-        let pages = response_pages
-            .iter()
-            .map(|bytes| ma2a_core::EnrollmentPage::decode(bytes))
-            .collect::<Result<Vec<_>, _>>()
+        let bootstrap = ma2a_core::EnrollmentBootstrap::decode_frames(&response_pages)
             .map_err(|_| EnrollmentError::from_status(1))?;
-        let chain = ma2a_core::validate_enrollment_pages(&pages)
-            .map_err(|_| EnrollmentError::from_status(1))?;
+        let (chain, owner_address) = bootstrap.into_parts();
         if chain.space_id() != expected_space
             || chain
                 .members()
@@ -101,9 +101,25 @@ impl Actor {
         {
             return Err(EnrollmentError::from_status(1));
         }
+        let now_ms = u64::try_from(
+            self.clock
+                .now_ms()
+                .map_err(|_| EnrollmentError::internal())?,
+        )
+        .map_err(|_| EnrollmentError::internal())?;
+        let authorization = ma2a_core::SpaceAuthorizationView::from_chain(&chain);
+        let owner_address = ValidatedAddressRecord::parse(
+            owner_address.canonical_bytes(),
+            AddressRecordValidation::new(
+                AddressRecordTarget::new(expected_space, owner_endpoint_id),
+                &authorization,
+                now_ms,
+            ),
+        )
+        .map_err(|_| EnrollmentError::from_status(1))?;
         let (revision, chain) = self
             .store
-            .persist_enrollment(chain)
+            .persist_enrollment(chain, owner_address)
             .await
             .map_err(|_| EnrollmentError::internal())?;
         self.state.memberships.insert(chain.space_id());
@@ -115,8 +131,13 @@ impl Actor {
         self.refresh_relay_candidates()
             .await
             .map_err(|_| EnrollmentError::internal())?;
+        self.refresh_local_control_publications()
+            .await
+            .map_err(|_| EnrollmentError::internal())?;
         self.schedule_control_round(
-            crate::control_sync::ControlRoundTrigger::EnrollmentCompleted,
+            crate::control_sync::ControlRoundTrigger::Explicit(
+                crate::control_sync::ControlRoundScope::peer(owner_endpoint_id),
+            ),
             None,
         );
         let _receiver_count = self
@@ -148,9 +169,11 @@ impl Actor {
                         None,
                     );
                 }
-                respond_with_chain(call, &chain);
+                self.respond_with_bootstrap(call, &chain).await;
             }
-            Ok(EnrollmentOutcome::Retry { chain }) => respond_with_chain(call, &chain),
+            Ok(EnrollmentOutcome::Retry { chain }) => {
+                self.respond_with_bootstrap(call, &chain).await;
+            }
             Ok(EnrollmentOutcome::Expired) => call.respond(2, Vec::new()),
             Ok(EnrollmentOutcome::Cancelled) => call.respond(3, Vec::new()),
             Ok(EnrollmentOutcome::Conflict) => call.respond(4, Vec::new()),
@@ -158,23 +181,26 @@ impl Actor {
             Err(_) => call.respond(255, Vec::new()),
         }
     }
-}
 
-fn respond_with_chain(call: EnrollmentCall, bytes: &[u8]) {
-    let pages = ma2a_core::SpaceChain::import_public(bytes)
-        .and_then(|chain| {
-            ma2a_core::EnrollmentPage::paginate(&chain)
-                .map_err(|_| ma2a_core::ManifestError::INVALID_ENCODING)
-        })
-        .and_then(|pages| {
-            pages
-                .iter()
-                .map(ma2a_core::EnrollmentPage::encode)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| ma2a_core::ManifestError::INVALID_ENCODING)
-        });
-    match pages {
-        Ok(pages) => call.respond(0, pages),
-        Err(_) => call.respond(255, Vec::new()),
+    async fn respond_with_bootstrap(&self, call: EnrollmentCall, bytes: &[u8]) {
+        let bootstrap = async {
+            let chain = ma2a_core::SpaceChain::import_public(bytes)
+                .map_err(|_| ma2a_core::ProtocolError::INVALID_INPUT)?;
+            let persisted = self
+                .store
+                .address_record(chain.space_id(), self.state.endpoint_id)
+                .await
+                .map_err(|_| ma2a_core::ProtocolError::INTERNAL)?
+                .ok_or(ma2a_core::ProtocolError::INTERNAL)?;
+            let owner_address = ma2a_core::SignedSpaceAddressRecordV1::parse_canonical_bytes(
+                persisted.signed_record(),
+            )?;
+            ma2a_core::EnrollmentBootstrap::new(chain, owner_address)?.encode_frames()
+        }
+        .await;
+        match bootstrap {
+            Ok(frames) => call.respond(0, frames),
+            Err(_) => call.respond(255, Vec::new()),
+        }
     }
 }

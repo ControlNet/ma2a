@@ -71,13 +71,9 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
         SpacePolicyV1::phase_one_default(),
     ))?;
     drop(repository);
-    let owner = Runtime::start_with_clock(
-        owner_config.clone(),
-        Arc::new(TestClock(AtomicI64::new(3_000))),
-    )
-    .await?;
-    let first = Runtime::start(StoreConfig::new(&first_state.0)).await?;
-    let second = Runtime::start(StoreConfig::new(&second_state.0)).await?;
+    let owner = runtime_at_test_time(owner_config.clone()).await?;
+    let first = runtime_at_test_time(StoreConfig::new(&first_state.0)).await?;
+    let second = runtime_at_test_time(StoreConfig::new(&second_state.0)).await?;
     let ticket = owner
         .handle()
         .create_enrollment_invite(EnrollmentCreation::new(
@@ -107,11 +103,7 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
         second.handle()
     };
     owner.shutdown().await?;
-    let owner = Runtime::start_with_clock(
-        owner_config.clone(),
-        Arc::new(TestClock(AtomicI64::new(3_000))),
-    )
-    .await?;
+    let owner = runtime_at_test_time(owner_config.clone()).await?;
     let before_denials = owner.handle().status().await?;
     let before_generation = Repository::open(&owner_config)?
         .load_space_chain(created.space_id())?
@@ -156,6 +148,10 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
     second.shutdown().await?;
     owner.shutdown().await?;
     Ok(())
+}
+
+async fn runtime_at_test_time(config: StoreConfig) -> Result<Runtime, ma2a_runtime::RuntimeError> {
+    Runtime::start_with_clock(config, Arc::new(TestClock(AtomicI64::new(3_000)))).await
 }
 
 fn member(endpoint_id: ma2a_core::EndpointId, label: &str) -> TestResultValue<SpaceMemberV1> {
