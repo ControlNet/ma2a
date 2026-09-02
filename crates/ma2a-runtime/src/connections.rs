@@ -17,4 +17,8 @@ impl RuntimeConnections {
     pub fn observations(&self, target: EndpointId) -> Vec<ma2a_net::ConnectionObservation> {
         self.telemetry.observations(target)
     }
+
+    pub(crate) fn latest_observations(&self) -> Vec<ma2a_net::ConnectionObservation> {
+        self.telemetry.latest_observations()
+    }
 }

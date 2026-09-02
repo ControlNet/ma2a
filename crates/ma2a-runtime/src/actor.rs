@@ -24,6 +24,8 @@ mod invite;
 mod local_control;
 mod membership;
 mod relay_configuration;
+#[cfg(test)]
+mod relay_lifecycle_test;
 mod shutdown;
 mod snapshot;
 pub(crate) use command::Command;
@@ -47,6 +49,7 @@ pub(crate) struct Actor {
     echo_tasks: JoinSet<echo::EchoTaskCompletion>,
     pub(crate) echo_audit: crate::echo_audit::EchoAuditLog,
     pub(crate) echo_metrics: EchoMetrics,
+    pub(crate) connections: crate::RuntimeConnections,
     pub(crate) lookup: SpaceAddressLookup,
     relay_observations: mpsc::Receiver<IrohRelayObservation>,
     relay_observer: tokio::task::JoinHandle<()>,
@@ -64,6 +67,16 @@ pub(crate) struct Actor {
 }
 
 impl Actor {
+    pub(crate) async fn initialize(&mut self) -> Result<(), RuntimeError> {
+        self.refresh_local_control_publications().await?;
+        self.state.revision = self
+            .store
+            .observe(&self.state)
+            .await?
+            .max(self.state.revision);
+        Ok(())
+    }
+
     #[expect(clippy::too_many_lines, reason = "actor command ordering is explicit")]
     pub(crate) async fn run(mut self) -> Result<ShutdownAck, RuntimeError> {
         let _receiver_count = self.events.send(RuntimeEvent::ready(self.state.revision));
@@ -209,6 +222,7 @@ impl Actor {
                 },
                 _ = periodic.tick() => {
                     self.refresh_relay_candidates().await?;
+                    self.refresh_local_control_publications().await?;
                     self.schedule_control_round(
                         crate::control_sync::ControlRoundTrigger::Periodic, None,
                     );
