@@ -7,6 +7,12 @@ const SOURCE_EXTENSIONS: [&str; 9] = ["cts", "js", "jsx", "mts", "rs", "sh", "ts
 pub(crate) fn check(root: &Path) -> Result<(), XtaskError> {
     let mut violations = Vec::new();
     for path in collect_files(root, None)? {
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+        {
+            continue;
+        }
         let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
             continue;
         };
