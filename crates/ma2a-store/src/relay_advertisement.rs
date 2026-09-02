@@ -1,6 +1,4 @@
-use ma2a_core::{
-    Capability, EndpointId, SignedPrivateRelayAdvertisementV1, SpaceAuthorizationView, SpaceId,
-};
+use ma2a_core::{EndpointId, SignedPrivateRelayAdvertisementV1, SpaceAuthorizationView, SpaceId};
 
 /// Validated private relay advertisement that alone can cross the persistence boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,10 +24,7 @@ impl ValidatedRelayAdvertisement {
         if advertisement.space_id() != authorization.space_id() {
             return Err(RelayAdvertisementBoundaryError::WrongSpace);
         }
-        if !authorization.allows(
-            advertisement.provider_endpoint_id(),
-            Capability::PRIVATE_RELAY_PROVIDER,
-        ) {
+        if !authorization.allows_private_relay_provider(advertisement.provider_endpoint_id()) {
             return Err(RelayAdvertisementBoundaryError::UnauthorizedProvider);
         }
         if advertisement.issued_at_ms() > now_ms {

@@ -37,7 +37,7 @@ impl Fixture {
         let member = SpaceMemberV1::new(
             endpoint_id,
             "store-fixture-owner".to_owned(),
-            MemberCapabilities::new(true, true),
+            MemberCapabilities::new(true, false),
         )?;
         let genesis = SpaceGenesisV1::new(
             SpaceGenesisIdentity::new([0x42; 32], 1, authority.public_key())?,
