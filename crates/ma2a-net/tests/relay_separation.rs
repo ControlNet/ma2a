@@ -215,10 +215,11 @@ fn exact_space_capability_and_high_water_rules_are_enforced() -> TestResult {
 }
 
 #[test]
-fn provider_without_private_relay_capability_is_rejected() -> TestResult {
+fn provider_must_be_a_current_space_member() -> TestResult {
     // Given
     let provider = SecretKey::from_bytes(&[0x34; 32]);
-    let (genesis, authorization) = authorization(&provider, 0x43, false)?;
+    let member = SecretKey::from_bytes(&[0x35; 32]);
+    let (genesis, authorization) = authorization(&member, 0x43, false)?;
     let state = TempState::new("relay-capability")?;
     let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
     repository.create_space(&SpaceRecord::new(
