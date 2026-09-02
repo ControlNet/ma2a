@@ -39,8 +39,20 @@ fn relay_provider_member_and_policy_grant_allows_advertisement() -> TestResult {
 }
 
 #[test]
-fn relay_advertisement_denies_missing_member_capability() -> TestResult {
-    assert_relay_denied(0x52, MEMBER_DENIED, Revocation::None)
+fn relay_advertisement_does_not_require_member_capability() -> TestResult {
+    // Given
+    let endpoints = endpoints();
+    let allowed = view(endpoints, spec(0x52, MEMBER_DENIED, Revocation::None))?;
+
+    // When
+    let decision = authorize_endpoint(
+        &request(endpoints, RemoteOperation::RELAY_ADVERTISEMENT),
+        &[allowed],
+    );
+
+    // Then
+    assert!(decision.is_ok());
+    Ok(())
 }
 
 #[test]
@@ -76,7 +88,7 @@ fn relay_member_and_policy_privileges_never_compose_across_spaces() -> TestResul
     // Given
     let endpoints = endpoints();
     let member_only = view(endpoints, spec(0x57, POLICY_DENIED, Revocation::None))?;
-    let policy_only = view(endpoints, spec(0x58, MEMBER_DENIED, Revocation::None))?;
+    let policy_only = view(endpoints, spec(0x58, MEMBER_DENIED, Revocation::Caller))?;
 
     // When
     let decision = authorize_endpoint(

@@ -44,6 +44,11 @@ impl SpaceAuthorizationView {
             .is_ok()
     }
 
+    /// Returns whether Space policy permits a current member to provide private relay service.
+    pub fn allows_private_relay_provider(&self, endpoint_id: EndpointId) -> bool {
+        self.policy.allows(Capability::PRIVATE_RELAY_PROVIDER) && self.contains_member(endpoint_id)
+    }
+
     /// Returns current unrevoked member Endpoint identities in canonical order.
     pub fn member_endpoint_ids(&self) -> impl Iterator<Item = EndpointId> + '_ {
         self.members.iter().map(SpaceMemberV1::endpoint_id)
@@ -81,7 +86,7 @@ impl SpaceAuthorizationView {
             | RemoteOperationKind::MetadataRead
             | RemoteOperationKind::AddressRecordExchange => true,
             RemoteOperationKind::RelayAdvertisement => {
-                self.allows(endpoints.caller, Capability::PRIVATE_RELAY_PROVIDER)
+                self.allows_private_relay_provider(endpoints.caller)
             }
             RemoteOperationKind::Unsupported => false,
         }
