@@ -36,12 +36,8 @@ interprocess = { version = "=2.4.3", features = ["tokio"] }
 iroh = "=1.1.0"
 iroh-base = "=1.1.0"
 iroh-dns = "=1.1.0"
-iroh-metrics = "=1.0.1"
-iroh-ping = "=1.0.0"
 iroh-relay = "=1.1.0"
 iroh-tickets = "=1.0.0"
-irpc = "=0.17.0"
-irpc-iroh = "=0.17.0"
 ma2a-core = { path = "crates/ma2a-core", version = "=0.1.0" }
 ma2a-net = { path = "crates/ma2a-net", version = "=0.1.0" }
 ma2a-runtime = { path = "crates/ma2a-runtime", version = "=0.1.0" }
