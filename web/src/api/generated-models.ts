@@ -14,7 +14,13 @@ export type SpaceView = {
 
 export type ControlSyncView = {
   readonly peer_endpoint_ids: readonly EndpointId[]
-  readonly synchronized: boolean
+}
+
+export type ConnectionView = {
+  readonly endpoint_id: EndpointId
+  readonly state: "connecting" | "connected" | "failed"
+  readonly path: "direct" | "relay" | "mixed_or_unknown"
+  readonly rtt_ms: number | null
 }
 
 export type UiAuthView = {
@@ -61,6 +67,7 @@ export type RuntimeSnapshot = {
   readonly endpoint: EndpointView
   readonly spaces: readonly SpaceView[]
   readonly control_sync: ControlSyncView
+  readonly connections: readonly ConnectionView[]
   readonly relay_candidates: readonly RelayCandidateView[]
   readonly observed_relay_state: ObservedRelayStateView
   readonly reachability: ReachabilityView
