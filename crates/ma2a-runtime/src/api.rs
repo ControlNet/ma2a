@@ -34,9 +34,9 @@ pub use result_data::{
 };
 pub use schema::{ERROR_NAMES, LOCAL_API_SCHEMA_JSON, LOCAL_API_SCHEMA_SHA256, RESULT_NAMES};
 pub use snapshot::{
-    ControlSyncView, EchoSummaryView, EndpointView, ObservedRelayStateView, ReachabilityView,
-    RelayCandidateView, RuntimeSnapshot, SnapshotCollections, SnapshotHeader, SpaceView,
-    UiAuthView,
+    ConnectionView, ControlSyncView, EchoSummaryView, EndpointView, ObservedRelayStateView,
+    ReachabilityView, RelayCandidateView, RuntimeSnapshot, SnapshotCollections, SnapshotHeader,
+    SpaceView, UiAuthView,
 };
 pub use snapshot_state::{ClientSnapshotState, NetworkSnapshotState, SnapshotState};
 

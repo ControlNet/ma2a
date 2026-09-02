@@ -1,11 +1,10 @@
 //! Authoritative client snapshot without secret or authorization diagnostics.
 
+use super::{ApiError, MAX_COLLECTION_ITEMS, snapshot_state::SnapshotState};
 use ma2a_core::{EndpointId, SpaceId};
-use serde_json::{Value, json};
 
-use super::{
-    ApiError, MAX_COLLECTION_ITEMS, codec_fields::encode_hex, snapshot_state::SnapshotState,
-};
+mod value;
+pub(crate) use value::{endpoint_value, space_value, ui_auth_value};
 
 /// Runtime Endpoint information safe for an authorized local client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +66,6 @@ impl SpaceView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlSyncView {
     pub(crate) peers: Vec<EndpointId>,
-    pub(crate) synchronized: bool,
 }
 
 impl ControlSyncView {
@@ -75,14 +73,41 @@ impl ControlSyncView {
     ///
     /// # Errors
     /// Returns invalid input when more than 256 peers are supplied.
-    pub fn new(peers: Vec<EndpointId>, synchronized: bool) -> Result<Self, ApiError> {
+    pub fn new(peers: Vec<EndpointId>) -> Result<Self, ApiError> {
         if peers.len() > MAX_COLLECTION_ITEMS {
             Err(ApiError::invalid_input())
         } else {
-            Ok(Self {
-                peers,
-                synchronized,
-            })
+            Ok(Self { peers })
+        }
+    }
+}
+
+/// Latest bounded observational connection state for one remote Endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionView {
+    pub(crate) endpoint_id: EndpointId,
+    pub(crate) state: &'static str,
+    pub(crate) path: &'static str,
+    pub(crate) rtt_ms: Option<u64>,
+}
+
+impl ConnectionView {
+    /// Creates one current per-peer connection observation.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the wire view carries one identity and three independent observed values"
+    )]
+    pub const fn new(
+        endpoint_id: EndpointId,
+        state: &'static str,
+        path: &'static str,
+        rtt_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            endpoint_id,
+            state,
+            path,
+            rtt_ms,
         }
     }
 }
@@ -191,6 +216,7 @@ pub struct RuntimeSnapshot {
     endpoint: EndpointView,
     spaces: Vec<SpaceView>,
     control_sync: ControlSyncView,
+    connections: Vec<ConnectionView>,
     relay_candidates: Vec<RelayCandidateView>,
     observed_relay_state: ObservedRelayStateView,
     reachability: ReachabilityView,
@@ -211,6 +237,7 @@ impl RuntimeSnapshot {
         if collections.spaces.len() > MAX_COLLECTION_ITEMS
             || collections.relay_candidates.len() > MAX_COLLECTION_ITEMS
             || collections.control_sync.peers.len() > MAX_COLLECTION_ITEMS
+            || collections.connections.len() > MAX_COLLECTION_ITEMS
         {
             return Err(ApiError::invalid_input());
         }
@@ -219,6 +246,7 @@ impl RuntimeSnapshot {
             endpoint: header.endpoint,
             spaces: collections.spaces,
             control_sync: collections.control_sync,
+            connections: collections.connections,
             relay_candidates: collections.relay_candidates,
             observed_relay_state: state.observed_relay_state,
             reachability: state.reachability,
@@ -234,20 +262,6 @@ impl RuntimeSnapshot {
 
     pub(crate) fn spaces(&self) -> &[SpaceView] {
         &self.spaces
-    }
-
-    pub(crate) fn to_value(&self) -> Value {
-        json!({
-            "revision": self.revision,
-            "endpoint": endpoint_value(&self.endpoint),
-            "spaces": self.spaces.iter().map(space_value).collect::<Vec<_>>(),
-            "control_sync": {"peer_endpoint_ids": self.control_sync.peers.iter().map(|id| encode_hex(id.as_bytes())).collect::<Vec<_>>(), "synchronized": self.control_sync.synchronized},
-            "relay_candidates": self.relay_candidates.iter().map(relay_candidate_value).collect::<Vec<_>>(),
-            "observed_relay_state": {"private_relay_online": self.observed_relay_state.private_relay_online, "public_relay_online": self.observed_relay_state.public_relay_online},
-            "reachability": {"direct": self.reachability.direct, "relayed": self.reachability.relayed},
-            "recent_echo_summary": {"successes": self.recent_echo_summary.successes, "failures": self.recent_echo_summary.failures},
-            "ui_auth": ui_auth_value(&self.ui_auth),
-        })
     }
 }
 
@@ -270,6 +284,7 @@ impl SnapshotHeader {
 pub struct SnapshotCollections {
     pub(crate) spaces: Vec<SpaceView>,
     pub(crate) control_sync: ControlSyncView,
+    pub(crate) connections: Vec<ConnectionView>,
     pub(crate) relay_candidates: Vec<RelayCandidateView>,
 }
 
@@ -278,35 +293,28 @@ impl SnapshotCollections {
     ///
     /// # Errors
     /// Returns invalid input when a collection exceeds 256 entities.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the snapshot groups four independently bounded wire collections"
+    )]
     pub fn new(
         spaces: Vec<SpaceView>,
         control_sync: ControlSyncView,
+        connections: Vec<ConnectionView>,
         relay_candidates: Vec<RelayCandidateView>,
     ) -> Result<Self, ApiError> {
-        if spaces.len() > MAX_COLLECTION_ITEMS || relay_candidates.len() > MAX_COLLECTION_ITEMS {
+        if spaces.len() > MAX_COLLECTION_ITEMS
+            || connections.len() > MAX_COLLECTION_ITEMS
+            || relay_candidates.len() > MAX_COLLECTION_ITEMS
+        {
             Err(ApiError::invalid_input())
         } else {
             Ok(Self {
                 spaces,
                 control_sync,
+                connections,
                 relay_candidates,
             })
         }
     }
-}
-
-pub(crate) fn endpoint_value(endpoint: &EndpointView) -> Value {
-    json!({"endpoint_id": encode_hex(endpoint.id.as_bytes()), "runtime_version": endpoint.runtime_version, "online": endpoint.online})
-}
-
-pub(crate) fn space_value(space: &SpaceView) -> Value {
-    json!({"space_id": encode_hex(space.id.as_bytes()), "name": space.name, "member_count": space.member_count})
-}
-
-pub(crate) fn ui_auth_value(auth: &UiAuthView) -> Value {
-    json!({"initialized": auth.initialized, "password_set": auth.password_set, "active_sessions": auth.active_sessions})
-}
-
-fn relay_candidate_value(candidate: &RelayCandidateView) -> Value {
-    json!({"endpoint_id": encode_hex(candidate.endpoint_id.as_bytes()), "relay_kind": candidate.relay_kind, "eligible": candidate.eligible})
 }

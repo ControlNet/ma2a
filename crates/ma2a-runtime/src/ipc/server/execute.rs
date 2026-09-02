@@ -158,7 +158,7 @@ pub(super) async fn execute(
                 .await
                 .map_err(|_| ProtocolError::UNAVAILABLE)?;
             CommandResult::control_sync_status(
-                ControlSyncView::new(vec![peer], synchronized)
+                ControlSyncView::new(if synchronized { vec![peer] } else { Vec::new() })
                     .map_err(|_| ProtocolError::INTERNAL)?,
             )
         }
@@ -177,7 +177,7 @@ pub(super) async fn execute(
                 .await
                 .map_err(|_| ProtocolError::UNAVAILABLE)?;
             CommandResult::control_sync_triggered(
-                ControlSyncView::new(vec![peer], synchronized)
+                ControlSyncView::new(if synchronized { vec![peer] } else { Vec::new() })
                     .map_err(|_| ProtocolError::INTERNAL)?,
             )
         }
