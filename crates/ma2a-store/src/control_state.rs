@@ -29,6 +29,15 @@ impl ControlSpaceState {
         &self.relay_advertisements
     }
 
+    /// Iterates advertisements currently visible to relay and control consumers.
+    pub fn active_relay_advertisements(
+        &self,
+    ) -> impl Iterator<Item = &PersistedRelayAdvertisement> {
+        self.relay_advertisements
+            .iter()
+            .filter(|advertisement| advertisement.is_active())
+    }
+
     /// Builds the bounded receiver high-water cursor for this Space.
     ///
     /// # Errors
