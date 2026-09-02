@@ -80,6 +80,7 @@ pub struct ConnectionObservation {
     preferred_home_relay: Option<RelayUrl>,
     observed_at_ms: u64,
     last_success_at_ms: Option<u64>,
+    rtt_ms: Option<u64>,
     last_error: Option<ConnectionErrorObservation>,
 }
 
@@ -103,6 +104,10 @@ impl ConnectionObservation {
     /// Returns the most recent successful connection timestamp.
     pub const fn last_success_at_ms(&self) -> Option<u64> {
         self.last_success_at_ms
+    }
+    /// Returns the selected path's current round-trip estimate in milliseconds.
+    pub const fn rtt_ms(&self) -> Option<u64> {
+        self.rtt_ms
     }
     /// Returns the most recent bounded failure metadata.
     pub const fn last_error(&self) -> Option<&ConnectionErrorObservation> {
@@ -129,6 +134,16 @@ impl ConnectionObservationContext {
 }
 
 impl ConnectionTelemetry {
+    /// Returns the latest retained observation for every remote Endpoint.
+    pub fn latest_observations(&self) -> Vec<ConnectionObservation> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter_map(|items| items.back().cloned())
+            .collect()
+    }
+
     /// Returns retained observations for one exact remote Endpoint.
     pub fn observations(&self, target: EndpointId) -> Vec<ConnectionObservation> {
         self.state
@@ -146,6 +161,7 @@ impl ConnectionTelemetry {
             preferred_home_relay: None,
             observed_at_ms: now_ms,
             last_success_at_ms: None,
+            rtt_ms: None,
             last_error: None,
         });
     }
@@ -161,6 +177,7 @@ impl ConnectionTelemetry {
             preferred_home_relay: None,
             observed_at_ms: context.now_ms,
             last_success_at_ms: None,
+            rtt_ms: None,
             last_error: Some(ConnectionErrorObservation {
                 class: error.class(),
                 detail: error.detail().to_owned(),
@@ -180,6 +197,7 @@ impl ConnectionTelemetry {
         let mut relay = false;
         let mut unknown = false;
         let mut selected_relay = None;
+        let mut selected_rtt_ms = None;
         for path in &paths {
             match path.remote_addr() {
                 TransportAddr::Ip(_) => direct = true,
@@ -190,6 +208,9 @@ impl ConnectionTelemetry {
                     }
                 }
                 _ => unknown = true,
+            }
+            if path.is_selected() {
+                selected_rtt_ms = u64::try_from(path.rtt().as_millis()).ok();
             }
         }
         let path_state = match (direct, relay, unknown) {
@@ -205,6 +226,7 @@ impl ConnectionTelemetry {
             preferred_home_relay: selected_relay,
             observed_at_ms: context.now_ms,
             last_success_at_ms: Some(context.now_ms),
+            rtt_ms: selected_rtt_ms,
             last_error: None,
         });
     }
