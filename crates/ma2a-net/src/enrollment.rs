@@ -3,7 +3,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
 };
-use ma2a_core::{EndpointId, MAX_ENROLLMENT_PAGE_BYTES, MAX_ENROLLMENT_PAGES};
+use ma2a_core::{EndpointId, MAX_ENROLLMENT_BOOTSTRAP_FRAME_BYTES, MAX_ENROLLMENT_PAGES};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, timeout};
 
@@ -176,7 +176,7 @@ async fn exchange_bounded(
             .map_err(|_| NetError::enrollment())?;
         let length =
             usize::try_from(u32::from_be_bytes(length)).map_err(|_| NetError::enrollment())?;
-        if length == 0 || length > MAX_ENROLLMENT_PAGE_BYTES {
+        if length == 0 || length > MAX_ENROLLMENT_BOOTSTRAP_FRAME_BYTES {
             return Err(NetError::enrollment());
         }
         let mut page = vec![0_u8; length];
@@ -200,7 +200,7 @@ fn validate_response(status: u8, pages: &[Vec<u8>]) -> Result<u16, NetError> {
     validate_response_count(status, page_count)?;
     if pages
         .iter()
-        .any(|page| page.is_empty() || page.len() > MAX_ENROLLMENT_PAGE_BYTES)
+        .any(|page| page.is_empty() || page.len() > MAX_ENROLLMENT_BOOTSTRAP_FRAME_BYTES)
     {
         return Err(NetError::enrollment());
     }
