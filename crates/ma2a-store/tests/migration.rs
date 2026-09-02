@@ -5,6 +5,10 @@ mod support;
 
 use std::collections::BTreeMap;
 
+use ma2a_core::{
+    MemberCapabilities, SpaceAuthoritySecret, SpaceGenesisIdentity, SpaceGenesisOwner,
+    SpaceGenesisV1, SpaceMemberV1, SpacePolicyV1,
+};
 use ma2a_store::{Repository, SCHEMA_VERSION, StoreConfig, StoreError, derive_password_verifier};
 use rusqlite::Connection;
 use support::{TempState, TestResult};
@@ -144,6 +148,103 @@ fn version_one_credentials_migrate_to_a_valid_session_epoch() -> TestResult {
     // Then
     assert_eq!(credential.auth_epoch(), 1);
     assert_eq!(credential.verifier(), verifier);
+    Ok(())
+}
+
+#[test]
+fn version_four_relay_rows_migrate_as_active_high_water() -> TestResult {
+    // Given
+    let state = TempState::new("v4-relay-activity")?;
+    let config = StoreConfig::new(state.path());
+    let connection = Connection::open(config.database_path())?;
+    connection.execute_batch(include_str!("../migrations/0001_init.sql"))?;
+    connection.execute_batch(include_str!("../migrations/0002_web_auth.sql"))?;
+    connection.execute_batch(include_str!("../migrations/0003_relay_persistence.sql"))?;
+    connection.execute_batch(include_str!("../migrations/0004_local_mutation_replay.sql"))?;
+    let authority = SpaceAuthoritySecret::from_bytes([0x31; 32]);
+    let provider = iroh_base::SecretKey::from_bytes(&[0x32; 32]);
+    let genesis = SpaceGenesisV1::new(
+        SpaceGenesisIdentity::new([0x33; 32], 1, authority.public_key())?,
+        SpaceGenesisOwner::new(
+            SpaceMemberV1::new(
+                provider.public().into(),
+                "relay-provider".to_owned(),
+                MemberCapabilities::new(true, true),
+            )?,
+            SpacePolicyV1::phase_one_default(),
+        ),
+    )
+    .sign(&authority)?;
+    connection.execute(
+        "INSERT INTO spaces(
+            space_id, genesis_cbor, latest_manifest_generation, latest_manifest_hash
+         ) VALUES (?1, ?2, 0, ?3)",
+        (
+            genesis.space_id().as_bytes().as_slice(),
+            genesis.canonical_bytes(),
+            genesis.chain_hash().as_slice(),
+        ),
+    )?;
+    connection.execute(
+        "INSERT INTO manifests(
+            space_id, generation, previous_hash, manifest_hash, signed_manifest
+         ) VALUES (?1, 0, NULL, ?2, ?3)",
+        (
+            genesis.space_id().as_bytes().as_slice(),
+            genesis.chain_hash().as_slice(),
+            genesis.canonical_bytes(),
+        ),
+    )?;
+    connection.execute(
+        "INSERT INTO members(space_id, endpoint_id, role, accepted_generation)
+         VALUES (?1, ?2, 0, 0)",
+        (
+            genesis.space_id().as_bytes().as_slice(),
+            provider.public().as_bytes().as_slice(),
+        ),
+    )?;
+    connection.execute(
+        "INSERT INTO relay_advertisement_state(
+            space_id, relay_endpoint_id, sequence, issued_at_ms, expires_at_ms,
+            advertisement_hash, signed_advertisement
+        ) VALUES (?1, ?2, 7, 10, 20, ?3, ?4)",
+        (
+            genesis.space_id().as_bytes().as_slice(),
+            provider.public().as_bytes().as_slice(),
+            [0x33; 32].as_slice(),
+            [0x34].as_slice(),
+        ),
+    )?;
+    connection.pragma_update(None, "user_version", 4_u32)?;
+    drop(connection);
+    #[cfg(unix)]
+    {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+        fs::set_permissions(config.database_path(), fs::Permissions::from_mode(0o600))?;
+    }
+
+    // When
+    drop(Repository::open(&config)?);
+
+    // Then
+    let connection = Connection::open(config.database_path())?;
+    assert!(
+        connection.query_row("SELECT active FROM relay_advertisement_state", [], |row| {
+            row.get::<_, bool>(0)
+        })?
+    );
+    assert_eq!(
+        connection.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))?,
+        5
+    );
+    assert_eq!(
+        connection.query_row(
+            "SELECT name FROM schema_migrations WHERE version = 5",
+            [],
+            |row| row.get::<_, String>(0)
+        )?,
+        "relay_advertisement_activity"
+    );
     Ok(())
 }
 
