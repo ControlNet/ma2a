@@ -53,7 +53,7 @@ impl LocalIrohRelayMap {
         let mut coverage = BTreeMap::<PrivateRelayCandidate, BTreeSet<SpaceId>>::new();
         for state in spaces {
             let authorization = state.authorization();
-            for persisted in state.relay_advertisements() {
+            for persisted in state.active_relay_advertisements() {
                 let Ok(validated) = PrivateRelayAdvertisementValidator::validate(
                     persisted.signed_advertisement(),
                     AdvertisementValidationContext::new(&authorization, now_ms),
