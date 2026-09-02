@@ -1,8 +1,8 @@
 use std::{error::Error, fmt};
 
 use ma2a_core::{
-    Capability, PrivateRelayAdvertisementScope, PrivateRelayAdvertisementV1,
-    PrivateRelayAdvertisementValidity, SignedPrivateRelayAdvertisementV1, SpaceAuthorizationView,
+    PrivateRelayAdvertisementScope, PrivateRelayAdvertisementV1, PrivateRelayAdvertisementValidity,
+    SignedPrivateRelayAdvertisementV1, SpaceAuthorizationView,
 };
 use ma2a_store::{
     RelayAdvertisementBoundaryError, RelayAdvertisementOutcome, Repository, StoreError,
@@ -81,8 +81,7 @@ impl PrivateRelayAdvertisementPublisher {
                 self.config
                     .served_spaces()
                     .contains(&authorization.space_id())
-                    && authorization
-                        .allows(provider_endpoint_id, Capability::PRIVATE_RELAY_PROVIDER)
+                    && authorization.allows_private_relay_provider(provider_endpoint_id)
             })
             .map(SpaceAuthorizationView::space_id)
             .collect::<Vec<_>>();

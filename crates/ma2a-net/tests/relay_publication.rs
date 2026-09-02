@@ -147,12 +147,13 @@ fn publisher_emits_one_space_private_advertisement_per_served_space() -> TestRes
 }
 
 #[test]
-fn publisher_excludes_configured_spaces_without_current_provider_capability() -> TestResult {
+fn publisher_includes_current_members_when_space_policy_allows_relay() -> TestResult {
     // Given
     let secret_bytes = [0x37; 32];
     let provider = SecretKey::from_bytes(&secret_bytes);
     let (_capable_genesis, capable) = authorization(&provider, 0x47, true)?;
     let (_incapable_genesis, incapable) = authorization(&provider, 0x48, false)?;
+    let incapable_space_id = incapable.space_id();
     let config = PrivateRelayProviderConfig::new(
         PrivateRelayProviderLocation::new(
             "127.0.0.1:0".parse()?,
@@ -179,11 +180,13 @@ fn publisher_excludes_configured_spaces_without_current_provider_capability() ->
     )?;
 
     // Then
-    assert_eq!(advertisements.len(), 1);
-    let advertisement = advertisements
-        .first()
-        .ok_or("effective relay advertisement was missing")?;
-    assert_eq!(advertisement.advertisement().space_id(), capable.space_id());
+    assert_eq!(advertisements.len(), 2);
+    let advertised_spaces = advertisements
+        .iter()
+        .map(|advertisement| advertisement.advertisement().space_id())
+        .collect::<Vec<_>>();
+    assert!(advertised_spaces.contains(&capable.space_id()));
+    assert!(advertised_spaces.contains(&incapable_space_id));
     Ok(())
 }
 
