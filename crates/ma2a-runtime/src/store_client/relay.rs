@@ -40,4 +40,19 @@ impl StoreClient {
         .await?;
         response.await.map_err(channel_error)?
     }
+
+    pub(crate) async fn reconcile_relay_activity(
+        &self,
+        local_endpoint_id: ma2a_core::EndpointId,
+        active_spaces: Vec<ma2a_core::SpaceId>,
+    ) -> Result<(u64, bool), RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::ReconcileRelayActivity {
+            local_endpoint_id,
+            active_spaces,
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
 }

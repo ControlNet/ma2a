@@ -120,10 +120,30 @@ impl StoreClient {
     pub(crate) async fn persist_enrollment(
         &self,
         chain: ma2a_core::SpaceChain,
+        owner_address: ma2a_store::ValidatedAddressRecord,
     ) -> Result<(u64, ma2a_core::SpaceChain), RuntimeError> {
         let (reply, response) = oneshot::channel();
-        self.send(StoreCommand::PersistEnrollment { chain, reply })
-            .await?;
+        self.send(StoreCommand::PersistEnrollment {
+            chain,
+            owner_address: Box::new(owner_address),
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
+
+    pub(crate) async fn address_record(
+        &self,
+        space_id: ma2a_core::SpaceId,
+        endpoint_id: ma2a_core::EndpointId,
+    ) -> Result<Option<ma2a_store::PersistedAddressRecord>, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::AddressRecord {
+            space_id,
+            endpoint_id,
+            reply,
+        })
+        .await?;
         response.await.map_err(channel_error)?
     }
 
