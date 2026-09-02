@@ -17,7 +17,8 @@ use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
 
 use super::control_period;
 use crate::{
-    EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock, control_sync::ControlRoundTrigger,
+    EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock,
+    control_sync::{ControlRoundScope, ControlRoundTrigger},
 };
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
@@ -29,6 +30,22 @@ struct FixedClock;
 
 impl RuntimeClock for FixedClock {
     fn now_ms(&self) -> Result<i64, crate::RuntimeError> {
+        Ok(100)
+    }
+}
+
+#[derive(Debug, Default)]
+struct FailDuringPublicationClock {
+    calls: AtomicU64,
+}
+
+impl RuntimeClock for FailDuringPublicationClock {
+    fn now_ms(&self) -> Result<i64, crate::RuntimeError> {
+        if self.calls.fetch_add(1, Ordering::Relaxed) == 1 {
+            return Err(crate::error::RuntimeError::new(
+                crate::error::RuntimeErrorKind::Clock,
+            ));
+        }
         Ok(100)
     }
 }
@@ -61,8 +78,71 @@ impl Drop for TempState {
 struct OwnedRuntime {
     runtime: Runtime,
     _state: TempState,
+    config: StoreConfig,
+    endpoint_id: ma2a_core::EndpointId,
     space_id: ma2a_core::SpaceId,
     membership: SpaceManifestMembership,
+}
+
+#[tokio::test]
+async fn startup_publishes_local_address_for_existing_space() -> TestResult {
+    // Given
+    let fixture = runtime_with_owned_space("startup-address").await?;
+
+    // When
+    let published_address =
+        Repository::open(&fixture.config)?.address_record(fixture.space_id, fixture.endpoint_id)?;
+    fixture.runtime.shutdown().await?;
+
+    // Then
+    assert!(published_address.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_startup_publication_never_persists_ready_state() -> TestResult {
+    // Given
+    let fixture = runtime_with_owned_space("failed-startup-publication").await?;
+    let config = fixture.config.clone();
+    fixture.runtime.shutdown().await?;
+
+    // When
+    let failed = Runtime::start_with_clock(
+        config.clone(),
+        Arc::new(FailDuringPublicationClock::default()),
+    )
+    .await;
+
+    // Then
+    assert!(failed.is_err());
+    let observation = Repository::open(&config)?
+        .runtime_metadata()?
+        .endpoint_observation();
+    assert!(observation.is_some_and(|value| !value.ready));
+    Runtime::start_with_clock(config, Arc::new(FixedClock))
+        .await?
+        .shutdown()
+        .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_creation_publishes_local_address() -> TestResult {
+    // Given
+    let state = TempState::new("created-space-address")?;
+    let config = StoreConfig::new(&state.0);
+    let runtime = Runtime::start_with_clock(config.clone(), Arc::new(FixedClock)).await?;
+    let handle = runtime.handle();
+    let endpoint_id = handle.status().await?.endpoint_id();
+
+    // When
+    let space_id = handle.create_owned_space("local".to_owned()).await?;
+    runtime.shutdown().await?;
+
+    // Then
+    let repository = Repository::open(&config)?;
+    assert!(repository.address_record(space_id, endpoint_id)?.is_some());
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -113,11 +193,13 @@ async fn completed_enrollment_schedules_control_on_both_runtime_actors() -> Test
     // Given
     let owner = runtime_with_owned_space("enrollment-owner").await?;
     let candidate_state = TempState::new("enrollment-candidate")?;
+    let candidate_config = StoreConfig::new(&candidate_state.0);
     let candidate =
-        Runtime::start_with_clock(StoreConfig::new(&candidate_state.0), Arc::new(FixedClock))
-            .await?;
+        Runtime::start_with_clock(candidate_config.clone(), Arc::new(FixedClock)).await?;
     let owner_handle = owner.runtime.handle();
     let candidate_handle = candidate.handle();
+    let owner_endpoint_id = owner_handle.status().await?.endpoint_id();
+    let candidate_endpoint_id = candidate_handle.status().await?.endpoint_id();
     let ticket = owner_handle
         .create_enrollment_invite(EnrollmentCreation::new(
             owner.space_id,
@@ -142,7 +224,17 @@ async fn completed_enrollment_schedules_control_on_both_runtime_actors() -> Test
 
     // Then
     assert!(owner_schedules.contains(&ControlRoundTrigger::EnrollmentCompleted));
-    assert!(candidate_schedules.contains(&ControlRoundTrigger::EnrollmentCompleted));
+    assert!(
+        candidate_schedules.contains(&ControlRoundTrigger::Explicit(ControlRoundScope::peer(
+            owner_endpoint_id
+        )))
+    );
+    let repository = Repository::open(&candidate_config)?;
+    assert!(
+        repository
+            .address_record(owner.space_id, candidate_endpoint_id)?
+            .is_some()
+    );
     Ok(())
 }
 
@@ -184,11 +276,12 @@ async fn runtime_with_owned_space(label: &str) -> TestResultValue<OwnedRuntime> 
     let space_id = created.space_id();
     let membership = SpaceManifestMembership::new(created.chain().members().to_vec(), Vec::new());
     drop(repository);
-    let runtime = Runtime::start_with_clock(config, Arc::new(FixedClock)).await?;
-    runtime.handle().status().await?;
+    let runtime = Runtime::start_with_clock(config.clone(), Arc::new(FixedClock)).await?;
     Ok(OwnedRuntime {
         runtime,
         _state: state,
+        config,
+        endpoint_id,
         space_id,
         membership,
     })

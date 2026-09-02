@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{Actor, COMMAND_CAPACITY, RuntimeHandle};
-use crate::{state::RuntimeStatus, store::StoreClient};
+use crate::{RuntimeConnections, state::RuntimeStatus, store::StoreClient};
 
 impl Actor {
     #[allow(
@@ -34,6 +34,7 @@ impl Actor {
         let echo_audit = crate::echo_audit::EchoAuditLog::default();
         let (relay_observation_sender, relay_observations) = mpsc::channel(COMMAND_CAPACITY);
         let relay_observer = endpoint.spawn_relay_observer(relay_observation_sender);
+        let connections = RuntimeConnections::new(&endpoint.connection_manager());
         let handle = RuntimeHandle::new(
             command_sender,
             store.clone(),
@@ -57,6 +58,7 @@ impl Actor {
             echo_tasks: tokio::task::JoinSet::new(),
             echo_audit,
             echo_metrics,
+            connections,
             lookup,
             relay_observations,
             relay_observer,

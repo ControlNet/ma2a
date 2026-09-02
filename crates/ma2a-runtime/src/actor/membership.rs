@@ -34,6 +34,7 @@ impl Actor {
         self.refresh_control_lookup().await?;
         self.refresh_relay_candidates().await?;
         self.refresh_private_relay_access().await?;
+        self.refresh_local_control_publications().await?;
         self.schedule_control_round(
             crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
             None,
@@ -57,6 +58,7 @@ impl Actor {
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
         self.refresh_control_lookup().await?;
+        self.refresh_local_control_publications().await?;
         self.schedule_control_round(
             crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
             None,
@@ -91,6 +93,7 @@ impl Actor {
         self.refresh_control_lookup().await?;
         self.refresh_relay_candidates().await?;
         self.refresh_private_relay_access().await?;
+        self.refresh_local_control_publications().await?;
         self.schedule_control_round(
             crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
             None,

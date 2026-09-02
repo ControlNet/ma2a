@@ -106,7 +106,7 @@ impl Runtime {
         let endpoint_data = endpoint
             .endpoint_data()
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-        let mut state = RuntimeStatus {
+        let state = RuntimeStatus {
             endpoint_id: identity.endpoint_id,
             endpoint_addr: endpoint.endpoint_addr(),
             endpoint_data,
@@ -118,8 +118,7 @@ impl Runtime {
             direct_reachable: false,
             relay: crate::reachability::RelayReachabilityState::new(relay_map),
         };
-        state.revision = store.observe(&state).await?.max(boot_revision);
-        let (actor, handle, cancellation) = Actor::new(
+        let (mut actor, handle, cancellation) = Actor::new(
             state,
             endpoint,
             store,
@@ -131,6 +130,7 @@ impl Runtime {
             clock,
             private_relay_server,
         );
+        actor.initialize().await?;
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
         Ok(Self {
             handle,
@@ -252,6 +252,24 @@ mod tests {
 
         // Then
         assert_eq!(actor_revision, Some(persisted_revision));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ready_event_is_observable_immediately_after_start()
+    -> Result<(), Box<dyn Error + Send + Sync>> {
+        // Given
+        let state = TempState::new()?;
+        let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+        let mut events = runtime.handle().subscribe();
+
+        // When
+        tokio::task::yield_now().await;
+        let event = events.try_recv()?;
+
+        // Then
+        assert!(event.is_ready());
+        runtime.shutdown().await?;
         Ok(())
     }
 }

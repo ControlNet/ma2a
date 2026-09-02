@@ -50,6 +50,7 @@ impl Actor {
         }
         self.private_relay_server = replacement;
         self.state.revision = revision;
+        self.refresh_local_relay_publication().await?;
         self.refresh_relay_candidates().await?;
         let _receiver_count = self
             .events
