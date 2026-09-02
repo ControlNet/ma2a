@@ -10,12 +10,8 @@ version.workspace = true
 getrandom.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
-iroh-metrics.workspace = true
-iroh-ping.workspace = true
 iroh-relay = { workspace = true, features = ["server"] }
 iroh-tickets.workspace = true
-irpc.workspace = true
-irpc-iroh.workspace = true
 ma2a-core.workspace = true
 ma2a-store.workspace = true
 n0-future.workspace = true
@@ -51,12 +47,8 @@ workspace = true
 ignored = [
     "iroh",
     "iroh-base",
-    "iroh-metrics",
-    "iroh-ping",
     "iroh-relay",
     "iroh-tickets",
-    "irpc",
-    "irpc-iroh",
     "ma2a-core",
     "tokio",
 ]
