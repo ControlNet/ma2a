@@ -16,7 +16,12 @@ const SpaceViewSchema = z.strictObject({
 })
 const ControlSyncViewSchema = z.strictObject({
   peer_endpoint_ids: z.array(EndpointIdSchema).max(256).readonly(),
-  synchronized: z.boolean(),
+})
+const ConnectionViewSchema = z.strictObject({
+  endpoint_id: EndpointIdSchema,
+  state: z.enum(["connecting", "connected", "failed"]),
+  path: z.enum(["direct", "relay", "mixed_or_unknown"]),
+  rtt_ms: z.number().int().nonnegative().nullable(),
 })
 const RelayCandidateViewSchema = z.strictObject({
   endpoint_id: EndpointIdSchema,
@@ -29,6 +34,7 @@ const RuntimeSnapshotSchema = z
     endpoint: EndpointViewSchema,
     spaces: z.array(SpaceViewSchema).max(256).readonly(),
     control_sync: ControlSyncViewSchema,
+    connections: z.array(ConnectionViewSchema).max(256).readonly(),
     relay_candidates: z.array(RelayCandidateViewSchema).max(256).readonly(),
     observed_relay_state: z.strictObject({
       private_relay_online: z.boolean(),

@@ -9,7 +9,6 @@ export type MutationSpaceView = {
 }
 export type MutationControlSyncView = {
   readonly peer_endpoint_ids: readonly string[]
-  readonly synchronized: boolean
 }
 export type MutationPrivateRelayView = {
   readonly configured: boolean
@@ -60,7 +59,6 @@ const SpaceSchema = z.strictObject({
 })
 const ControlSyncSchema = z.strictObject({
   peer_endpoint_ids: z.array(EndpointIdSchema).max(256).readonly(),
-  synchronized: z.boolean(),
 })
 const PrivateRelaySchema = z.strictObject({
   configured: z.boolean(),
