@@ -36,11 +36,13 @@ impl Actor {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         let collections = SnapshotCollections::new(
             spaces,
-            ControlSyncView::new(
-                self.synchronized_control_peers.iter().copied().collect(),
-                !self.synchronized_control_peers.is_empty(),
-            )
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?,
+            ControlSyncView::new(self.synchronized_control_peers.iter().copied().collect())
+                .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?,
+            self.connections
+                .latest_observations()
+                .iter()
+                .map(connection_view)
+                .collect(),
             self.state
                 .relay
                 .private_candidates()
@@ -93,6 +95,29 @@ impl Actor {
         )
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
     }
+}
+
+const fn connection_view(
+    observation: &ma2a_net::ConnectionObservation,
+) -> crate::api::ConnectionView {
+    let state = if observation.last_error().is_some() {
+        "failed"
+    } else if observation.last_success_at_ms().is_some() {
+        "connected"
+    } else {
+        "connecting"
+    };
+    let path = match observation.path_state() {
+        ma2a_net::ConnectionPathState::Relay => "relay",
+        ma2a_net::ConnectionPathState::Direct => "direct",
+        _ => "mixed_or_unknown",
+    };
+    crate::api::ConnectionView::new(
+        observation.remote_endpoint_id(),
+        state,
+        path,
+        observation.rtt_ms(),
+    )
 }
 
 #[cfg(test)]
@@ -161,6 +186,19 @@ mod tests {
             snapshot.pointer("/recent_echo_summary/failures"),
             Some(&serde_json::json!(1))
         );
+        assert_eq!(
+            snapshot.pointer("/connections/0/state"),
+            Some(&serde_json::json!("failed"))
+        );
+        assert_eq!(
+            snapshot.pointer("/connections/0/path"),
+            Some(&serde_json::json!("mixed_or_unknown"))
+        );
+        assert_eq!(
+            snapshot.pointer("/connections/0/rtt_ms"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(snapshot.pointer("/control_sync/synchronized").is_none());
         Ok(())
     }
 

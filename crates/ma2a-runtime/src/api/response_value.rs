@@ -24,7 +24,6 @@ pub(super) fn result_value(result: &CommandResult) -> Value {
         ResultKind::ControlSyncStatus(value) | ResultKind::ControlSyncTriggered(value) => {
             json!({
                 "peer_endpoint_ids": value.peers.iter().map(|id| encode_hex(id.as_bytes())).collect::<Vec<_>>(),
-                "synchronized": value.synchronized,
             })
         }
         ResultKind::PrivateRelayConfigured(value) | ResultKind::PrivateRelayStatus(value) => {

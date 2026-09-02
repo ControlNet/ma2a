@@ -223,7 +223,7 @@ async fn successful_mutation_replays_and_conflicts_after_runtime_restart() -> Te
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn control_sync_commands_report_unsynchronized_without_spaces() -> TestResult {
+async fn control_sync_commands_report_no_peers_without_spaces() -> TestResult {
     // Given
     let state = TempState::new()?;
     let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
@@ -264,8 +264,8 @@ async fn control_sync_commands_report_unsynchronized_without_spaces() -> TestRes
         Some("control_sync_status")
     );
     assert_eq!(
-        status_response.pointer("/result/payload/synchronized"),
-        Some(&serde_json::Value::Bool(false))
+        status_response.pointer("/result/payload"),
+        Some(&serde_json::json!({ "peer_endpoint_ids": [] }))
     );
     assert_eq!(
         trigger_response

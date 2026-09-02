@@ -1,7 +1,7 @@
 use ma2a_core::{EndpointId, SpaceId};
 use ma2a_runtime::api::{
-    CapabilityFlags, ClientSnapshotState, Command, CommandResult, ControlSyncView, EchoReplyView,
-    EchoSummaryView, EndpointView, HandshakeAuth, HandshakeState, HandshakeView,
+    CapabilityFlags, ClientSnapshotState, Command, CommandResult, ConnectionView, ControlSyncView,
+    EchoReplyView, EchoSummaryView, EndpointView, HandshakeAuth, HandshakeState, HandshakeView,
     InteractionCapabilities, ManagementCapabilities, NetworkSnapshotState, ObservedRelayStateView,
     PrivateRelayView, PublicRelayView, ReachabilityView, RelayAddress, RelayCandidateView,
     RelayCapabilities, RuntimeEvent, RuntimeSnapshot, RuntimeStatusView, SnapshotCollections,
@@ -25,7 +25,7 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
     let endpoint_id = endpoint_id()?;
     let endpoint = EndpointView::new(endpoint_id, "ma2a-runtime", true)?;
     let space = SpaceView::new(space_id()?, "ops", 3)?;
-    let control_sync = ControlSyncView::new(vec![endpoint_id], true)?;
+    let control_sync = ControlSyncView::new(vec![endpoint_id])?;
     let ui_auth = UiAuthView::new(true, true, 2);
     let capabilities = CapabilityFlags::new(
         ManagementCapabilities::new(true, true),
@@ -104,6 +104,12 @@ fn snapshot(fixture: SnapshotFixture) -> FixtureResult<RuntimeSnapshot> {
     let collections = SnapshotCollections::new(
         vec![fixture.space],
         fixture.control_sync,
+        vec![ConnectionView::new(
+            endpoint_id()?,
+            "connected",
+            "direct",
+            Some(12),
+        )],
         vec![RelayCandidateView::new(endpoint_id()?, "private", true)?],
     )?;
     let state = SnapshotState::new(

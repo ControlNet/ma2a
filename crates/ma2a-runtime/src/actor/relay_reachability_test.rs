@@ -148,10 +148,7 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
             "public_relay_online": false,
         }))
     );
-    assert_eq!(
-        snapshot.pointer("/control_sync/synchronized"),
-        Some(&serde_json::json!(false))
-    );
+    assert!(snapshot.pointer("/control_sync/synchronized").is_none());
     assert_eq!(
         snapshot.pointer("/reachability/direct"),
         Some(&serde_json::json!(true))
