@@ -7,4 +7,19 @@
   button {
     transition: none;
   }
+
+  button:active:not(:disabled) {
+    transform: none;
+  }
+}
+.visually-hidden {
+  position: absolute;
+  overflow: hidden;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
