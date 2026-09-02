@@ -7,6 +7,7 @@ mod authorization;
 mod codec;
 mod control;
 mod echo;
+mod enrollment_bootstrap;
 mod enrollment_page;
 mod error;
 mod ids;
@@ -44,6 +45,7 @@ pub use echo::{
     EchoError, EchoRequest, EchoResponse, EchoResultClass, EchoStatus, MAX_ECHO_DURATION_MS,
     MAX_ECHO_PAYLOAD_LEN,
 };
+pub use enrollment_bootstrap::{EnrollmentBootstrap, MAX_ENROLLMENT_BOOTSTRAP_FRAME_BYTES};
 pub use enrollment_page::{
     EnrollmentPage, MAX_ENROLLMENT_ARTIFACTS_PER_PAGE, MAX_ENROLLMENT_PAGE_BYTES,
     MAX_ENROLLMENT_PAGES, validate_enrollment_pages,
