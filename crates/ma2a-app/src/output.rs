@@ -76,9 +76,9 @@ fn write_control_sync(payload: &Value) -> io::Result<()> {
         io::stdout().lock(),
         "Control sync: {}",
         payload
-            .get("synchronized")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
+            .get("peer_endpoint_ids")
+            .and_then(Value::as_array)
+            .is_some_and(|peers| !peers.is_empty())
     )
 }
 
