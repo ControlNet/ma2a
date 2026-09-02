@@ -93,6 +93,9 @@ pub(crate) fn load_lookup(
     for state in &spaces {
         let authorization = state.authorization();
         for record in state.address_records() {
+            if !authorization.contains_member(record.endpoint_id()) {
+                continue;
+            }
             let Ok(issued_at_ms) = u64::try_from(record.issued_at_ms()) else {
                 continue;
             };
