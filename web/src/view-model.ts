@@ -1,7 +1,7 @@
 export type ConnectionState = "online" | "uncertain" | "offline"
 export type EndpointStatus = "active" | "degraded" | "offline"
 export type ObservedPath = "direct" | "relay" | "mixed" | "unknown"
-export type SyncState = "current" | "catching-up" | "stalled"
+export type SyncState = "current" | "catching-up" | "stalled" | "unknown"
 export type RelayKind = "private" | "public"
 export type RelayStatus = "eligible" | "disabled"
 
@@ -24,6 +24,13 @@ export type RelayView = {
   readonly status: RelayStatus
 }
 
+export type PeerConnectionView = {
+  readonly endpointId: string
+  readonly state: "connecting" | "connected" | "failed"
+  readonly path: "direct" | "relay" | "mixed or unknown"
+  readonly rttMs: number | undefined
+}
+
 export type ReachabilityView = {
   readonly status: "reachable" | "degraded" | "unknown" | "unreachable"
   readonly path: string
@@ -44,8 +51,8 @@ export type RuntimeViewData = {
   readonly reachability: ReachabilityView
   readonly controlSync: {
     readonly peer_endpoint_ids: readonly string[]
-    readonly synchronized: boolean
   }
+  readonly peerConnections: readonly PeerConnectionView[]
   readonly echoTotals: { readonly successes: number; readonly failures: number }
   readonly uiAuth: {
     readonly initialized: boolean

@@ -19,7 +19,8 @@ export const EMPTY_RUNTIME_FIXTURE = {
     path: "No target selected",
     detail: "Run an Echo test to observe a target-specific path.",
   },
-  controlSync: { peer_endpoint_ids: [], synchronized: true },
+  controlSync: { peer_endpoint_ids: [] },
+  peerConnections: [],
   echoTotals: { successes: 0, failures: 0 },
   uiAuth: { initialized: true, password_set: true, active_sessions: 1 },
 } satisfies RuntimeViewData
@@ -86,6 +87,14 @@ export const MANY_RUNTIME_FIXTURE = {
     detail: "No Private Relay is compatible with every active Space.",
   },
   observedRelayState: { private_relay_online: true, public_relay_online: false },
-  controlSync: { peer_endpoint_ids: ["44".repeat(32)], synchronized: false },
+  controlSync: { peer_endpoint_ids: ["44".repeat(32)] },
+  peerConnections: [
+    {
+      endpointId: "44".repeat(32),
+      state: "connected",
+      path: "relay",
+      rttMs: 34,
+    },
+  ],
   echoTotals: { successes: 1, failures: 1 },
 } satisfies RuntimeViewData

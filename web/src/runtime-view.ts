@@ -49,7 +49,7 @@ export function runtimeViewFromSnapshot(
       id: space.space_id,
       name: space.name,
       memberCount: space.member_count,
-      sync: snapshot.control_sync.synchronized ? "current" : "catching-up",
+      sync: "unknown",
     })),
     relays: snapshot.relay_candidates.map((relay) => ({
       endpointId: relay.endpoint_id,
@@ -59,6 +59,12 @@ export function runtimeViewFromSnapshot(
     observedRelayState: snapshot.observed_relay_state,
     reachability,
     controlSync: snapshot.control_sync,
+    peerConnections: snapshot.connections.map((peer) => ({
+      endpointId: peer.endpoint_id,
+      state: peer.state,
+      path: peer.path === "mixed_or_unknown" ? "mixed or unknown" : peer.path,
+      rttMs: peer.rtt_ms ?? undefined,
+    })),
     echoTotals: snapshot.recent_echo_summary,
     uiAuth: snapshot.ui_auth,
   }
