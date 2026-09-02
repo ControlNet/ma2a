@@ -9,7 +9,10 @@ mod control_sync_e2e_support;
 
 use std::time::Duration;
 
-use ma2a_core::{ControlRequestV1, ControlResponseV1, SpaceManifestMembership, SpaceRevocationV1};
+use ma2a_core::{
+    ControlRequestV1, ControlResponseV1, SignedSpaceAddressRecordV1, SpaceManifestMembership,
+    SpaceRevocationV1,
+};
 use ma2a_net::{EndpointSecret, RuntimeEndpoint};
 use ma2a_runtime::Runtime;
 use ma2a_store::{OwnedSpaceUpdate, Repository};
@@ -56,10 +59,16 @@ async fn explicit_round_converges_shared_spaces_without_leaking_private_space() 
         let imported_owner = candidate_repository
             .address_record(space_id, fixture.owner_secret.public().into())?
             .ok_or("newer owner address was not pulled")?;
+        assert!(imported_owner.sequence() > owner_record.record().sequence());
+        let signed_owner =
+            SignedSpaceAddressRecordV1::parse_canonical_bytes(imported_owner.signed_record())?;
+        signed_owner.verify_signature()?;
+        assert_eq!(signed_owner.record().space_id(), space_id);
         assert_eq!(
-            imported_owner.signed_record(),
-            owner_record.canonical_bytes()
+            signed_owner.record().endpoint_id(),
+            fixture.owner_secret.public().into()
         );
+        assert!(!signed_owner.record().endpoint_data().addresses().is_empty());
         let imported_relay = candidate_repository
             .relay_advertisement(space_id, fixture.owner_secret.public().into())?
             .ok_or("owner relay advertisement was not pulled")?;

@@ -21,6 +21,7 @@ struct SynchronizedRecords<'a> {
     endpoint_id: ma2a_core::EndpointId,
     first_sequences: &'a [u64],
     second_sequences: &'a [u64],
+    expected_sequences: &'a [u64],
     expected_addresses: &'a std::collections::BTreeSet<iroh_base::TransportAddr>,
 }
 
@@ -64,6 +65,14 @@ async fn scenario_f_observed_home_change_propagates_through_control_sync() -> Te
     let second_sequences = publications.publish(&second_addr)?;
     endpoint.close().await;
     drop(endpoint);
+    let candidate = Runtime::start_with_clock(candidate_config.clone(), support::clock()).await?;
+    assert!(
+        candidate
+            .connections()
+            .observations(fixture.owner_secret.public().into())
+            .iter()
+            .all(|observation| observation.last_success_at_ms().is_none())
+    );
     let owner = Runtime::start_with_clock(owner_config.clone(), support::clock()).await?;
     let owner_status = owner.handle().status().await?;
     let owner_sequences = address_sequences(
@@ -71,13 +80,7 @@ async fn scenario_f_observed_home_change_propagates_through_control_sync() -> Te
         &fixture.shared_spaces,
         fixture.owner_secret.public().into(),
     )?;
-    let candidate = Runtime::start_with_clock(candidate_config.clone(), support::clock()).await?;
-    assert!(
-        candidate
-            .connections()
-            .observations(fixture.owner_secret.public().into())
-            .is_empty()
-    );
+    let owner_addresses = owner_status.endpoint_addr().addrs;
     let sync_revision =
         tokio::time::timeout(Duration::from_secs(15), candidate.handle().sync_control()).await??;
     let observations = candidate
@@ -94,7 +97,8 @@ async fn scenario_f_observed_home_change_propagates_through_control_sync() -> Te
         endpoint_id: fixture.owner_secret.public().into(),
         first_sequences: &first_sequences,
         second_sequences: &second_sequences,
-        expected_addresses: &second_addr.addrs,
+        expected_sequences: &owner_sequences,
+        expected_addresses: &owner_addresses,
     }
     .assert_exact()?;
     emit(&serde_json::json!({
@@ -171,17 +175,18 @@ impl SynchronizedRecords<'_> {
     fn assert_exact(&self) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
         let repository = Repository::open(self.config)?;
         let mut received = Vec::new();
-        for ((space_id, first_sequence), second_sequence) in self
+        for (((space_id, first_sequence), second_sequence), expected_sequence) in self
             .spaces
             .iter()
             .zip(self.first_sequences)
             .zip(self.second_sequences)
+            .zip(self.expected_sequences)
         {
             assert_eq!(*second_sequence, first_sequence + 1);
+            assert_eq!(*expected_sequence, second_sequence + 1);
             let record = repository
                 .address_record(*space_id, self.endpoint_id)?
                 .ok_or("synchronized changed address missing")?;
-            assert_eq!(record.sequence(), *second_sequence);
             let signed = SignedSpaceAddressRecordV1::parse_canonical_bytes(record.signed_record())?;
             let synchronized_addresses = signed
                 .record()
@@ -190,6 +195,7 @@ impl SynchronizedRecords<'_> {
                 .iter()
                 .cloned()
                 .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(record.sequence(), *expected_sequence);
             assert_eq!(&synchronized_addresses, self.expected_addresses);
             received.push(record.sequence());
         }
