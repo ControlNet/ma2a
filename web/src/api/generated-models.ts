@@ -16,11 +16,44 @@ export type ControlSyncView = {
   readonly peer_endpoint_ids: readonly EndpointId[]
 }
 
+export type SpaceMemberView = {
+  readonly endpoint_id: EndpointId
+  readonly label: string
+  readonly echo: boolean
+  readonly relay_provider: boolean
+}
+
+export type SnapshotSpaceView = {
+  readonly space_id: SpaceId
+  readonly name: string
+  readonly member_count: number
+  readonly generation: number
+  readonly chain_hash: string
+  readonly members: readonly SpaceMemberView[]
+  readonly revoked_count: number
+}
+
+export type ConnectionObservationView = {
+  readonly observed_at_ms: number
+  readonly path: "connecting" | "direct" | "relay" | "mixed_or_unknown"
+  readonly rtt_ms: number | null
+  readonly error_class:
+    | "none"
+    | "transient"
+    | "authorization"
+    | "version"
+    | "revocation"
+    | "malformed_input"
+    | "policy"
+    | "cancelled"
+}
+
 export type ConnectionView = {
   readonly endpoint_id: EndpointId
   readonly state: "connecting" | "connected" | "failed"
   readonly path: "direct" | "relay" | "mixed_or_unknown"
   readonly rtt_ms: number | null
+  readonly observations: readonly ConnectionObservationView[]
 }
 
 export type UiAuthView = {
@@ -51,6 +84,13 @@ export type RelayCandidateView = {
   readonly endpoint_id: EndpointId
   readonly relay_kind: string
   readonly eligible: boolean
+  readonly covered_space_ids: readonly SpaceId[]
+}
+
+export type ControlRoundView = {
+  readonly at_ms: number
+  readonly peer_count: number
+  readonly outcome: "succeeded" | "failed" | "empty"
 }
 
 export type ObservedRelayStateView = {
@@ -65,10 +105,11 @@ export type EchoSummaryView = { readonly successes: number; readonly failures: n
 export type RuntimeSnapshot = {
   readonly revision: number
   readonly endpoint: EndpointView
-  readonly spaces: readonly SpaceView[]
+  readonly spaces: readonly SnapshotSpaceView[]
   readonly control_sync: ControlSyncView
   readonly connections: readonly ConnectionView[]
   readonly relay_candidates: readonly RelayCandidateView[]
+  readonly control_rounds: readonly ControlRoundView[]
   readonly observed_relay_state: ObservedRelayStateView
   readonly reachability: ReachabilityView
   readonly recent_echo_summary: EchoSummaryView
@@ -98,6 +139,7 @@ export type RuntimeStatusView = {
 export type EchoReplyView = {
   readonly target_endpoint_id: EndpointId
   readonly payload: string
+  readonly duration_ms: number
 }
 
 export type UiOpenView = {
