@@ -47,6 +47,8 @@ upgrade in the required Iroh 1.1.0 graph, and must be re-evaluated when that pin
 
 | Dependency | Exact version | Purpose |
 | --- | --- | --- |
+| `@fontsource-variable/space-grotesk` | 5.3.0 | Self-hosted UI typeface, latin subset only (OFL-1.1) |
+| `@fontsource-variable/jetbrains-mono` | 5.3.0 | Self-hosted identifier typeface, latin subset only (OFL-1.1) |
 | `ky` | 2.1.0 | Same-origin HTTP client boundary |
 | `react` | 19.2.8 | Component runtime |
 | `react-dom` | 19.2.8 | Browser DOM renderer |
@@ -71,6 +73,11 @@ upgrade in the required Iroh 1.1.0 graph, and must be re-evaluated when that pin
 | `typescript` | 5.9.3 | Strict frontend type checking |
 | `vite` | 8.2.2 | Frontend development and production build |
 | `vitest` | 4.1.11 | Frontend test runner |
+
+Both font packages are vendored into the bundle at build time. `src/styles/fonts.css`
+declares only the latin `woff2` face of each family, so the embedded binary carries two font
+files rather than the eleven the packages ship. No stylesheet may reference a remote origin;
+`src/styles/fonts.test.ts` enforces that and the release smoke test re-proves it in a browser.
 
 ## Update Procedure
 
