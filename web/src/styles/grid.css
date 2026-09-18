@@ -1,0 +1,201 @@
+.states {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.state {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+}
+
+.state[aria-current] {
+  background: var(--panel-2);
+  border-width: 1.6px;
+}
+
+.state__dot {
+  inline-size: 9px;
+  block-size: 9px;
+  border-radius: 50%;
+}
+
+.state__name {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.state__gloss {
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  line-height: 1.55;
+}
+
+.states--compact .state {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  padding: var(--space-3);
+}
+
+.matrix,
+.trust {
+  inline-size: 100%;
+  border-collapse: collapse;
+  text-align: start;
+}
+
+.matrix th,
+.matrix td,
+.trust th,
+.trust td {
+  padding: var(--space-3);
+  border-block-end: 1px solid var(--line);
+  text-align: start;
+  vertical-align: middle;
+}
+
+.matrix thead th,
+.trust thead th {
+  color: var(--text-dim);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.matrix tbody th,
+.trust tbody th {
+  font-weight: 500;
+}
+
+.trust__mark {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 20px;
+  block-size: 20px;
+  border-radius: 50%;
+  background: var(--observed-direct-soft);
+  color: var(--observed-direct);
+}
+
+.trust__mark::before {
+  content: "\2713";
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.trust__mark--absent {
+  border: 1.4px dashed var(--control);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.trust__mark--absent::before {
+  content: "\2013";
+}
+
+.trust__name {
+  display: block;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.trust__guard {
+  display: block;
+  margin-block-start: 2px;
+  color: var(--text-dim);
+  font-size: 0.625rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.trust__cell {
+  inline-size: 1%;
+}
+
+.matrix__name {
+  display: block;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.matrix__detail {
+  display: block;
+  margin-block-start: 2px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+}
+
+.matrix__cell {
+  inline-size: 1%;
+  white-space: nowrap;
+}
+
+.matrix__verdict {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--observed-direct-soft);
+  color: var(--observed-direct);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.matrix__verdict--no {
+  background: var(--observed-failed-soft);
+  color: var(--observed-failed);
+}
+
+.members {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.member {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px var(--space-3);
+  align-items: baseline;
+}
+
+.member__id {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.member__label {
+  grid-row: 2;
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+}
+
+.member__caps {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}

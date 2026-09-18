@@ -1,0 +1,91 @@
+@media (width <= 74rem) {
+  .shell__body {
+    display: grid;
+    grid-template-columns: var(--rail-width) minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .shell--inspected .shell__body {
+    grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  }
+
+  .inspector {
+    grid-column: 1 / -1;
+    grid-template-rows: auto auto auto;
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--line);
+  }
+
+  .shell__main {
+    overflow: visible;
+  }
+
+  .inspector__body {
+    overflow: visible;
+  }
+}
+
+@media (width <= 52rem) {
+  .lane-map {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lane {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+@media (width <= 40rem) {
+  .shell__body,
+  .shell--inspected .shell__body {
+    grid-template-columns: minmax(0, 1fr);
+    padding-block-end: 4.5rem;
+  }
+
+  .shell__main {
+    padding: var(--space-4);
+  }
+
+  .rail {
+    position: fixed;
+    inset-block-end: 0;
+    inset-inline: 0;
+    z-index: 3;
+    grid-auto-flow: column;
+    justify-items: stretch;
+    gap: 0;
+    padding: var(--space-2) var(--space-1);
+    border-inline-end: 0;
+    border-block-start: 1px solid var(--line);
+  }
+
+  .rail__link {
+    inline-size: auto;
+  }
+
+  .top-strip {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .inspector__head,
+  .inspector__body,
+  .inspector__foot {
+    padding: var(--space-4);
+  }
+
+  .section__head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .peer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .peer__badge {
+    grid-column: 1;
+    grid-row: 3;
+    text-align: start;
+  }
+}

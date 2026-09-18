@@ -1,26 +1,110 @@
+/*
+ * One token set, two modes. Every colour below is verified in tokens.test.ts:
+ * text tokens reach 4.5:1 on every surface they are allowed to sit on, and
+ * --control reaches 3:1 because it is the only visible boundary of a control.
+ *
+ * Semantics, never mix these two groups:
+ *   --accent*    what you can act on (this Endpoint, controls, focus, the now line)
+ *   --observed-* what Iroh reported (direct / relay / failed / no observation)
+ * A signed authorization fact is never painted with an --observed-* colour.
+ */
+
 :root {
   color-scheme: light;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  --surface-canvas: #f4f6f8;
-  --surface-primary: #fbfcfd;
-  --surface-secondary: #eef2f5;
-  --surface-elevated: #ffffff;
-  --text-primary: #17202a;
-  --text-secondary: #465565;
-  --text-muted: #5f6d7c;
-  --border-default: #cfd7df;
-  --border-subtle: #e2e7ec;
-  --accent-primary: #185fa7;
-  --accent-hover: #124c86;
-  --focus-ring: #0b63ce;
-  --status-success: #19733b;
-  --status-warning: #8a5a00;
-  --status-warning-surface: #fff7df;
-  --status-error: #b42318;
-  --status-error-surface: #fff0ee;
-  --status-info-surface: #eaf3fc;
+
+  --bg: #f7f9fc;
+  --panel: #ffffff;
+  --panel-2: #f1f5fa;
+  --line: #e1e7ef;
+  --track: #dce3ec;
+  --control: #798fad;
+
+  --text: #0d1420;
+  --text-muted: #4e5a6b;
+  --text-dim: #646f7f;
+
+  --accent: #2e62c8;
+  --accent-soft: #e8effb;
+  --accent-contrast: #ffffff;
+
+  --observed-direct: #0a7e54;
+  --observed-direct-soft: #ebf6f1;
+  --observed-relay: #976409;
+  --observed-relay-soft: #faf4e7;
+  --observed-failed: #c0392b;
+  --observed-failed-soft: #fbe9e7;
+  --observed-none: #646f7f;
+  --observed-none-soft: #f1f4f7;
+
+  --shadow-overlay: 0 18px 48px rgb(13 20 32 / 18%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg: #0e1116;
+    --panel: #161a21;
+    --panel-2: #1c222b;
+    --line: #242b35;
+    --track: #2a313c;
+    --control: #5c6d85;
+
+    --text: #e6eaf0;
+    --text-muted: #9aa7b8;
+    --text-dim: #7c8a9b;
+
+    --accent: #6d9bf2;
+    --accent-soft: #17233a;
+    --accent-contrast: #0e1116;
+
+    --observed-direct: #3ddc97;
+    --observed-direct-soft: #10281f;
+    --observed-relay: #f0b429;
+    --observed-relay-soft: #2b2212;
+    --observed-failed: #ff6b6b;
+    --observed-failed-soft: #2c1718;
+    --observed-none: #7c8a9b;
+    --observed-none-soft: #1b2129;
+
+    --shadow-overlay: 0 18px 48px rgb(0 0 0 / 55%);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0e1116;
+  --panel: #161a21;
+  --panel-2: #1c222b;
+  --line: #242b35;
+  --track: #2a313c;
+  --control: #5c6d85;
+
+  --text: #e6eaf0;
+  --text-muted: #9aa7b8;
+  --text-dim: #7c8a9b;
+
+  --accent: #6d9bf2;
+  --accent-soft: #17233a;
+  --accent-contrast: #0e1116;
+
+  --observed-direct: #3ddc97;
+  --observed-direct-soft: #10281f;
+  --observed-relay: #f0b429;
+  --observed-relay-soft: #2b2212;
+  --observed-failed: #ff6b6b;
+  --observed-failed-soft: #2c1718;
+  --observed-none: #7c8a9b;
+  --observed-none-soft: #1b2129;
+
+  --shadow-overlay: 0 18px 48px rgb(0 0 0 / 55%);
+}
+
+:root {
+  --font-sans: "Space Grotesk Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", Consolas, monospace;
+
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -29,45 +113,16 @@
   --space-6: 1.5rem;
   --space-8: 2rem;
   --space-10: 2.5rem;
+
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-pill: 999px;
+
+  --stroke-chart: 1.6px;
+  --rail-width: 72px;
+  --inspector-width: 340px;
+  --target-min: 44px;
+
   --motion-micro: 120ms;
   --motion-standard: 180ms;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html {
-  background: var(--surface-canvas);
-  color: var(--text-primary);
-}
-
-body {
-  margin: 0;
-  min-inline-size: 20rem;
-}
-
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
-
-button,
-a {
-  -webkit-tap-highlight-color: transparent;
-}
-
-a {
-  color: var(--accent-primary);
-}
-
-:focus-visible {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 3px;
-}
-
-::selection {
-  background: var(--status-info-surface);
 }
