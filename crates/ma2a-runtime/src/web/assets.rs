@@ -35,6 +35,7 @@ pub(super) fn asset_response(assets: &WebAssets, requested: &str) -> Response {
         Some(value) if value.eq_ignore_ascii_case("js") => "text/javascript; charset=utf-8",
         Some(value) if value.eq_ignore_ascii_case("css") => "text/css; charset=utf-8",
         Some(value) if value.eq_ignore_ascii_case("svg") => "image/svg+xml",
+        Some(value) if value.eq_ignore_ascii_case("woff2") => "font/woff2",
         Some(_) | None => "application/octet-stream",
     };
     let cache_control = if *name == "index.html" {
@@ -63,7 +64,19 @@ mod tests {
     static FILES: &[(&str, &[u8])] = &[
         ("index.html", b"<main>console</main>"),
         ("assets/app-a1b2c3.js", b"export{}"),
+        ("assets/mono-d4e5f6.woff2", b"wOF2"),
     ];
+
+    #[test]
+    fn serves_self_hosted_fonts_with_a_font_media_type() {
+        let response = asset_response(&WebAssets::new(FILES), "assets/mono-d4e5f6.woff2");
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static("font/woff2"))
+        );
+    }
 
     #[tokio::test]
     async fn falls_back_to_index_for_a_deep_spa_route() {
