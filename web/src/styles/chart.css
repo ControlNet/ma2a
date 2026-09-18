@@ -1,0 +1,200 @@
+.chart {
+  display: block;
+  max-inline-size: 100%;
+}
+
+.chart__value {
+  fill: var(--text);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chart__value--small {
+  font-size: 12px;
+}
+
+.chart__caption {
+  fill: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.chart__caption--accent {
+  fill: var(--accent);
+}
+
+.chart__caption--direct {
+  fill: var(--observed-direct);
+}
+
+.track line {
+  stroke-width: 1;
+}
+
+.meters {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+}
+
+.meter__label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.meter__value {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.meter__track {
+  display: block;
+  grid-column: 1 / -1;
+  block-size: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--track);
+}
+
+.meter__fill {
+  display: block;
+  block-size: 100%;
+  border-radius: 3px;
+}
+
+.meter__note {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+}
+
+.stack {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.stack__bar {
+  display: flex;
+  gap: 2px;
+  block-size: 10px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: var(--track);
+}
+
+.stack__segment {
+  display: block;
+  border-radius: 5px;
+}
+
+.stack__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.stack__key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.stack__dot {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+}
+
+.rounds {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.rounds__bars {
+  display: flex;
+  align-items: end;
+  gap: 5px;
+  block-size: 64px;
+}
+
+.rounds__bar {
+  flex: 1 1 0;
+  border-radius: 2px;
+}
+
+.rounds__caption {
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.exchange {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.exchange__node {
+  fill: var(--panel-2);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.exchange__node--target {
+  stroke: var(--observed-direct);
+}
+
+.exchange__out {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.exchange__in {
+  stroke: var(--observed-direct);
+  stroke-width: 1.5;
+}
+
+.exchange__deadline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-3);
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.exchange__deadline .meter__track {
+  grid-column: 1 / -1;
+}
+
+.exchange__used {
+  color: var(--observed-direct);
+  font-family: var(--font-mono);
+}
+
+.exchange__cap {
+  text-align: end;
+}

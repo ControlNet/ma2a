@@ -1,0 +1,134 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-block-size: var(--target-min);
+  padding-inline: var(--space-4);
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--motion-micro) ease-out;
+}
+
+.button--compact {
+  min-block-size: 2rem;
+  padding-inline: var(--space-3);
+  font-size: 0.6875rem;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+
+.button--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.button--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.button--danger {
+  color: var(--observed-failed);
+}
+
+.button:disabled {
+  border-color: var(--line);
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.field__label {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.field__help {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  line-height: 1.55;
+}
+
+.field input,
+.field textarea,
+.field select {
+  inline-size: 100%;
+  min-block-size: var(--target-min);
+  padding: var(--space-3);
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.segmented {
+  display: inline-flex;
+  gap: var(--space-1);
+  min-inline-size: auto;
+  margin: 0;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel-2);
+}
+
+.segmented__option {
+  min-block-size: var(--target-min);
+  padding-inline: var(--space-4);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--motion-micro) ease-out;
+}
+
+.segmented__option:hover:not([aria-pressed="true"]) {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.segmented__option[aria-pressed="true"] {
+  border-color: var(--control);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.command {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+
+.command__line {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
