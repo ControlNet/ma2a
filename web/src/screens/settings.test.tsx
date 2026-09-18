@@ -4,31 +4,36 @@ import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, test, vi } from "vitest"
 
-import type { RuntimeActions } from "../runtime-actions"
-import { SettingsScreen } from "./settings"
+import { ONE_RUNTIME_FIXTURE } from "../test/fixtures"
+import { runtimeActions } from "./actions.fixture"
+import { SettingsInspector, SettingsScreen } from "./settings"
 
 test("revoke all forces local sign-out without calling authenticated logout", async () => {
   const user = userEvent.setup()
-  const revokeSessions = vi.fn(() => Promise.resolve())
+  const actions = runtimeActions()
   const onLogout = vi.fn(() => Promise.resolve())
   const onSessionsRevoked = vi.fn()
-  const actions: RuntimeActions = {
-    createSpace: vi.fn(() => Promise.resolve()),
-    createInvitation: vi.fn(() => Promise.resolve()),
-    revokeEndpoint: vi.fn(() => Promise.resolve()),
-    triggerSync: vi.fn(() => Promise.resolve()),
-    configurePrivateRelay: vi.fn(() => Promise.reject(new TypeError("unused"))),
-    configurePublicRelay: vi.fn(() => Promise.reject(new TypeError("unused"))),
-    echo: vi.fn(() => Promise.reject(new TypeError("unused"))),
-    revokeSessions,
-  }
   render(
-    <SettingsScreen actions={actions} onLogout={onLogout} onSessionsRevoked={onSessionsRevoked} />,
+    <SettingsInspector
+      actions={actions}
+      onLogout={onLogout}
+      onSessionsRevoked={onSessionsRevoked}
+      runtime={ONE_RUNTIME_FIXTURE}
+    />,
   )
 
-  await user.click(screen.getByRole("button", { name: "Revoke all" }))
+  await user.click(screen.getByRole("button", { name: "Revoke all sessions" }))
 
-  expect(revokeSessions).toHaveBeenCalledOnce()
+  expect(actions.revokeSessions).toHaveBeenCalledOnce()
   expect(onSessionsRevoked).toHaveBeenCalledOnce()
   expect(onLogout).not.toHaveBeenCalled()
+})
+
+test("the trust boundary states in words that the browser holds no secret", () => {
+  render(<SettingsScreen runtime={ONE_RUNTIME_FIXTURE} />)
+
+  const browser = screen.getByRole("columnheader", { name: /Browser/ })
+  expect(browser).toBeInTheDocument()
+  expect(screen.getAllByText("never exists here").length).toBeGreaterThanOrEqual(6)
+  expect(screen.getByText("ma2a ui password reset")).toBeInTheDocument()
 })

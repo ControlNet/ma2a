@@ -7,43 +7,13 @@ import {
   type WebSession,
 } from "./api/web-auth"
 import { AppShell } from "./components/app-shell"
-import { RuntimeLoadError } from "./components/runtime-status"
+import { SnapshotError } from "./components/feedback"
 import { isRoutePath, ROUTE_PATHS, type RoutePath } from "./routes"
-import { createRuntimeActions, type RuntimeActions } from "./runtime-actions"
+import { createRuntimeActions } from "./runtime-actions"
 import { RuntimeController } from "./runtime-controller"
 import { LoginScreen, SetupScreen } from "./screens/auth"
-import { EchoScreen } from "./screens/echo"
-import { EndpointScreen } from "./screens/endpoint"
-import { OverviewScreen } from "./screens/overview"
-import { RelaysScreen } from "./screens/relays"
-import { SettingsScreen } from "./screens/settings"
-import { SpacesScreen } from "./screens/spaces"
+import { routeView } from "./screens/route-view"
 import type { RuntimeViewData } from "./view-model"
-
-function routeContent(
-  path: RoutePath,
-  runtime: RuntimeViewData | undefined,
-  actions: RuntimeActions | undefined,
-): ReactNode {
-  switch (path) {
-    case ROUTE_PATHS.login:
-      return <LoginScreen />
-    case ROUTE_PATHS.setup:
-      return <SetupScreen />
-    case ROUTE_PATHS.overview:
-      return <OverviewScreen runtime={runtime} />
-    case ROUTE_PATHS.endpoint:
-      return <EndpointScreen runtime={runtime} />
-    case ROUTE_PATHS.spaces:
-      return <SpacesScreen actions={actions} runtime={runtime} />
-    case ROUTE_PATHS.relays:
-      return <RelaysScreen actions={actions} runtime={runtime} />
-    case ROUTE_PATHS.echo:
-      return <EchoScreen actions={actions} runtime={runtime} />
-    case ROUTE_PATHS.settings:
-      return <SettingsScreen />
-  }
-}
 
 function browserPath(): RoutePath {
   return isRoutePath(window.location.pathname) ? window.location.pathname : ROUTE_PATHS.overview
@@ -61,6 +31,8 @@ export function App({
   const [liveRuntime, setLiveRuntime] = useState<RuntimeViewData | undefined>(runtime)
   const [runtimeLoadFailed, setRuntimeLoadFailed] = useState(false)
   const [controller, setController] = useState<RuntimeController | undefined>()
+  const [selectedPeer, setSelectedPeer] = useState<string | undefined>()
+  const [syncMessage, setSyncMessage] = useState<string | undefined>()
   const controlled = initialPath !== undefined
   const displayedRuntime = controlled ? runtime : liveRuntime
 
@@ -143,20 +115,38 @@ export function App({
   if (path === ROUTE_PATHS.setup) {
     return <SetupScreen />
   }
+
+  const sync = (endpointId: string): void => {
+    if (actions === undefined) return
+    setSyncMessage("Requesting a bounded control round\u2026")
+    void actions.triggerSync(endpointId).then(
+      () => setSyncMessage("Control round requested."),
+      () => setSyncMessage("The Runtime rejected the request."),
+    )
+  }
+
+  const view = routeView({
+    path,
+    runtime: displayedRuntime,
+    actions,
+    selectedPeer,
+    syncMessage,
+    onSelectPeer: setSelectedPeer,
+    onSync: sync,
+    onNavigate: navigate,
+    onLogout: logout,
+    onSessionsRevoked: sessionsRevoked,
+  })
+  const unavailable = displayedRuntime === undefined && runtimeLoadFailed
+
   return (
-    <AppShell onNavigate={navigate} path={path} runtime={displayedRuntime}>
-      {path === ROUTE_PATHS.settings ? (
-        <SettingsScreen
-          actions={actions}
-          onLogout={logout}
-          onSessionsRevoked={sessionsRevoked}
-          runtime={displayedRuntime}
-        />
-      ) : displayedRuntime === undefined && runtimeLoadFailed ? (
-        <RuntimeLoadError onRetry={() => void controller?.refresh()} />
-      ) : (
-        routeContent(path, displayedRuntime, actions)
-      )}
+    <AppShell
+      inspector={unavailable ? undefined : view.inspector}
+      onNavigate={navigate}
+      path={path}
+      runtime={displayedRuntime}
+    >
+      {unavailable ? <SnapshotError onRetry={() => void controller?.refresh()} /> : view.content}
     </AppShell>
   )
 }
