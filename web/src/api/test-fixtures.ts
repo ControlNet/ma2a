@@ -12,6 +12,7 @@ export function runtimeSnapshot(revision: number): RuntimeSnapshot {
     control_sync: { peer_endpoint_ids: [] },
     connections: [],
     relay_candidates: [],
+    control_rounds: [],
     observed_relay_state: { private_relay_online: false, public_relay_online: false },
     reachability: { direct: true, relayed: false },
     recent_echo_summary: { successes: 0, failures: 0 },

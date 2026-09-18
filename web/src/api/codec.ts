@@ -9,24 +9,56 @@ const EndpointViewSchema = z.strictObject({
   runtime_version: z.string().min(1).max(128),
   online: z.boolean(),
 })
+const SpaceMemberViewSchema = z.strictObject({
+  endpoint_id: EndpointIdSchema,
+  label: z.string().min(1).max(64),
+  echo: z.boolean(),
+  relay_provider: z.boolean(),
+})
 const SpaceViewSchema = z.strictObject({
   space_id: SpaceIdSchema,
   name: z.string().min(1).max(128),
   member_count: U32Schema,
+  generation: RevisionSchema,
+  chain_hash: z.string().regex(/^[0-9a-f]{64}$/),
+  members: z.array(SpaceMemberViewSchema).max(64).readonly(),
+  revoked_count: U32Schema,
 })
 const ControlSyncViewSchema = z.strictObject({
   peer_endpoint_ids: z.array(EndpointIdSchema).max(256).readonly(),
+})
+const ConnectionObservationViewSchema = z.strictObject({
+  observed_at_ms: z.number().int().nonnegative(),
+  path: z.enum(["connecting", "direct", "relay", "mixed_or_unknown"]),
+  rtt_ms: z.number().int().nonnegative().nullable(),
+  error_class: z.enum([
+    "none",
+    "transient",
+    "authorization",
+    "version",
+    "revocation",
+    "malformed_input",
+    "policy",
+    "cancelled",
+  ]),
 })
 const ConnectionViewSchema = z.strictObject({
   endpoint_id: EndpointIdSchema,
   state: z.enum(["connecting", "connected", "failed"]),
   path: z.enum(["direct", "relay", "mixed_or_unknown"]),
   rtt_ms: z.number().int().nonnegative().nullable(),
+  observations: z.array(ConnectionObservationViewSchema).max(8).readonly(),
 })
 const RelayCandidateViewSchema = z.strictObject({
   endpoint_id: EndpointIdSchema,
   relay_kind: z.string().min(1).max(32),
   eligible: z.boolean(),
+  covered_space_ids: z.array(SpaceIdSchema).max(256).readonly(),
+})
+const ControlRoundViewSchema = z.strictObject({
+  at_ms: z.number().int().nonnegative(),
+  peer_count: U32Schema,
+  outcome: z.enum(["succeeded", "failed", "empty"]),
 })
 const RuntimeSnapshotSchema = z
   .strictObject({
@@ -36,6 +68,7 @@ const RuntimeSnapshotSchema = z
     control_sync: ControlSyncViewSchema,
     connections: z.array(ConnectionViewSchema).max(256).readonly(),
     relay_candidates: z.array(RelayCandidateViewSchema).max(256).readonly(),
+    control_rounds: z.array(ControlRoundViewSchema).max(16).readonly(),
     observed_relay_state: z.strictObject({
       private_relay_online: z.boolean(),
       public_relay_online: z.boolean(),
