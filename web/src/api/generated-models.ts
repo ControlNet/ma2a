@@ -80,11 +80,18 @@ export type HandshakeView = {
   readonly capabilities: CapabilityFlags
 }
 
-export type RelayCandidateView = {
-  readonly endpoint_id: EndpointId
-  readonly relay_kind: string
-  readonly eligible: boolean
+export type PrivateRelayCandidateView = {
+  readonly provider_endpoint_id: EndpointId
+  readonly relay_url: string
   readonly covered_space_ids: readonly SpaceId[]
+  readonly home_compatible: boolean
+}
+
+/** External transport infrastructure: no Endpoint identity, no Space coverage. */
+export type PublicRelayFallbackView = {
+  readonly relay_url: string
+  readonly enabled: boolean
+  readonly observed_connected: boolean
 }
 
 export type ControlRoundView = {
@@ -98,7 +105,17 @@ export type ObservedRelayStateView = {
   readonly public_relay_online: boolean
 }
 
-export type ReachabilityView = { readonly direct: boolean; readonly relayed: boolean }
+export type ReachabilityStateName =
+  | "NoActiveSpaces"
+  | "DegradedNoCommonHome"
+  | "AwaitingIrohHome"
+  | "IrohHomeConnected"
+
+export type ReachabilityView = {
+  readonly state: ReachabilityStateName
+  readonly direct: boolean
+  readonly relayed: boolean
+}
 
 export type EchoSummaryView = { readonly successes: number; readonly failures: number }
 
@@ -108,7 +125,8 @@ export type RuntimeSnapshot = {
   readonly spaces: readonly SnapshotSpaceView[]
   readonly control_sync: ControlSyncView
   readonly connections: readonly ConnectionView[]
-  readonly relay_candidates: readonly RelayCandidateView[]
+  readonly private_relay_candidates: readonly PrivateRelayCandidateView[]
+  readonly public_relay_fallbacks: readonly PublicRelayFallbackView[]
   readonly control_rounds: readonly ControlRoundView[]
   readonly observed_relay_state: ObservedRelayStateView
   readonly reachability: ReachabilityView

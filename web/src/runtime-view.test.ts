@@ -47,17 +47,20 @@ test("projects only authoritative snapshot state into the console view", () => {
         ],
       },
     ],
-    relay_candidates: [
+    private_relay_candidates: [
       {
-        endpoint_id: "ef".repeat(32),
-        relay_kind: "private",
-        eligible: true,
+        provider_endpoint_id: "ef".repeat(32),
+        relay_url: "https://relay.example",
         covered_space_ids: ["ab".repeat(32)],
+        home_compatible: true,
       },
+    ],
+    public_relay_fallbacks: [
+      { relay_url: "https://public.example", enabled: true, observed_connected: false },
     ],
     control_rounds: [{ at_ms: 1_700_000_000_000, peer_count: 1, outcome: "succeeded" as const }],
     observed_relay_state: { private_relay_online: true, public_relay_online: false },
-    reachability: { direct: false, relayed: true },
+    reachability: { state: "IrohHomeConnected" as const, direct: false, relayed: true },
     recent_echo_summary: { successes: 3, failures: 1 },
     ui_auth: { initialized: true, password_set: true, active_sessions: 2 },
   }
@@ -75,10 +78,42 @@ test("projects only authoritative snapshot state into the console view", () => {
     echoTotals: { successes: 3, failures: 1 },
     uiAuth: { active_sessions: 2 },
   })
-  expect(view.spaces[0]).toMatchObject({ name: "Operations", memberCount: 2, sync: "unknown" })
-  expect(view.relays[0]).toMatchObject({
-    endpointId: "ef".repeat(32),
-    kind: "private",
-    status: "eligible",
+  expect(view.spaces[0]).toMatchObject({ name: "Operations", memberCount: 2, generation: 4 })
+  expect(view.privateRelayCandidates[0]).toMatchObject({
+    providerEndpointId: "ef".repeat(32),
+    relayUrl: "https://relay.example",
+    homeCompatible: true,
   })
+  expect(view.publicRelayFallbacks[0]).toMatchObject({
+    relayUrl: "https://public.example",
+    enabled: true,
+    observedConnected: false,
+  })
+})
+
+test("a public fallback carries no Endpoint identity and no Space coverage", () => {
+  const snapshot = {
+    ...runtimeSnapshot(3),
+    public_relay_fallbacks: [
+      { relay_url: "https://public.example", enabled: true, observed_connected: true },
+    ],
+  }
+
+  const [fallback] = runtimeViewFromSnapshot(snapshot, "online").publicRelayFallbacks
+
+  expect(fallback).toBeDefined()
+  expect(Object.keys(fallback ?? {})).toEqual(["relayUrl", "enabled", "observedConnected"])
+})
+
+test("reachability is taken from the Runtime, never rebuilt from provider facts", () => {
+  const snapshot = {
+    ...runtimeSnapshot(4),
+    reachability: { state: "DegradedNoCommonHome" as const, direct: false, relayed: false },
+    observed_relay_state: { private_relay_online: true, public_relay_online: false },
+  }
+
+  const view = runtimeViewFromSnapshot(snapshot, "online")
+
+  expect(view.reachability.state).toBe("DegradedNoCommonHome")
+  expect(view.observedRelayState.privateRelayProviderRunning).toBe(true)
 })

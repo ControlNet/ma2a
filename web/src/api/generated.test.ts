@@ -48,7 +48,14 @@ test("generated local API contract matches the independent golden hash", () => {
 test("machine schema describes nested commands, envelopes, results, and events", () => {
   const schema = JSON.parse(LOCAL_API_SCHEMA_JSON)
 
-  expect(schema.types.runtime_snapshot.fields.relay_candidates.items.ref).toBe("relay_candidate")
+  expect(schema.types.runtime_snapshot.fields.private_relay_candidates.items.ref).toBe(
+    "private_relay_candidate",
+  )
+  expect(schema.types.runtime_snapshot.fields.public_relay_fallbacks.items.ref).toBe(
+    "public_relay_fallback",
+  )
+  expect(schema.types.public_relay_fallback.fields.provider_endpoint_id).toBeUndefined()
+  expect(schema.types.reachability.fields.state.values).toContain("IrohHomeConnected")
   expect(schema.commands.space_invite.fields.ttl_ms.maximum).toBe(300_000)
   expect(schema.commands.space_invite.fields.output_path.ref).toBe("path")
   expect(schema.commands.private_relay_configure.fields.served_space_ids.items.ref).toBe("space_id")

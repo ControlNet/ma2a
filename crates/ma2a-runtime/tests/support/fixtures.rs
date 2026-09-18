@@ -4,7 +4,8 @@ use ma2a_runtime::api::{
     ConnectionView, ControlRoundView, ControlSyncView,
     EchoReplyView, EchoSummaryView, EndpointView, HandshakeAuth, HandshakeState, HandshakeView,
     InteractionCapabilities, ManagementCapabilities, NetworkSnapshotState, ObservedRelayStateView,
-    PrivateRelayView, PublicRelayView, ReachabilityView, RelayAddress, RelayCandidateView,
+    PrivateRelayCandidateView, PrivateRelayView, PublicRelayFallbackView, PublicRelayView,
+    ReachabilityView, RelayAddress,
     RelayCapabilities, RuntimeEvent, RuntimeSnapshot, RuntimeStatusView, SnapshotCollections,
     SnapshotHeader, SnapshotSpaceView, SnapshotState, SpaceChainHead, SpaceMemberView,
     SpaceView, UiAuthView, decode_command,
@@ -124,18 +125,19 @@ fn snapshot(fixture: SnapshotFixture) -> FixtureResult<RuntimeSnapshot> {
                 "none",
             )],
         )?],
-        vec![RelayCandidateView::new(
+        vec![PrivateRelayCandidateView::new(
             endpoint_id()?,
-            "private",
-            true,
+            "https://relay.example",
             vec![space_id()?],
+            true,
         )?],
+        vec![PublicRelayFallbackView::new("https://public.example", true, false)?],
         vec![ControlRoundView::new(1_700_000_000_000, 1, "succeeded")?],
     )?;
     let state = SnapshotState::new(
         NetworkSnapshotState::new(
             ObservedRelayStateView::new(true, false),
-            ReachabilityView::new(true, true),
+            ReachabilityView::new("IrohHomeConnected", true, true)?,
         ),
         ClientSnapshotState::new(EchoSummaryView::new(4, 1), fixture.ui_auth),
     );

@@ -3,9 +3,6 @@ import type { Tone } from "./viz/tone"
 export type ConnectionState = "online" | "uncertain" | "offline"
 export type EndpointStatus = "active" | "degraded" | "offline"
 export type ObservedPath = "direct" | "relay" | "mixed" | "unknown"
-export type SyncState = "current" | "catching-up" | "stalled" | "unknown"
-export type RelayKind = "private" | "public"
-export type RelayStatus = "eligible" | "disabled"
 
 export type EndpointView = {
   readonly id: string
@@ -24,18 +21,28 @@ export type SpaceView = {
   readonly id: string
   readonly name: string
   readonly memberCount: number
-  readonly sync: SyncState
   readonly generation: number
   readonly chainHash: string
   readonly members: readonly SpaceMemberView[]
   readonly revokedCount: number
 }
 
-export type RelayView = {
-  readonly endpointId: string
-  readonly kind: RelayKind
-  readonly status: RelayStatus
+/** An MA2A Endpoint hosting the Private Relay role, with Space-scoped coverage. */
+export type PrivateRelayCandidateView = {
+  readonly providerEndpointId: string
+  readonly relayUrl: string
   readonly coveredSpaceIds: readonly string[]
+  readonly homeCompatible: boolean
+}
+
+/**
+ * External transport infrastructure. A public Iroh relay is not an MA2A Endpoint,
+ * is never a Space member, and therefore has no provider identity or coverage.
+ */
+export type PublicRelayFallbackView = {
+  readonly relayUrl: string
+  readonly enabled: boolean
+  readonly observedConnected: boolean
 }
 
 export type ObservationPath = "connecting" | "direct" | "relay" | "mixed_or_unknown"
@@ -71,8 +78,6 @@ export type ReachabilityStateName =
 export type ReachabilityView = {
   readonly state: ReachabilityStateName
   readonly tone: Tone
-  readonly status: "reachable" | "degraded" | "unknown" | "unreachable"
-  readonly path: string
   readonly detail: string
 }
 
@@ -82,10 +87,15 @@ export type RuntimeViewData = {
   readonly runtimeVersion: string
   readonly endpoint: EndpointView
   readonly spaces: readonly SpaceView[]
-  readonly relays: readonly RelayView[]
+  readonly privateRelayCandidates: readonly PrivateRelayCandidateView[]
+  readonly publicRelayFallbacks: readonly PublicRelayFallbackView[]
+  /**
+   * `privateRelayProviderRunning` is a provider/service fact about this Runtime.
+   * It is not, and must never be treated as, evidence of a connected Iroh home.
+   */
   readonly observedRelayState: {
-    readonly private_relay_online: boolean
-    readonly public_relay_online: boolean
+    readonly privateRelayProviderRunning: boolean
+    readonly publicRelayConnected: boolean
   }
   readonly reachability: ReachabilityView
   readonly controlSync: {

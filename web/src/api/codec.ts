@@ -49,11 +49,16 @@ const ConnectionViewSchema = z.strictObject({
   rtt_ms: z.number().int().nonnegative().nullable(),
   observations: z.array(ConnectionObservationViewSchema).max(8).readonly(),
 })
-const RelayCandidateViewSchema = z.strictObject({
-  endpoint_id: EndpointIdSchema,
-  relay_kind: z.string().min(1).max(32),
-  eligible: z.boolean(),
+const PrivateRelayCandidateViewSchema = z.strictObject({
+  provider_endpoint_id: EndpointIdSchema,
+  relay_url: z.string().min(1).max(2048),
   covered_space_ids: z.array(SpaceIdSchema).max(256).readonly(),
+  home_compatible: z.boolean(),
+})
+const PublicRelayFallbackViewSchema = z.strictObject({
+  relay_url: z.string().min(1).max(2048),
+  enabled: z.boolean(),
+  observed_connected: z.boolean(),
 })
 const ControlRoundViewSchema = z.strictObject({
   at_ms: z.number().int().nonnegative(),
@@ -67,13 +72,23 @@ const RuntimeSnapshotSchema = z
     spaces: z.array(SpaceViewSchema).max(256).readonly(),
     control_sync: ControlSyncViewSchema,
     connections: z.array(ConnectionViewSchema).max(256).readonly(),
-    relay_candidates: z.array(RelayCandidateViewSchema).max(256).readonly(),
+    private_relay_candidates: z.array(PrivateRelayCandidateViewSchema).max(256).readonly(),
+    public_relay_fallbacks: z.array(PublicRelayFallbackViewSchema).max(256).readonly(),
     control_rounds: z.array(ControlRoundViewSchema).max(16).readonly(),
     observed_relay_state: z.strictObject({
       private_relay_online: z.boolean(),
       public_relay_online: z.boolean(),
     }),
-    reachability: z.strictObject({ direct: z.boolean(), relayed: z.boolean() }),
+    reachability: z.strictObject({
+      state: z.enum([
+        "NoActiveSpaces",
+        "DegradedNoCommonHome",
+        "AwaitingIrohHome",
+        "IrohHomeConnected",
+      ]),
+      direct: z.boolean(),
+      relayed: z.boolean(),
+    }),
     recent_echo_summary: z.strictObject({ successes: U32Schema, failures: U32Schema }),
     ui_auth: z.strictObject({
       initialized: z.boolean(),

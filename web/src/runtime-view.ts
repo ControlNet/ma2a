@@ -1,49 +1,29 @@
 import type { RuntimeSnapshot } from "./api/client"
 import type { ConnectionState, RuntimeViewData } from "./view-model"
+import type { Tone } from "./viz/tone"
+
+const REACHABILITY_DETAIL: Record<RuntimeViewData["reachability"]["state"], string> = {
+  NoActiveSpaces: "A zero-Space Endpoint contributes no private relay candidate at all.",
+  DegradedNoCommonHome:
+    "No relay covers every active Space and public fallback is off. Direct paths may still work.",
+  AwaitingIrohHome: "Compatible candidates exist. Iroh has not reported a connected home yet.",
+  IrohHomeConnected: "Iroh reports a connected home drawn from the candidate map MA2A supplied.",
+}
+
+const REACHABILITY_TONE: Record<RuntimeViewData["reachability"]["state"], Tone> = {
+  NoActiveSpaces: "none",
+  DegradedNoCommonHome: "failed",
+  AwaitingIrohHome: "relay",
+  IrohHomeConnected: "direct",
+}
 
 /**
- * docs/reachability.md names four states. They are derived here from the only
- * fields the snapshot publishes, and never softened into a score.
+ * The Runtime owns this state. It is projected verbatim and never reconstructed
+ * from provider facts such as whether a local Private Relay Provider is running.
  */
 function reachabilityView(snapshot: RuntimeSnapshot): RuntimeViewData["reachability"] {
-  if (snapshot.spaces.length === 0) {
-    return {
-      state: "NoActiveSpaces",
-      tone: "none",
-      status: "unknown",
-      path: "No active Space",
-      detail: "A zero-Space Endpoint contributes no private relay candidate at all.",
-    }
-  }
-  const online =
-    snapshot.observed_relay_state.private_relay_online ||
-    snapshot.observed_relay_state.public_relay_online
-  if (online) {
-    return {
-      state: "IrohHomeConnected",
-      tone: "direct",
-      status: "reachable",
-      path: "Home relay connected",
-      detail: "Iroh reports a connected home drawn from the candidate map MA2A supplied.",
-    }
-  }
-  if (snapshot.relay_candidates.length > 0) {
-    return {
-      state: "AwaitingIrohHome",
-      tone: "relay",
-      status: "unknown",
-      path: "Awaiting an Iroh home",
-      detail: "Compatible candidates exist. Iroh has not reported a connected home yet.",
-    }
-  }
-  return {
-    state: "DegradedNoCommonHome",
-    tone: "failed",
-    status: "degraded",
-    path: "No common home relay",
-    detail:
-      "No relay covers every active Space and public fallback is off. Direct paths may still work.",
-  }
+  const state = snapshot.reachability.state
+  return { state, tone: REACHABILITY_TONE[state], detail: REACHABILITY_DETAIL[state] }
 }
 
 export function runtimeViewFromSnapshot(
@@ -71,7 +51,6 @@ export function runtimeViewFromSnapshot(
       id: space.space_id,
       name: space.name,
       memberCount: space.member_count,
-      sync: "unknown",
       generation: space.generation,
       chainHash: space.chain_hash,
       members: space.members.map((member) => ({
@@ -82,13 +61,21 @@ export function runtimeViewFromSnapshot(
       })),
       revokedCount: space.revoked_count,
     })),
-    relays: snapshot.relay_candidates.map((relay) => ({
-      endpointId: relay.endpoint_id,
-      kind: relay.relay_kind === "public" ? "public" : "private",
-      status: relay.eligible ? "eligible" : "disabled",
+    privateRelayCandidates: snapshot.private_relay_candidates.map((relay) => ({
+      providerEndpointId: relay.provider_endpoint_id,
+      relayUrl: relay.relay_url,
       coveredSpaceIds: relay.covered_space_ids,
+      homeCompatible: relay.home_compatible,
     })),
-    observedRelayState: snapshot.observed_relay_state,
+    publicRelayFallbacks: snapshot.public_relay_fallbacks.map((fallback) => ({
+      relayUrl: fallback.relay_url,
+      enabled: fallback.enabled,
+      observedConnected: fallback.observed_connected,
+    })),
+    observedRelayState: {
+      privateRelayProviderRunning: snapshot.observed_relay_state.private_relay_online,
+      publicRelayConnected: snapshot.observed_relay_state.public_relay_online,
+    },
     reachability,
     controlSync: snapshot.control_sync,
     peerConnections: snapshot.connections.map((peer) => ({

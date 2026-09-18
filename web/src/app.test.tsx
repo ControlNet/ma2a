@@ -98,8 +98,34 @@ test("a Space shows its signed member set, not just a count", () => {
   const shared = screen.getAllByText("field-station-2")
   expect(shared).toHaveLength(2)
   expect(screen.getByText("lab-archive")).toBeVisible()
-  expect(screen.getAllByText("relay-provider").length).toBeGreaterThan(0)
   expect(screen.getByText(/1 revoked, carried forward/)).toBeVisible()
+})
+
+test("the raw per-member relay-provider bit is not shown as effective permission", () => {
+  render(<App initialPath="/spaces" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(screen.queryByText("relay-provider")).not.toBeInTheDocument()
+})
+
+test("no Space claims a global control-sync status", () => {
+  render(<App initialPath="/spaces" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(screen.queryByText(/control sync/i)).not.toBeInTheDocument()
+})
+
+test("a public fallback is listed without any Endpoint identity", () => {
+  render(<App initialPath="/relays" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(screen.getByText("https://public.example")).toBeVisible()
+  expect(screen.getByText("external transport, no Endpoint identity")).toBeVisible()
+})
+
+test("a running local Private Relay Provider is not reported as a connected home", () => {
+  render(<App initialPath="/relays" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  const current = screen.getAllByRole("listitem").filter((item) => item.ariaCurrent === "true")
+  expect(current[0]).toHaveTextContent("DegradedNoCommonHome")
+  expect(screen.getByText("Private Relay Provider running here")).toBeVisible()
 })
 
 test("relay coverage is drawn as a grid whose verdict follows the cells", () => {
@@ -113,8 +139,8 @@ test("relay coverage is drawn as a grid whose verdict follows the cells", () => 
 
 test.each([
   [EMPTY_RUNTIME_FIXTURE, "No candidate supplied"],
-  [ONE_RUNTIME_FIXTURE, "111111"],
-  [MANY_RUNTIME_FIXTURE, "222222"],
+  [ONE_RUNTIME_FIXTURE, "https://relay.ops.internal"],
+  [MANY_RUNTIME_FIXTURE, "https://relay.lab.internal"],
 ] as const)("renders zero, one, and many Relay states", (runtime, expectedText) => {
   render(<App initialPath="/relays" runtime={runtime} />)
 

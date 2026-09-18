@@ -13,6 +13,17 @@ use crate::{
 
 mod project;
 
+/// The Runtime's own reachability state, projected verbatim. A client must never
+/// reconstruct it from provider facts such as whether a local Private Relay runs.
+const fn reachability_label(state: ma2a_core::RelayReachability) -> &'static str {
+    match state {
+        ma2a_core::RelayReachability::NoActiveSpaces => "NoActiveSpaces",
+        ma2a_core::RelayReachability::AwaitingIrohHome => "AwaitingIrohHome",
+        ma2a_core::RelayReachability::IrohHomeConnected => "IrohHomeConnected",
+        ma2a_core::RelayReachability::DegradedNoCommonHome => "DegradedNoCommonHome",
+    }
+}
+
 use project::{connection_view, space_view};
 
 impl Actor {
@@ -48,13 +59,22 @@ impl Actor {
                 .relay
                 .private_coverage()
                 .map(|(candidate, covered)| {
-                    crate::api::RelayCandidateView::new(
+                    crate::api::PrivateRelayCandidateView::new(
                         candidate.provider_endpoint_id(),
-                        "private",
-                        self.state.relay.home_relay_compatible(candidate),
+                        candidate.relay_url().as_str(),
                         covered.iter().copied().collect(),
+                        self.state.relay.home_relay_compatible(candidate),
                     )
                     .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            self.state
+                .relay
+                .public_fallbacks()
+                .iter()
+                .map(|(url, connected)| {
+                    crate::api::PublicRelayFallbackView::new(url, true, *connected)
+                        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             self.control_round_history.iter().copied().collect(),
@@ -79,12 +99,14 @@ impl Actor {
                     self.state.relay.public_relay_online(),
                 ),
                 ReachabilityView::new(
+                    reachability_label(self.state.relay_reachability()),
                     self.state.direct_reachable,
                     matches!(
                         self.state.relay_reachability(),
                         ma2a_core::RelayReachability::IrohHomeConnected
                     ),
-                ),
+                )
+                .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?,
             ),
             ClientSnapshotState::new(
                 EchoSummaryView::new(echo_successes, echo_failures),

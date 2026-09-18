@@ -8,12 +8,6 @@ import type { RuntimeActions } from "../runtime-actions"
 import type { RuntimeViewData } from "../view-model"
 import { LIMITS, shortId } from "./derive"
 
-function syncTone(sync: RuntimeViewData["spaces"][number]["sync"]): "direct" | "relay" | "failed" {
-  if (sync === "current") return "direct"
-  if (sync === "stalled") return "failed"
-  return "relay"
-}
-
 export function SpacesScreen({
   runtime,
 }: {
@@ -37,9 +31,6 @@ export function SpacesScreen({
               <code className="identifier__value">{space.id}</code>
               <div className="cluster">
                 <Pill tone="accent">generation {space.generation}</Pill>
-                <Pill filled tone={syncTone(space.sync)}>
-                  control sync {space.sync}
-                </Pill>
                 {space.revokedCount === 0 ? null : (
                   <Pill tone="failed">{space.revokedCount} revoked, carried forward</Pill>
                 )}
@@ -61,7 +52,6 @@ export function SpacesScreen({
                       <span className="member__label">{member.label}</span>
                       <span className="member__caps">
                         {member.echo ? <Pill tone="direct">echo</Pill> : null}
-                        {member.relayProvider ? <Pill tone="accent">relay-provider</Pill> : null}
                       </span>
                     </li>
                   ))}

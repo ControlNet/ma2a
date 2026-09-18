@@ -62,6 +62,24 @@ impl RelayReachabilityState {
             .home_relay_compatible(candidate.provider_endpoint_id(), candidate.relay_url())
     }
 
+    /// Every explicitly configured public fallback URL with its observed state.
+    ///
+    /// A public Iroh relay is external transport infrastructure. It has no MA2A
+    /// Endpoint identity, is never a Space member, and carries no Space coverage.
+    pub(crate) fn public_fallbacks(&self) -> Vec<(String, bool)> {
+        self.candidates
+            .public_relays()
+            .iter()
+            .map(|url| {
+                let connected = self
+                    .observed_home_relays
+                    .iter()
+                    .any(|home| home.is_connected() && home.relay_url() == url);
+                (url.to_string(), connected)
+            })
+            .collect()
+    }
+
     pub(crate) fn public_relay_online(&self) -> bool {
         self.observed_home_relays
             .iter()
