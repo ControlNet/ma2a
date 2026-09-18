@@ -1,9 +1,13 @@
 //! Typed local API result payloads.
 
 use ma2a_core::EndpointId;
-use serde_json::{Value, json};
 
-use super::{codec_fields::encode_hex, snapshot::UiAuthView};
+mod value;
+
+pub(crate) use value::{
+    echo_reply_value, handshake_value, private_relay_value, public_relay_value, status_value,
+    ui_auth_result_value, ui_open_value,
+};
 
 /// Phase 1 local API capabilities advertised without Space details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,60 +283,28 @@ impl PublicRelayView {
 pub struct EchoReplyView {
     pub(crate) target_endpoint_id: EndpointId,
     pub(crate) payload: String,
+    pub(crate) duration_ms: u16,
 }
 
 impl EchoReplyView {
     /// Creates a bounded Echo response.
     ///
     /// # Errors
-    /// Returns invalid input when the payload exceeds 4,096 bytes.
-    pub fn new(target_endpoint_id: EndpointId, payload: &str) -> Result<Self, super::ApiError> {
-        if payload.len() > 4_096 {
+    /// Returns invalid input when the payload exceeds 4,096 bytes or the
+    /// duration exceeds the Echo v1 saturation bound of 10,000 milliseconds.
+    pub fn new(
+        target_endpoint_id: EndpointId,
+        payload: &str,
+        duration_ms: u16,
+    ) -> Result<Self, super::ApiError> {
+        if payload.len() > 4_096 || duration_ms > 10_000 {
             Err(super::ApiError::invalid_input())
         } else {
             Ok(Self {
                 target_endpoint_id,
                 payload: payload.to_owned(),
+                duration_ms,
             })
         }
     }
-}
-
-pub(crate) fn handshake_value(value: &HandshakeView) -> Value {
-    json!({
-        "runtime_version": value.runtime_version,
-        "endpoint_id": encode_hex(value.endpoint_id.as_bytes()),
-        "revision": value.revision,
-        "initialized": value.initialized,
-        "password_set": value.password_set,
-        "capabilities": capability_value(value.capabilities),
-    })
-}
-
-pub(crate) fn status_value(value: RuntimeStatusView) -> Value {
-    json!({"revision": value.revision, "initialized": value.initialized, "shutting_down": value.shutting_down})
-}
-
-pub(crate) fn private_relay_value(value: &PrivateRelayView) -> Value {
-    json!({"configured": value.configured, "mode": value.mode, "host": value.host, "port": value.port, "online": value.online})
-}
-
-pub(crate) fn public_relay_value(value: &PublicRelayView) -> Value {
-    json!({"configured": value.configured, "url": value.url, "online": value.online})
-}
-
-pub(crate) fn ui_open_value(value: &UiOpenView) -> Value {
-    json!({"url": value.url})
-}
-
-pub(crate) fn echo_reply_value(value: &EchoReplyView) -> Value {
-    json!({"target_endpoint_id": encode_hex(value.target_endpoint_id.as_bytes()), "payload": value.payload})
-}
-
-pub(crate) fn ui_auth_result_value(value: &UiAuthView) -> Value {
-    super::snapshot::ui_auth_value(value)
-}
-
-fn capability_value(value: CapabilityFlags) -> Value {
-    json!({"spaces": value.management.spaces, "control_sync": value.management.control_sync, "private_relay": value.relays.private_relay, "public_relay": value.relays.public_relay, "echo": value.interaction.echo, "events": value.interaction.events})
 }

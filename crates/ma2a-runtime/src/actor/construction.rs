@@ -66,6 +66,7 @@ impl Actor {
             control_rounds: tokio::task::JoinSet::new(),
             control_queue: crate::control_actor::ControlRoundQueue::default(),
             synchronized_control_peers: std::collections::BTreeSet::new(),
+            control_round_history: std::collections::VecDeque::new(),
             #[cfg(test)]
             control_schedule_events,
             cancellation: cancellation.child_token(),

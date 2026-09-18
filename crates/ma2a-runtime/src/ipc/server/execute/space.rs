@@ -48,6 +48,7 @@ pub(super) async fn invite(
         .iter()
         .find(|space| space.id() == space_id)
         .cloned()
+        .and_then(|space| space.to_space_view().ok())
         .map(CommandResult::space_invitation_created)
         .ok_or(ProtocolError::INTERNAL)
 }
@@ -85,7 +86,14 @@ pub(super) async fn list(context: &ConnectionContext) -> Result<CommandResult, P
         .snapshot()
         .await
         .map_err(|_| ProtocolError::UNAVAILABLE)?;
-    CommandResult::spaces(snapshot.spaces().to_vec()).map_err(|_| ProtocolError::INTERNAL)
+    CommandResult::spaces(
+        snapshot
+            .spaces()
+            .iter()
+            .map(|space| space.to_space_view().map_err(|_| ProtocolError::INTERNAL))
+            .collect::<Result<Vec<_>, _>>()?,
+    )
+    .map_err(|_| ProtocolError::INTERNAL)
 }
 
 pub(super) async fn show(
@@ -102,6 +110,7 @@ pub(super) async fn show(
         .iter()
         .find(|space| space.id() == space_id)
         .cloned()
+        .and_then(|space| space.to_space_view().ok())
         .map(CommandResult::space)
         .ok_or(ProtocolError::INVALID_INPUT)
 }
@@ -134,6 +143,7 @@ pub(super) async fn redeem(
         .iter()
         .find(|space| space.id() == space_id)
         .cloned()
+        .and_then(|space| space.to_space_view().ok())
         .map(CommandResult::space_redeemed)
         .ok_or(ProtocolError::INTERNAL)
 }
@@ -160,7 +170,9 @@ pub(super) async fn revoke(
         .await
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
     space.member_count -= 1;
-    Ok(CommandResult::space_revoked(space))
+    Ok(CommandResult::space_revoked(
+        space.to_space_view().map_err(|_| ProtocolError::INTERNAL)?,
+    ))
 }
 
 fn enrollment_protocol_error(error: &crate::EnrollmentError) -> ProtocolError {
