@@ -29,11 +29,12 @@ test("revoke all forces local sign-out without calling authenticated logout", as
   expect(onLogout).not.toHaveBeenCalled()
 })
 
-test("the trust boundary states in words that the browser holds no secret", () => {
+test("the trust boundary is about retention, and says so about the passphrase", () => {
   render(<SettingsScreen runtime={ONE_RUNTIME_FIXTURE} />)
 
   const browser = screen.getByRole("columnheader", { name: /Browser/ })
   expect(browser).toBeInTheDocument()
-  expect(screen.getAllByText("never exists here").length).toBeGreaterThanOrEqual(6)
+  expect(screen.getAllByText("never retained here").length).toBeGreaterThanOrEqual(6)
   expect(screen.getByText("ma2a ui password reset")).toBeInTheDocument()
+  expect(screen.getByText(/This table is about retention, not transit/)).toBeInTheDocument()
 })

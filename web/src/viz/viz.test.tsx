@@ -106,7 +106,7 @@ test("signed lanes and observed peers are separate, labelled bands", () => {
 
   expect(screen.getByRole("heading", { name: "Signed authorization" })).toBeInTheDocument()
   expect(screen.getByRole("heading", { name: "Observed transport" })).toBeInTheDocument()
-  expect(screen.getByText(/publishes a member count, not member identities/)).toBeInTheDocument()
+  expect(screen.getByText(/with its signed member set/)).toBeInTheDocument()
   expect(screen.getByText("3 members")).toBeInTheDocument()
 })
 
@@ -145,7 +145,7 @@ test("zero Spaces explains the protocol isolation instead of drawing nothing", (
   expect(screen.getByText(/ma2a\/enrollment\/1/)).toBeInTheDocument()
 })
 
-test("the trust chain says in words where a secret may exist", () => {
+test("the trust chain says in words where a secret may be retained", () => {
   render(
     <TrustChain
       boundaries={[
@@ -156,6 +156,6 @@ test("the trust chain says in words where a secret may exist", () => {
     />,
   )
 
-  expect(screen.getByText("never exists here")).toBeInTheDocument()
-  expect(screen.getByText("may exist here")).toBeInTheDocument()
+  expect(screen.getByText("never retained here")).toBeInTheDocument()
+  expect(screen.getByText("may be retained here")).toBeInTheDocument()
 })
