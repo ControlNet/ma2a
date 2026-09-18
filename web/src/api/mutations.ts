@@ -25,6 +25,7 @@ export type MutationPublicRelayView = {
 export type MutationEchoReplyView = {
   readonly target_endpoint_id: string
   readonly payload: string
+  readonly duration_ms: number
 }
 export type MutationUiAuthView = {
   readonly initialized: boolean
@@ -72,7 +73,11 @@ const PublicRelaySchema = z.strictObject({
   url: z.string().nullable(),
   online: z.boolean(),
 })
-const EchoSchema = z.strictObject({ target_endpoint_id: EndpointIdSchema, payload: z.string() })
+const EchoSchema = z.strictObject({
+  target_endpoint_id: EndpointIdSchema,
+  payload: z.string(),
+  duration_ms: z.number().int().min(0).max(10_000),
+})
 const UiAuthSchema = z.strictObject({
   initialized: z.boolean(),
   password_set: z.boolean(),
