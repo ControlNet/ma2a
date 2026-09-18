@@ -43,29 +43,38 @@ function badge(peer: RuntimeViewData["peerConnections"][number]): string {
 }
 
 /**
- * Every peer the Runtime knows, whether or not Iroh has ever reported a path.
- * A peer with no observation is listed, because membership does not depend on
- * one.
+ * Every peer this Endpoint is authorized to reach, built from the signed member
+ * sets of all active Spaces, then overlaid with whatever Iroh happens to have
+ * observed. A member with no observation stays listed: membership is a signed
+ * fact and does not depend on reachability.
  */
 export function peerList(runtime: RuntimeViewData): ObservedPeer[] {
-  const observed = runtime.peerConnections.map((peer) => ({
-    id: peer.endpointId,
-    shortId: shortId(peer.endpointId),
-    state: peer.state,
-    tone: pathTone(peer),
-    badge: badge(peer),
-  }))
-  const seen = new Set(observed.map((peer) => peer.id))
-  const quiet = runtime.controlSync.peer_endpoint_ids
-    .filter((id) => !seen.has(id))
-    .map((id) => ({
-      id,
-      shortId: shortId(id),
-      state: "no observation",
-      tone: "none" as Tone,
-      badge: "never observed",
-    }))
-  return [...observed, ...quiet]
+  const observed = new Map(runtime.peerConnections.map((peer) => [peer.endpointId, peer]))
+  const members = new Map<string, string>()
+  for (const space of runtime.spaces) {
+    for (const member of space.members) {
+      if (member.endpointId !== runtime.endpoint.id) members.set(member.endpointId, member.label)
+    }
+  }
+  for (const id of runtime.controlSync.peer_endpoint_ids) {
+    if (id !== runtime.endpoint.id && !members.has(id)) members.set(id, "peer")
+  }
+  for (const id of observed.keys()) {
+    if (id !== runtime.endpoint.id && !members.has(id)) members.set(id, "peer")
+  }
+  return Array.from(members, ([id, label]) => {
+    const peer = observed.get(id)
+    if (peer === undefined) {
+      return {
+        id,
+        shortId: shortId(id),
+        state: label,
+        tone: "none" as Tone,
+        badge: "no transport observation",
+      }
+    }
+    return { id, shortId: shortId(id), state: label, tone: pathTone(peer), badge: badge(peer) }
+  })
 }
 
 export function observationTrack(
@@ -104,6 +113,14 @@ export function pathParts(runtime: RuntimeViewData): StackPart[] {
   ]
 }
 
+/** Everything MA2A is willing to hand Iroh, from both relay ontologies. */
+export function candidateCount(runtime: RuntimeViewData): number {
+  return (
+    runtime.privateRelayCandidates.filter((relay) => relay.homeCompatible).length +
+    runtime.publicRelayFallbacks.filter((fallback) => fallback.enabled).length
+  )
+}
+
 export function boundMeters(runtime: RuntimeViewData): Meter[] {
   return [
     {
@@ -120,11 +137,11 @@ export function boundMeters(runtime: RuntimeViewData): Meter[] {
       note: "Each Space authorizes on its own and is never combined with another.",
     },
     {
-      label: "Relay candidates supplied to Iroh",
-      fraction: runtime.relays.length === 0 ? 0 : 1,
-      value: String(runtime.relays.length),
-      tone: runtime.relays.length === 0 ? "none" : "direct",
-      note: "A listed candidate is not a reachability guarantee.",
+      label: "Candidates supplied to Iroh",
+      fraction: candidateCount(runtime) === 0 ? 0 : 1,
+      value: String(candidateCount(runtime)),
+      tone: candidateCount(runtime) === 0 ? "none" : "direct",
+      note: "Home-compatible Private Relays plus enabled public fallbacks. A listed candidate is not a reachability guarantee.",
     },
   ]
 }

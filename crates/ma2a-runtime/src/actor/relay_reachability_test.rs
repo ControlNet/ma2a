@@ -145,12 +145,12 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
         .unwrap_or_default();
     assert!(!active_space_ids.is_empty());
     assert_eq!(
-        snapshot.pointer("/relay_candidates"),
+        snapshot.pointer("/private_relay_candidates"),
         Some(&serde_json::json!([{
-            "endpoint_id": crate::api::encode_hex(relay.public().as_bytes()),
-            "relay_kind": "private",
-            "eligible": true,
+            "provider_endpoint_id": crate::api::encode_hex(relay.public().as_bytes()),
+            "relay_url": allowed_url.as_str(),
             "covered_space_ids": active_space_ids,
+            "home_compatible": true,
         }]))
     );
     assert_eq!(
@@ -159,6 +159,19 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
             "private_relay_online": false,
             "public_relay_online": false,
         }))
+    );
+    // No local Private Relay Provider runs here, yet Iroh reports a connected
+    // home. The two facts are independent and a client must never derive one
+    // from the other.
+    assert_eq!(
+        snapshot.pointer("/reachability/state"),
+        Some(&serde_json::json!("IrohHomeConnected"))
+    );
+    assert!(
+        snapshot
+            .pointer("/public_relay_fallbacks")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
     );
     assert!(snapshot.pointer("/control_sync/synchronized").is_none());
     assert_eq!(

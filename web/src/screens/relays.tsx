@@ -9,7 +9,7 @@ import type { RuntimeViewData } from "../view-model"
 import { CoverageMatrix } from "../viz/coverage-matrix"
 import { MeterList } from "../viz/meter-list"
 import { StateMachine } from "../viz/state-machine"
-import { REACHABILITY_STATES, shortId } from "./derive"
+import { candidateCount, REACHABILITY_STATES, shortId } from "./derive"
 
 export function RelaysScreen({
   runtime,
@@ -28,29 +28,59 @@ export function RelaysScreen({
       </Card>
       <div className="split">
         <Card label="Desired: candidates supplied to Iroh">
-          {runtime.relays.length === 0 ? (
+          {runtime.privateRelayCandidates.length === 0 &&
+          runtime.publicRelayFallbacks.length === 0 ? (
             <EmptyState title="No candidate supplied">
-              No compatible Private Relay and no enabled Public fallback are present in this
+              No Private Relay advertisement and no configured public fallback are present in this
               snapshot.
             </EmptyState>
           ) : (
-            <div className="scroll-x">
-              <CoverageMatrix
-                caption="Relay candidate coverage by Space"
-                rows={runtime.relays.map((relay) => ({
-                  id: relay.endpointId,
-                  name: relay.kind === "private" ? "Private Relay" : "Public fallback",
-                  detail: shortId(relay.endpointId),
-                  covers: runtime.spaces.map((space) => relay.coveredSpaceIds.includes(space.id)),
-                  compatible: relay.status === "eligible",
-                }))}
-                spaces={runtime.spaces.map((space) => space.name)}
-              />
-            </div>
+            <>
+              {runtime.privateRelayCandidates.length === 0 ? null : (
+                <div className="scroll-x">
+                  <CoverageMatrix
+                    caption="MA2A Private Relay coverage by Space"
+                    rows={runtime.privateRelayCandidates.map((relay) => ({
+                      id: relay.providerEndpointId,
+                      name: relay.relayUrl,
+                      detail: `provider ${shortId(relay.providerEndpointId)}`,
+                      covers: runtime.spaces.map((space) =>
+                        relay.coveredSpaceIds.includes(space.id),
+                      ),
+                      compatible: relay.homeCompatible,
+                    }))}
+                    spaces={runtime.spaces.map((space) => space.name)}
+                  />
+                </div>
+              )}
+              {runtime.publicRelayFallbacks.length === 0 ? null : (
+                <div>
+                  <span className="eyebrow">Public Iroh relay fallback</span>
+                  <ul className="peer-list">
+                    {runtime.publicRelayFallbacks.map((fallback) => (
+                      <li key={fallback.relayUrl}>
+                        <span className="peer peer--static">
+                          <span className="peer__id">{fallback.relayUrl}</span>
+                          <span className="peer__state">
+                            external transport, no Endpoint identity
+                          </span>
+                          <Pill filled tone={fallback.observedConnected ? "direct" : "none"}>
+                            {fallback.observedConnected ? "connected" : "not connected"}
+                          </Pill>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
           )}
           <p className="field__help">
-            A candidate is home-compatible exactly when it covers every active Space. A listed
-            candidate is still not a reachability guarantee.
+            MA2A supplies Iroh {candidateCount(runtime)} of these entries: the home-compatible
+            Private Relays plus every enabled public fallback. A Private Relay is a role hosted by
+            an MA2A Endpoint and is home-compatible only when it covers every active Space. A public
+            Iroh relay is external infrastructure with no Endpoint identity and no Space coverage. A
+            listed candidate is not a reachability guarantee.
           </p>
         </Card>
         <Card label="Effective: what Iroh reports back">
@@ -58,16 +88,18 @@ export function RelaysScreen({
             label="Observed relay state"
             meters={[
               {
-                label: "Private relay online",
-                fraction: runtime.observedRelayState.private_relay_online ? 1 : 0,
-                value: runtime.observedRelayState.private_relay_online ? "yes" : "no",
-                tone: runtime.observedRelayState.private_relay_online ? "direct" : "none",
+                label: "Public relay connected",
+                fraction: runtime.observedRelayState.publicRelayConnected ? 1 : 0,
+                value: runtime.observedRelayState.publicRelayConnected ? "yes" : "no",
+                tone: runtime.observedRelayState.publicRelayConnected ? "direct" : "none",
+                note: "An Iroh transport observation for this Endpoint.",
               },
               {
-                label: "Public relay online",
-                fraction: runtime.observedRelayState.public_relay_online ? 1 : 0,
-                value: runtime.observedRelayState.public_relay_online ? "yes" : "no",
-                tone: runtime.observedRelayState.public_relay_online ? "direct" : "none",
+                label: "Private Relay Provider running here",
+                fraction: runtime.observedRelayState.privateRelayProviderRunning ? 1 : 0,
+                value: runtime.observedRelayState.privateRelayProviderRunning ? "yes" : "no",
+                tone: runtime.observedRelayState.privateRelayProviderRunning ? "accent" : "none",
+                note: "A service this Runtime hosts for others. It says nothing about whether this Endpoint has a connected home relay.",
               },
             ]}
           />
@@ -156,7 +188,7 @@ export function RelaysInspector({
             <input id="relay-url" name="public-url" pattern="https://.*" required type="url" />
           </Field>
           <Field
-            help="Separate Space IDs with commas or line breaks. Effective service is the intersection with the Spaces where you still hold the relay-provider capability."
+            help="Separate Space IDs with commas or line breaks. The Runtime may serve only active Spaces it currently belongs to and that permit Private Relay Provider operation."
             id="relay-served"
             label="Served Space IDs"
           >

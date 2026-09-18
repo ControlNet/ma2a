@@ -12,13 +12,12 @@ export const EMPTY_RUNTIME_FIXTURE = {
     observedPath: "unknown",
   },
   spaces: [],
-  relays: [],
-  observedRelayState: { private_relay_online: false, public_relay_online: false },
+  privateRelayCandidates: [],
+  publicRelayFallbacks: [],
+  observedRelayState: { privateRelayProviderRunning: false, publicRelayConnected: false },
   reachability: {
     state: "NoActiveSpaces",
     tone: "none",
-    status: "unknown",
-    path: "No active Space",
     detail: "A zero-Space Endpoint contributes no private relay candidate at all.",
   },
   controlSync: { peer_endpoint_ids: [] },
@@ -34,8 +33,6 @@ export const ONE_RUNTIME_FIXTURE = {
   reachability: {
     state: "AwaitingIrohHome",
     tone: "relay",
-    status: "unknown",
-    path: "Awaiting an Iroh home",
     detail: "Compatible candidates exist. Iroh has not reported a connected home yet.",
   },
   spaces: [
@@ -43,19 +40,18 @@ export const ONE_RUNTIME_FIXTURE = {
       id: "test-space-operations",
       name: "Operations",
       memberCount: 1,
-      sync: "current",
       generation: 0,
       chainHash: "aa".repeat(32),
       members: [{ endpointId: ENDPOINT_ID, label: "operator", echo: true, relayProvider: true }],
       revokedCount: 0,
     },
   ],
-  relays: [
+  privateRelayCandidates: [
     {
-      endpointId: "11".repeat(32),
-      kind: "private",
-      status: "eligible",
+      providerEndpointId: "11".repeat(32),
+      relayUrl: "https://relay.ops.internal",
       coveredSpaceIds: ["test-space-operations"],
+      homeCompatible: false,
     },
   ],
 } satisfies RuntimeViewData
@@ -74,7 +70,6 @@ export const MANY_RUNTIME_FIXTURE = {
       id: "test-space-laboratory",
       name: "Laboratory",
       memberCount: 3,
-      sync: "catching-up",
       generation: 11,
       chainHash: "bb".repeat(32),
       members: [
@@ -88,7 +83,6 @@ export const MANY_RUNTIME_FIXTURE = {
       id: "test-space-field",
       name: "Field",
       memberCount: 2,
-      sync: "current",
       generation: 2,
       chainHash: "cc".repeat(32),
       members: [
@@ -98,29 +92,24 @@ export const MANY_RUNTIME_FIXTURE = {
       revokedCount: 0,
     },
   ],
-  relays: [
-    ...ONE_RUNTIME_FIXTURE.relays,
+  privateRelayCandidates: [
+    ...ONE_RUNTIME_FIXTURE.privateRelayCandidates,
     {
-      endpointId: "22".repeat(32),
-      kind: "private",
-      status: "eligible",
+      providerEndpointId: "22".repeat(32),
+      relayUrl: "https://relay.lab.internal",
       coveredSpaceIds: ["test-space-operations", "test-space-laboratory", "test-space-field"],
+      homeCompatible: true,
     },
-    {
-      endpointId: "33".repeat(32),
-      kind: "public",
-      status: "disabled",
-      coveredSpaceIds: [],
-    },
+  ],
+  publicRelayFallbacks: [
+    { relayUrl: "https://public.example", enabled: true, observedConnected: false },
   ],
   reachability: {
     state: "DegradedNoCommonHome",
     tone: "failed",
-    status: "degraded",
-    path: "No common home relay",
     detail: "No Private Relay is compatible with every active Space.",
   },
-  observedRelayState: { private_relay_online: true, public_relay_online: false },
+  observedRelayState: { privateRelayProviderRunning: true, publicRelayConnected: false },
   controlSync: { peer_endpoint_ids: ["44".repeat(32)] },
   peerConnections: [
     {

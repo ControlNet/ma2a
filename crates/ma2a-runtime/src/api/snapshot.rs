@@ -6,13 +6,13 @@ use ma2a_core::EndpointId;
 mod connection;
 mod control_round;
 mod member;
+mod relay;
 mod space;
 mod value;
 
-pub use connection::{
-    ConnectionObservationView, ConnectionView, MAX_RETAINED_OBSERVATIONS, RelayCandidateView,
-};
+pub use connection::{ConnectionObservationView, ConnectionView, MAX_RETAINED_OBSERVATIONS};
 pub use control_round::{ControlRoundView, MAX_RETAINED_CONTROL_ROUNDS};
+pub use relay::{PrivateRelayCandidateView, PublicRelayFallbackView};
 pub use member::{SnapshotSpaceView, SpaceChainHead, SpaceMemberView};
 pub use space::SpaceView;
 pub(crate) use value::{endpoint_value, space_value, ui_auth_value};
@@ -85,14 +85,31 @@ impl ObservedRelayStateView {
 /// Current direct and relay reachability summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReachabilityView {
+    pub(crate) state: &'static str,
     pub(crate) direct: bool,
     pub(crate) relayed: bool,
 }
 
 impl ReachabilityView {
-    /// Creates direct and relayed reachability state.
-    pub const fn new(direct: bool, relayed: bool) -> Self {
-        Self { direct, relayed }
+    /// Creates reachability state from the Runtime's own `RelayReachability`.
+    ///
+    /// `state` is authoritative. `direct` and `relayed` remain separate observed
+    /// path facts and must not be used to reconstruct `state` elsewhere.
+    ///
+    /// # Errors
+    /// Returns invalid input for a state outside the closed set.
+    pub fn new(state: &'static str, direct: bool, relayed: bool) -> Result<Self, ApiError> {
+        if !matches!(
+            state,
+            "NoActiveSpaces" | "DegradedNoCommonHome" | "AwaitingIrohHome" | "IrohHomeConnected"
+        ) {
+            return Err(ApiError::invalid_input());
+        }
+        Ok(Self {
+            state,
+            direct,
+            relayed,
+        })
     }
 }
 
@@ -140,7 +157,8 @@ pub struct RuntimeSnapshot {
     spaces: Vec<SnapshotSpaceView>,
     control_sync: ControlSyncView,
     connections: Vec<ConnectionView>,
-    relay_candidates: Vec<RelayCandidateView>,
+    private_relay_candidates: Vec<PrivateRelayCandidateView>,
+    public_relay_fallbacks: Vec<PublicRelayFallbackView>,
     control_rounds: Vec<ControlRoundView>,
     observed_relay_state: ObservedRelayStateView,
     reachability: ReachabilityView,
@@ -159,7 +177,7 @@ impl RuntimeSnapshot {
         state: SnapshotState,
     ) -> Result<Self, ApiError> {
         if collections.spaces.len() > MAX_COLLECTION_ITEMS
-            || collections.relay_candidates.len() > MAX_COLLECTION_ITEMS
+            || collections.private_relay_candidates.len() > MAX_COLLECTION_ITEMS
             || collections.control_sync.peers.len() > MAX_COLLECTION_ITEMS
             || collections.connections.len() > MAX_COLLECTION_ITEMS
         {
@@ -171,7 +189,8 @@ impl RuntimeSnapshot {
             spaces: collections.spaces,
             control_sync: collections.control_sync,
             connections: collections.connections,
-            relay_candidates: collections.relay_candidates,
+            private_relay_candidates: collections.private_relay_candidates,
+            public_relay_fallbacks: collections.public_relay_fallbacks,
             control_rounds: collections.control_rounds,
             observed_relay_state: state.observed_relay_state,
             reachability: state.reachability,
@@ -210,7 +229,8 @@ pub struct SnapshotCollections {
     pub(crate) spaces: Vec<SnapshotSpaceView>,
     pub(crate) control_sync: ControlSyncView,
     pub(crate) connections: Vec<ConnectionView>,
-    pub(crate) relay_candidates: Vec<RelayCandidateView>,
+    pub(crate) private_relay_candidates: Vec<PrivateRelayCandidateView>,
+    pub(crate) public_relay_fallbacks: Vec<PublicRelayFallbackView>,
     pub(crate) control_rounds: Vec<ControlRoundView>,
 }
 
@@ -227,12 +247,14 @@ impl SnapshotCollections {
         spaces: Vec<SnapshotSpaceView>,
         control_sync: ControlSyncView,
         connections: Vec<ConnectionView>,
-        relay_candidates: Vec<RelayCandidateView>,
+        private_relay_candidates: Vec<PrivateRelayCandidateView>,
+    public_relay_fallbacks: Vec<PublicRelayFallbackView>,
         control_rounds: Vec<ControlRoundView>,
     ) -> Result<Self, ApiError> {
         if spaces.len() > MAX_COLLECTION_ITEMS
             || connections.len() > MAX_COLLECTION_ITEMS
-            || relay_candidates.len() > MAX_COLLECTION_ITEMS
+            || private_relay_candidates.len() > MAX_COLLECTION_ITEMS
+            || public_relay_fallbacks.len() > MAX_COLLECTION_ITEMS
             || control_rounds.len() > MAX_RETAINED_CONTROL_ROUNDS
         {
             Err(ApiError::invalid_input())
@@ -241,7 +263,8 @@ impl SnapshotCollections {
                 spaces,
                 control_sync,
                 connections,
-                relay_candidates,
+                private_relay_candidates,
+                public_relay_fallbacks,
                 control_rounds,
             })
         }

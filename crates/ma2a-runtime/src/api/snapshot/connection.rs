@@ -1,6 +1,6 @@
 //! Observational connection and relay-candidate projections.
 
-use ma2a_core::{EndpointId, SpaceId};
+use ma2a_core::EndpointId;
 
 use crate::api::ApiError;
 
@@ -66,45 +66,5 @@ impl ConnectionView {
             rtt_ms,
             observations,
         })
-    }
-}
-
-/// One bounded relay candidate exposed without broad topology data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelayCandidateView {
-    pub(crate) endpoint_id: EndpointId,
-    pub(crate) relay_kind: String,
-    pub(crate) eligible: bool,
-    pub(crate) covered_space_ids: Vec<SpaceId>,
-}
-
-impl RelayCandidateView {
-    /// Creates one relay candidate with the exact Spaces its advertisements cover.
-    ///
-    /// `eligible` is the home-relay-compatible verdict, which is true exactly
-    /// when `covered_space_ids` equals every currently active Space.
-    ///
-    /// # Errors
-    /// Returns invalid input when the relay kind length is outside the bound or
-    /// the coverage set exceeds the collection bound.
-    pub fn new(
-        endpoint_id: EndpointId,
-        relay_kind: &str,
-        eligible: bool,
-        covered_space_ids: Vec<SpaceId>,
-    ) -> Result<Self, ApiError> {
-        if relay_kind.is_empty()
-            || relay_kind.len() > 32
-            || covered_space_ids.len() > crate::api::MAX_COLLECTION_ITEMS
-        {
-            Err(ApiError::invalid_input())
-        } else {
-            Ok(Self {
-                endpoint_id,
-                relay_kind: relay_kind.to_owned(),
-                eligible,
-                covered_space_ids,
-            })
-        }
     }
 }

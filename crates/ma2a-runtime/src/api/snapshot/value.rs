@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use super::{
     ConnectionObservationView, ConnectionView, ControlRoundView, EndpointView,
-    RelayCandidateView, RuntimeSnapshot,
+    PrivateRelayCandidateView, PublicRelayFallbackView, RuntimeSnapshot,
     SnapshotSpaceView, SpaceMemberView, SpaceView, UiAuthView,
 };
 use crate::api::codec_fields::encode_hex;
@@ -15,10 +15,11 @@ impl RuntimeSnapshot {
             "spaces": self.spaces.iter().map(snapshot_space_value).collect::<Vec<_>>(),
             "control_sync": {"peer_endpoint_ids": self.control_sync.peers.iter().map(|id| encode_hex(id.as_bytes())).collect::<Vec<_>>()},
             "connections": self.connections.iter().map(connection_value).collect::<Vec<_>>(),
-            "relay_candidates": self.relay_candidates.iter().map(relay_candidate_value).collect::<Vec<_>>(),
+            "private_relay_candidates": self.private_relay_candidates.iter().map(private_relay_value).collect::<Vec<_>>(),
+            "public_relay_fallbacks": self.public_relay_fallbacks.iter().map(public_relay_value).collect::<Vec<_>>(),
             "control_rounds": self.control_rounds.iter().map(control_round_value).collect::<Vec<_>>(),
             "observed_relay_state": {"private_relay_online": self.observed_relay_state.private_relay_online, "public_relay_online": self.observed_relay_state.public_relay_online},
-            "reachability": {"direct": self.reachability.direct, "relayed": self.reachability.relayed},
+            "reachability": {"state": self.reachability.state, "direct": self.reachability.direct, "relayed": self.reachability.relayed},
             "recent_echo_summary": {"successes": self.recent_echo_summary.successes, "failures": self.recent_echo_summary.failures},
             "ui_auth": ui_auth_value(&self.ui_auth),
         })
@@ -77,12 +78,20 @@ pub(crate) fn ui_auth_value(auth: &UiAuthView) -> Value {
     json!({"initialized": auth.initialized, "password_set": auth.password_set, "active_sessions": auth.active_sessions})
 }
 
-fn relay_candidate_value(candidate: &RelayCandidateView) -> Value {
+fn private_relay_value(candidate: &PrivateRelayCandidateView) -> Value {
     json!({
-        "endpoint_id": encode_hex(candidate.endpoint_id.as_bytes()),
-        "relay_kind": candidate.relay_kind,
-        "eligible": candidate.eligible,
+        "provider_endpoint_id": encode_hex(candidate.provider_endpoint_id.as_bytes()),
+        "relay_url": candidate.relay_url,
         "covered_space_ids": candidate.covered_space_ids.iter().map(|id| encode_hex(id.as_bytes())).collect::<Vec<_>>(),
+        "home_compatible": candidate.home_compatible,
+    })
+}
+
+fn public_relay_value(fallback: &PublicRelayFallbackView) -> Value {
+    json!({
+        "relay_url": fallback.relay_url,
+        "enabled": fallback.enabled,
+        "observed_connected": fallback.observed_connected,
     })
 }
 
