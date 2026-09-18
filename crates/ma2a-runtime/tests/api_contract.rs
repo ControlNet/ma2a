@@ -266,6 +266,14 @@ fn generated_types_embed_the_exact_machine_contract() {
         .map(|(schema, _)| schema);
     assert_eq!(generated_schema, Some(LOCAL_API_SCHEMA_JSON));
     assert!(generated.contains(LOCAL_API_SCHEMA_SHA256));
+    let protocol_doc = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/protocol/local-api-v1.md"
+    ));
+    assert!(
+        protocol_doc.contains(LOCAL_API_SCHEMA_SHA256),
+        "docs/protocol/local-api-v1.md pins a stale schema hash"
+    );
     for command in COMMAND_NAMES {
         assert!(generated.contains(command));
     }

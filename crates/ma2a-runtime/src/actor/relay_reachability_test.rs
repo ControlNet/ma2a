@@ -133,12 +133,24 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
         .find(|item| item.relay_url == allowed_url.as_str())
         .ok_or("allowed relay observation was not persisted")?;
     assert!(allowed.reachable);
+    let active_space_ids = snapshot
+        .pointer("/spaces")
+        .and_then(serde_json::Value::as_array)
+        .map(|spaces| {
+            spaces
+                .iter()
+                .filter_map(|space| space.pointer("/space_id").cloned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(!active_space_ids.is_empty());
     assert_eq!(
         snapshot.pointer("/relay_candidates"),
         Some(&serde_json::json!([{
             "endpoint_id": crate::api::encode_hex(relay.public().as_bytes()),
             "relay_kind": "private",
             "eligible": true,
+            "covered_space_ids": active_space_ids,
         }]))
     );
     assert_eq!(

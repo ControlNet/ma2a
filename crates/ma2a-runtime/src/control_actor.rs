@@ -115,7 +115,31 @@ impl Actor {
             Ok(None) => (true, BTreeSet::new()),
             Err(_) => (false, BTreeSet::new()),
         };
+        self.record_control_round(succeeded, &synchronized_peers);
         self.complete_control_waiters(round_id, succeeded, &synchronized_peers);
+    }
+
+    /// Retains a bounded in-memory round history. It is a diagnostic, never a log:
+    /// it is not persisted and does not survive a restart.
+    fn record_control_round(&mut self, succeeded: bool, synchronized_peers: &BTreeSet<EndpointId>) {
+        let Ok(at_ms) = self.clock.now_ms().map(|now| u64::try_from(now).unwrap_or(0)) else {
+            return;
+        };
+        let outcome = if !succeeded {
+            "failed"
+        } else if synchronized_peers.is_empty() {
+            "empty"
+        } else {
+            "succeeded"
+        };
+        let peer_count = u32::try_from(synchronized_peers.len()).unwrap_or(u32::MAX);
+        let Ok(record) = crate::api::ControlRoundView::new(at_ms, peer_count, outcome) else {
+            return;
+        };
+        if self.control_round_history.len() >= crate::api::MAX_RETAINED_CONTROL_ROUNDS {
+            self.control_round_history.pop_front();
+        }
+        self.control_round_history.push_back(record);
     }
 
     #[expect(

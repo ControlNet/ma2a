@@ -1,9 +1,20 @@
 //! Authoritative client snapshot without secret or authorization diagnostics.
 
 use super::{ApiError, MAX_COLLECTION_ITEMS, snapshot_state::SnapshotState};
-use ma2a_core::{EndpointId, SpaceId};
+use ma2a_core::EndpointId;
 
+mod connection;
+mod control_round;
+mod member;
+mod space;
 mod value;
+
+pub use connection::{
+    ConnectionObservationView, ConnectionView, MAX_RETAINED_OBSERVATIONS, RelayCandidateView,
+};
+pub use control_round::{ControlRoundView, MAX_RETAINED_CONTROL_ROUNDS};
+pub use member::{SnapshotSpaceView, SpaceChainHead, SpaceMemberView};
+pub use space::SpaceView;
 pub(crate) use value::{endpoint_value, space_value, ui_auth_value};
 
 /// Runtime Endpoint information safe for an authorized local client.
@@ -32,35 +43,6 @@ impl EndpointView {
     }
 }
 
-/// Bounded Space summary without membership authorization diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpaceView {
-    pub(crate) id: SpaceId,
-    pub(crate) name: String,
-    pub(crate) member_count: u32,
-}
-
-impl SpaceView {
-    /// Creates a bounded Space summary.
-    ///
-    /// # Errors
-    /// Returns invalid input when the Space name length is outside the bound.
-    pub fn new(id: SpaceId, name: &str, member_count: u32) -> Result<Self, ApiError> {
-        if name.is_empty() || name.len() > 128 {
-            Err(ApiError::invalid_input())
-        } else {
-            Ok(Self {
-                id,
-                name: name.to_owned(),
-                member_count,
-            })
-        }
-    }
-
-    pub(crate) const fn id(&self) -> SpaceId {
-        self.id
-    }
-}
 
 /// Control synchronization state keyed only by peer Endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,65 +64,6 @@ impl ControlSyncView {
     }
 }
 
-/// Latest bounded observational connection state for one remote Endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectionView {
-    pub(crate) endpoint_id: EndpointId,
-    pub(crate) state: &'static str,
-    pub(crate) path: &'static str,
-    pub(crate) rtt_ms: Option<u64>,
-}
-
-impl ConnectionView {
-    /// Creates one current per-peer connection observation.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the wire view carries one identity and three independent observed values"
-    )]
-    pub const fn new(
-        endpoint_id: EndpointId,
-        state: &'static str,
-        path: &'static str,
-        rtt_ms: Option<u64>,
-    ) -> Self {
-        Self {
-            endpoint_id,
-            state,
-            path,
-            rtt_ms,
-        }
-    }
-}
-
-/// One bounded relay candidate exposed without broad topology data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelayCandidateView {
-    pub(crate) endpoint_id: EndpointId,
-    pub(crate) relay_kind: String,
-    pub(crate) eligible: bool,
-}
-
-impl RelayCandidateView {
-    /// Creates one relay candidate without topology expansion.
-    ///
-    /// # Errors
-    /// Returns invalid input when the relay kind length is outside the bound.
-    pub fn new(
-        endpoint_id: EndpointId,
-        relay_kind: &str,
-        eligible: bool,
-    ) -> Result<Self, ApiError> {
-        if relay_kind.is_empty() || relay_kind.len() > 32 {
-            Err(ApiError::invalid_input())
-        } else {
-            Ok(Self {
-                endpoint_id,
-                relay_kind: relay_kind.to_owned(),
-                eligible,
-            })
-        }
-    }
-}
 
 /// Locally observed relay state, distinct from configuration and advertisements.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,10 +137,11 @@ impl UiAuthView {
 pub struct RuntimeSnapshot {
     revision: u64,
     endpoint: EndpointView,
-    spaces: Vec<SpaceView>,
+    spaces: Vec<SnapshotSpaceView>,
     control_sync: ControlSyncView,
     connections: Vec<ConnectionView>,
     relay_candidates: Vec<RelayCandidateView>,
+    control_rounds: Vec<ControlRoundView>,
     observed_relay_state: ObservedRelayStateView,
     reachability: ReachabilityView,
     recent_echo_summary: EchoSummaryView,
@@ -248,6 +172,7 @@ impl RuntimeSnapshot {
             control_sync: collections.control_sync,
             connections: collections.connections,
             relay_candidates: collections.relay_candidates,
+            control_rounds: collections.control_rounds,
             observed_relay_state: state.observed_relay_state,
             reachability: state.reachability,
             recent_echo_summary: state.recent_echo_summary,
@@ -260,7 +185,7 @@ impl RuntimeSnapshot {
         self.revision
     }
 
-    pub(crate) fn spaces(&self) -> &[SpaceView] {
+    pub(crate) fn spaces(&self) -> &[SnapshotSpaceView] {
         &self.spaces
     }
 }
@@ -282,10 +207,11 @@ impl SnapshotHeader {
 /// Bounded collections grouped for snapshot construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotCollections {
-    pub(crate) spaces: Vec<SpaceView>,
+    pub(crate) spaces: Vec<SnapshotSpaceView>,
     pub(crate) control_sync: ControlSyncView,
     pub(crate) connections: Vec<ConnectionView>,
     pub(crate) relay_candidates: Vec<RelayCandidateView>,
+    pub(crate) control_rounds: Vec<ControlRoundView>,
 }
 
 impl SnapshotCollections {
@@ -295,17 +221,19 @@ impl SnapshotCollections {
     /// Returns invalid input when a collection exceeds 256 entities.
     #[expect(
         clippy::too_many_arguments,
-        reason = "the snapshot groups four independently bounded wire collections"
+        reason = "the snapshot groups five independently bounded wire collections"
     )]
     pub fn new(
-        spaces: Vec<SpaceView>,
+        spaces: Vec<SnapshotSpaceView>,
         control_sync: ControlSyncView,
         connections: Vec<ConnectionView>,
         relay_candidates: Vec<RelayCandidateView>,
+        control_rounds: Vec<ControlRoundView>,
     ) -> Result<Self, ApiError> {
         if spaces.len() > MAX_COLLECTION_ITEMS
             || connections.len() > MAX_COLLECTION_ITEMS
             || relay_candidates.len() > MAX_COLLECTION_ITEMS
+            || control_rounds.len() > MAX_RETAINED_CONTROL_ROUNDS
         {
             Err(ApiError::invalid_input())
         } else {
@@ -314,6 +242,7 @@ impl SnapshotCollections {
                 control_sync,
                 connections,
                 relay_candidates,
+                control_rounds,
             })
         }
     }

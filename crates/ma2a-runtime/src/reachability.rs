@@ -41,6 +41,27 @@ impl RelayReachabilityState {
         self.candidates.private_relays()
     }
 
+    /// Every fresh private candidate with the exact Spaces it covers.
+    pub(crate) fn private_coverage(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &ma2a_net::PrivateRelayCandidate,
+            &std::collections::BTreeSet<ma2a_core::SpaceId>,
+        ),
+    > {
+        self.candidates.private_coverage()
+    }
+
+    /// Whether one candidate covers every currently active Space.
+    pub(crate) fn home_relay_compatible(
+        &self,
+        candidate: &ma2a_net::PrivateRelayCandidate,
+    ) -> bool {
+        self.candidates
+            .home_relay_compatible(candidate.provider_endpoint_id(), candidate.relay_url())
+    }
+
     pub(crate) fn public_relay_online(&self) -> bool {
         self.observed_home_relays
             .iter()

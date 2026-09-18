@@ -60,6 +60,7 @@ pub(crate) struct Actor {
     )>,
     pub(crate) control_queue: crate::control_actor::ControlRoundQueue,
     pub(crate) synchronized_control_peers: BTreeSet<ma2a_core::EndpointId>,
+    pub(crate) control_round_history: std::collections::VecDeque<crate::api::ControlRoundView>,
     #[cfg(test)]
     pub(crate) control_schedule_events:
         Arc<std::sync::Mutex<Vec<crate::control_sync::ControlRoundTrigger>>>,

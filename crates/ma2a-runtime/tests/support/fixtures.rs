@@ -1,11 +1,13 @@
 use ma2a_core::{EndpointId, SpaceId};
 use ma2a_runtime::api::{
-    CapabilityFlags, ClientSnapshotState, Command, CommandResult, ConnectionView, ControlSyncView,
+    CapabilityFlags, ClientSnapshotState, Command, CommandResult, ConnectionObservationView,
+    ConnectionView, ControlRoundView, ControlSyncView,
     EchoReplyView, EchoSummaryView, EndpointView, HandshakeAuth, HandshakeState, HandshakeView,
     InteractionCapabilities, ManagementCapabilities, NetworkSnapshotState, ObservedRelayStateView,
     PrivateRelayView, PublicRelayView, ReachabilityView, RelayAddress, RelayCandidateView,
     RelayCapabilities, RuntimeEvent, RuntimeSnapshot, RuntimeStatusView, SnapshotCollections,
-    SnapshotHeader, SnapshotState, SpaceView, UiAuthView, decode_command,
+    SnapshotHeader, SnapshotSpaceView, SnapshotState, SpaceChainHead, SpaceMemberView,
+    SpaceView, UiAuthView, decode_command,
 };
 
 type FixtureResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -25,6 +27,12 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
     let endpoint_id = endpoint_id()?;
     let endpoint = EndpointView::new(endpoint_id, "ma2a-runtime", true)?;
     let space = SpaceView::new(space_id()?, "ops", 3)?;
+    let snapshot_space = SnapshotSpaceView::new(
+        space_id()?,
+        "ops",
+        SpaceChainHead::new(4, [0x5a; 32], 1),
+        vec![SpaceMemberView::new(endpoint_id, "operator", true, false)?],
+    )?;
     let control_sync = ControlSyncView::new(vec![endpoint_id])?;
     let ui_auth = UiAuthView::new(true, true, 2);
     let capabilities = CapabilityFlags::new(
@@ -45,7 +53,7 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
     let public_relay = PublicRelayView::new(true, Some("https://relay.example".to_owned()), true)?;
     let snapshot = snapshot(SnapshotFixture {
         endpoint,
-        space: space.clone(),
+        space: snapshot_space.clone(),
         control_sync: control_sync.clone(),
         ui_auth: ui_auth.clone(),
     })?;
@@ -65,7 +73,7 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::private_relay_status(private_relay),
         CommandResult::public_relay_configured(public_relay.clone()),
         CommandResult::public_relay_status(public_relay),
-        CommandResult::echo(EchoReplyView::new(endpoint_id, "hello")?),
+        CommandResult::echo(EchoReplyView::new(endpoint_id, "hello", 34)?),
         CommandResult::ui_password_set(ui_auth.clone()),
         CommandResult::ui_password_reset(ui_auth.clone()),
         CommandResult::sessions_revoked(ui_auth),
@@ -95,7 +103,7 @@ pub(crate) fn events() -> FixtureResult<Vec<RuntimeEvent>> {
 
 struct SnapshotFixture {
     endpoint: EndpointView,
-    space: SpaceView,
+    space: SnapshotSpaceView,
     control_sync: ControlSyncView,
     ui_auth: UiAuthView,
 }
@@ -109,8 +117,20 @@ fn snapshot(fixture: SnapshotFixture) -> FixtureResult<RuntimeSnapshot> {
             "connected",
             "direct",
             Some(12),
-        )],
-        vec![RelayCandidateView::new(endpoint_id()?, "private", true)?],
+            vec![ConnectionObservationView::new(
+                1_700_000_000_000,
+                "direct",
+                Some(12),
+                "none",
+            )],
+        )?],
+        vec![RelayCandidateView::new(
+            endpoint_id()?,
+            "private",
+            true,
+            vec![space_id()?],
+        )?],
+        vec![ControlRoundView::new(1_700_000_000_000, 1, "succeeded")?],
     )?;
     let state = SnapshotState::new(
         NetworkSnapshotState::new(

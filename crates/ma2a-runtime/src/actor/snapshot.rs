@@ -6,10 +6,14 @@ use crate::{
     api::{
         ClientSnapshotState, ControlSyncView, EchoSummaryView, EndpointView, NetworkSnapshotState,
         ObservedRelayStateView, ReachabilityView, RuntimeSnapshot, SnapshotCollections,
-        SnapshotHeader, SnapshotState, SpaceView, UiAuthView,
+        SnapshotHeader, SnapshotState, UiAuthView,
     },
     error::{RuntimeError, RuntimeErrorKind},
 };
+
+mod project;
+
+use project::{connection_view, space_view};
 
 impl Actor {
     pub(super) async fn handle_snapshot(
@@ -27,10 +31,7 @@ impl Actor {
         let spaces = durable
             .spaces()
             .iter()
-            .map(|space| {
-                SpaceView::new(space.space_id(), space.label(), space.member_count())
-                    .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
-            })
+            .map(space_view)
             .collect::<Result<Vec<_>, _>>()?;
         let endpoint = EndpointView::new(self.state.endpoint_id, env!("CARGO_PKG_VERSION"), true)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
@@ -41,20 +42,22 @@ impl Actor {
             self.connections
                 .latest_observations()
                 .iter()
-                .map(connection_view)
-                .collect(),
+                .map(|latest| connection_view(latest, &self.connections))
+                .collect::<Result<Vec<_>, _>>()?,
             self.state
                 .relay
-                .private_candidates()
-                .map(|candidate| {
+                .private_coverage()
+                .map(|(candidate, covered)| {
                     crate::api::RelayCandidateView::new(
                         candidate.provider_endpoint_id(),
                         "private",
-                        true,
+                        self.state.relay.home_relay_compatible(candidate),
+                        covered.iter().copied().collect(),
                     )
                     .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
+            self.control_round_history.iter().copied().collect(),
         )
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         let (echo_successes, echo_failures) = self.echo_audit.snapshot().iter().fold(
@@ -95,29 +98,6 @@ impl Actor {
         )
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
     }
-}
-
-const fn connection_view(
-    observation: &ma2a_net::ConnectionObservation,
-) -> crate::api::ConnectionView {
-    let state = if observation.last_error().is_some() {
-        "failed"
-    } else if observation.last_success_at_ms().is_some() {
-        "connected"
-    } else {
-        "connecting"
-    };
-    let path = match observation.path_state() {
-        ma2a_net::ConnectionPathState::Relay => "relay",
-        ma2a_net::ConnectionPathState::Direct => "direct",
-        _ => "mixed_or_unknown",
-    };
-    crate::api::ConnectionView::new(
-        observation.remote_endpoint_id(),
-        state,
-        path,
-        observation.rtt_ms(),
-    )
 }
 
 #[cfg(test)]
