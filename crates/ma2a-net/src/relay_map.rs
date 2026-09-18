@@ -33,6 +33,7 @@ impl PrivateRelayCandidate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalIrohRelayMap {
     active_spaces: BTreeSet<SpaceId>,
+    coverage: BTreeMap<PrivateRelayCandidate, BTreeSet<SpaceId>>,
     eligible_private: BTreeSet<PrivateRelayCandidate>,
     home_private: BTreeSet<PrivateRelayCandidate>,
     public_relays: Vec<RelayUrl>,
@@ -73,9 +74,10 @@ impl LocalIrohRelayMap {
         }
         let eligible_private = coverage.keys().cloned().collect::<BTreeSet<_>>();
         let home_private = coverage
-            .into_iter()
+            .iter()
             .filter_map(|(candidate, covered_spaces)| {
-                (!active_spaces.is_empty() && covered_spaces == active_spaces).then_some(candidate)
+                (!active_spaces.is_empty() && *covered_spaces == active_spaces)
+                    .then(|| candidate.clone())
             })
             .collect::<BTreeSet<_>>();
         let public_relays =
@@ -87,6 +89,7 @@ impl LocalIrohRelayMap {
             .collect();
         Self {
             active_spaces,
+            coverage,
             eligible_private,
             home_private,
             public_relays,
@@ -131,6 +134,16 @@ impl LocalIrohRelayMap {
     /// Iterates every fresh private candidate authorized by at least one current Space.
     pub fn private_relays(&self) -> impl Iterator<Item = &PrivateRelayCandidate> {
         self.eligible_private.iter()
+    }
+
+    /// Iterates every fresh private candidate with the exact Spaces it covers.
+    ///
+    /// `home_relay_compatible` is precisely "this set equals every active Space",
+    /// so retaining it lets a client show the verdict and its reason together.
+    pub fn private_coverage(
+        &self,
+    ) -> impl Iterator<Item = (&PrivateRelayCandidate, &BTreeSet<SpaceId>)> {
+        self.coverage.iter()
     }
 
     /// Returns whether the URL identifies a private candidate compatible with every Space.
