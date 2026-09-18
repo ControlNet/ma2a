@@ -23,3 +23,10 @@ Object.defineProperties(globalThis, {
   navigator: { configurable: true, value: dom.window.navigator },
   window: { configurable: true, value: dom.window },
 })
+
+const { cleanup } = await import("@testing-library/react")
+const { afterEach } = await import("vitest")
+
+afterEach(() => {
+  cleanup()
+})

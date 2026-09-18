@@ -1,24 +1,81 @@
-import { type FormEvent, type ReactNode, useState } from "react"
+import { type ReactNode, useState } from "react"
 
-import { CodeValue, EmptyState, PageHeader, StatusText } from "../components/primitives"
-import { PendingRuntime } from "../components/runtime-status"
+import { EmptyState, PendingSnapshot } from "../components/feedback"
+import { Field, Form, text } from "../components/form"
+import { Inspector } from "../components/inspector"
+import { Card, Mono, Pill, Section } from "../components/ui"
 import type { RuntimeActions } from "../runtime-actions"
-import type { RuntimeViewData, SyncState } from "../view-model"
+import type { RuntimeViewData } from "../view-model"
+import { LIMITS, shortId } from "./derive"
 
-function syncTone(sync: SyncState): "success" | "warning" | "error" {
-  switch (sync) {
-    case "current":
-      return "success"
-    case "catching-up":
-      return "warning"
-    case "stalled":
-      return "error"
-    case "unknown":
-      return "warning"
-  }
+function syncTone(sync: RuntimeViewData["spaces"][number]["sync"]): "direct" | "relay" | "failed" {
+  if (sync === "current") return "direct"
+  if (sync === "stalled") return "failed"
+  return "relay"
 }
 
 export function SpacesScreen({
+  runtime,
+}: {
+  readonly runtime: RuntimeViewData | undefined
+}): ReactNode {
+  if (runtime === undefined) return <PendingSnapshot />
+  return (
+    <Section
+      description="Every Space is an independently signed authorization domain. A grant in one is never combined with a grant in another."
+      title="Spaces"
+    >
+      {runtime.spaces.length === 0 ? (
+        <EmptyState title="No Space yet">
+          Create one here, or redeem an invitation ticket from the trusted terminal with
+          <code> ma2a space invite redeem</code>. Redemption has no browser route.
+        </EmptyState>
+      ) : (
+        <div className="split">
+          {runtime.spaces.map((space) => (
+            <Card key={space.id} label={space.name}>
+              <code className="identifier__value">{space.id}</code>
+              <div className="cluster">
+                <Pill tone="accent">generation {space.generation}</Pill>
+                <Pill filled tone={syncTone(space.sync)}>
+                  control sync {space.sync}
+                </Pill>
+                {space.revokedCount === 0 ? null : (
+                  <Pill tone="failed">{space.revokedCount} revoked, carried forward</Pill>
+                )}
+              </div>
+              <div>
+                <span className="eyebrow">Chain hash</span>
+                <div>
+                  <Mono>{space.chainHash}</Mono>
+                </div>
+              </div>
+              <div>
+                <span className="eyebrow">
+                  Signed members · {space.memberCount} of {LIMITS.members}
+                </span>
+                <ul className="members">
+                  {space.members.map((member) => (
+                    <li className="member" key={member.endpointId}>
+                      <span className="member__id">{shortId(member.endpointId)}</span>
+                      <span className="member__label">{member.label}</span>
+                      <span className="member__caps">
+                        {member.echo ? <Pill tone="direct">echo</Pill> : null}
+                        {member.relayProvider ? <Pill tone="accent">relay-provider</Pill> : null}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </Section>
+  )
+}
+
+export function SpacesInspector({
   runtime,
   actions,
 }: {
@@ -26,129 +83,120 @@ export function SpacesScreen({
   readonly actions: RuntimeActions | undefined
 }): ReactNode {
   const [message, setMessage] = useState<string | undefined>()
-  const submit = (operation: () => Promise<void>, success: string): void => {
-    setMessage("Working...")
+  const run = (operation: () => Promise<void>, success: string): void => {
+    setMessage("Working…")
     void operation().then(
       () => setMessage(success),
       () => setMessage("The Runtime rejected the request."),
     )
   }
-  const create = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault()
-    const name = new FormData(event.currentTarget).get("name")
-    if (typeof name === "string" && actions !== undefined) {
-      submit(() => actions.createSpace(name), "Space created from the authoritative Runtime.")
-      event.currentTarget.reset()
-    }
-  }
-  const invite = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault()
-    const values = new FormData(event.currentTarget)
-    const spaceId = values.get("space-id")
-    const ttlMs = values.get("ttl-ms")
-    const outputPath = values.get("output-path")
-    if (
-      typeof spaceId !== "string" ||
-      typeof ttlMs !== "string" ||
-      typeof outputPath !== "string" ||
-      actions === undefined
-    )
-      return
-    submit(
-      () => actions.createInvitation(spaceId, Number(ttlMs), outputPath),
-      `Invitation ticket written by the Runtime to ${outputPath}.`,
-    )
-  }
-  const revoke = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault()
-    const values = new FormData(event.currentTarget)
-    const spaceId = values.get("space-id")
-    const endpointId = values.get("endpoint-id")
-    if (typeof spaceId !== "string" || typeof endpointId !== "string" || actions === undefined)
-      return
-    submit(() => actions.revokeEndpoint(spaceId, endpointId), "Endpoint revocation recorded.")
-  }
+  const disabled = actions === undefined
+  const spaces = runtime?.spaces ?? []
   return (
-    <div className="page-stack">
-      <PageHeader
-        description="Private membership summaries for this Endpoint. Membership never changes its identity."
-        title="Spaces"
-      />
-      <div className="operation-grid">
-        <form className="form-stack" onSubmit={create}>
-          <h2>Create Space</h2>
-          <label htmlFor="space-name">Local label</label>
-          <input id="space-name" maxLength={128} name="name" required />
-          <button disabled={actions === undefined} type="submit">
-            Create
-          </button>
-        </form>
-        <form className="form-stack" onSubmit={invite}>
-          <h2>Create Invitation</h2>
-          <label htmlFor="invite-space">Space ID</label>
-          <input id="invite-space" name="space-id" pattern="[0-9a-f]{64}" required />
-          <label htmlFor="invite-ttl">Lifetime in milliseconds</label>
-          <input id="invite-ttl" max={300000} min={1} name="ttl-ms" required type="number" />
-          <label htmlFor="invite-output">Local output path</label>
-          <input id="invite-output" maxLength={4096} name="output-path" required />
-          <p className="field-help">
-            The Runtime creates a new owner-only ticket file and never returns its secret to the
-            browser.
-          </p>
-          <button disabled={actions === undefined} type="submit">
-            Create ticket
-          </button>
-        </form>
-        <form className="form-stack" onSubmit={revoke}>
-          <h2>Revoke Endpoint</h2>
-          <label htmlFor="revoke-space">Space ID</label>
-          <input id="revoke-space" name="space-id" pattern="[0-9a-f]{64}" required />
-          <label htmlFor="revoke-endpoint">Endpoint ID</label>
-          <input id="revoke-endpoint" name="endpoint-id" pattern="[0-9a-f]{64}" required />
-          <button className="button-danger" disabled={actions === undefined} type="submit">
-            Revoke
-          </button>
-        </form>
-      </div>
-      {message === undefined ? null : <p role="status">{message}</p>}
-      {runtime === undefined ? (
-        <PendingRuntime />
-      ) : runtime.spaces.length === 0 ? (
-        <EmptyState
-          description="Create or redeem a Space from the trusted Runtime interfaces when available."
-          title="No Spaces yet"
-        />
-      ) : (
-        <div className="table-wrap">
-          <table>
-            <caption>Active Space memberships</caption>
-            <thead>
-              <tr>
-                <th scope="col">Space</th>
-                <th scope="col">Space ID</th>
-                <th scope="col">Members</th>
-                <th scope="col">Control sync</th>
-                <th scope="col">Member detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runtime.spaces.map((space) => (
-                <tr key={space.id}>
-                  <th scope="row">{space.name}</th>
-                  <td>
-                    <CodeValue>{space.id}</CodeValue>
-                  </td>
-                  <td>{space.memberCount}</td>
-                  <td>
-                    <StatusText tone={syncTone(space.sync)}>{space.sync}</StatusText>
-                  </td>
-                  <td>Summary only; member identities are not exposed by this API.</td>
-                </tr>
+    <Inspector eyebrow="Operations" title="Space actions">
+      <Card label="Create a Space">
+        <Form
+          disabled={disabled}
+          label="Create a Space"
+          onSubmit={(data) => {
+            if (actions === undefined) return
+            run(() => actions.createSpace(text(data, "name")), "Space created by the Runtime.")
+          }}
+          submitLabel="Create"
+          {...(message === undefined ? {} : { status: message })}
+        >
+          <Field
+            help="A local label only. The signed Space carries no name."
+            id="space-name"
+            label="Local label"
+          >
+            <input id="space-name" maxLength={128} name="name" required />
+          </Field>
+        </Form>
+      </Card>
+      <Card label="Create an invitation ticket">
+        <Form
+          disabled={disabled}
+          label="Create an invitation ticket"
+          onSubmit={(data) => {
+            if (actions === undefined) return
+            run(
+              () =>
+                actions.createInvitation(
+                  text(data, "space-id"),
+                  Number(text(data, "ttl-ms")),
+                  text(data, "output-path"),
+                ),
+              "Ticket written by the Runtime. Its secret never reaches this browser.",
+            )
+          }}
+          submitLabel="Write ticket"
+        >
+          <Field id="invite-space" label="Space">
+            <select id="invite-space" name="space-id" required>
+              {spaces.map((space) => (
+                <option key={space.id} value={space.id}>
+                  {space.name} · {shortId(space.id)}
+                </option>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+            </select>
+          </Field>
+          <Field
+            help="Between 1 ms and 5 m. Expiry is computed by the Runtime clock, not the browser."
+            id="invite-ttl"
+            label="Lifetime in milliseconds"
+          >
+            <input
+              defaultValue={300000}
+              id="invite-ttl"
+              max={300000}
+              min={1}
+              name="ttl-ms"
+              required
+              type="number"
+            />
+          </Field>
+          <Field
+            help="The ticket is a bearer secret written once with owner-only permissions."
+            id="invite-path"
+            label="Owner-only output path"
+          >
+            <input id="invite-path" maxLength={4096} name="output-path" required />
+          </Field>
+        </Form>
+      </Card>
+      <Card label="Revoke an Endpoint">
+        <Form
+          danger
+          disabled={disabled}
+          label="Revoke an Endpoint"
+          onSubmit={(data) => {
+            if (actions === undefined) return
+            run(
+              () => actions.revokeEndpoint(text(data, "space-id"), text(data, "endpoint-id")),
+              "Revocation recorded. It applies to this Space only.",
+            )
+          }}
+          submitLabel="Revoke"
+        >
+          <Field id="revoke-space" label="Space">
+            <select id="revoke-space" name="space-id" required>
+              {spaces.map((space) => (
+                <option key={space.id} value={space.id}>
+                  {space.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field
+            help="Revocation is Space-local. Another shared Space can still authorize this peer."
+            id="revoke-endpoint"
+            label="Endpoint ID"
+          >
+            <input id="revoke-endpoint" name="endpoint-id" pattern="[0-9a-f]{64}" required />
+          </Field>
+        </Form>
+      </Card>
+    </Inspector>
   )
 }

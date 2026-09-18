@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest"
 
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import axe from "axe-core"
 import { describe, expect, test } from "vitest"
@@ -68,58 +68,69 @@ test("makes the named main landmark the keyboard-scrollable content region", () 
   expect(main).toHaveAttribute("tabindex", "0")
 })
 
-test("describes the narrow route navigation affordance", () => {
+test("every destination stays reachable at every width, with the current one marked", () => {
   render(<App initialPath="/settings" runtime={MANY_RUNTIME_FIXTURE} />)
 
-  const navigation = screen.getByRole("navigation", { name: "Runtime" })
-  expect(navigation).toHaveAttribute("aria-describedby", "route-scroll-hint")
-  expect(navigation).toHaveAccessibleDescription("Current: Settings Scroll for more routes")
-  expect(screen.getByText("Current: Settings")).toBeInTheDocument()
-  expect(screen.getByText("Scroll for more routes")).toBeInTheDocument()
-})
+  const navigation = screen.getByRole("navigation", { name: "Console sections" })
+  const links = within(navigation).getAllByRole("link")
 
-test("scrolls the current narrow route into the visible navigation strip without moving focus", () => {
-  const clientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth")
-  const offsetLeft = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetLeft")
-  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
-    configurable: true,
-    get() {
-      return this.tagName === "NAV" ? 375 : 90
-    },
-  })
-  Object.defineProperty(HTMLElement.prototype, "offsetLeft", {
-    configurable: true,
-    get() {
-      return this.getAttribute("aria-current") === "page" ? 500 : 0
-    },
-  })
-
-  render(<App initialPath="/settings" runtime={MANY_RUNTIME_FIXTURE} />)
-
-  expect(screen.getByRole("navigation", { name: "Runtime" }).scrollLeft).toBe(357.5)
-  expect(document.activeElement).toBe(document.body)
-  Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidth ?? { configurable: true })
-  Object.defineProperty(HTMLElement.prototype, "offsetLeft", offsetLeft ?? { configurable: true })
+  expect(links).toHaveLength(6)
+  expect(links.filter((link) => link.getAttribute("aria-current") === "page")).toHaveLength(1)
+  expect(within(navigation).getByRole("link", { name: "Settings" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
 })
 
 test.each([
-  [EMPTY_RUNTIME_FIXTURE, "No Spaces yet"],
-  [ONE_RUNTIME_FIXTURE, "Operations"],
-  [MANY_RUNTIME_FIXTURE, "Laboratory"],
+  [EMPTY_RUNTIME_FIXTURE, "No Space yet"],
+  [ONE_RUNTIME_FIXTURE, "Signed members"],
+  [MANY_RUNTIME_FIXTURE, "generation 11"],
 ] as const)("renders zero, one, and many Space states", (runtime, expectedText) => {
   render(<App initialPath="/spaces" runtime={runtime} />)
 
-  expect(screen.getByText(expectedText)).toBeVisible()
+  expect(screen.getAllByText(expectedText, { exact: false })[0]).toBeVisible()
+})
+
+test("a Space shows its signed member set, not just a count", () => {
+  render(<App initialPath="/spaces" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  const shared = screen.getAllByText("field-station-2")
+  expect(shared).toHaveLength(2)
+  expect(screen.getByText("lab-archive")).toBeVisible()
+  expect(screen.getAllByText("relay-provider").length).toBeGreaterThan(0)
+  expect(screen.getByText(/1 revoked, carried forward/)).toBeVisible()
+})
+
+test("relay coverage is drawn as a grid whose verdict follows the cells", () => {
+  render(<App initialPath="/relays" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(screen.getByRole("columnheader", { name: "Home-compatible" })).toBeInTheDocument()
+  expect(screen.getAllByText("covered").length).toBeGreaterThan(0)
+  expect(screen.getAllByText("not covered").length).toBeGreaterThan(0)
+  expect(screen.getAllByText("NO").length).toBeGreaterThan(0)
 })
 
 test.each([
-  [EMPTY_RUNTIME_FIXTURE, "No relay candidates"],
-  [ONE_RUNTIME_FIXTURE, "11111111"],
-  [MANY_RUNTIME_FIXTURE, "22222222"],
+  [EMPTY_RUNTIME_FIXTURE, "No candidate supplied"],
+  [ONE_RUNTIME_FIXTURE, "111111"],
+  [MANY_RUNTIME_FIXTURE, "222222"],
 ] as const)("renders zero, one, and many Relay states", (runtime, expectedText) => {
   render(<App initialPath="/relays" runtime={runtime} />)
 
-  expect(screen.getByText(expectedText, { exact: false })).toBeVisible()
+  expect(screen.getAllByText(expectedText, { exact: false })[0]).toBeVisible()
+})
+
+test.each([
+  [EMPTY_RUNTIME_FIXTURE, "NoActiveSpaces"],
+  [ONE_RUNTIME_FIXTURE, "AwaitingIrohHome"],
+  [MANY_RUNTIME_FIXTURE, "DegradedNoCommonHome"],
+] as const)("names the reachability state the Runtime reports", (runtime, expected) => {
+  render(<App initialPath="/relays" runtime={runtime} />)
+
+  const current = screen.getAllByRole("listitem").filter((item) => item.ariaCurrent === "true")
+  expect(current).toHaveLength(1)
+  expect(current[0]).toHaveTextContent(expected)
 })
 
 test("keeps password setup on trusted CLI only", () => {

@@ -1,9 +1,14 @@
-import { type FormEvent, type ReactNode, useState } from "react"
-
-import { EmptyState, PageHeader, Section, StatusText } from "../components/primitives"
-import { PendingRuntime } from "../components/runtime-status"
+import { type ReactNode, useState } from "react"
+import type { MutationEchoReplyView } from "../api/mutations"
+import { PendingSnapshot } from "../components/feedback"
+import { Field, Form, text } from "../components/form"
+import { Inspector } from "../components/inspector"
+import { Card, Pill, Section } from "../components/ui"
 import type { RuntimeActions } from "../runtime-actions"
 import type { RuntimeViewData } from "../view-model"
+import { Donut } from "../viz/donut"
+import { MeterList } from "../viz/meter-list"
+import { echoSegments, LIMITS, shortId } from "./derive"
 
 export function EchoScreen({
   runtime,
@@ -12,75 +17,135 @@ export function EchoScreen({
   readonly runtime: RuntimeViewData | undefined
   readonly actions: RuntimeActions | undefined
 }): ReactNode {
+  const [payload, setPayload] = useState("hello")
   const [result, setResult] = useState<string | undefined>()
-  const submit = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault()
-    const values = new FormData(event.currentTarget)
-    const endpointId = values.get("target")
-    const payload = values.get("payload")
-    if (typeof endpointId !== "string" || typeof payload !== "string" || actions === undefined)
-      return
-    setResult("Echo in progress...")
-    void actions.echo(endpointId, payload).then(
-      (reply) => setResult(`Echo reply from ${reply.target_endpoint_id}: ${reply.payload}`),
-      () => setResult("Echo failed or was not authorized."),
+  const [reply, setReply] = useState<MutationEchoReplyView | undefined>()
+  if (runtime === undefined) return <PendingSnapshot />
+  const bytes = new TextEncoder().encode(payload).length
+  return (
+    <Section
+      description="Address one Endpoint directly. There is no Space selector: the receiver decides whether any one complete shared Space authorizes the call."
+      title="Echo"
+    >
+      <div className="split">
+        <Card label="Request">
+          <Form
+            disabled={actions === undefined || bytes > LIMITS.echoPayload}
+            label="Send an Echo"
+            onSubmit={(data) => {
+              if (actions === undefined) return
+              setResult("Echo in progress…")
+              setReply(undefined)
+              void actions.echo(text(data, "target"), payload).then(
+                (received) => {
+                  setReply(received)
+                  setResult(undefined)
+                },
+                () => setResult("Echo failed or was not authorized."),
+              )
+            }}
+            submitLabel="Send Echo"
+            {...(result === undefined ? {} : { status: result })}
+          >
+            <Field
+              help="A denial is deliberately uniform. It never says which Space refused, or whether one exists."
+              id="echo-target"
+              label="Target Endpoint ID"
+            >
+              <input id="echo-target" name="target" pattern="[0-9a-f]{64}" required />
+            </Field>
+            <Field id="echo-payload" label="Payload">
+              <textarea
+                id="echo-payload"
+                name="payload"
+                onChange={(event) => setPayload(event.currentTarget.value)}
+                rows={3}
+                value={payload}
+              />
+            </Field>
+            <MeterList
+              label="Echo bounds"
+              meters={[
+                {
+                  label: "Payload bytes",
+                  fraction: bytes / LIMITS.echoPayload,
+                  value: `${bytes} / ${LIMITS.echoPayload}`,
+                  tone: bytes > LIMITS.echoPayload ? "failed" : "accent",
+                },
+              ]}
+            />
+          </Form>
+          {reply === undefined ? null : (
+            <div className="stack-4" role="status">
+              <div className="cluster">
+                <Pill filled tone="direct">
+                  reply from {shortId(reply.target_endpoint_id)}
+                </Pill>
+                <Pill tone="accent">{reply.duration_ms} ms</Pill>
+              </div>
+              <code className="identifier__value">{reply.payload}</code>
+              <MeterList
+                label="Echo deadline"
+                meters={[
+                  {
+                    label: "Aggregate deadline used",
+                    fraction: reply.duration_ms / LIMITS.echoDeadlineMs,
+                    value: `${reply.duration_ms} / ${LIMITS.echoDeadlineMs} ms`,
+                    tone: "direct",
+                    note: "Reported by the responder in the Echo v1 frame, saturated at 10 s.",
+                  },
+                ]}
+              />
+            </div>
+          )}
+        </Card>
+        <Card label="What the Runtime keeps">
+          <p className="field__help">
+            Echo has a ten second aggregate deadline and no semantic retries. The audit record holds
+            a request id, the authenticated peer, a bounded result class and a duration. Payload
+            bytes, Space IDs and authorization details are structurally absent.
+          </p>
+          <div className="cluster">
+            <Pill tone="accent">at most {LIMITS.echoStreamsPerPeer} streams per peer</Pill>
+            <Pill tone="accent">at most {LIMITS.connections} runtime-wide</Pill>
+          </div>
+        </Card>
+      </div>
+    </Section>
+  )
+}
+
+export function EchoInspector({
+  runtime,
+}: {
+  readonly runtime: RuntimeViewData | undefined
+}): ReactNode {
+  if (runtime === undefined) {
+    return (
+      <Inspector eyebrow="Echo" title="No snapshot">
+        <p className="field__help">Nothing is drawn until the Runtime answers.</p>
+      </Inspector>
     )
   }
+  const echo = echoSegments(runtime)
   return (
-    <div className="page-stack">
-      <PageHeader
-        description="Address one Endpoint directly. Authorization remains receiver-derived and Space-private."
-        title="Echo Test"
-      />
-      {runtime === undefined ? (
-        <PendingRuntime />
-      ) : (
-        <div className="evidence-layout">
-          <Section title="Request">
-            <form className="form-stack" onSubmit={submit}>
-              <label htmlFor="echo-target">Target Endpoint ID</label>
-              <input
-                aria-describedby="echo-target-help"
-                id="echo-target"
-                name="target"
-                placeholder="Endpoint ID"
-                type="text"
-              />
-              <p className="field-help" id="echo-target-help">
-                No Space selector is used. The receiver determines whether one complete shared Space
-                authorizes Echo.
-              </p>
-              <label htmlFor="echo-payload">Payload</label>
-              <textarea defaultValue="hello" id="echo-payload" name="payload" rows={4} />
-              <button disabled={actions === undefined} type="submit">
-                Send Echo
-              </button>
-              {result === undefined ? null : <p role="status">{result}</p>}
-            </form>
-          </Section>
-          <aside className="status-aside" aria-label="Recent Echo outcomes">
-            <h2>Recent outcomes</h2>
-            <dl className="detail-list">
-              <div>
-                <dt>Successes</dt>
-                <dd>
-                  <StatusText tone="success">{runtime.echoTotals.successes}</StatusText>
-                </dd>
-              </div>
-              <div>
-                <dt>Failures</dt>
-                <dd>
-                  <StatusText tone="error">{runtime.echoTotals.failures}</StatusText>
-                </dd>
-              </div>
-            </dl>
-            <EmptyState
-              description="The authoritative snapshot retains bounded totals, not payload or target history."
-              title="No detailed history retained"
-            />
-          </aside>
+    <Inspector eyebrow="Echo" title="Recent outcomes">
+      <Card label="Bounded totals">
+        <div className="cluster">
+          <Donut label="echo" segments={echo.segments} value={String(echo.total)} />
+          <div className="stack-4">
+            <Pill filled tone="direct">
+              {runtime.echoTotals.successes} ok
+            </Pill>
+            <Pill filled tone="failed">
+              {runtime.echoTotals.failures} failed
+            </Pill>
+          </div>
         </div>
-      )}
-    </div>
+        <p className="field__help">
+          Totals only. No target, payload or history is retained across the snapshot.
+        </p>
+      </Card>
+    </Inspector>
   )
 }

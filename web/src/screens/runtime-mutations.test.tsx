@@ -2,72 +2,55 @@ import "@testing-library/jest-dom/vitest"
 
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { expect, test, vi } from "vitest"
+import { expect, test } from "vitest"
 
-import type { RuntimeActions } from "../runtime-actions"
-import { RelaysScreen } from "./relays"
-import { SpacesScreen } from "./spaces"
-
-function runtimeActions(): RuntimeActions {
-  const configurePrivateRelay = vi.fn<RuntimeActions["configurePrivateRelay"]>(async () => ({
-    configured: true,
-    mode: "external_termination",
-    host: "127.0.0.1",
-    port: 443,
-    online: true,
-  }))
-  return {
-    createSpace: vi.fn(async () => undefined),
-    createInvitation: vi.fn(async () => undefined),
-    revokeEndpoint: vi.fn(async () => undefined),
-    triggerSync: vi.fn(async () => undefined),
-    configurePrivateRelay,
-    configurePublicRelay: vi.fn(async () => ({ configured: true, url: null, online: false })),
-    echo: vi.fn(async () => ({ target_endpoint_id: "11".repeat(32), payload: "ok" })),
-    revokeSessions: vi.fn(async () => undefined),
-  }
-}
+import { ONE_RUNTIME_FIXTURE } from "../test/fixtures"
+import { runtimeActions } from "./actions.fixture"
+import { RelaysInspector } from "./relays"
+import { SpacesInspector } from "./spaces"
 
 test("creates an invitation ticket through the Runtime without browser secret material", async () => {
   const user = userEvent.setup()
   const actions = runtimeActions()
-  render(<SpacesScreen actions={actions} runtime={undefined} />)
-  const form = screen.getByRole("heading", { name: "Create Invitation" }).closest("form")
-  expect(form).not.toBeNull()
-  if (form === null) return
-  const invitation = within(form)
+  render(<SpacesInspector actions={actions} runtime={ONE_RUNTIME_FIXTURE} />)
+  const form = within(screen.getByRole("form", { name: "Create an invitation ticket" }))
 
-  await user.type(invitation.getByLabelText("Space ID"), "ab".repeat(32))
-  await user.type(invitation.getByLabelText("Lifetime in milliseconds"), "300000")
-  await user.type(invitation.getByLabelText("Local output path"), "/tmp/operations.invite")
-  expect(form).toBeValid()
-  await user.click(invitation.getByRole("button", { name: "Create ticket" }))
+  await user.type(form.getByLabelText("Owner-only output path"), "/tmp/operations.invite")
+  await user.click(form.getByRole("button", { name: "Write ticket" }))
 
   expect(actions.createInvitation).toHaveBeenCalledWith(
-    "ab".repeat(32),
+    "test-space-operations",
     300_000,
     "/tmp/operations.invite",
   )
 })
 
+test("the invitation form never renders the ticket secret it asks the Runtime to write", async () => {
+  const user = userEvent.setup()
+  const actions = runtimeActions()
+  render(<SpacesInspector actions={actions} runtime={ONE_RUNTIME_FIXTURE} />)
+  const form = within(screen.getByRole("form", { name: "Create an invitation ticket" }))
+
+  await user.type(form.getByLabelText("Owner-only output path"), "/tmp/operations.invite")
+  await user.click(form.getByRole("button", { name: "Write ticket" }))
+
+  expect(await screen.findByText(/secret never reaches this browser/)).toBeInTheDocument()
+})
+
 test("configures external Private Relay termination with parsed Space IDs and null TLS paths", async () => {
   const user = userEvent.setup()
   const actions = runtimeActions()
-  render(<RelaysScreen actions={actions} runtime={undefined} />)
-  const form = screen.getByRole("heading", { name: "Private Provider" }).closest("form")
-  expect(form).not.toBeNull()
-  if (form === null) return
-  const privateRelay = within(form)
+  render(<RelaysInspector actions={actions} />)
+  const form = within(screen.getByRole("form", { name: "Configure the Private Relay" }))
 
-  await user.selectOptions(privateRelay.getByLabelText("TLS termination"), "external_termination")
-  await user.type(privateRelay.getByLabelText("Listen address"), "127.0.0.1:443")
-  await user.type(privateRelay.getByLabelText("Public HTTPS URL"), "https://relay.example")
+  await user.click(form.getByRole("button", { name: "External" }))
+  await user.type(form.getByLabelText("Listen address"), "127.0.0.1:443")
+  await user.type(form.getByLabelText("Public HTTPS URL"), "https://relay.example")
   await user.type(
-    privateRelay.getByLabelText("Served Space IDs"),
+    form.getByLabelText("Served Space IDs"),
     `${"ab".repeat(32)},\n${"cd".repeat(32)}`,
   )
-  expect(form).toBeValid()
-  await user.click(privateRelay.getByRole("button", { name: "Configure Private" }))
+  await user.click(form.getByRole("button", { name: "Configure private" }))
 
   expect(actions.configurePrivateRelay).toHaveBeenCalledWith({
     mode: "external_termination",
@@ -77,4 +60,15 @@ test("configures external Private Relay termination with parsed Space IDs and nu
     certificatePath: null,
     privateKeyPath: null,
   })
+})
+
+test("external termination hides the TLS path fields instead of ignoring them silently", async () => {
+  const user = userEvent.setup()
+  render(<RelaysInspector actions={runtimeActions()} />)
+
+  expect(screen.getByLabelText("TLS private key path")).toBeInTheDocument()
+  await user.click(screen.getByRole("button", { name: "External" }))
+
+  expect(screen.queryByLabelText("TLS private key path")).not.toBeInTheDocument()
+  expect(screen.getByText(/plaintext backend on loopback only/)).toBeInTheDocument()
 })
