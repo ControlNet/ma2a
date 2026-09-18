@@ -1,6 +1,37 @@
-use ma2a_core::{EndpointId, SpaceId};
+use ma2a_core::{Capability, EndpointId, SpaceId};
 
 use crate::{Repository, StoreError};
+
+/// One signed member of a Space, as the owner's own chain already records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotMember {
+    endpoint_id: EndpointId,
+    label: String,
+    echo: bool,
+    relay_provider: bool,
+}
+
+impl SnapshotMember {
+    /// Returns the member Endpoint identity.
+    pub const fn endpoint_id(&self) -> EndpointId {
+        self.endpoint_id
+    }
+
+    /// Returns the signed member label.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Returns whether the Space policy and this member grant Echo.
+    pub const fn echo(&self) -> bool {
+        self.echo
+    }
+
+    /// Returns whether this member may provide private relay service.
+    pub const fn relay_provider(&self) -> bool {
+        self.relay_provider
+    }
+}
 
 /// Public local-user-safe Space facts read from one `SQLite` snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8,6 +39,10 @@ pub struct SnapshotSpace {
     space_id: SpaceId,
     label: String,
     member_count: u32,
+    generation: u64,
+    chain_hash: [u8; 32],
+    members: Vec<SnapshotMember>,
+    revoked_count: u32,
 }
 
 impl SnapshotSpace {
@@ -24,6 +59,26 @@ impl SnapshotSpace {
     /// Returns the current derived member count.
     pub const fn member_count(&self) -> u32 {
         self.member_count
+    }
+
+    /// Returns the latest applied manifest generation, or zero at genesis.
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the latest accepted contiguous chain hash.
+    pub const fn chain_hash(&self) -> [u8; 32] {
+        self.chain_hash
+    }
+
+    /// Returns the latest complete sorted member set.
+    pub fn members(&self) -> &[SnapshotMember] {
+        &self.members
+    }
+
+    /// Returns the number of Space-local revocations carried forward.
+    pub const fn revoked_count(&self) -> u32 {
+        self.revoked_count
     }
 }
 
@@ -106,10 +161,26 @@ impl Repository {
                     .ok_or(StoreError::SchemaMismatch {
                         detail: "snapshot local Space member is missing",
                     })?;
+                let members = chain
+                    .members()
+                    .iter()
+                    .map(|member| SnapshotMember {
+                        endpoint_id: member.endpoint_id(),
+                        label: member.label().to_owned(),
+                        echo: member.capabilities().allows(Capability::ECHO),
+                        relay_provider: member
+                            .capabilities()
+                            .allows(Capability::PRIVATE_RELAY_PROVIDER),
+                    })
+                    .collect();
                 Ok(SnapshotSpace {
                     space_id,
                     label,
                     member_count,
+                    generation: chain.latest_generation(),
+                    chain_hash: chain.latest_hash(),
+                    members,
+                    revoked_count: u32::try_from(chain.revocations().len()).unwrap_or(u32::MAX),
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
