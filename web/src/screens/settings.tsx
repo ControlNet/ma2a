@@ -30,10 +30,15 @@ export function SettingsScreen({
       description="The browser is the least trusted surface in this system. This page shows exactly how little it is allowed to hold."
       title="Settings"
     >
-      <Card label="Where each secret is allowed to exist">
+      <Card label="Where each secret may be persisted or retained">
         <div className="scroll-x">
           <TrustChain boundaries={BOUNDARIES} secrets={SECRETS} />
         </div>
+        <p className="field__help">
+          This table is about retention, not transit. Signing in necessarily puts the passphrase in
+          browser memory and sends it over same-origin loopback to the Runtime; what the browser
+          never does is persist it, or any other secret above.
+        </p>
       </Card>
       <div className="split">
         <Card label="Appearance">

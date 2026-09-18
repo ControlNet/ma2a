@@ -139,7 +139,9 @@ parser and the docs together.
 | --- | --- |
 | Signed member set inside each Space | `snapshot_space.members`, with label and capability grants |
 | Generation and chain hash | `snapshot_space.generation`, `.chain_hash`, `.revoked_count` |
-| Relay coverage grid | `relay_candidate.covered_space_ids`, with `eligible` as the verdict |
+| Relay coverage grid | `private_relay_candidate.covered_space_ids`, with `home_compatible` as the verdict |
+| Public fallback rows | `public_relay_fallback`, which has no Endpoint identity by construction |
+| Named reachability state | `reachability.state`, projected verbatim from the Runtime |
 | Retained observation track | `connection.observations`, at most eight per peer |
 | Control round history | `runtime_snapshot.control_rounds`, at most sixteen, memory only |
 | Echo round-trip time | `echo_reply.duration_ms`, saturated at 10,000 |
@@ -147,6 +149,22 @@ parser and the docs together.
 One thing is still deliberately absent, and the UI says so rather than guessing:
 which Space authorized a given request. `authorized_via` is on the schema's own
 privacy exclusion list beside private keys and invite secrets.
+
+Three things the UI deliberately does **not** claim:
+
+- **A running local Private Relay Provider is not a connected home relay.** They
+  are drawn as separate rows with separate wording, and `reachability.state`
+  comes from the Runtime rather than being rebuilt from provider facts.
+- **A public Iroh relay is not an MA2A Endpoint.** It is fed from its own model
+  and never given a synthesised provider identity or Space coverage.
+- **There is no global per-Space control-sync status.** Control synchronization
+  is bounded peer reconciliation, so the Spaces screen shows no convergence
+  badge; the bounded `control_rounds` history remains as round diagnostics.
+
+The per-member `relay_provider` bit stays in the wire format as manifest history,
+but is not shown as effective permission: Phase 1 evaluates provider eligibility
+from active membership plus Space policy plus local serve configuration, so the
+raw bit would misreport it.
 
 A manifest chain **ladder** is still not drawn. The snapshot publishes the chain
 head, not the history behind it, and a ladder of one rung would be a decoration.

@@ -61,8 +61,9 @@ function Chip({
 /**
  * Two bands that must never be read as one. Lanes are Spaces: signed, durable
  * authorization, drawn in neutral because membership is not a status. Peers are
- * what Iroh currently observes, drawn in an observed tone. The Runtime does not
- * publish which peer belongs to which Space, and the layout says so out loud.
+ * what Iroh currently observes, drawn in an observed tone. They are separate bands
+ * on purpose: the snapshot does publish each Space's signed member set, and
+ * keeping the two apart is what stops membership reading as reachability.
  */
 export function LaneMap({
   endpointId,
@@ -87,8 +88,7 @@ export function LaneMap({
         <section className="band band--signed">
           <h2 className="band__title">Signed authorization</h2>
           <p className="band__note">
-            One lane per Space, each authorizing on its own. This API publishes a member count, not
-            member identities.
+            One lane per Space, each authorizing on its own, with its signed member set.
           </p>
           {lanes.length === 0 ? (
             <div className="lane-map__empty">
@@ -115,7 +115,8 @@ export function LaneMap({
         <section className="band band--observed">
           <h2 className="band__title">Observed transport</h2>
           <p className="band__note">
-            What Iroh reports right now. Cleared on restart, and never an authorization fact.
+            What Iroh reports right now, kept apart from membership because authorization does not
+            imply current reachability. Cleared on restart, and never an authorization fact.
           </p>
           {peers.length === 0 ? (
             <div className="lane-map__empty lane-map__empty--quiet">

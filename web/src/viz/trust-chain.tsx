@@ -6,7 +6,11 @@ export type Boundary = {
   readonly holds: readonly boolean[]
 }
 
-/** Which secret is allowed to exist at which boundary. Rows are secrets. */
+/**
+ * Which secret may be *persisted or retained* at which boundary. Rows are secrets.
+ * This is deliberately not a claim about transit: a passphrase does pass through
+ * the browser on sign-in, it is simply never kept there.
+ */
 export function TrustChain({
   secrets,
   boundaries,
@@ -38,7 +42,7 @@ export function TrustChain({
                 <td className="trust__cell" key={`${boundary.name}-${secret}`}>
                   <span className={allowed ? "trust__mark" : "trust__mark trust__mark--absent"}>
                     <span className="visually-hidden">
-                      {allowed ? "may exist here" : "never exists here"}
+                      {allowed ? "may be retained here" : "never retained here"}
                     </span>
                   </span>
                 </td>
