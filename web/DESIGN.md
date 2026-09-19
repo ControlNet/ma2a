@@ -9,8 +9,10 @@ blurs them is lying:
    bytes. A peer that cannot be reached is still fully authorized.
 2. **Desired configuration is not observed effective state.** MA2A supplies relay candidates; Iroh
    alone probes, selects a home and upgrades to direct. Observed state is cleared at every restart.
-3. **The browser is the least trusted surface.** Passphrases, invitation ticket secrets and private
-   key material never enter it. Snapshot uncertainty discards state rather than merging it.
+3. **The browser is the least trusted surface.** A login passphrase is handled there only
+   transiently, on its way to the Runtime over same-origin loopback, and is never persisted or
+   retained; invitation ticket secrets and private key material never reach it at all. Snapshot
+   uncertainty discards state rather than merging it.
 
 The layout is the argument. The map draws signed lanes and observed peers as two labelled bands
 that are never mixed, and the colour system gives each side its own palette.
