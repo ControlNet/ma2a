@@ -76,8 +76,8 @@ const RuntimeSnapshotSchema = z
     public_relay_fallbacks: z.array(PublicRelayFallbackViewSchema).max(256).readonly(),
     control_rounds: z.array(ControlRoundViewSchema).max(16).readonly(),
     observed_relay_state: z.strictObject({
-      private_relay_online: z.boolean(),
-      public_relay_online: z.boolean(),
+      private_relay_provider_running: z.boolean(),
+      public_relay_connected: z.boolean(),
     }),
     reachability: z.strictObject({
       state: z.enum([

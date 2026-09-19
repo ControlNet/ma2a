@@ -59,7 +59,10 @@ test("projects only authoritative snapshot state into the console view", () => {
       { relay_url: "https://public.example", enabled: true, observed_connected: false },
     ],
     control_rounds: [{ at_ms: 1_700_000_000_000, peer_count: 1, outcome: "succeeded" as const }],
-    observed_relay_state: { private_relay_online: true, public_relay_online: false },
+    observed_relay_state: {
+      private_relay_provider_running: true,
+      public_relay_connected: false,
+    },
     reachability: { state: "IrohHomeConnected" as const, direct: false, relayed: true },
     recent_echo_summary: { successes: 3, failures: 1 },
     ui_auth: { initialized: true, password_set: true, active_sessions: 2 },
@@ -109,7 +112,10 @@ test("reachability is taken from the Runtime, never rebuilt from provider facts"
   const snapshot = {
     ...runtimeSnapshot(4),
     reachability: { state: "DegradedNoCommonHome" as const, direct: false, relayed: false },
-    observed_relay_state: { private_relay_online: true, public_relay_online: false },
+    observed_relay_state: {
+      private_relay_provider_running: true,
+      public_relay_connected: false,
+    },
   }
 
   const view = runtimeViewFromSnapshot(snapshot, "online")

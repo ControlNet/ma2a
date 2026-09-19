@@ -6,7 +6,7 @@ import { expect, test } from "vitest"
 
 import { ONE_RUNTIME_FIXTURE } from "../test/fixtures"
 import { runtimeActions } from "./actions.fixture"
-import { RelaysInspector } from "./relays"
+import { RelaysInspector } from "./relay-config"
 import { SpacesInspector } from "./spaces"
 
 test("creates an invitation ticket through the Runtime without browser secret material", async () => {

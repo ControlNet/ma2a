@@ -34,7 +34,8 @@ test("the trust boundary is about retention, and says so about the passphrase", 
 
   const browser = screen.getByRole("columnheader", { name: /Browser/ })
   expect(browser).toBeInTheDocument()
-  expect(screen.getAllByText("never retained here").length).toBeGreaterThanOrEqual(6)
+  expect(screen.getAllByText("handled transiently, not retained").length).toBeGreaterThan(0)
+  expect(screen.getAllByText("retained here").length).toBeGreaterThan(0)
   expect(screen.getByText("ma2a ui password reset")).toBeInTheDocument()
-  expect(screen.getByText(/This table is about retention, not transit/)).toBeInTheDocument()
+  expect(screen.getByText(/Handling is not retention/)).toBeInTheDocument()
 })

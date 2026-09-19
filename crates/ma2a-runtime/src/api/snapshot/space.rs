@@ -29,7 +29,4 @@ impl SpaceView {
         }
     }
 
-    pub(crate) const fn id(&self) -> SpaceId {
-        self.id
-    }
 }

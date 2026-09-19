@@ -145,17 +145,18 @@ test("zero Spaces explains the protocol isolation instead of drawing nothing", (
   expect(screen.getByText(/ma2a\/enrollment\/1/)).toBeInTheDocument()
 })
 
-test("the trust chain says in words where a secret may be retained", () => {
+test("the trust chain separates transient handling from retention", () => {
   render(
     <TrustChain
       boundaries={[
-        { name: "Browser", guard: "session cookie", holds: [false] },
-        { name: "Runtime", guard: "0600 key files", holds: [true] },
+        { name: "Browser", guard: "session cookie", presence: ["transient", "never"] },
+        { name: "Protected storage", guard: "0600 key files", presence: ["never", "retained"] },
       ]}
-      secrets={["private keys"]}
+      secrets={["passphrase", "private keys"]}
     />,
   )
 
-  expect(screen.getByText("never retained here")).toBeInTheDocument()
-  expect(screen.getByText("may be retained here")).toBeInTheDocument()
+  expect(screen.getByText("handled transiently, not retained")).toBeInTheDocument()
+  expect(screen.getByText("retained here")).toBeInTheDocument()
+  expect(screen.getAllByText("never present here")).toHaveLength(2)
 })

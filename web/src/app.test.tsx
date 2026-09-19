@@ -120,12 +120,37 @@ test("a public fallback is listed without any Endpoint identity", () => {
   expect(screen.getByText("external transport, no Endpoint identity")).toBeVisible()
 })
 
+test("an incompatible advertisement stays visible but is not counted as supplied", () => {
+  render(<App initialPath="/relays" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(screen.getByText("https://relay.ops.internal")).toBeVisible()
+  expect(screen.getAllByText("NO").length).toBeGreaterThan(0)
+  expect(screen.getByText("2 supplied")).toBeVisible()
+})
+
+test("the local provider role is not filed under Iroh observations", () => {
+  render(<App initialPath="/relays" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  const provider = screen.getByRole("list", { name: "Local provider role" })
+  expect(provider).toHaveTextContent("Private Relay Provider running here")
+  expect(screen.getByRole("list", { name: "Iroh transport observation" })).not.toHaveTextContent(
+    "Private Relay Provider",
+  )
+})
+
 test("a running local Private Relay Provider is not reported as a connected home", () => {
   render(<App initialPath="/relays" runtime={MANY_RUNTIME_FIXTURE} />)
 
   const current = screen.getAllByRole("listitem").filter((item) => item.ariaCurrent === "true")
   expect(current[0]).toHaveTextContent("DegradedNoCommonHome")
   expect(screen.getByText("Private Relay Provider running here")).toBeVisible()
+})
+
+test("a signed member with no observation still appears under Peers", () => {
+  render(<App initialPath="/endpoint" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(screen.getByText("lab-archive")).toBeVisible()
+  expect(screen.getAllByText("no transport observation").length).toBeGreaterThan(0)
 })
 
 test("relay coverage is drawn as a grid whose verdict follows the cells", () => {
@@ -138,7 +163,7 @@ test("relay coverage is drawn as a grid whose verdict follows the cells", () => 
 })
 
 test.each([
-  [EMPTY_RUNTIME_FIXTURE, "No candidate supplied"],
+  [EMPTY_RUNTIME_FIXTURE, "No relay advertisement or fallback"],
   [ONE_RUNTIME_FIXTURE, "https://relay.ops.internal"],
   [MANY_RUNTIME_FIXTURE, "https://relay.lab.internal"],
 ] as const)("renders zero, one, and many Relay states", (runtime, expectedText) => {

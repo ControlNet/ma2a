@@ -73,8 +73,8 @@ export function runtimeViewFromSnapshot(
       observedConnected: fallback.observed_connected,
     })),
     observedRelayState: {
-      privateRelayProviderRunning: snapshot.observed_relay_state.private_relay_online,
-      publicRelayConnected: snapshot.observed_relay_state.public_relay_online,
+      privateRelayProviderRunning: snapshot.observed_relay_state.private_relay_provider_running,
+      publicRelayConnected: snapshot.observed_relay_state.public_relay_connected,
     },
     reachability,
     controlSync: snapshot.control_sync,

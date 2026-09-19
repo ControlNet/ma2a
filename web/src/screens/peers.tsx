@@ -24,7 +24,7 @@ export function PeersScreen({
   const peers = peerList(runtime)
   return (
     <Section
-      description="Everything Iroh has reported about reaching another Endpoint. Cleared at every restart, and never an authorization fact."
+      description="Known peer Endpoints from signed Space membership, with Iroh transport observations overlaid where available. Membership is a signed fact and does not depend on whether a path has ever been seen."
       title="Peers"
     >
       <Card label="This Endpoint">
@@ -38,8 +38,9 @@ export function PeersScreen({
         </div>
       </Card>
       {peers.length === 0 ? (
-        <EmptyState title="No peer observed yet">
-          Members of your Spaces stay fully authorized whether or not a path has ever been seen.
+        <EmptyState title="No peer Endpoint known yet">
+          Once a Space has another member, it appears here whether or not Iroh has ever reported a
+          path to it.
         </EmptyState>
       ) : (
         <ul className="peer-list">

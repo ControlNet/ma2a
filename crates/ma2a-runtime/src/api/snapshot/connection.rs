@@ -5,7 +5,7 @@ use ma2a_core::EndpointId;
 use crate::api::ApiError;
 
 /// Bounded observations Iroh retains for one remote Endpoint, oldest first.
-pub const MAX_RETAINED_OBSERVATIONS: usize = 8;
+pub(crate) const MAX_RETAINED_OBSERVATIONS: usize = 8;
 
 /// One retained observation, exactly as Iroh reported it at that moment.
 #[derive(Debug, Clone, PartialEq, Eq)]

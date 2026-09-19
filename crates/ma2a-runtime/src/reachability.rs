@@ -35,12 +35,6 @@ impl RelayReachabilityState {
             .map(|observation| observation.relay_url().as_str())
     }
 
-    pub(crate) fn private_candidates(
-        &self,
-    ) -> impl Iterator<Item = &ma2a_net::PrivateRelayCandidate> {
-        self.candidates.private_relays()
-    }
-
     /// Every fresh private candidate with the exact Spaces it covers.
     pub(crate) fn private_coverage(
         &self,

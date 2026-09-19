@@ -18,7 +18,7 @@ impl RuntimeSnapshot {
             "private_relay_candidates": self.private_relay_candidates.iter().map(private_relay_value).collect::<Vec<_>>(),
             "public_relay_fallbacks": self.public_relay_fallbacks.iter().map(public_relay_value).collect::<Vec<_>>(),
             "control_rounds": self.control_rounds.iter().map(control_round_value).collect::<Vec<_>>(),
-            "observed_relay_state": {"private_relay_online": self.observed_relay_state.private_relay_online, "public_relay_online": self.observed_relay_state.public_relay_online},
+            "observed_relay_state": {"private_relay_provider_running": self.observed_relay_state.private_relay_provider_running, "public_relay_connected": self.observed_relay_state.public_relay_connected},
             "reachability": {"state": self.reachability.state, "direct": self.reachability.direct, "relayed": self.reachability.relayed},
             "recent_echo_summary": {"successes": self.recent_echo_summary.successes, "failures": self.recent_echo_summary.failures},
             "ui_auth": ui_auth_value(&self.ui_auth),
