@@ -101,7 +101,7 @@ dark are one implementation.
 | `MeterList` | any documented bound or countdown, value always spelled out | `connections`, `spaces`, payload length |
 | `StackBar` | peer path distribution | `connections` |
 | `Donut` / `Ring` | bounded ratios | `recent_echo_summary`, `ui_auth` |
-| `TrustChain` | where each secret may exist | documented boundaries, static |
+| `TrustChain` | where each secret is retained, and where it only passes through | documented boundaries, static |
 
 Rules that hold across all of them:
 
@@ -152,14 +152,24 @@ privacy exclusion list beside private keys and invite secrets.
 
 Three things the UI deliberately does **not** claim:
 
-- **A running local Private Relay Provider is not a connected home relay.** They
-  are drawn as separate rows with separate wording, and `reachability.state`
-  comes from the Runtime rather than being rebuilt from provider facts.
+- **A running local Private Relay Provider is not a connected home relay.** The
+  wire fields say which is which (`private_relay_provider_running` against
+  `public_relay_connected`), they sit in separate cards titled *Local provider
+  role* and *Iroh transport observation*, and `reachability.state` comes from the
+  Runtime rather than being rebuilt from either.
 - **A public Iroh relay is not an MA2A Endpoint.** It is fed from its own model
   and never given a synthesised provider identity or Space coverage.
 - **There is no global per-Space control-sync status.** Control synchronization
   is bounded peer reconciliation, so the Spaces screen shows no convergence
   badge; the bounded `control_rounds` history remains as round diagnostics.
+- **Not every advertisement is a candidate.** The Relays screen lists every
+  Private Relay advertisement so coverage can be read, and separately states how
+  many entries are actually supplied to the generic Iroh relay map: the
+  home-compatible Private Relays plus the enabled Public Relay Fallbacks.
+- **Handling is not retention.** The trust table is a three-state model, so a
+  passphrase reads as transient in the browser and on loopback, and never as
+  retained anywhere: protected storage holds an Argon2id verifier, not a
+  passphrase.
 
 The per-member `relay_provider` bit stays in the wire format as manifest history,
 but is not shown as effective permission: Phase 1 evaluates provider eligibility

@@ -10,7 +10,7 @@ mod relay;
 mod space;
 mod value;
 
-pub use connection::{ConnectionObservationView, ConnectionView, MAX_RETAINED_OBSERVATIONS};
+pub use connection::{ConnectionObservationView, ConnectionView};
 pub use control_round::{ControlRoundView, MAX_RETAINED_CONTROL_ROUNDS};
 pub use relay::{PrivateRelayCandidateView, PublicRelayFallbackView};
 pub use member::{SnapshotSpaceView, SpaceChainHead, SpaceMemberView};
@@ -65,19 +65,23 @@ impl ControlSyncView {
 }
 
 
-/// Locally observed relay state, distinct from configuration and advertisements.
+/// Local provider-role state and Iroh public-relay observation, kept apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedRelayStateView {
-    pub(crate) private_relay_online: bool,
-    pub(crate) public_relay_online: bool,
+    pub(crate) private_relay_provider_running: bool,
+    pub(crate) public_relay_connected: bool,
 }
 
 impl ObservedRelayStateView {
     /// Creates observed Private and Public Relay status.
-    pub const fn new(private_relay_online: bool, public_relay_online: bool) -> Self {
+    /// `private_relay_provider_running` is a local service-role fact: this Runtime
+    /// currently hosts its embedded Private Relay. `public_relay_connected` is an
+    /// Iroh transport observation for this Endpoint. Neither may be used to
+    /// reconstruct `ReachabilityView::state`, which the Runtime owns.
+    pub const fn new(private_relay_provider_running: bool, public_relay_connected: bool) -> Self {
         Self {
-            private_relay_online,
-            public_relay_online,
+            private_relay_provider_running,
+            public_relay_connected,
         }
     }
 }

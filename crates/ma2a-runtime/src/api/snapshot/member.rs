@@ -1,11 +1,8 @@
 //! Signed Space facts the owner's own chain already holds.
 
-use ma2a_core::{EndpointId, SpaceId};
+use ma2a_core::{EndpointId, MAX_SPACE_MEMBERS, SpaceId};
 
 use crate::api::ApiError;
-
-/// Core v1 permits at most 64 active members per Space.
-pub const MAX_SPACE_MEMBERS: usize = 64;
 
 /// One signed member of a Space, without any authorization diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]

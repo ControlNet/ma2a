@@ -5,18 +5,45 @@ import { ThemeToggle } from "../components/theme-toggle"
 import { Button, Card, Pill, Section } from "../components/ui"
 import type { RuntimeActions } from "../runtime-actions"
 import type { RuntimeViewData } from "../view-model"
-import { TrustChain } from "../viz/trust-chain"
+import { type Boundary, TrustChain } from "../viz/trust-chain"
 
 const SECRETS = ["Passphrase", "Invitation ticket secret", "Endpoint and Space private keys"]
 
-const BOUNDARIES = [
-  { name: "Browser", guard: "host-only HttpOnly cookie", holds: [false, false, false] },
-  { name: "Loopback HTTP", guard: "exact same-origin, Host pinned", holds: [false, false, false] },
-  { name: "Private IPC", guard: "current-user UID or SID checked", holds: [true, false, false] },
+/**
+ * Rows follow SECRETS. Retention is the question, not handling: a passphrase does
+ * pass through the browser on sign-in, and protected storage keeps only an
+ * Argon2id verifier, never the passphrase itself.
+ */
+const BOUNDARIES: readonly Boundary[] = [
   {
-    name: "Runtime and key files",
-    guard: "Argon2id verifier, 0600 keys",
-    holds: [true, true, true],
+    name: "Browser",
+    guard: "host-only HttpOnly cookie",
+    presence: ["transient", "never", "never"],
+  },
+  {
+    name: "Loopback HTTP",
+    guard: "same-origin, Host pinned",
+    presence: ["transient", "never", "never"],
+  },
+  {
+    name: "Private IPC",
+    guard: "current-user UID or SID",
+    presence: ["transient", "transient", "never"],
+  },
+  {
+    name: "Runtime memory",
+    guard: "zeroized after use",
+    presence: ["transient", "transient", "transient"],
+  },
+  {
+    name: "Protected storage",
+    guard: "verifier and digests only",
+    presence: ["never", "never", "retained"],
+  },
+  {
+    name: "Owner-only file",
+    guard: "written once on request",
+    presence: ["never", "retained", "never"],
   },
 ]
 
@@ -34,10 +61,26 @@ export function SettingsScreen({
         <div className="scroll-x">
           <TrustChain boundaries={BOUNDARIES} secrets={SECRETS} />
         </div>
+        <ul className="trust-legend">
+          <li>
+            <span aria-hidden="true" className="trust__mark trust__mark--retained" />
+            retained here
+          </li>
+          <li>
+            <span aria-hidden="true" className="trust__mark trust__mark--transient" />
+            handled in passing, not kept
+          </li>
+          <li>
+            <span aria-hidden="true" className="trust__mark trust__mark--never" />
+            never present
+          </li>
+        </ul>
         <p className="field__help">
-          This table is about retention, not transit. Signing in necessarily puts the passphrase in
-          browser memory and sends it over same-origin loopback to the Runtime; what the browser
-          never does is persist it, or any other secret above.
+          Handling is not retention. Signing in necessarily puts the passphrase in browser memory
+          and sends it over same-origin loopback; nothing keeps it. Protected storage holds an
+          Argon2id verifier and an invitation digest, never the passphrase or the ticket secret
+          themselves. The ticket file is the one place a ticket secret is retained, written once on
+          request for the operator to transfer and delete.
         </p>
       </Card>
       <div className="split">

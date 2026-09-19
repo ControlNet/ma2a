@@ -1,10 +1,7 @@
-import { type ReactNode, useState } from "react"
+import type { ReactNode } from "react"
 
 import { EmptyState, PendingSnapshot } from "../components/feedback"
-import { Field, Form, text } from "../components/form"
-import { Inspector } from "../components/inspector"
 import { Card, Pill, Section } from "../components/ui"
-import type { RuntimeActions } from "../runtime-actions"
 import type { RuntimeViewData } from "../view-model"
 import { CoverageMatrix } from "../viz/coverage-matrix"
 import { MeterList } from "../viz/meter-list"
@@ -27,35 +24,42 @@ export function RelaysScreen({
         <p className="field__help">{runtime.reachability.detail}</p>
       </Card>
       <div className="split">
-        <Card label="Desired: candidates supplied to Iroh">
+        <Card label="Relay advertisements and candidate selection">
           {runtime.privateRelayCandidates.length === 0 &&
           runtime.publicRelayFallbacks.length === 0 ? (
-            <EmptyState title="No candidate supplied">
-              No Private Relay advertisement and no configured public fallback are present in this
-              snapshot.
+            <EmptyState title="No relay advertisement or fallback">
+              No Private Relay advertisement and no configured Public Relay Fallback are present in
+              this snapshot.
             </EmptyState>
           ) : (
             <>
               {runtime.privateRelayCandidates.length === 0 ? null : (
-                <div className="scroll-x">
-                  <CoverageMatrix
-                    caption="MA2A Private Relay coverage by Space"
-                    rows={runtime.privateRelayCandidates.map((relay) => ({
-                      id: relay.providerEndpointId,
-                      name: relay.relayUrl,
-                      detail: `provider ${shortId(relay.providerEndpointId)}`,
-                      covers: runtime.spaces.map((space) =>
-                        relay.coveredSpaceIds.includes(space.id),
-                      ),
-                      compatible: relay.homeCompatible,
-                    }))}
-                    spaces={runtime.spaces.map((space) => space.name)}
-                  />
+                <div>
+                  <span className="eyebrow">Private Relay advertisements</span>
+                  <div className="scroll-x">
+                    <CoverageMatrix
+                      caption="MA2A Private Relay coverage by Space"
+                      rows={runtime.privateRelayCandidates.map((relay) => ({
+                        id: relay.providerEndpointId,
+                        name: relay.relayUrl,
+                        detail: `provider ${shortId(relay.providerEndpointId)}`,
+                        covers: runtime.spaces.map((space) =>
+                          relay.coveredSpaceIds.includes(space.id),
+                        ),
+                        compatible: relay.homeCompatible,
+                      }))}
+                      spaces={runtime.spaces.map((space) => space.name)}
+                    />
+                  </div>
+                  <p className="field__help">
+                    Every current advertisement is listed. Only a home-compatible one, meaning one
+                    that covers every active Space, is supplied to Iroh.
+                  </p>
                 </div>
               )}
               {runtime.publicRelayFallbacks.length === 0 ? null : (
                 <div>
-                  <span className="eyebrow">Public Iroh relay fallback</span>
+                  <span className="eyebrow">Public Relay Fallback</span>
                   <ul className="peer-list">
                     {runtime.publicRelayFallbacks.map((fallback) => (
                       <li key={fallback.relayUrl}>
@@ -75,169 +79,60 @@ export function RelaysScreen({
               )}
             </>
           )}
+          <div className="cluster">
+            <span className="eyebrow">Candidates supplied to Iroh</span>
+            <Pill filled tone={candidateCount(runtime) === 0 ? "none" : "direct"}>
+              {`${candidateCount(runtime)} supplied`}
+            </Pill>
+          </div>
           <p className="field__help">
-            MA2A supplies Iroh {candidateCount(runtime)} of these entries: the home-compatible
-            Private Relays plus every enabled public fallback. A Private Relay is a role hosted by
-            an MA2A Endpoint and is home-compatible only when it covers every active Space. A public
-            Iroh relay is external infrastructure with no Endpoint identity and no Space coverage. A
-            listed candidate is not a reachability guarantee.
+            The generic Iroh relay map receives the home-compatible Private Relays plus every
+            enabled Public Relay Fallback, and nothing else. A Private Relay is a role hosted by an
+            MA2A Endpoint; a Public Relay Fallback is external infrastructure with no Endpoint
+            identity and no Space coverage. A supplied candidate is still not a reachability
+            guarantee.
           </p>
         </Card>
-        <Card label="Effective: what Iroh reports back">
+        <Card label="Iroh transport observation">
           <MeterList
-            label="Observed relay state"
+            label="Iroh transport observation"
             meters={[
               {
-                label: "Public relay connected",
+                label: "Public Relay Fallback connected",
                 fraction: runtime.observedRelayState.publicRelayConnected ? 1 : 0,
                 value: runtime.observedRelayState.publicRelayConnected ? "yes" : "no",
                 tone: runtime.observedRelayState.publicRelayConnected ? "direct" : "none",
-                note: "An Iroh transport observation for this Endpoint.",
-              },
-              {
-                label: "Private Relay Provider running here",
-                fraction: runtime.observedRelayState.privateRelayProviderRunning ? 1 : 0,
-                value: runtime.observedRelayState.privateRelayProviderRunning ? "yes" : "no",
-                tone: runtime.observedRelayState.privateRelayProviderRunning ? "accent" : "none",
-                note: "A service this Runtime hosts for others. It says nothing about whether this Endpoint has a connected home relay.",
+                note: "Iroh reports this Endpoint connected through an enabled Public Relay Fallback.",
               },
             ]}
           />
           <div className="cluster">
-            <Pill tone="none">aggregate path: {runtime.endpoint.observedPath}</Pill>
+            <Pill tone="none">observed path: {runtime.endpoint.observedPath}</Pill>
           </div>
           <p className="field__help">
             Cleared at every restart, then rebuilt from the running Endpoint. MA2A never claims to
             pick Iroh&apos;s home relay.
           </p>
         </Card>
+        <Card label="Local provider role">
+          <MeterList
+            label="Local provider role"
+            meters={[
+              {
+                label: "Private Relay Provider running here",
+                fraction: runtime.observedRelayState.privateRelayProviderRunning ? 1 : 0,
+                value: runtime.observedRelayState.privateRelayProviderRunning ? "yes" : "no",
+                tone: runtime.observedRelayState.privateRelayProviderRunning ? "accent" : "none",
+              },
+            ]}
+          />
+          <p className="field__help">
+            A service this Runtime hosts for other Endpoints, configured in the panel beside this
+            one. It is not an Iroh observation about this Endpoint and says nothing about whether
+            this Endpoint has a connected home relay.
+          </p>
+        </Card>
       </div>
     </Section>
-  )
-}
-
-export function RelaysInspector({
-  actions,
-}: {
-  readonly actions: RuntimeActions | undefined
-}): ReactNode {
-  const [message, setMessage] = useState<string | undefined>()
-  const [native, setNative] = useState(true)
-  const disabled = actions === undefined
-  return (
-    <Inspector eyebrow="Operations" title="Relay configuration">
-      <Card label="Private provider">
-        <Form
-          disabled={disabled}
-          label="Configure the Private Relay"
-          onSubmit={(data) => {
-            if (actions === undefined) return
-            setMessage("Configuring…")
-            const served = text(data, "served")
-              .split(/[\s,]+/u)
-              .filter((value) => value.length > 0)
-            const base = {
-              listen: text(data, "listen"),
-              publicUrl: text(data, "public-url"),
-              servedSpaceIds: served,
-            }
-            const configuration = native
-              ? {
-                  mode: "native_tls" as const,
-                  ...base,
-                  certificatePath: text(data, "cert"),
-                  privateKeyPath: text(data, "key"),
-                }
-              : {
-                  mode: "external_termination" as const,
-                  ...base,
-                  certificatePath: null,
-                  privateKeyPath: null,
-                }
-            void actions.configurePrivateRelay(configuration).then(
-              (relay) => setMessage(`Configured at ${relay.host}:${relay.port}.`),
-              () => setMessage("The Runtime rejected the configuration."),
-            )
-          }}
-          submitLabel="Configure private"
-          {...(message === undefined ? {} : { status: message })}
-        >
-          <fieldset className="segmented">
-            <legend className="visually-hidden">TLS termination</legend>
-            <button
-              aria-pressed={native}
-              className="segmented__option"
-              onClick={() => setNative(true)}
-              type="button"
-            >
-              Native TLS
-            </button>
-            <button
-              aria-pressed={!native}
-              className="segmented__option"
-              onClick={() => setNative(false)}
-              type="button"
-            >
-              External
-            </button>
-          </fieldset>
-          <Field id="relay-listen" label="Listen address">
-            <input id="relay-listen" name="listen" required />
-          </Field>
-          <Field id="relay-url" label="Public HTTPS URL">
-            <input id="relay-url" name="public-url" pattern="https://.*" required type="url" />
-          </Field>
-          <Field
-            help="Separate Space IDs with commas or line breaks. The Runtime may serve only active Spaces it currently belongs to and that permit Private Relay Provider operation."
-            id="relay-served"
-            label="Served Space IDs"
-          >
-            <textarea id="relay-served" name="served" required rows={2} />
-          </Field>
-          {native ? (
-            <>
-              <Field id="relay-cert" label="TLS certificate path">
-                <input id="relay-cert" name="cert" required />
-              </Field>
-              <Field
-                help="Only the path is sent to the daemon. PEM bytes never enter the browser, the local API or logs."
-                id="relay-key"
-                label="TLS private key path"
-              >
-                <input id="relay-key" name="key" required />
-              </Field>
-            </>
-          ) : (
-            <p className="field__help">
-              External termination starts a plaintext backend on loopback only. Your proxy must
-              terminate TLS and forward the relay upgrade unchanged.
-            </p>
-          )}
-        </Form>
-      </Card>
-      <Card label="Public fallback">
-        <Form
-          disabled={disabled}
-          label="Configure the public fallback"
-          onSubmit={(data) => {
-            if (actions === undefined) return
-            setMessage("Configuring…")
-            void actions.configurePublicRelay(text(data, "url")).then(
-              () => setMessage("Public fallback updated."),
-              () => setMessage("The Runtime rejected the configuration."),
-            )
-          }}
-          submitLabel="Configure public"
-        >
-          <Field
-            help="Fallback is explicit. MA2A never promotes it automatically."
-            id="public-url"
-            label="HTTPS relay URL"
-          >
-            <input id="public-url" name="url" pattern="https://.*" required type="url" />
-          </Field>
-        </Form>
-      </Card>
-    </Inspector>
   )
 }

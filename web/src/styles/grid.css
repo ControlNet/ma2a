@@ -85,24 +85,59 @@
   inline-size: 20px;
   block-size: 20px;
   border-radius: 50%;
-  background: var(--observed-direct-soft);
-  color: var(--observed-direct);
 }
 
 .trust__mark::before {
-  content: "\2713";
   font-size: 0.75rem;
   font-weight: 700;
 }
 
+.trust__mark--retained {
+  background: var(--observed-relay-soft);
+  color: var(--observed-relay);
+}
+
+.trust__mark--retained::before {
+  content: "\25cf";
+}
+
+.trust__mark--transient {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.trust__mark--transient::before {
+  content: "\25d0";
+}
+
+.trust__mark--never,
 .trust__mark--absent {
   border: 1.4px dashed var(--control);
   background: transparent;
   color: var(--text-dim);
 }
 
+.trust__mark--never::before,
 .trust__mark--absent::before {
   content: "\2013";
+}
+
+.trust-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-dim);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.trust-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .trust__name {

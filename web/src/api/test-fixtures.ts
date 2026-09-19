@@ -14,7 +14,10 @@ export function runtimeSnapshot(revision: number): RuntimeSnapshot {
     private_relay_candidates: [],
     public_relay_fallbacks: [],
     control_rounds: [],
-    observed_relay_state: { private_relay_online: false, public_relay_online: false },
+    observed_relay_state: {
+      private_relay_provider_running: false,
+      public_relay_connected: false,
+    },
     reachability: { state: "AwaitingIrohHome" as const, direct: true, relayed: false },
     recent_echo_summary: { successes: 0, failures: 0 },
     ui_auth: { initialized: true, password_set: false, active_sessions: 0 },

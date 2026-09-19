@@ -101,8 +101,8 @@ export type ControlRoundView = {
 }
 
 export type ObservedRelayStateView = {
-  readonly private_relay_online: boolean
-  readonly public_relay_online: boolean
+  readonly private_relay_provider_running: boolean
+  readonly public_relay_connected: boolean
 }
 
 export type ReachabilityStateName =

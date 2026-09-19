@@ -156,8 +156,8 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     assert_eq!(
         snapshot.pointer("/observed_relay_state"),
         Some(&serde_json::json!({
-            "private_relay_online": false,
-            "public_relay_online": false,
+            "private_relay_provider_running": false,
+            "public_relay_connected": false,
         }))
     );
     // No local Private Relay Provider runs here, yet Iroh reports a connected
