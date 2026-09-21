@@ -7,15 +7,13 @@ MA2A uses the platform state directory described in [private-ipc.md](private-ipc
 ## Runtime and Endpoint
 
 ```sh
-ma2a init
 ma2a status [--json]
 ma2a endpoint show [--json]
 ma2a daemon
 ma2a shutdown
 ```
 
-`init` securely prompts twice for the Web password. `daemon` runs in the foreground for direct
-supervision. Runtime-requiring commands auto-start the same executable when no compatible daemon
+`daemon` runs in the foreground for direct supervision. WebUI is stopped by default. Runtime-requiring commands auto-start the same executable when no compatible daemon
 is live.
 
 ## Spaces and Enrollment
@@ -79,20 +77,38 @@ state; MA2A does not claim to select Iroh's preferred or home relay.
 ```sh
 ma2a echo --endpoint ENDPOINT_ID --text TEXT [--json]
 printf '%s' TEXT | ma2a echo --endpoint ENDPOINT_ID --stdin [--json]
-ma2a ui password set
-ma2a ui password reset
-ma2a ui sessions revoke-all
-ma2a ui open
+ma2a ui init
+ma2a ui revoke-all
+ma2a ui start --host 127.0.0.1 --port 8080
+ma2a ui stop
+ma2a ui status --json
 ```
 
-Echo is Endpoint-addressed and has no Space routing option. Password commands read and confirm the
-password without echo through a terminal; passwords are rejected from argv. `ui open` starts or
-reuses the daemon, refuses when no password is configured, and launches a credential-free
-`http://127.0.0.1:PORT` URL through the operating system process API without shell construction.
+Echo is Endpoint-addressed and has no Space routing option. `ui init` reads and confirms a
+1–1024-byte UTF-8 password without terminal echo. It sets the first password or resets an existing
+one atomically, revoking all existing sessions. Passwords are rejected from argv.
+
+`ui start` requires a configured password. It starts the daemon if necessary, binds the WebUI
+listener, prints its status and URL, and returns to the shell while the daemon serves HTTP in the
+background. Running it again restarts WebUI. `--host` accepts IP addresses and hostnames, including
+`0.0.0.0` and `::` for wildcard binding. The defaults are `127.0.0.1` and `--port 0` (a free port
+selected by the OS). `--json` returns the same status shape as `ui status --json`.
+
+`ui stop` closes the WebUI listener and existing HTTP/SSE connections; the daemon and Endpoint
+continue running. `ui status` prints `running` or `stopped` and the URL (or `-` when stopped).
+Neither command auto-starts a stopped daemon. Listener settings and running state are not persisted;
+a daemon restart leaves WebUI stopped. For wildcard bindings, the URL shows the wildcard address;
+use the node's reachable IP or hostname in a remote browser.
+
+`ui init` does not start WebUI. `ui revoke-all` invalidates all browser sessions without stopping
+WebUI. The old top-level `init`, `ui password set/reset`, `ui sessions revoke-all`, and `ui open`
+commands are removed.
 
 ## Output and Errors
 
-Commands with `--json` write the exact local API v1 envelope to standard output. Diagnostics go to
+Commands with `--json` write the exact local API v1 envelope to standard output, except UI lifecycle
+commands, which emit `{ "running": true, "url": "http://127.0.0.1:8080" }` or
+`{ "running": false, "url": null }`. Diagnostics go to
 standard error. Human output is intended for operators and may evolve; JSON discriminants and
 fields are checked against the repository's golden schema.
 

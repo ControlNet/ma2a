@@ -18,7 +18,7 @@ Unknown fields, duplicate JSON object members, and unknown operations are reject
 
 ## Commands And Results
 
-The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `196c9bdbaa8a30bf9b4c3e62c872cdbb85cd554b2a10abc2665c251684113d0a`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 24 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
+The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `e1f06a5886cf8f4e1991c459217ea2a2027335cd16a41bab245866b3de9e6dda`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 25 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
 
 Successful responses contain required `version`, nullable `request_id`, `revision`, and discriminated `result` fields. Error responses contain required `version`, `error`, and nullable `remediation` fields. TypeScript exposes `LocalApiSuccessResponse`, `LocalApiErrorResponse`, and their `LocalApiResponse` union.
 
@@ -26,9 +26,13 @@ The `echo_call` command carries a request ID, target Endpoint ID, and UTF-8 payl
 
 The pre-authorization `handshake` result exposes only Runtime version, Endpoint ID, revision, initialization/password status, and capability flags. It contains no Space details. Client-visible values never contain key material, invitation secrets, session bearers, password verifiers, or `authorized_via` diagnostics.
 
+`ui_init` atomically establishes or replaces the Web password and revokes existing sessions. The public CLI uses this operation for both first setup and recovery. Lower-level `ui_password_set` and `ui_password_reset` operations retain their explicit preconditions for local API callers.
+
+`ui_start` carries `host` (an IP address or hostname) and `port` (0–65535; zero selects a free port). `ui_stop` and `ui_status` carry no fields. All three return `ui_status` with `running` and nullable `url`. These are private IPC lifecycle instructions, have no `request_id`, execute on every call, and never participate in durable replay. Each successful `ui_start` restarts an existing service. A new daemon always starts with WebUI stopped. HTTP routes do not expose UI initialization or lifecycle control.
+
 ## Mutation Replay
 
-Every mutation carries a client-generated `request_id`. The Runtime fingerprints the canonical typed command after version and input validation:
+Every durable mutation carries a client-generated `request_id`. The Runtime fingerprints the canonical typed command after version and input validation:
 
 - New identifier and payload: execute once.
 - Same identifier and same payload: return the prior result without executing again.

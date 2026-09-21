@@ -6,7 +6,7 @@ mod value;
 
 pub(crate) use value::{
     echo_reply_value, handshake_value, private_relay_value, public_relay_value, status_value,
-    ui_auth_result_value, ui_open_value,
+    ui_auth_result_value, ui_status_value,
 };
 
 /// Phase 1 local API capabilities advertised without Space details.
@@ -232,23 +232,16 @@ pub struct PublicRelayView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Credential-free loopback Web endpoint owned by the daemon.
-pub struct UiOpenView {
-    pub(crate) url: String,
+/// Web UI running state and credential-free URL owned by the daemon.
+pub struct UiStatusView {
+    pub(crate) url: Option<String>,
 }
 
-impl UiOpenView {
-    /// Creates a bounded IPv4 loopback URL.
-    ///
-    /// # Errors
-    /// Returns invalid input for non-loopback or oversized URLs.
-    pub fn new(url: &str) -> Result<Self, super::ApiError> {
-        if !url.starts_with("http://127.0.0.1:") || url.len() > 64 {
-            Err(super::ApiError::invalid_input())
-        } else {
-            Ok(Self {
-                url: url.to_owned(),
-            })
+impl UiStatusView {
+    /// Creates a status view from the actual bound address, or a stopped state.
+    pub fn new(address: Option<std::net::SocketAddr>) -> Self {
+        Self {
+            url: address.map(|address| format!("http://{address}")),
         }
     }
 }

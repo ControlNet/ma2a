@@ -34,6 +34,7 @@ pub fn decode_ui_control_response(
         command.operation(),
         result.get("type").and_then(Value::as_str),
     ) {
+        ("ui_init", Some("ui_initialized")) => Ok(CommandResult::ui_initialized(auth)),
         ("ui_password_set", Some("ui_password_set")) => Ok(CommandResult::ui_password_set(auth)),
         ("ui_password_reset", Some("ui_password_reset")) => {
             Ok(CommandResult::ui_password_reset(auth))

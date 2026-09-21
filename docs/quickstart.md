@@ -27,15 +27,15 @@ mkdir -p "$HOME/.local/state/ma2a-quickstart"
 chmod 700 "$HOME/.local/state/ma2a-quickstart"
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" --version
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" status
-./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" init
-./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" ui open
+./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" ui init
+./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" ui start
 ```
 
-`status` starts the installed executable as the current-user daemon when needed. `init` reads and
+`status` starts the installed executable as the current-user daemon when needed, with WebUI stopped. `ui init` reads and
 confirms the Web password without echo. Passwords must contain 1–1,024 UTF-8 bytes, and both
 entries must match exactly. No character-class combination is required.
-`ui open` launches a credential-free loopback URL. Stop the
-isolated Runtime with:
+`ui start` starts WebUI in the background and prints its URL. Open that URL in a browser.
+Use `ui status` to query it or `ui stop` to stop only WebUI. Stop the isolated Runtime with:
 
 ```sh
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" shutdown

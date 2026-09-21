@@ -30,7 +30,7 @@ pub use responses::{ApiResponse, CommandResult, UiControlResult, encode_error, e
 pub use result_data::{
     CapabilityFlags, EchoReplyView, HandshakeAuth, HandshakeState, HandshakeView,
     InteractionCapabilities, ManagementCapabilities, PrivateRelayView, PublicRelayView,
-    RelayAddress, RelayCapabilities, RuntimeStatusView, UiOpenView,
+    RelayAddress, RelayCapabilities, RuntimeStatusView, UiStatusView,
 };
 pub use schema::{ERROR_NAMES, LOCAL_API_SCHEMA_JSON, LOCAL_API_SCHEMA_SHA256, RESULT_NAMES};
 pub use snapshot::{

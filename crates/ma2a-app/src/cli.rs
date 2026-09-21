@@ -20,7 +20,6 @@ pub(crate) enum Command {
     Daemon,
     #[command(hide = true)]
     DaemonDetached,
-    Init,
     Status {
         #[arg(long)]
         json: bool,
@@ -211,26 +210,28 @@ pub(crate) struct EchoArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum UiCommand {
-    Password {
-        #[command(subcommand)]
-        command: PasswordCommand,
-    },
-    Sessions {
-        #[command(subcommand)]
-        command: SessionsCommand,
-    },
-    Open,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum PasswordCommand {
-    Set,
-    Reset,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum SessionsCommand {
+    /// Set or reset the Web UI password and revoke existing sessions.
+    Init,
+    /// Revoke all Web UI sessions.
     RevokeAll,
+    /// Start or restart Web UI in the daemon and return to the shell.
+    Start {
+        /// IP address or hostname to bind, including wildcard addresses.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Listener port; 0 asks the OS to select a free port.
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop Web UI without stopping the daemon or Endpoint.
+    Stop,
+    /// Show running/stopped and the current URL.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl Cli {

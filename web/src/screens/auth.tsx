@@ -49,7 +49,7 @@ export function LoginScreen({
       <div className="auth__copy">
         <h1>Sign in to this Runtime</h1>
         <p>
-          Your passphrase goes only to the same-origin Runtime on loopback and is never stored by
+          Your passphrase goes only to the same-origin Runtime and is never stored by
           the browser.
         </p>
       </div>
@@ -93,9 +93,8 @@ export function LoginScreen({
 }
 
 const COMMANDS = [
-  ["Initialize a Runtime", "ma2a init"],
-  ["Set the UI passphrase", "ma2a ui password set"],
-  ["Reset the UI passphrase", "ma2a ui password reset"],
+  ["Set or reset the UI passphrase", "ma2a ui init"],
+  ["Start the WebUI", "ma2a ui start"],
 ] as const
 
 export function SetupScreen(): ReactNode {

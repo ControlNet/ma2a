@@ -2084,6 +2084,7 @@ dependencies = [
  "axum",
  "blake3",
  "getrandom 0.4.3",
+ "hyper-util",
  "interprocess",
  "iroh",
  "iroh-tickets",

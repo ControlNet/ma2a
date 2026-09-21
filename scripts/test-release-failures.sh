@@ -15,8 +15,8 @@ trap 'rm -rf "$temporary"' EXIT
 
 ./scripts/test-runtime-references.sh >/dev/null
 
-if ! grep -Fqx 'url=$($binary --state-dir "$state_dir" ui open)' ./scripts/smoke-release.sh; then
-  printf 'release smoke must use the canonical ui open command\n' >&2
+if ! grep -Fqx 'url=$($binary --state-dir "$state_dir" ui start --json | jq -er .url)' ./scripts/smoke-release.sh; then
+  printf 'release smoke must use the canonical ui start command\n' >&2
   exit 1
 fi
 if grep -Fq 'url=$($binary --state-dir "$state_dir" web)' ./scripts/smoke-release.sh; then

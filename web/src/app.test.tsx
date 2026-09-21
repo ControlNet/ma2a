@@ -187,14 +187,14 @@ test.each([
 test("keeps password setup on trusted CLI only", () => {
   render(<App initialPath="/setup" runtime={EMPTY_RUNTIME_FIXTURE} />)
 
-  expect(screen.getByText("ma2a ui password set")).toBeVisible()
-  expect(screen.getByText("ma2a ui password reset")).toBeVisible()
+  expect(screen.getByText("ma2a ui start")).toBeVisible()
+  expect(screen.getByText("ma2a ui init")).toBeVisible()
   expect(screen.queryByLabelText("New password")).not.toBeInTheDocument()
 })
 
 test("uses the reset command for Settings password recovery", () => {
   render(<App initialPath="/settings" runtime={MANY_RUNTIME_FIXTURE} />)
 
-  expect(screen.getByText("ma2a ui password reset")).toBeVisible()
+  expect(screen.getByText("ma2a ui init")).toBeVisible()
   expect(screen.queryByText("ma2a ui password set")).not.toBeInTheDocument()
 })

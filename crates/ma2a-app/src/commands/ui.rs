@@ -47,15 +47,10 @@ impl<R: std::io::BufRead + Send> PasswordReader for InheritedStdinPasswordReader
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PasswordCommand {
-    Set,
-    Reset,
-}
-
 #[derive(Debug)]
 pub(crate) enum UiCommandError {
     ConfirmationMismatch,
+    PasswordBounds,
     Control(CurrentUserControlError),
     InvalidCommand(ma2a_runtime::api::ApiError),
     Read(std::io::Error),
@@ -65,6 +60,7 @@ pub(crate) enum UiCommandError {
 impl fmt::Display for UiCommandError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PasswordBounds => formatter.write_str("password must contain 1–1024 UTF-8 bytes"),
             Self::ConfirmationMismatch => {
                 formatter.write_str("password confirmation did not match")
             }
@@ -84,13 +80,12 @@ impl std::error::Error for UiCommandError {
             Self::Control(error) => Some(error),
             Self::InvalidCommand(error) => Some(error),
             Self::Read(error) => Some(error),
-            Self::ConfirmationMismatch | Self::UnexpectedResult => None,
+            Self::PasswordBounds | Self::ConfirmationMismatch | Self::UnexpectedResult => None,
         }
     }
 }
 
 pub(crate) async fn change_password(
-    action: PasswordCommand,
     reader: &mut impl PasswordReader,
     client: &mut dyn CurrentUserControlClient,
 ) -> Result<(), UiCommandError> {
@@ -101,19 +96,17 @@ pub(crate) async fn change_password(
     if password.as_bytes() != confirmation.as_bytes() {
         return Err(UiCommandError::ConfirmationMismatch);
     }
-    let command = match action {
-        PasswordCommand::Set => Command::ui_password_set(password),
-        PasswordCommand::Reset => Command::ui_password_reset(password),
+    if !(1..=1_024).contains(&password.len()) {
+        return Err(UiCommandError::PasswordBounds);
     }
-    .map_err(UiCommandError::InvalidCommand)?;
+    let command = Command::ui_init(password).map_err(UiCommandError::InvalidCommand)?;
     let result = client
         .send(command)
         .await
         .map_err(UiCommandError::Control)?;
-    match (action, result.ui_control_result()) {
-        (PasswordCommand::Set, Some(UiControlResult::PasswordSet(_)))
-        | (PasswordCommand::Reset, Some(UiControlResult::PasswordReset(_))) => Ok(()),
-        (PasswordCommand::Set | PasswordCommand::Reset, _) => Err(UiCommandError::UnexpectedResult),
+    match result.ui_control_result() {
+        Some(UiControlResult::Initialized(_)) => Ok(()),
+        _ => Err(UiCommandError::UnexpectedResult),
     }
 }
 
@@ -209,15 +202,15 @@ mod tests {
         };
         let mut client = RecordingClient {
             commands: Vec::new(),
-            results: VecDeque::from([CommandResult::ui_password_set(UiAuthView::new(
+            results: VecDeque::from([CommandResult::ui_initialized(UiAuthView::new(
                 true, true, 0,
             ))]),
         };
 
-        change_password(PasswordCommand::Set, &mut reader, &mut client).await?;
+        change_password(&mut reader, &mut client).await?;
 
         let command = client.commands.first().ok_or("missing recorded command")?;
-        assert_eq!(command.operation(), "ui_password_set");
+        assert_eq!(command.operation(), "ui_init");
         assert!(!format!("{command:?}").contains(passphrase));
         assert!(
             encode_command(command)?
@@ -237,7 +230,7 @@ mod tests {
             results: VecDeque::new(),
         };
 
-        let result = change_password(PasswordCommand::Set, &mut reader, &mut client).await;
+        let result = change_password(&mut reader, &mut client).await;
 
         assert!(matches!(result, Err(UiCommandError::ConfirmationMismatch)));
         assert!(client.commands.is_empty());

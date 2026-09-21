@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::{
     CapabilityFlags, EchoReplyView, HandshakeView, PrivateRelayView, PublicRelayView,
-    RuntimeStatusView, UiOpenView,
+    RuntimeStatusView, UiStatusView,
 };
 use crate::api::{codec_fields::encode_hex, snapshot::UiAuthView};
 
@@ -31,8 +31,8 @@ pub(crate) fn public_relay_value(value: &PublicRelayView) -> Value {
     json!({"configured": value.configured, "url": value.url, "online": value.online})
 }
 
-pub(crate) fn ui_open_value(value: &UiOpenView) -> Value {
-    json!({"url": value.url})
+pub(crate) fn ui_status_value(value: &UiStatusView) -> Value {
+    json!({"running": value.url.is_some(), "url": value.url})
 }
 
 pub(crate) fn echo_reply_value(value: &EchoReplyView) -> Value {

@@ -20,7 +20,7 @@ pub(super) async fn authoritative_revision(
     context: &ConnectionContext,
 ) -> Result<u64, IpcError> {
     match command.operation() {
-        "ui_password_set" | "ui_password_reset" | "session_revoke_all" => {
+        "ui_init" | "ui_password_set" | "ui_password_reset" | "session_revoke_all" => {
             let persisted = context
                 .control
                 .state_revision()
@@ -226,27 +226,27 @@ pub(super) async fn execute(
                 .await
                 .map_err(|_| ProtocolError::UNAVAILABLE)?,
         ),
-        "ui_open" => {
-            if !context
-                .control
-                .password_is_set()
-                .await
-                .map_err(|_| ProtocolError::INTERNAL)?
-            {
-                return Err(ProtocolError::CONFLICT);
-            }
-            CommandResult::ui_opened(
-                crate::api::UiOpenView::new(
-                    context
-                        .web_url
-                        .as_deref()
-                        .ok_or(ProtocolError::UNAVAILABLE)?,
-                )
-                .map_err(|_| ProtocolError::INTERNAL)?,
+        "ui_start" => {
+            let (host, port) = command.ui_binding().ok_or(ProtocolError::INVALID_INPUT)?;
+            CommandResult::ui_status(
+                context
+                    .web
+                    .as_ref()
+                    .ok_or(ProtocolError::UNAVAILABLE)?
+                    .start(host, port)
+                    .await?,
             )
         }
+        "ui_stop" => CommandResult::ui_status(match &context.web {
+            Some(web) => web.stop().await,
+            None => crate::api::UiStatusView::new(None),
+        }),
+        "ui_status" => CommandResult::ui_status(match &context.web {
+            Some(web) => web.status().await,
+            None => crate::api::UiStatusView::new(None),
+        }),
         "graceful_shutdown" => CommandResult::shutting_down(),
-        "ui_password_set" | "ui_password_reset" | "session_revoke_all" => context
+        "ui_init" | "ui_password_set" | "ui_password_reset" | "session_revoke_all" => context
             .control
             .send(command.clone())
             .await

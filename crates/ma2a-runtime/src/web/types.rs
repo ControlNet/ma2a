@@ -49,6 +49,8 @@ impl Default for WebAuthConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PasswordAction {
+    /// Set or reset a password atomically.
+    Init,
     /// Establishes the first verifier.
     Set,
     /// Replaces an existing verifier.

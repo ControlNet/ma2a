@@ -77,7 +77,7 @@ export function SettingsScreen({
         </ul>
         <p className="field__help">
           Handling is not retention. Signing in necessarily puts the passphrase in browser memory
-          and sends it over same-origin loopback; nothing keeps it. Protected storage holds an
+          and sends it to the same-origin Runtime; nothing keeps it. Protected storage holds an
           Argon2id verifier and an invitation digest, never the passphrase or the ticket secret
           themselves. The ticket file is the one place a ticket secret is retained, written once on
           request for the operator to transfer and delete.
@@ -97,8 +97,8 @@ export function SettingsScreen({
             browser route for creating or resetting a passphrase.
           </p>
           <div className="command">
-            <code className="command__line">ma2a ui password reset</code>
-            <code className="command__line">ma2a ui sessions revoke-all</code>
+            <code className="command__line">ma2a ui init</code>
+            <code className="command__line">ma2a ui revoke-all</code>
           </div>
         </Card>
         <Card label="Browser storage">

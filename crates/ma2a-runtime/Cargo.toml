@@ -10,6 +10,7 @@ version.workspace = true
 axum.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
+hyper-util = { version = "=0.1.20", features = ["server-auto", "service", "tokio"] }
 interprocess.workspace = true
 ma2a-core.workspace = true
 ma2a-net.workspace = true

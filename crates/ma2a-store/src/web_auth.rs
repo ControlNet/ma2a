@@ -31,6 +31,8 @@ pub struct CredentialRecord {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PasswordTransition {
+    /// Set or reset the verifier in the same transaction.
+    Init,
     /// Establish a verifier only when none exists.
     Set,
     /// Require an existing verifier before changing it.
@@ -151,7 +153,9 @@ impl Repository {
             |row| row.get::<_, bool>(0),
         )?;
         match (transition, configured) {
-            (PasswordTransition::Set, false) | (PasswordTransition::Reset, true) => {}
+            (PasswordTransition::Init, _)
+            | (PasswordTransition::Set, false)
+            | (PasswordTransition::Reset, true) => {}
             (PasswordTransition::Set, true) | (PasswordTransition::Reset, false) => {
                 return Ok(None);
             }

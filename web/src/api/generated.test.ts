@@ -61,11 +61,11 @@ test("machine schema describes nested commands, envelopes, results, and events",
   expect(schema.commands.private_relay_configure.fields.served_space_ids.items.ref).toBe("space_id")
   expect(schema.commands.private_relay_disable.fields.request_id.ref).toBe("request_id")
   expect(schema.commands.public_relay_disable.fields.request_id.ref).toBe("request_id")
-  expect(schema.commands.ui_open.fields).toEqual({})
+  expect(schema.commands.ui_status.fields).toEqual({})
   expect(schema.responses.success.fields.request_id.nullable.ref).toBe("request_id")
   expect(schema.responses.error.fields.error.values).toEqual(ERROR_CODES)
   expect(schema.results.snapshot.payload.ref).toBe("runtime_snapshot")
-  expect(schema.results.ui_opened.payload.ref).toBe("ui_open")
+  expect(schema.results.ui_status.payload.ref).toBe("ui_status")
   expect(schema.events.spaces_changed.fields.changed.ref).toBe("changed_space_ids")
 })
 

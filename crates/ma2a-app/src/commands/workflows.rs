@@ -44,41 +44,7 @@ pub(crate) async fn run_echo(
 }
 
 pub(crate) async fn run_ui(state_dir: &Path, command: cli::UiCommand) -> Result<(), AppError> {
-    match command {
-        cli::UiCommand::Password { command } => match command {
-            cli::PasswordCommand::Set => {
-                crate::credential_command::run_password(state_dir, super::ui::PasswordCommand::Set)
-                    .await
-            }
-            cli::PasswordCommand::Reset => {
-                crate::credential_command::run_password(
-                    state_dir,
-                    super::ui::PasswordCommand::Reset,
-                )
-                .await
-            }
-        },
-        cli::UiCommand::Sessions {
-            command: cli::SessionsCommand::RevokeAll,
-        } => crate::credential_command::run_revoke_all(state_dir).await,
-        cli::UiCommand::Open => {
-            let paths = IpcPaths::new(state_dir)?;
-            crate::autostart::ensure_daemon(state_dir, &paths).await?;
-            let response = ma2a_runtime::ipc::LocalApiClient::new(paths)
-                .call(&unit_command("ui_open")?)
-                .await?;
-            let document: Value = serde_json::from_slice(&response).map_err(io::Error::other)?;
-            let url = document
-                .pointer("/result/payload/url")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    io::Error::other("Runtime response is missing the loopback UI URL")
-                })?;
-            crate::browser::open(url)?;
-            println!("{url}");
-            Ok(())
-        }
-    }
+    super::ui_lifecycle::run(state_dir, command).await
 }
 
 pub(crate) fn unit_command(operation: &str) -> Result<api::Command, AppError> {

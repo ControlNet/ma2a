@@ -170,8 +170,9 @@ export type EchoReplyView = {
   readonly duration_ms: number
 }
 
-export type UiOpenView = {
-  readonly url: string
+export type UiStatusView = {
+  readonly running: boolean
+  readonly url: string | null
 }
 
 export type CommandResult =
@@ -194,7 +195,8 @@ export type CommandResult =
   | { readonly type: "ui_password_set"; readonly payload: UiAuthView }
   | { readonly type: "ui_password_reset"; readonly payload: UiAuthView }
   | { readonly type: "sessions_revoked"; readonly payload: UiAuthView }
-  | { readonly type: "ui_opened"; readonly payload: UiOpenView }
+  | { readonly type: "ui_initialized"; readonly payload: UiAuthView }
+  | { readonly type: "ui_status"; readonly payload: UiStatusView }
   | { readonly type: "space_details"; readonly payload: SpaceDetailsView }
   | { readonly type: "snapshot_stamp"; readonly payload: SnapshotStampView }
   | { readonly type: "snapshot"; readonly payload: RuntimeSnapshot }
