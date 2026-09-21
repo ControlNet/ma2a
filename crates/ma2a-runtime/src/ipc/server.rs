@@ -41,7 +41,7 @@ pub struct LocalApiServer {
     handle: RuntimeHandle,
     control: CurrentUserRuntime,
     replay: Arc<Mutex<()>>,
-    web_url: Option<String>,
+    web: Option<crate::web::WebLifecycle>,
 }
 
 impl LocalApiServer {
@@ -61,14 +61,14 @@ impl LocalApiServer {
             handle,
             control,
             replay: Arc::new(Mutex::new(())),
-            web_url: None,
+            web: None,
         })
     }
 
-    /// Associates the already-bound daemon Web endpoint with local API discovery.
+    /// Associates the explicitly controlled daemon Web UI service.
     #[must_use]
-    pub fn with_web_url(mut self, web_url: String) -> Self {
-        self.web_url = Some(web_url);
+    pub fn with_web_lifecycle(mut self, web: crate::web::WebLifecycle) -> Self {
+        self.web = Some(web);
         self
     }
 
@@ -99,7 +99,7 @@ impl LocalApiServer {
                         control: self.control.clone(),
                         replay: Arc::clone(&self.replay),
                         shutdown_sender: shutdown_sender.clone(),
-                        web_url: self.web_url.clone(),
+                        web: self.web.clone(),
                     };
                     tasks.spawn(async move {
                         let _permit = permit;
@@ -130,7 +130,7 @@ struct ConnectionContext {
     control: CurrentUserRuntime,
     replay: Arc<Mutex<()>>,
     shutdown_sender: mpsc::Sender<()>,
-    web_url: Option<String>,
+    web: Option<crate::web::WebLifecycle>,
 }
 
 async fn handle_connection(
@@ -161,7 +161,13 @@ async fn handle_connection(
 
 async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>, bool), IpcError> {
     let command = api::decode_command(input)?;
-    let _replay = context.replay.lock().await;
+    // Volatile lifecycle instructions execute on every call and never enter durable replay.
+    // They must not hold the mutation lock while closing HTTP requests using this IPC.
+    let _replay = if command.is_ui_lifecycle() {
+        None
+    } else {
+        Some(context.replay.lock().await)
+    };
     let fingerprint = match command.request_id() {
         Some(request_id) => Some((request_id, api::command_fingerprint(&command)?)),
         None => None,

@@ -74,7 +74,30 @@ fn parse_command(object: &Map<String, Value>) -> Result<Command, ApiError> {
         "ui_password_set" => ui_password(object, true)?,
         "ui_password_reset" => ui_password(object, false)?,
         "session_revoke_all" => request_only(object, false)?,
-        "ui_open" => unit(object, CommandKind::UiOpen)?,
+        "ui_init" => {
+            exact_fields(object, &["version", "operation", "request_id", "password"])?;
+            CommandKind::UiInit(
+                request_id(object, "request_id")?,
+                bounded_text(object, "password", 1_024)?,
+            )
+        }
+        "ui_start" => {
+            exact_fields(object, &["version", "operation", "host", "port"])?;
+            let host = bounded_text(object, "host", 253)?;
+            if host.as_str().parse::<std::net::IpAddr>().is_err()
+                && !host
+                    .as_str()
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+            {
+                return Err(ApiError::invalid_input());
+            }
+            let port =
+                u16::try_from(number(object, "port")?).map_err(|_| ApiError::invalid_input())?;
+            CommandKind::UiStart(host, port)
+        }
+        "ui_stop" => unit(object, CommandKind::UiStop)?,
+        "ui_status" => unit(object, CommandKind::UiStatus)?,
         "snapshot_stamp" => unit(object, CommandKind::SnapshotStamp)?,
         "space_details_fetch" => {
             exact_fields(object, &["version", "operation", "space_id"])?;
@@ -220,9 +243,13 @@ fn command_value(command: &Command) -> Value {
         | CommandKind::SpaceList
         | CommandKind::PrivateRelayStatus
         | CommandKind::PublicRelayStatus
-        | CommandKind::UiOpen
+        | CommandKind::UiStop
+        | CommandKind::UiStatus
         | CommandKind::SnapshotStamp
         | CommandKind::SnapshotFetch => json!({"operation": operation}),
+        CommandKind::UiStart(host, port) => {
+            json!({"operation": operation, "host": host.as_str(), "port": port})
+        }
         CommandKind::SpaceCreate(id, name) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "name": name.as_str()})
         }
@@ -253,7 +280,9 @@ fn command_value(command: &Command) -> Value {
         CommandKind::EchoCall(id, target, payload) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "target_endpoint_id": encode_hex(target.as_bytes()), "payload": payload.as_str()})
         }
-        CommandKind::UiPasswordSet(id, password) | CommandKind::UiPasswordReset(id, password) => {
+        CommandKind::UiInit(id, password)
+        | CommandKind::UiPasswordSet(id, password)
+        | CommandKind::UiPasswordReset(id, password) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "password": password.as_str()})
         }
         CommandKind::PrivateRelayDisable(id)

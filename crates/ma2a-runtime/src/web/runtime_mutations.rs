@@ -12,7 +12,7 @@ use super::WebState;
 pub(super) async fn mutation(State(state): State<WebState>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
-    if !super::headers::valid_same_origin(&headers, state.port) {
+    if !super::headers::valid_same_origin(&headers, &state) {
         return StatusCode::FORBIDDEN.into_response();
     }
     match super::authenticated_mutation(&state, &headers).await {

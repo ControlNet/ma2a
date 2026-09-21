@@ -72,10 +72,11 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::echo(EchoReplyView::new(endpoint_id, "hello", 34)?),
         CommandResult::ui_password_set(ui_auth.clone()),
         CommandResult::ui_password_reset(ui_auth.clone()),
-        CommandResult::sessions_revoked(ui_auth),
-        CommandResult::ui_opened(ma2a_runtime::api::UiOpenView::new(
-            "http://127.0.0.1:12345",
-        )?),
+        CommandResult::sessions_revoked(ui_auth.clone()),
+        CommandResult::ui_initialized(ui_auth),
+        CommandResult::ui_status(ma2a_runtime::api::UiStatusView::new(Some(
+            "127.0.0.1:12345".parse()?,
+        ))),
         CommandResult::snapshot(snapshot),
         CommandResult::space_details(ma2a_runtime::api::SpaceDetailsView::new(
             7,
@@ -211,7 +212,12 @@ fn command_json() -> Vec<String> {
             r#"{{"version":1,"operation":"ui_password_reset","request_id":"{REQUEST_ID}","password":"new correct horse battery staple"}}"#
         ),
         format!(r#"{{"version":1,"operation":"session_revoke_all","request_id":"{REQUEST_ID}"}}"#),
-        r#"{"version":1,"operation":"ui_open"}"#.to_owned(),
+        format!(
+            r#"{{"version":1,"operation":"ui_init","request_id":"{REQUEST_ID}","password":"correct horse battery staple"}}"#
+        ),
+        r#"{"version":1,"operation":"ui_start","host":"127.0.0.1","port":0}"#.to_owned(),
+        r#"{"version":1,"operation":"ui_stop"}"#.to_owned(),
+        r#"{"version":1,"operation":"ui_status"}"#.to_owned(),
         r#"{"version":1,"operation":"snapshot_fetch"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"space_details_fetch","space_id":"{SPACE_ID}"}}"#),
         r#"{"version":1,"operation":"snapshot_stamp"}"#.to_owned(),

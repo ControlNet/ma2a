@@ -15,7 +15,7 @@ fn password_value_is_rejected_from_argv_without_echoing_it() -> TestResult {
 
     // When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["ui", "password", "set", "--password", probe])
+        .args(["ui", "init", "--password", probe])
         .output()?;
 
     // Then
@@ -132,7 +132,7 @@ fn inline_password_value_is_rejected_without_echoing_it() -> TestResult {
 
     // When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["ui", "password", "set", &format!("--password={probe}")])
+        .args(["ui", "init", &format!("--password={probe}")])
         .output()?;
 
     // Then
@@ -164,7 +164,7 @@ fn dash_prefixed_password_value_is_rejected_without_echoing_it() -> TestResult {
 
     // When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["ui", "password", "set", probe])
+        .args(["ui", "init", probe])
         .output()?;
 
     // Then

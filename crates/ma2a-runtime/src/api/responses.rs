@@ -8,7 +8,7 @@ use super::{
     codec_fields::encode_hex,
     result_data::{
         EchoReplyView, HandshakeView, PrivateRelayView, PublicRelayView, RuntimeStatusView,
-        UiOpenView,
+        UiStatusView,
     },
     snapshot::{ControlSyncView, EndpointView, RuntimeSnapshot, SpaceView, UiAuthView},
 };
@@ -31,10 +31,11 @@ pub(super) enum ResultKind {
     PublicRelayConfigured(PublicRelayView),
     PublicRelayStatus(PublicRelayView),
     Echo(EchoReplyView),
+    UiInitialized(UiAuthView),
     UiPasswordSet(UiAuthView),
     UiPasswordReset(UiAuthView),
     SessionsRevoked(UiAuthView),
-    UiOpened(UiOpenView),
+    UiStatus(UiStatusView),
     Snapshot(RuntimeSnapshot),
     SpaceDetails(super::SpaceDetailsView),
     SnapshotStamp(super::SnapshotStampView),
@@ -49,6 +50,8 @@ pub struct CommandResult(pub(super) ResultKind);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UiControlResult<'a> {
+    /// Password established or reset.
+    Initialized(&'a UiAuthView),
     /// The first UI password verifier was established.
     PasswordSet(&'a UiAuthView),
     /// The UI password verifier was replaced and older sessions were revoked.
@@ -62,6 +65,7 @@ impl CommandResult {
     #[must_use]
     pub const fn ui_control_result(&self) -> Option<UiControlResult<'_>> {
         match &self.0 {
+            ResultKind::UiInitialized(value) => Some(UiControlResult::Initialized(value)),
             ResultKind::UiPasswordSet(value) => Some(UiControlResult::PasswordSet(value)),
             ResultKind::UiPasswordReset(value) => Some(UiControlResult::PasswordReset(value)),
             ResultKind::SessionsRevoked(value) => Some(UiControlResult::SessionsRevoked(value)),
@@ -81,7 +85,7 @@ impl CommandResult {
             | ResultKind::PublicRelayConfigured(_)
             | ResultKind::PublicRelayStatus(_)
             | ResultKind::Echo(_)
-            | ResultKind::UiOpened(_)
+            | ResultKind::UiStatus(_)
             | ResultKind::SpaceDetails(_)
             | ResultKind::SnapshotStamp(_)
             | ResultKind::Snapshot(_)
@@ -179,7 +183,12 @@ impl CommandResult {
     pub const fn echo(value: EchoReplyView) -> Self {
         Self(ResultKind::Echo(value))
     }
-    /// Creates a UI password-set result.
+    /// Reports successful password initialization or reset.
+    pub const fn ui_initialized(value: UiAuthView) -> Self {
+        Self(ResultKind::UiInitialized(value))
+    }
+
+    /// Reports successful initial password setup.
     pub const fn ui_password_set(value: UiAuthView) -> Self {
         Self(ResultKind::UiPasswordSet(value))
     }
@@ -191,9 +200,9 @@ impl CommandResult {
     pub const fn sessions_revoked(value: UiAuthView) -> Self {
         Self(ResultKind::SessionsRevoked(value))
     }
-    /// Creates a daemon-owned loopback Web endpoint result.
-    pub const fn ui_opened(value: UiOpenView) -> Self {
-        Self(ResultKind::UiOpened(value))
+    /// Creates a daemon-owned Web UI lifecycle status result.
+    pub const fn ui_status(value: UiStatusView) -> Self {
+        Self(ResultKind::UiStatus(value))
     }
 
     /// Returns the exact result discriminant.
@@ -215,10 +224,11 @@ impl CommandResult {
             ResultKind::PublicRelayConfigured(_) => "public_relay_configured",
             ResultKind::PublicRelayStatus(_) => "public_relay_status",
             ResultKind::Echo(_) => "echo",
+            ResultKind::UiInitialized(_) => "ui_initialized",
             ResultKind::UiPasswordSet(_) => "ui_password_set",
             ResultKind::UiPasswordReset(_) => "ui_password_reset",
             ResultKind::SessionsRevoked(_) => "sessions_revoked",
-            ResultKind::UiOpened(_) => "ui_opened",
+            ResultKind::UiStatus(_) => "ui_status",
             ResultKind::SpaceDetails(_) => "space_details",
             ResultKind::SnapshotStamp(_) => "snapshot_stamp",
             ResultKind::Snapshot(_) => "snapshot",

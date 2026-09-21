@@ -42,41 +42,35 @@ pub(crate) async fn run(
     )
     .await
     .map_err(AppError::CurrentUser)?;
-    let web = ma2a_runtime::web::LoopbackWebServer::bind_with_runtime(
+    let web = ma2a_runtime::web::WebLifecycle::new(
+        control.web_auth().clone(),
         ma2a_runtime::web::WebRuntimeDependencies::new(
             control.web_auth().clone(),
             ma2a_runtime::web::WebAssets::new(crate::embedded_web::WEB_ASSETS),
             LocalApiClient::new(paths.clone()),
         ),
-        ma2a_runtime::web::WebServerConfig::default(),
-    )
-    .await
-    .map_err(AppError::Web)?;
-    let web_url = format!("http://127.0.0.1:{}", web.port());
+    );
     let serve_result = match LocalApiServer::bind(paths.clone(), runtime.handle(), control) {
         Ok(server) => {
             let cancellation = CancellationToken::new();
             let serving = server
-                .with_web_url(web_url)
+                .with_web_lifecycle(web.clone())
                 .serve(cancellation.child_token());
-            let web_serving = web.serve(cancellation.child_token().cancelled_owned());
             tokio::pin!(serving);
-            tokio::pin!(web_serving);
             tokio::select! {
                 result = &mut serving => result.map(|_exit| ()).map_err(AppError::from),
-                result = &mut web_serving => result.map_err(AppError::Web),
-                signal = tokio::signal::ctrl_c() => match signal {
-                    Ok(()) => {
-                        cancellation.cancel();
-                        serving.await.map(|_exit| ()).map_err(AppError::from)?;
-                        web_serving.await.map_err(AppError::Web)
+                signal = tokio::signal::ctrl_c() => {
+                    cancellation.cancel();
+                    match signal {
+                        Ok(()) => serving.await.map(|_exit| ()).map_err(AppError::from),
+                        Err(error) => Err(error.into()),
                     }
-                    Err(error) => Err(error.into()),
                 }
             }
         }
         Err(error) => Err(error.into()),
     };
+    web.stop().await;
     let shutdown_result = runtime.shutdown().await.map_err(AppError::from);
     let cleanup_result = paths.remove_stale_endpoint().map_err(AppError::from);
     drop(lock);

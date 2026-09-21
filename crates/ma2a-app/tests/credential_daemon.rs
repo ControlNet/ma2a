@@ -56,9 +56,7 @@ fn sessions_revoke_all_uses_the_autostarted_daemon_control_path() -> TestResult 
     let fixture = Fixture::new()?;
 
     // When
-    let output = fixture
-        .command(&["ui", "sessions", "revoke-all"])
-        .output()?;
+    let output = fixture.command(&["ui", "revoke-all"]).output()?;
 
     // Then
     assert!(

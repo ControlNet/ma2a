@@ -7,10 +7,17 @@ supervision, and `ma2a shutdown` for graceful stop. Use `--state-dir ABSOLUTE_PA
 instances. The default locations and private IPC protections are documented in
 [private-ipc.md](private-ipc.md).
 
-Set or reset the loopback Web password only through `ma2a init` or
-`ma2a ui password set|reset`. Passwords are never accepted in argv or URLs. Automation may opt into
+Set or reset the Web password through `ma2a ui init`. Passwords are never accepted in argv or URLs. Automation may opt into
 two newline-delimited values on inherited standard input by setting `MA2A_PASSWORD_STDIN=1`; keep
 that pipe private and do not log it.
+
+WebUI never starts automatically with the daemon, including after daemon restart. `ui init` only
+updates credentials. Explicitly run `ma2a ui start` to serve HTTP in the background. Set a binding
+with `--host` (IP or hostname, including wildcard addresses) and `--port`; defaults are `127.0.0.1`
+and OS-selected port 0. A repeated start restarts WebUI. Use `ma2a ui status` for its running state
+and URL, `ma2a ui stop` to close only HTTP/SSE connections, and `ma2a ui revoke-all` to invalidate
+browser sessions. UI stop/status do not start a daemon. Endpoint identity and networking survive UI
+restarts.
 
 ## Enrollment and Synchronization
 
@@ -45,9 +52,8 @@ wizard, cloud escrow, or automatic key replication.
 
 - `status` cannot start: verify the state directory is absolute, local, current-user owned, and not
   shared with another incompatible daemon.
-- Web UI redirects to setup: run `ma2a init`; browser-based password setup is intentionally absent.
-- Web UI cannot load: use the exact loopback URL returned by `ma2a ui open`; proxying or rewriting
-  Host/Origin values fails closed.
+- Web UI start requires a password: run `ma2a ui init`, then `ma2a ui start`.
+- Web UI cannot load: use the URL returned by `ma2a ui status` (replace a wildcard address with the node address); Host and Origin must satisfy the selected binding and same-origin checks.
 - Enrollment fails: confirm the ticket is unexpired, unused, intact, and intended for this Endpoint.
 - Echo fails after revocation: this is expected when no complete shared Space still authorizes it.
 - Private Relay is offline: verify TLS mode, certificate validity, key permissions, served-Space

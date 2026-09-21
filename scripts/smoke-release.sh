@@ -63,12 +63,12 @@ jq -e '.result.payload.endpoint.online == true and .result.payload.spaces == []'
 
 smoke_credential="ma2a-release-smoke-password"
 printf '%s\n%s\n' "$smoke_credential" "$smoke_credential" |
-  MA2A_PASSWORD_STDIN=1 "$binary" --state-dir "$state_dir" ui password set >/dev/null
+  MA2A_PASSWORD_STDIN=1 "$binary" --state-dir "$state_dir" ui init >/dev/null
 
 created=$($binary --state-dir "$state_dir" space create --name release-smoke --json)
 jq -e '.result.payload.space_id | type == "string"' <<<"$created" >/dev/null
 
-url=$($binary --state-dir "$state_dir" ui open)
+url=$($binary --state-dir "$state_dir" ui start --json | jq -er .url)
 [[ "$url" == http://127.0.0.1:* ]] || { printf 'unexpected Web URL: %s\n' "$url" >&2; exit 1; }
 
 same_origin_headers=(--header "Origin: $url" --header "Sec-Fetch-Site: same-origin")

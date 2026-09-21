@@ -9,7 +9,6 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
 };
 
 use ma2a_runtime::{
@@ -68,12 +67,10 @@ impl Drop for Fixture {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn ui_open_requires_password_and_launches_the_daemon_loopback_url() -> TestResult {
-    use std::os::unix::fs::PermissionsExt as _;
-
+async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
-    assert!(!fixture.run(&["ui", "open"])?.status.success());
+    assert!(!fixture.run(&["ui", "start", "--json"])?.status.success());
     let control =
         CurrentUserRuntime::open_at(&fixture.0, Arc::new(FixedClock), WebAuthConfig::default())
             .await?;
@@ -82,29 +79,8 @@ async fn ui_open_requires_password_and_launches_the_daemon_loopback_url() -> Tes
             "secure-process-test-password".to_owned(),
         ))?)
         .await?;
-    let tools = fixture.0.join("tools");
-    fs::create_dir(&tools)?;
-    let capture = fixture.0.join("opened-url");
-    let opener = tools.join("xdg-open");
-    fs::write(
-        &opener,
-        format!(
-            "#!/bin/sh\nset -eu\nprintf '%s' \"$1\" > \"{}\"\n",
-            capture.display()
-        ),
-    )?;
-    fs::set_permissions(&opener, fs::Permissions::from_mode(0o700))?;
-
     // When
-    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&fixture.0)
-        .args(["ui", "open"])
-        .env(
-            "PATH",
-            format!("{}:{}", tools.display(), std::env::var("PATH")?),
-        )
-        .output()?;
+    let output = fixture.run(&["ui", "start", "--json"])?;
 
     // Then
     assert!(
@@ -112,13 +88,9 @@ async fn ui_open_requires_password_and_launches_the_daemon_loopback_url() -> Tes
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let url = String::from_utf8(output.stdout)?.trim().to_owned();
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let url = status["url"].as_str().ok_or("missing UI URL")?;
     assert!(url.starts_with("http://127.0.0.1:"));
     assert!(!url.contains('@'));
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !capture.exists() && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert_eq!(fs::read_to_string(capture)?, url);
     Ok(())
 }

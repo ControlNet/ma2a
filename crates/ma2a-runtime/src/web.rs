@@ -2,6 +2,7 @@ mod assets;
 mod auth;
 mod csrf;
 mod headers;
+mod lifecycle;
 mod rate_limit;
 mod router;
 mod runtime_mutations;
@@ -23,6 +24,7 @@ use zeroize::Zeroizing;
 pub use assets::WebAssets;
 use assets::asset_response;
 pub use auth::WebAuthService;
+pub use lifecycle::WebLifecycle;
 use router::WebState;
 pub use router::{WebRuntimeDependencies, WebServerConfig, build_router, build_runtime_router};
 pub use server::LoopbackWebServer;
@@ -52,7 +54,7 @@ struct LoginRequest {
 }
 
 async fn login(State(state): State<WebState>, headers: HeaderMap, body: Bytes) -> Response {
-    if !headers::valid_same_origin(&headers, state.port) {
+    if !headers::valid_same_origin(&headers, &state) {
         return StatusCode::FORBIDDEN.into_response();
     }
     if !state.login_rate.allow(state.auth.now_ms()) {
@@ -89,7 +91,7 @@ async fn login(State(state): State<WebState>, headers: HeaderMap, body: Bytes) -
 }
 
 async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Response {
-    if !headers::valid_same_origin(&headers, state.port) {
+    if !headers::valid_same_origin(&headers, &state) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let session = match authenticated_mutation(&state, &headers).await {
@@ -120,7 +122,7 @@ pub(super) fn expire_session_cookies(response: &mut Response) {
 }
 
 async fn touch_session(State(state): State<WebState>, headers: HeaderMap) -> Response {
-    if !headers::valid_same_origin(&headers, state.port) {
+    if !headers::valid_same_origin(&headers, &state) {
         return StatusCode::FORBIDDEN.into_response();
     }
     match authenticated_mutation(&state, &headers).await {

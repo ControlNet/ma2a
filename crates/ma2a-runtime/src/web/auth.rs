@@ -96,6 +96,7 @@ impl WebAuthService {
             Repository::open(&config)?
                 .change_password(
                     match action {
+                        PasswordAction::Init => PasswordTransition::Init,
                         PasswordAction::Set => PasswordTransition::Set,
                         PasswordAction::Reset => PasswordTransition::Reset,
                     },

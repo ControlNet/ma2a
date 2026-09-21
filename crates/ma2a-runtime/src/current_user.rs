@@ -61,6 +61,15 @@ impl CurrentUserRuntime {
             .into_ui_control()
             .map_err(|_| CurrentUserError::InvalidCommand)?
         {
+            UiControlCommand::PasswordInit(password) => {
+                self.auth
+                    .change_password(PasswordAction::Init, password)
+                    .await
+                    .map_err(CurrentUserError::Authentication)?;
+                Ok(CommandResult::ui_initialized(UiAuthView::new(
+                    true, true, 0,
+                )))
+            }
             UiControlCommand::PasswordSet(password) => {
                 self.auth
                     .change_password(PasswordAction::Set, password)

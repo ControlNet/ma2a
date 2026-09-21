@@ -15,7 +15,6 @@ use ma2a_runtime::{
     ipc::{IpcError, IpcPaths, LocalApiClient},
 };
 mod autostart;
-mod browser;
 mod cli;
 mod commands;
 mod credential_command;
@@ -33,7 +32,6 @@ enum AppError {
     Ipc(IpcError),
     Runtime(RuntimeError),
     Usage(&'static str),
-    Web(io::Error),
 }
 
 impl fmt::Debug for AppError {
@@ -51,7 +49,6 @@ impl fmt::Display for AppError {
             Self::Ipc(error) => error.fmt(formatter),
             Self::Runtime(error) => error.fmt(formatter),
             Self::Usage(message) => formatter.write_str(message),
-            Self::Web(error) => write!(formatter, "loopback Web server failed: {error}"),
         }
     }
 }
@@ -61,7 +58,7 @@ impl Error for AppError {
         match self {
             Self::Command(error) => Some(error),
             Self::CurrentUser(error) => Some(error),
-            Self::Io(error) | Self::Web(error) => Some(error),
+            Self::Io(error) => Some(error),
             Self::Ipc(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Usage(_) => None,
@@ -114,8 +111,7 @@ async fn main() -> ExitCode {
                 | AppError::CurrentUser(_)
                 | AppError::Io(_)
                 | AppError::Ipc(_)
-                | AppError::Runtime(_)
-                | AppError::Web(_) => ExitCode::FAILURE,
+                | AppError::Runtime(_) => ExitCode::FAILURE,
             }
         }
     }
@@ -130,9 +126,6 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
     match cli.command {
         cli::Command::Daemon => daemon::run(state_dir, paths, false).await,
         cli::Command::DaemonDetached => daemon::run(state_dir, paths, true).await,
-        cli::Command::Init => {
-            credential_command::run_password(&state_dir, commands::ui::PasswordCommand::Set).await
-        }
         cli::Command::Status { json } => {
             call((&state_dir, paths), api::Command::snapshot_fetch(), json).await
         }

@@ -5,7 +5,7 @@ use super::{
     responses::{CommandResult, ResultKind},
     result_data::{
         echo_reply_value, handshake_value, private_relay_value, public_relay_value, status_value,
-        ui_auth_result_value, ui_open_value,
+        ui_auth_result_value, ui_status_value,
     },
     snapshot::{endpoint_value, space_value},
 };
@@ -33,10 +33,11 @@ pub(super) fn result_value(result: &CommandResult) -> Value {
             public_relay_value(value)
         }
         ResultKind::Echo(value) => echo_reply_value(value),
-        ResultKind::UiPasswordSet(value)
+        ResultKind::UiInitialized(value)
+        | ResultKind::UiPasswordSet(value)
         | ResultKind::UiPasswordReset(value)
         | ResultKind::SessionsRevoked(value) => ui_auth_result_value(value),
-        ResultKind::UiOpened(value) => ui_open_value(value),
+        ResultKind::UiStatus(value) => ui_status_value(value),
         ResultKind::SpaceDetails(value) => value.to_value(),
         ResultKind::SnapshotStamp(value) => value.to_value(),
         ResultKind::Snapshot(value) => value.to_value(),

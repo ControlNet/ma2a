@@ -9,7 +9,7 @@ use super::{ApiError, MAX_TEXT_BYTES};
 mod accessors;
 
 /// Exact ordered operation inventory carried by the schema and TypeScript contract.
-pub const COMMAND_NAMES: [&str; 26] = [
+pub const COMMAND_NAMES: [&str; 29] = [
     "handshake",
     "status",
     "endpoint_info",
@@ -31,7 +31,10 @@ pub const COMMAND_NAMES: [&str; 26] = [
     "ui_password_set",
     "ui_password_reset",
     "session_revoke_all",
-    "ui_open",
+    "ui_init",
+    "ui_start",
+    "ui_stop",
+    "ui_status",
     "snapshot_fetch",
     "space_details_fetch",
     "snapshot_stamp",
@@ -68,6 +71,7 @@ impl BoundedText {
 }
 
 pub(crate) enum UiControlCommand {
+    PasswordInit(Zeroizing<String>),
     PasswordSet(Zeroizing<String>),
     PasswordReset(Zeroizing<String>),
     SessionsRevokeAll,
@@ -118,7 +122,10 @@ pub(crate) enum CommandKind {
     UiPasswordSet(RequestId, BoundedText),
     UiPasswordReset(RequestId, BoundedText),
     SessionRevokeAll(RequestId),
-    UiOpen,
+    UiInit(RequestId, BoundedText),
+    UiStart(BoundedText, u16),
+    UiStop,
+    UiStatus,
     SnapshotFetch,
     SpaceDetailsFetch(SpaceId),
     SnapshotStamp,
@@ -134,6 +141,9 @@ pub struct Command {
 impl Command {
     pub(crate) fn into_ui_control(self) -> Result<UiControlCommand, ApiError> {
         match self.kind {
+            CommandKind::UiInit(_, password) => {
+                Ok(UiControlCommand::PasswordInit(password.into_secret()))
+            }
             CommandKind::UiPasswordSet(_, password) => {
                 Ok(UiControlCommand::PasswordSet(password.into_secret()))
             }
@@ -162,8 +172,38 @@ impl Command {
             | CommandKind::SpaceDetailsFetch(_)
             | CommandKind::SnapshotStamp
             | CommandKind::SnapshotFetch
-            | CommandKind::UiOpen
+            | CommandKind::UiStart(_, _)
+            | CommandKind::UiStop
+            | CommandKind::UiStatus
             | CommandKind::GracefulShutdown(_) => Err(ApiError::invalid_input()),
+        }
+    }
+
+    /// Creates an atomic password initialization or reset command.
+    ///
+    /// # Errors
+    /// Returns an error if randomness or password bounds fail.
+    pub fn ui_init(password: Zeroizing<String>) -> Result<Self, ApiError> {
+        Ok(Self {
+            kind: CommandKind::UiInit(
+                RequestId::random().map_err(ApiError::new)?,
+                BoundedText::parse_secret(password, 1_024)?,
+            ),
+        })
+    }
+
+    /// Returns whether a command controls volatile Web UI state without durable replay.
+    pub const fn is_ui_lifecycle(&self) -> bool {
+        matches!(
+            self.kind,
+            CommandKind::UiStart(_, _) | CommandKind::UiStop | CommandKind::UiStatus
+        )
+    }
+
+    pub(crate) fn ui_binding(&self) -> Option<(&str, u16)> {
+        match &self.kind {
+            CommandKind::UiStart(host, port) => Some((host.as_str(), *port)),
+            _ => None,
         }
     }
 
@@ -247,7 +287,10 @@ impl Command {
             CommandKind::UiPasswordSet(_, _) => "ui_password_set",
             CommandKind::UiPasswordReset(_, _) => "ui_password_reset",
             CommandKind::SessionRevokeAll(_) => "session_revoke_all",
-            CommandKind::UiOpen => "ui_open",
+            CommandKind::UiInit(_, _) => "ui_init",
+            CommandKind::UiStart(_, _) => "ui_start",
+            CommandKind::UiStop => "ui_stop",
+            CommandKind::UiStatus => "ui_status",
             CommandKind::SpaceDetailsFetch(_) => "space_details_fetch",
             CommandKind::SnapshotStamp => "snapshot_stamp",
             CommandKind::SnapshotFetch => "snapshot_fetch",
@@ -269,7 +312,9 @@ impl Command {
             | CommandKind::SpaceDetailsFetch(_)
             | CommandKind::SnapshotStamp
             | CommandKind::SnapshotFetch
-            | CommandKind::UiOpen => None,
+            | CommandKind::UiStart(_, _)
+            | CommandKind::UiStop
+            | CommandKind::UiStatus => None,
             CommandKind::SpaceCreate(id, _)
             | CommandKind::SpaceInvite(id, _, _, _)
             | CommandKind::SpaceRedeem(id, _)
@@ -280,6 +325,7 @@ impl Command {
             | CommandKind::PublicRelayConfigure(id, _)
             | CommandKind::PublicRelayDisable(id)
             | CommandKind::EchoCall(id, _, _)
+            | CommandKind::UiInit(id, _)
             | CommandKind::UiPasswordSet(id, _)
             | CommandKind::UiPasswordReset(id, _)
             | CommandKind::SessionRevokeAll(id)

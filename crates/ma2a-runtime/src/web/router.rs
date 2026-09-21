@@ -32,10 +32,17 @@ impl WebRuntimeDependencies {
     }
 }
 
-/// Bounded loopback HTTP server settings.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
+pub(super) struct WebBinding {
+    pub(super) host: String,
+    pub(super) address: std::net::SocketAddr,
+}
+
+/// Bounded HTTP server settings.
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct WebServerConfig {
+    pub(super) binding: Option<Arc<WebBinding>>,
     pub(super) request_timeout: Duration,
 }
 
@@ -57,6 +64,7 @@ impl WebServerConfig {
 impl Default for WebServerConfig {
     fn default() -> Self {
         Self {
+            binding: None,
             request_timeout: Duration::from_secs(10),
         }
     }

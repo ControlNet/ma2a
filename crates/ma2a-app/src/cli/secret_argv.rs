@@ -33,7 +33,13 @@ pub(super) fn reject_secret_argv(arguments: &[OsString]) -> Result<(), clap::Err
                         && matches!(action.as_ref(), "set" | "reset")
             )
         })
-        .map(|index| index + 3);
+        .map(|index| index + 3)
+        .or_else(|| {
+            values
+                .windows(2)
+                .position(|window| window == ["ui", "init"])
+                .map(|index| index + 2)
+        });
     let unsupported_password_value = password_index.is_some_and(|index| {
         values
             .get(index..)
