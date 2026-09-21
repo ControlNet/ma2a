@@ -1,6 +1,6 @@
 use std::{io, path::Path};
 
-use ma2a_runtime::ipc::{IpcError, IpcPaths, LocalApiClient};
+use ma2a_runtime::ipc::{IpcPaths, LocalApiClient};
 use serde_json::{Map, Value, json};
 
 use crate::{AppError, cli::UiCommand};
@@ -22,23 +22,7 @@ pub(super) async fn run(state_dir: &Path, action: UiCommand) -> Result<(), AppEr
     };
     let paths = IpcPaths::new(state_dir)?;
     let client = LocalApiClient::new(paths.clone());
-    // Queries and stop must not create a daemon just to report an absent UI.
-    if operation == "ui_start" {
-        crate::autostart::ensure_daemon(state_dir, &paths).await?;
-    } else {
-        match client.probe().await {
-            Ok(()) => {}
-            Err(IpcError::Io(error))
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                ) =>
-            {
-                return print_status(&json!({"running": false, "url": null}), json_output);
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
+    crate::daemon_control::require(&paths).await?;
     let command = super::workflows::command(operation, fields)?;
     let response = client.call(&command).await?;
     let document: Value = serde_json::from_slice(&response).map_err(io::Error::other)?;

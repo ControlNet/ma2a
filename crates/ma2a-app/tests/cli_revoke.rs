@@ -12,6 +12,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
     // Given
     let state_dir = state_dir()?;
+    assert!(run(&state_dir, &["start"])?.status.success());
     let created = run(
         &state_dir,
         &["space", "create", "--name", "Revocable", "--json"],
@@ -21,7 +22,7 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
     let endpoint = run(&state_dir, &["endpoint", "show", "--json"])?;
     let endpoint_response: Value = serde_json::from_slice(&endpoint.stdout)?;
     let owner_text = value(&endpoint_response, "/result/payload/endpoint_id")?;
-    let shutdown = run(&state_dir, &["shutdown"])?;
+    let shutdown = run(&state_dir, &["stop"])?;
     assert!(shutdown.status.success());
     let space_id = SpaceId::try_from(hex_bytes::<32>(space_text)?.as_slice())?;
     let owner_id = EndpointId::try_from(hex_bytes::<32>(owner_text)?.as_slice())?;
@@ -34,6 +35,7 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
         .as_slice(),
     )?;
     add_peer(&state_dir, space_id, (owner_id, peer_id))?;
+    assert!(run(&state_dir, &["start"])?.status.success());
     let peer_text = encode_hex(peer_id.as_bytes())?;
 
     // When
@@ -72,7 +74,7 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
             .and_then(Value::as_u64),
         Some(1)
     );
-    let _shutdown = run(&state_dir, &["shutdown"]);
+    let _shutdown = run(&state_dir, &["stop"]);
     fs::remove_dir_all(state_dir)?;
     Ok(())
 }

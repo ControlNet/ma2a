@@ -15,6 +15,8 @@ use std::{
 
 use serde_json::Value;
 
+#[path = "daemon_lifecycle/explicit.rs"]
+mod explicit;
 #[path = "daemon_lifecycle/identity.rs"]
 mod identity;
 
@@ -48,7 +50,10 @@ impl Fixture {
             .arg("--state-dir")
             .arg(&self.state_dir)
             .arg(operation);
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         command
     }
 
@@ -73,7 +78,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _shutdown = self.run("shutdown");
+        let _shutdown = self.run("stop");
         let deadline = Instant::now() + Duration::from_secs(10);
         while self.runtime_dir().join("control.sock").exists() && Instant::now() < deadline {
             std::thread::yield_now();
@@ -101,11 +106,12 @@ fn unknown_command_reports_user_facing_error() -> TestResult {
 }
 
 #[test]
-fn status_autostarts_one_private_daemon() -> TestResult {
+fn explicit_start_creates_one_private_daemon() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
 
     // When
+    assert!(fixture.run("start")?.status.success());
     let response = fixture.run_status()?;
 
     // Then
@@ -137,11 +143,11 @@ fn status_autostarts_one_private_daemon() -> TestResult {
 }
 
 #[test]
-fn concurrent_status_calls_converge_on_one_daemon() -> TestResult {
+fn concurrent_start_calls_converge_on_one_daemon() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
     let children = (0..20)
-        .map(|_| fixture.command("status").arg("--json").spawn())
+        .map(|_| fixture.command("start").spawn())
         .collect::<Result<Vec<_>, _>>()?;
 
     // When
@@ -152,13 +158,11 @@ fn concurrent_status_calls_converge_on_one_daemon() -> TestResult {
 
     // Then
     assert!(outputs.iter().all(|output| output.status.success()));
-    for output in outputs {
-        let response: Value = serde_json::from_slice(&output.stdout)?;
-        assert_eq!(
-            response.pointer("/result/type").and_then(Value::as_str),
-            Some("snapshot")
-        );
-    }
+    let response = fixture.run_status()?;
+    assert_eq!(
+        response.pointer("/result/type").and_then(Value::as_str),
+        Some("snapshot")
+    );
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -169,7 +173,7 @@ fn concurrent_status_calls_converge_on_one_daemon() -> TestResult {
 }
 
 #[test]
-fn autostart_reclaims_stale_socket_while_holding_startup_lock() -> TestResult {
+fn explicit_start_reclaims_stale_socket_while_holding_startup_lock() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
     fs::create_dir(fixture.runtime_dir())?;
@@ -181,6 +185,7 @@ fn autostart_reclaims_stale_socket_while_holding_startup_lock() -> TestResult {
     fs::write(fixture.runtime_dir().join("control.sock"), b"stale")?;
 
     // When
+    assert!(fixture.run("start")?.status.success());
     let response = fixture.run_status()?;
 
     // Then
@@ -204,10 +209,11 @@ fn autostart_reclaims_stale_socket_while_holding_startup_lock() -> TestResult {
 fn graceful_shutdown_releases_singleton_and_removes_endpoint() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
+    assert!(fixture.run("start")?.status.success());
     let _status = fixture.run_status()?;
 
     // When
-    let output = fixture.run("shutdown")?;
+    let output = fixture.run("stop")?;
 
     // Then
     assert!(
@@ -215,11 +221,7 @@ fn graceful_shutdown_releases_singleton_and_removes_endpoint() -> TestResult {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let response: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(
-        response.pointer("/result/type").and_then(Value::as_str),
-        Some("shutting_down")
-    );
+    assert_eq!(String::from_utf8(output.stdout)?, "daemon stopped\n");
     let deadline = Instant::now() + Duration::from_secs(10);
     let endpoint = fixture.runtime_dir().join("control.sock");
     while endpoint.exists() && Instant::now() < deadline {

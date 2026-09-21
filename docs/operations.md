@@ -2,21 +2,36 @@
 
 ## Runtime Lifecycle
 
-Use `ma2a status` to inspect or auto-start the current-user Runtime, `ma2a daemon` for foreground
-supervision, and `ma2a shutdown` for graceful stop. Use `--state-dir ABSOLUTE_PATH` for isolated
+Use `ma2a start` to start the current-user Runtime in the background, `ma2a restart` to restart it,
+`ma2a stop` for graceful stop, and `ma2a daemon` for foreground supervision.
+`ma2a status` only inspects a running Runtime. No business or UI command starts a daemon implicitly.
+Use `--state-dir ABSOLUTE_PATH` for isolated
 instances. The default locations and private IPC protections are documented in
 [private-ipc.md](private-ipc.md).
+
+After replacing the executable, explicitly switch the running daemon to it with:
+
+```sh
+ma2a --state-dir "$STATE" restart
+```
+
+When the existing daemon's API version is incompatible, `start/restart` automatically stop it
+using its reported protocol version and launch the current executable. `stop` can also stop an
+incompatible daemon, but does not launch a replacement. These operations wait for graceful
+teardown; a failed stop leaves replacement aborted. A compatible older daemon remains in use
+until explicitly restarted. WebUI remains stopped after replacement.
 
 Set or reset the Web password through `ma2a ui init`. Passwords are never accepted in argv or URLs. Automation may opt into
 two newline-delimited values on inherited standard input by setting `MA2A_PASSWORD_STDIN=1`; keep
 that pipe private and do not log it.
 
 WebUI never starts automatically with the daemon, including after daemon restart. `ui init` only
-updates credentials. Explicitly run `ma2a ui start` to serve HTTP in the background. Set a binding
+updates credentials in the running daemon. Run `ma2a start` first, then explicitly run
+`ma2a ui start` to serve HTTP in the background. Set a binding
 with `--host` (IP or hostname, including wildcard addresses) and `--port`; defaults are `127.0.0.1`
 and OS-selected port 0. A repeated start restarts WebUI. Use `ma2a ui status` for its running state
 and URL, `ma2a ui stop` to close only HTTP/SSE connections, and `ma2a ui revoke-all` to invalidate
-browser sessions. UI stop/status do not start a daemon. Endpoint identity and networking survive UI
+browser sessions. All UI commands fail when the daemon is stopped. Endpoint identity and networking survive UI
 restarts.
 
 ## Enrollment and Synchronization
@@ -50,7 +65,8 @@ wizard, cloud escrow, or automatic key replication.
 
 ## Troubleshooting
 
-- `status` cannot start: verify the state directory is absolute, local, current-user owned, and not
+- A command reports that the daemon is not running: use `ma2a start` with the same `--state-dir`.
+- `start` fails: verify the state directory is absolute, local, current-user owned, and not
   shared with another incompatible daemon.
 - Web UI start requires a password: run `ma2a ui init`, then `ma2a ui start`.
 - Web UI cannot load: use the URL returned by `ma2a ui status` (replace a wildcard address with the node address); Host and Origin must satisfy the selected binding and same-origin checks.

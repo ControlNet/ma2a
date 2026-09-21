@@ -22,7 +22,7 @@ login_response="$workspace/login-response.json"
 csrf_config="$workspace/csrf.curl"
 cleanup() {
   if [[ -n "${binary:-}" && -x "${binary:-}" ]]; then
-    "$binary" --state-dir "$state_dir" shutdown >/dev/null 2>&1 || true
+    "$binary" --state-dir "$state_dir" stop >/dev/null 2>&1 || true
   fi
   rm -rf "$workspace"
 }
@@ -58,6 +58,7 @@ chmod 700 "$binary"
 version=$($binary --version)
 [[ "$version" == ma2a\ * ]] || { printf 'unexpected version output: %s\n' "$version" >&2; exit 1; }
 
+"$binary" --state-dir "$state_dir" start >/dev/null
 status=$($binary --state-dir "$state_dir" status --json)
 jq -e '.result.payload.endpoint.online == true and .result.payload.spaces == []' <<<"$status" >/dev/null
 
@@ -195,7 +196,7 @@ status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}
 printf 'GET /api/v1/snapshot %s\n' "$status" >> "$request_log"
 [[ "$status" == 401 ]] || { printf 'logged-out snapshot returned HTTP %s\n' "$status" >&2; exit 1; }
 
-$binary --state-dir "$state_dir" shutdown >/dev/null
+$binary --state-dir "$state_dir" stop >/dev/null
 binary=
 while IFS= read -r request; do
   printf 'smoke request: %s\n' "$request"

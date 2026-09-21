@@ -60,7 +60,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _shutdown = self.run(&["shutdown"]);
+        let _shutdown = self.run(&["stop"]);
         let _cleanup = fs::remove_dir_all(&self.0);
     }
 }
@@ -70,6 +70,12 @@ impl Drop for Fixture {
 async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
+    let started = fixture.run(&["start"])?;
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
     assert!(!fixture.run(&["ui", "start", "--json"])?.status.success());
     let control =
         CurrentUserRuntime::open_at(&fixture.0, Arc::new(FixedClock), WebAuthConfig::default())
@@ -92,5 +98,17 @@ async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> Tes
     let url = status["url"].as_str().ok_or("missing UI URL")?;
     assert!(url.starts_with("http://127.0.0.1:"));
     assert!(!url.contains('@'));
+    let restarted = fixture.run(&["restart"])?;
+    assert!(
+        restarted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+    let stopped = fixture.run(&["ui", "status", "--json"])?;
+    assert!(stopped.status.success());
+    let stopped: serde_json::Value = serde_json::from_slice(&stopped.stdout)?;
+    assert_eq!(stopped["running"], false);
+    assert!(stopped["url"].is_null());
+    assert!(fixture.run(&["ui", "start"])?.status.success());
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! Credential commands exercised through the autostarted daemon boundary.
+//! Credential commands exercised through an explicitly started daemon.
 
 use std::{
     error::Error,
@@ -43,7 +43,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _shutdown = self.command(&["shutdown"]).output();
+        let _shutdown = self.command(&["stop"]).output();
         let _cleanup = fs::remove_dir_all(&self.0);
     }
 }
@@ -51,9 +51,10 @@ impl Drop for Fixture {
 type TestResultValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[test]
-fn sessions_revoke_all_uses_the_autostarted_daemon_control_path() -> TestResult {
+fn sessions_revoke_all_uses_the_running_daemon_control_path() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
+    assert!(fixture.command(&["start"]).output()?.status.success());
 
     // When
     let output = fixture.command(&["ui", "revoke-all"]).output()?;

@@ -33,11 +33,7 @@ impl TempState {
 impl Drop for TempState {
     fn drop(&mut self) {
         let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-            .args([
-                "--state-dir",
-                self.0.to_str().unwrap_or_default(),
-                "shutdown",
-            ])
+            .args(["--state-dir", self.0.to_str().unwrap_or_default(), "stop"])
             .output();
         let _cleanup = fs::remove_dir_all(&self.0);
     }
@@ -58,7 +54,9 @@ fn help_lists_endpoint_centric_workflows() -> TestResult {
     // Then
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
-    for workflow in ["endpoint", "space", "relay", "echo", "ui"] {
+    for workflow in [
+        "start", "restart", "stop", "endpoint", "space", "relay", "echo", "ui",
+    ] {
         assert!(
             stdout.contains(workflow),
             "missing {workflow} in help:\n{stdout}"
@@ -72,7 +70,7 @@ fn help_lists_endpoint_centric_workflows() -> TestResult {
 }
 
 #[test]
-fn ui_help_lists_open_workflow() -> TestResult {
+fn ui_help_lists_explicit_lifecycle() -> TestResult {
     // Given
     let mut command = ma2a();
 
@@ -83,8 +81,8 @@ fn ui_help_lists_open_workflow() -> TestResult {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(
-        stdout.contains("open"),
-        "missing open in UI help:\n{stdout}"
+        stdout.contains("start") && stdout.contains("stop") && stdout.contains("status"),
+        "missing lifecycle commands in UI help:\n{stdout}"
     );
     Ok(())
 }

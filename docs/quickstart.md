@@ -26,24 +26,27 @@ The examples use an explicit state directory so they do not affect another MA2A 
 mkdir -p "$HOME/.local/state/ma2a-quickstart"
 chmod 700 "$HOME/.local/state/ma2a-quickstart"
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" --version
+./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" start
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" status
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" ui init
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" ui start
 ```
 
-`status` starts the installed executable as the current-user daemon when needed, with WebUI stopped. `ui init` reads and
+`start` launches the daemon in the background with WebUI stopped. `status` queries the running
+daemon and errors if it is stopped. `ui init` reads and
 confirms the Web password without echo. Passwords must contain 1–1,024 UTF-8 bytes, and both
 entries must match exactly. No character-class combination is required.
 `ui start` starts WebUI in the background and prints its URL. Open that URL in a browser.
 Use `ui status` to query it or `ui stop` to stop only WebUI. Stop the isolated Runtime with:
 
 ```sh
-./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" shutdown
+./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" stop
 ```
 
 ## Create a Space
 
 ```sh
+./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" start
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" space create --name primary
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" space list
 ```
@@ -53,6 +56,7 @@ Enrollment tickets are secret bearer material. Prefer owner-only files:
 ```sh
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" \
   space invite create --space SPACE_ID --ttl 5m --file invite.ma2a
+./ma2a --state-dir "$HOME/.local/state/ma2a-peer" start
 ./ma2a --state-dir "$HOME/.local/state/ma2a-peer" \
   space invite redeem --file invite.ma2a
 ```

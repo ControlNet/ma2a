@@ -1,20 +1,35 @@
 # Endpoint-Centric CLI
 
 MA2A administration targets Endpoint IDs. Commands that require Runtime state use the private
-current-user daemon and start it on demand. Use `--state-dir PATH` to isolate a Runtime; otherwise
+current-user daemon and fail if it is not running. Use `--state-dir PATH` to isolate a Runtime; otherwise
 MA2A uses the platform state directory described in [private-ipc.md](private-ipc.md).
 
 ## Runtime and Endpoint
 
 ```sh
+ma2a start
+ma2a restart
+ma2a stop
 ma2a status [--json]
 ma2a endpoint show [--json]
 ma2a daemon
-ma2a shutdown
 ```
 
-`daemon` runs in the foreground for direct supervision. WebUI is stopped by default. Runtime-requiring commands auto-start the same executable when no compatible daemon
-is live.
+`start` explicitly starts the daemon in the background, waits for readiness, and returns to the
+shell. An already running, protocol-compatible daemon is reused without restarting it. `restart` gracefully stops the
+running daemon and starts it again; if stopped, it starts it. `stop` waits for graceful teardown
+and reports an error if no daemon is running. These commands use the same `--state-dir` as the
+business commands. The old `shutdown` command is removed.
+
+If the daemon's API version is incompatible, `start` and `restart` automatically stop it through
+the lifecycle compatibility path and launch the current CLI executable. `stop` uses the same
+compatibility path to stop the old daemon and leaves it stopped. Business and UI commands never
+perform this replacement. A different package version alone does not trigger replacement;
+use `restart` to switch a compatible daemon to the updated executable.
+
+`daemon` runs in the foreground for direct supervision. WebUI is stopped by default, including
+after `restart`. No business or UI command implicitly starts the daemon. `status` reads the Runtime
+snapshot and reports an error if the daemon is stopped; it never changes the running state.
 
 ## Spaces and Enrollment
 
@@ -88,7 +103,7 @@ Echo is Endpoint-addressed and has no Space routing option. `ui init` reads and 
 1–1024-byte UTF-8 password without terminal echo. It sets the first password or resets an existing
 one atomically, revoking all existing sessions. Passwords are rejected from argv.
 
-`ui start` requires a configured password. It starts the daemon if necessary, binds the WebUI
+`ui start` requires a running daemon and a configured password. It binds the WebUI
 listener, prints its status and URL, and returns to the shell while the daemon serves HTTP in the
 background. Running it again restarts WebUI. `--host` accepts IP addresses and hostnames, including
 `0.0.0.0` and `::` for wildcard binding. The defaults are `127.0.0.1` and `--port 0` (a free port
@@ -96,7 +111,7 @@ selected by the OS). `--json` returns the same status shape as `ui status --json
 
 `ui stop` closes the WebUI listener and existing HTTP/SSE connections; the daemon and Endpoint
 continue running. `ui status` prints `running` or `stopped` and the URL (or `-` when stopped).
-Neither command auto-starts a stopped daemon. Listener settings and running state are not persisted;
+Both commands report an error when the daemon is stopped. Listener settings and running state are not persisted;
 a daemon restart leaves WebUI stopped. For wildcard bindings, the URL shows the wildcard address;
 use the node's reachable IP or hostname in a remote browser.
 

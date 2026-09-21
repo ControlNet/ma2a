@@ -119,6 +119,7 @@ async fn invite(
             let invitation = match arguments.file {
                 Some(path) => read_owner_only_invitation(&path)?,
                 None if arguments.stdin => {
+                    crate::daemon_control::require(&paths).await?;
                     let mut input = String::new();
                     io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
                     input

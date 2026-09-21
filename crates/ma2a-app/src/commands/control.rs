@@ -1,4 +1,4 @@
-use std::{future::Future, io, path::PathBuf, pin::Pin};
+use std::{future::Future, io, pin::Pin};
 
 use ma2a_runtime::{
     api::{Command, CommandResult, decode_ui_control_response},
@@ -14,15 +14,13 @@ pub(crate) trait CurrentUserControlClient: Send {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RuntimeControlClient {
-    state_dir: PathBuf,
     paths: IpcPaths,
     client: LocalApiClient,
 }
 
 impl RuntimeControlClient {
-    pub(crate) fn new(state_dir: PathBuf, paths: IpcPaths) -> Self {
+    pub(crate) fn new(paths: IpcPaths) -> Self {
         Self {
-            state_dir,
             client: LocalApiClient::new(paths.clone()),
             paths,
         }
@@ -32,7 +30,7 @@ impl RuntimeControlClient {
 impl CurrentUserControlClient for RuntimeControlClient {
     fn send(&mut self, command: Command) -> ControlFuture<'_> {
         Box::pin(async move {
-            crate::autostart::ensure_daemon(&self.state_dir, &self.paths)
+            crate::daemon_control::require(&self.paths)
                 .await
                 .map_err(|error| CurrentUserControlError::from(io::Error::other(error)))?;
             let response = self

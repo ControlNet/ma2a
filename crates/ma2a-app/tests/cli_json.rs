@@ -19,6 +19,7 @@ fn status_json_uses_the_local_api_envelope() -> TestResult {
     // Given
     let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
     let state_dir = state_dir(serial)?;
+    start(&state_dir)?;
 
     // When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
@@ -42,7 +43,7 @@ fn status_json_uses_the_local_api_envelope() -> TestResult {
     let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
         .arg("--state-dir")
         .arg(&state_dir)
-        .arg("shutdown")
+        .arg("stop")
         .output();
     fs::remove_dir_all(state_dir)?;
     Ok(())
@@ -57,6 +58,7 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
     // Given
     let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
     let state_dir = state_dir(serial)?;
+    start(&state_dir)?;
 
     // When
     let created = Command::new(env!("CARGO_BIN_EXE_ma2a"))
@@ -141,8 +143,9 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
     let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
         .arg("--state-dir")
         .arg(&state_dir)
-        .arg("shutdown")
+        .arg("stop")
         .output();
+    start(&state_dir)?;
     let restarted = Command::new(env!("CARGO_BIN_EXE_ma2a"))
         .arg("--state-dir")
         .arg(&state_dir)
@@ -159,9 +162,23 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
     let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
         .arg("--state-dir")
         .arg(&state_dir)
-        .arg("shutdown")
+        .arg("stop")
         .output();
     fs::remove_dir_all(state_dir)?;
+    Ok(())
+}
+
+fn start(state_dir: &std::path::Path) -> TestResult {
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(state_dir)
+        .arg("start")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(())
 }
 
