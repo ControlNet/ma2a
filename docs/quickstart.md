@@ -32,7 +32,9 @@ chmod 700 "$HOME/.local/state/ma2a-quickstart"
 ```
 
 `status` starts the installed executable as the current-user daemon when needed. `init` reads and
-confirms the Web password without echo. `ui open` launches a credential-free loopback URL. Stop the
+confirms the Web password without echo. Passwords must contain 1–1,024 UTF-8 bytes, and both
+entries must match exactly. No character-class combination is required.
+`ui open` launches a credential-free loopback URL. Stop the
 isolated Runtime with:
 
 ```sh
