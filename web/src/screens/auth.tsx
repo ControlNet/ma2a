@@ -48,46 +48,35 @@ export function LoginScreen({
     <AuthFrame>
       <div className="auth__copy">
         <h1>Sign in to this Runtime</h1>
-        <p>
-          Your passphrase goes only to the same-origin Runtime and is never stored by
-          the browser.
-        </p>
       </div>
       <form className="form" onSubmit={submit}>
         <div className="field">
           <label className="field__label" htmlFor="passphrase">
             Passphrase
           </label>
-          <input
-            autoComplete="current-password"
-            id="passphrase"
-            name="passphrase"
-            required
-            type="password"
-          />
+          <div className="field__row">
+            <input
+              autoComplete="current-password"
+              id="passphrase"
+              name="passphrase"
+              required
+              type="password"
+            />
+            <button
+              className="button button--primary"
+              disabled={onLogin === undefined || pending}
+              type="submit"
+            >
+              {pending ? "Signing in…" : "Sign in"}
+            </button>
+          </div>
         </div>
         {failed ? (
           <p className="field__help" role="alert">
             The passphrase was not accepted.
           </p>
         ) : null}
-        <button
-          className="button button--primary"
-          disabled={onLogin === undefined || pending}
-          type="submit"
-        >
-          {pending ? "Signing in…" : "Sign in"}
-        </button>
       </form>
-      <div className="cluster">
-        <Pill tone="accent">Argon2id</Pill>
-        <Pill tone="accent">host-only cookie</Pill>
-        <Pill tone="accent">SameSite=Strict</Pill>
-      </div>
-      <p className="field__help">
-        Password creation and reset exist only on the trusted terminal. There is no browser route
-        for either.
-      </p>
     </AuthFrame>
   )
 }
@@ -105,10 +94,7 @@ export function SetupScreen(): ReactNode {
           Setup required
         </Pill>
         <h1>Create the first passphrase from a trusted terminal</h1>
-        <p>
-          Management state stays hidden until the local Runtime holds a password verifier. Creation
-          and reset are intentionally unavailable in the browser.
-        </p>
+        <p>Management state stays hidden until the Runtime holds a password verifier.</p>
       </div>
       <dl className="commands">
         {COMMANDS.map(([label, command]) => (
@@ -120,7 +106,7 @@ export function SetupScreen(): ReactNode {
           </div>
         ))}
       </dl>
-      <p className="field__help">Return here once the trusted local command succeeds.</p>
+      <p className="field__help">Return here once the command succeeds.</p>
     </AuthFrame>
   )
 }

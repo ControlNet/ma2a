@@ -134,14 +134,12 @@ export function boundMeters(runtime: RuntimeViewData): Meter[] {
       fraction: runtime.spaces.length / LIMITS.spaces,
       value: `${runtime.spaces.length} / ${LIMITS.spaces}`,
       tone: "accent",
-      note: "Each Space authorizes on its own and is never combined with another.",
     },
     {
       label: "Candidates supplied to Iroh",
       fraction: candidateCount(runtime) === 0 ? 0 : 1,
       value: String(candidateCount(runtime)),
       tone: candidateCount(runtime) === 0 ? "none" : "direct",
-      note: "Home-compatible Private Relays plus enabled public fallbacks. A listed candidate is not a reachability guarantee.",
     },
   ]
 }

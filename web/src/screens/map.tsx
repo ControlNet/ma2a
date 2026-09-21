@@ -30,10 +30,7 @@ export function MapScreen({
 }): ReactNode {
   if (runtime === undefined) return <PendingSnapshot />
   return (
-    <Section
-      description="One Endpoint identity, one lane per independently authorized Space, and whatever Iroh currently reports about reaching anyone."
-      title="Map"
-    >
+    <Section title="Map">
       {runtime.spaces.some((space) => space.members === undefined) ? (
         <p role="status">
           {runtime.spaces.some((space) => space.membersError)
@@ -42,7 +39,6 @@ export function MapScreen({
         </p>
       ) : null}
       <LaneMap
-        endpointId={runtime.endpoint.id}
         lanes={laneList(runtime)}
         onSelect={onSelect}
         peers={peerList(runtime)}
@@ -82,7 +78,7 @@ export function MapInspector({
   if (runtime === undefined) {
     return (
       <Inspector eyebrow="Runtime" title="No snapshot">
-        <p className="field__help">Nothing is drawn until the Runtime answers.</p>
+        <p className="field__help">Waiting for the Runtime.</p>
       </Inspector>
     )
   }
@@ -116,18 +112,14 @@ export function MapInspector({
             <Pill tone="failed">{runtime.echoTotals.failures} failed</Pill>
           </div>
         </div>
-        <p className="field__help">Bounded totals only. No payload or target is retained.</p>
       </Card>
       <Card label="Control rounds">
         {runtime.controlRounds.length === 0 ? (
-          <p className="field__help">No round has completed since this Runtime started.</p>
+          <p className="field__help">No round completed yet.</p>
         ) : (
           <RoundBars rounds={runtime.controlRounds} />
         )}
-        <p className="field__help">
-          Deterministic 60 to 89 second interval, at most four peers per Space per round. Retained
-          in memory only.
-        </p>
+        <p className="field__help">Every 60–89 s, at most 4 peers per Space. In memory only.</p>
       </Card>
       <Card label="Bounded capacity">
         <MeterList label="Bounded capacity" meters={boundMeters(runtime)} />

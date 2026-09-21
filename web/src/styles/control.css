@@ -50,6 +50,14 @@
   gap: var(--space-2);
 }
 
+/** One control plus an action that belongs beside it, not under it. */
+.field__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+}
+
 .field__label {
   color: var(--text);
   font-size: 0.75rem;

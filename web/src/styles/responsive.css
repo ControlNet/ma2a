@@ -26,10 +26,6 @@
 }
 
 @media (width <= 52rem) {
-  .lane-map {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .lane {
     grid-template-columns: minmax(0, 1fr);
     align-items: start;

@@ -16,12 +16,11 @@ export function RelaysScreen({
   if (runtime === undefined) return <PendingSnapshot />
   return (
     <Section
-      description="MA2A filters candidates and hands them to Iroh. Iroh alone probes, selects a home and upgrades to direct. These are separate facts and stay on separate rows."
+      description="MA2A filters candidates and hands them to Iroh. Iroh alone probes, selects a home and upgrades to direct."
       title="Relays"
     >
       <Card label="Reachability, as the Runtime names it">
         <StateMachine current={runtime.reachability.state} states={REACHABILITY_STATES} />
-        <p className="field__help">{runtime.reachability.detail}</p>
       </Card>
       <div className="split">
         <Card label="Relay advertisements and candidate selection">
@@ -52,8 +51,7 @@ export function RelaysScreen({
                     />
                   </div>
                   <p className="field__help">
-                    Every current advertisement is listed. Only a home-compatible one, meaning one
-                    that covers every active Space, is supplied to Iroh.
+                    Only a candidate covering every active Space is supplied to Iroh.
                   </p>
                 </div>
               )}
@@ -86,11 +84,9 @@ export function RelaysScreen({
             </Pill>
           </div>
           <p className="field__help">
-            The generic Iroh relay map receives the home-compatible Private Relays plus every
-            enabled Public Relay Fallback, and nothing else. A Private Relay is a role hosted by an
-            MA2A Endpoint; a Public Relay Fallback is external infrastructure with no Endpoint
-            identity and no Space coverage. A supplied candidate is still not a reachability
-            guarantee.
+            A Private Relay is a role hosted by an MA2A Endpoint; a Public Relay Fallback is
+            external infrastructure with no Endpoint identity. A supplied candidate is not a
+            reachability guarantee.
           </p>
         </Card>
         <Card label="Iroh transport observation">
@@ -102,7 +98,6 @@ export function RelaysScreen({
                 fraction: runtime.observedRelayState.publicRelayConnected ? 1 : 0,
                 value: runtime.observedRelayState.publicRelayConnected ? "yes" : "no",
                 tone: runtime.observedRelayState.publicRelayConnected ? "direct" : "none",
-                note: "Iroh reports this Endpoint connected through an enabled Public Relay Fallback.",
               },
             ]}
           />
@@ -110,8 +105,7 @@ export function RelaysScreen({
             <Pill tone="none">observed path: {runtime.endpoint.observedPath}</Pill>
           </div>
           <p className="field__help">
-            Cleared at every restart, then rebuilt from the running Endpoint. MA2A never claims to
-            pick Iroh&apos;s home relay.
+            Cleared at every restart. MA2A never picks Iroh&apos;s home relay.
           </p>
         </Card>
         <Card label="Local provider role">
@@ -127,9 +121,8 @@ export function RelaysScreen({
             ]}
           />
           <p className="field__help">
-            A service this Runtime hosts for other Endpoints, configured in the panel beside this
-            one. It is not an Iroh observation about this Endpoint and says nothing about whether
-            this Endpoint has a connected home relay.
+            A service this Runtime hosts for other Endpoints. It says nothing about this
+            Endpoint&apos;s own reachability.
           </p>
         </Card>
       </div>

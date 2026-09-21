@@ -67,13 +67,11 @@ function Chip({
  * keeping the two apart is what stops membership reading as reachability.
  */
 export function LaneMap({
-  endpointId,
   lanes,
   peers,
   selected,
   onSelect,
 }: {
-  readonly endpointId: string
   readonly lanes: readonly Lane[]
   readonly peers: readonly ObservedPeer[]
   readonly selected?: string
@@ -81,30 +79,24 @@ export function LaneMap({
 }): ReactNode {
   return (
     <div className="lane-map">
-      <div className="lane-map__self">
-        <span className="lane-map__eyebrow">This Endpoint</span>
-        <span className="lane-map__id">{endpointId}</span>
-      </div>
       <div className="lane-map__bands">
         <section className="band band--signed">
           <h2 className="band__title">Signed authorization</h2>
-          <p className="band__note">
-            One lane per Space, each authorizing on its own, with its signed member set.
-          </p>
           {lanes.length === 0 ? (
             <div className="lane-map__empty">
-              <strong>No Space, so no lane to draw</strong>
+              <strong>No Space yet</strong>
               <p>
-                A zero-Space Runtime advertises only <code>ma2a/enrollment/1</code>. Echo, control,
-                metadata and relay are refused before any stream opens.
+                A zero-Space Runtime accepts only <code>ma2a/enrollment/1</code>.
               </p>
             </div>
           ) : (
             <ul className="lane-map__lanes">
               {lanes.map((lane) => (
                 <li className="lane" key={lane.spaceId}>
-                  <span className="lane__name">{lane.name}</span>
-                  <span className="lane__space">{lane.spaceId}</span>
+                  <span className="lane__head">
+                    <span className="lane__name">{lane.name}</span>
+                    <span className="lane__space">{lane.spaceId}</span>
+                  </span>
                   <span className="lane__meta">
                     {lane.memberCount} {lane.memberCount === 1 ? "member" : "members"}
                   </span>
@@ -115,15 +107,9 @@ export function LaneMap({
         </section>
         <section className="band band--observed">
           <h2 className="band__title">Observed transport</h2>
-          <p className="band__note">
-            Known peers toned by what Iroh reports right now, kept apart from membership because
-            authorization does not imply current reachability. Observations are cleared on restart
-            and are never an authorization fact.
-          </p>
           {peers.length === 0 ? (
             <div className="lane-map__empty lane-map__empty--quiet">
               <strong>No peer observed yet</strong>
-              <p>Members stay fully authorized whether or not a path has ever been seen.</p>
             </div>
           ) : (
             <div className="lane__members">
