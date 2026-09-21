@@ -25,6 +25,16 @@ fn stale_ipc_endpoint_is_recovered_by_a_real_daemon_process() -> TestResult {
     fs::write(runtime_dir.join("control.sock"), b"stale")?;
 
     // When
+    let started = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(&state_path)
+        .arg("start")
+        .output()?;
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
         .arg("--state-dir")
         .arg(&state_path)
@@ -59,7 +69,7 @@ fn stale_ipc_endpoint_is_recovered_by_a_real_daemon_process() -> TestResult {
     let shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
         .arg("--state-dir")
         .arg(&state_path)
-        .arg("shutdown")
+        .arg("stop")
         .output()?;
     assert!(shutdown.status.success());
     Ok(())

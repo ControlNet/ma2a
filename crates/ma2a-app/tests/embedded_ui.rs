@@ -100,7 +100,7 @@ impl Drop for Fixture {
         let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
             .arg("--state-dir")
             .arg(&self.state_dir)
-            .arg("shutdown")
+            .arg("stop")
             .output();
         let _wait = self.daemon.wait();
         let _cleanup = fs::remove_dir_all(&self.state_dir);

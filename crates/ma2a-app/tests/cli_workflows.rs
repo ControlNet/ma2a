@@ -42,6 +42,7 @@ impl Fixture {
     }
 
     fn create_space(&self) -> TestValue<String> {
+        assert_success(&self.run(&["start"])?)?;
         let output = self.run(&["space", "create", "--name", "Workflows", "--json"])?;
         assert_success(&output)?;
         let response: Value = serde_json::from_slice(&output.stdout)?;
@@ -55,7 +56,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _shutdown = self.run(&["shutdown"]);
+        let _shutdown = self.run(&["stop"]);
         let _cleanup = fs::remove_dir_all(&self.0);
     }
 }
@@ -205,7 +206,8 @@ fn external_private_and_public_relays_configure_status_and_disable() -> TestResu
             .and_then(Value::as_str),
         Some("https://public.example")
     );
-    assert_success(&fixture.run(&["shutdown"])?)?;
+    assert_success(&fixture.run(&["stop"])?)?;
+    assert_success(&fixture.run(&["start"])?)?;
     let restored_private: Value = serde_json::from_slice(
         &fixture
             .run(&["relay", "private", "status", "--json"])?

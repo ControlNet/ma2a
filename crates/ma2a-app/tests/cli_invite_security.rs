@@ -43,7 +43,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _shutdown = self.run(&["shutdown"]);
+        let _shutdown = self.run(&["stop"]);
         let _cleanup = fs::remove_dir_all(&self.0);
     }
 }

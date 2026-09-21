@@ -12,7 +12,8 @@ use crate::{
 
 pub(crate) async fn run_password(state_dir: &Path) -> Result<(), AppError> {
     let paths = IpcPaths::new(state_dir)?;
-    let mut client = RuntimeControlClient::new(state_dir.to_path_buf(), paths);
+    crate::daemon_control::require(&paths).await?;
+    let mut client = RuntimeControlClient::new(paths);
     if std::env::var_os("MA2A_PASSWORD_STDIN").is_some_and(|value| value == "1") {
         let mut reader =
             InheritedStdinPasswordReader::new(std::io::BufReader::new(std::io::stdin()));
@@ -30,7 +31,8 @@ pub(crate) async fn run_password(state_dir: &Path) -> Result<(), AppError> {
 
 pub(crate) async fn run_revoke_all(state_dir: &Path) -> Result<(), AppError> {
     let paths = IpcPaths::new(state_dir)?;
-    let mut client = RuntimeControlClient::new(state_dir.to_path_buf(), paths);
+    crate::daemon_control::require(&paths).await?;
+    let mut client = RuntimeControlClient::new(paths);
     ui::revoke_all_sessions(&mut client)
         .await
         .map_err(AppError::Command)?;

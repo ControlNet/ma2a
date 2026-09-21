@@ -3,7 +3,7 @@
 use std::{
     error::Error,
     fmt::{self, Write as _},
-    io::{self, Write as _},
+    io,
     path::PathBuf,
     process::ExitCode,
 };
@@ -14,11 +14,11 @@ use ma2a_runtime::{
     current_user::CurrentUserError,
     ipc::{IpcError, IpcPaths, LocalApiClient},
 };
-mod autostart;
 mod cli;
 mod commands;
 mod credential_command;
 mod daemon;
+mod daemon_control;
 mod output;
 
 mod embedded_web {
@@ -28,6 +28,7 @@ mod embedded_web {
 enum AppError {
     Command(commands::ui::UiCommandError),
     CurrentUser(CurrentUserError),
+    DaemonStopped,
     Io(io::Error),
     Ipc(IpcError),
     Runtime(RuntimeError),
@@ -45,6 +46,9 @@ impl fmt::Display for AppError {
         match self {
             Self::Command(error) => error.fmt(formatter),
             Self::CurrentUser(error) => error.fmt(formatter),
+            Self::DaemonStopped => formatter.write_str(
+                "daemon is not running; run `ma2a start` with the same --state-dir first",
+            ),
             Self::Io(error) => write!(formatter, "MA2A I/O failed: {error}"),
             Self::Ipc(error) => error.fmt(formatter),
             Self::Runtime(error) => error.fmt(formatter),
@@ -58,10 +62,10 @@ impl Error for AppError {
         match self {
             Self::Command(error) => Some(error),
             Self::CurrentUser(error) => Some(error),
+            Self::DaemonStopped | Self::Usage(_) => None,
             Self::Io(error) => Some(error),
             Self::Ipc(error) => Some(error),
             Self::Runtime(error) => Some(error),
-            Self::Usage(_) => None,
         }
     }
 }
@@ -109,6 +113,7 @@ async fn main() -> ExitCode {
                 AppError::Usage(_) => ExitCode::from(2),
                 AppError::Command(_)
                 | AppError::CurrentUser(_)
+                | AppError::DaemonStopped
                 | AppError::Io(_)
                 | AppError::Ipc(_)
                 | AppError::Runtime(_) => ExitCode::FAILURE,
@@ -124,6 +129,24 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
     };
     let paths = IpcPaths::new(&state_dir)?;
     match cli.command {
+        cli::Command::Start => {
+            let outcome = daemon_control::start(&state_dir, &paths).await?;
+            match outcome {
+                daemon_control::StartOutcome::Started => println!("daemon started"),
+                daemon_control::StartOutcome::AlreadyRunning => println!("daemon already running"),
+            }
+            Ok(())
+        }
+        cli::Command::Restart => {
+            daemon_control::restart(&state_dir, &paths).await?;
+            println!("daemon restarted");
+            Ok(())
+        }
+        cli::Command::Stop => {
+            daemon_control::stop(&paths).await?;
+            println!("daemon stopped");
+            Ok(())
+        }
         cli::Command::Daemon => daemon::run(state_dir, paths, false).await,
         cli::Command::DaemonDetached => daemon::run(state_dir, paths, true).await,
         cli::Command::Status { json } => {
@@ -149,7 +172,6 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
             commands::workflows::run_echo(&state_dir, paths, arguments).await
         }
         cli::Command::Ui { command } => commands::workflows::run_ui(&state_dir, command).await,
-        cli::Command::Shutdown => call_shutdown(paths).await,
     }
 }
 
@@ -158,8 +180,8 @@ async fn call(
     command: api::Command,
     json: bool,
 ) -> Result<(), AppError> {
-    let (state_dir, paths) = runtime;
-    autostart::ensure_daemon(state_dir, &paths).await?;
+    let (_, paths) = runtime;
+    daemon_control::require(&paths).await?;
     let response = LocalApiClient::new(paths).call(&command).await?;
     if json {
         output::write_json(&response)?;
@@ -169,12 +191,20 @@ async fn call(
     Ok(())
 }
 
-async fn call_shutdown(paths: IpcPaths) -> Result<(), AppError> {
+async fn stop_daemon(paths: IpcPaths) -> Result<(), AppError> {
+    daemon_control::require(&paths).await?;
     let command = shutdown_command()?;
     let response = LocalApiClient::new(paths.clone()).call(&command).await?;
-    autostart::wait_until_stopped(&paths).await?;
-    io::stdout().lock().write_all(&response)?;
-    writeln!(io::stdout().lock())?;
+    let document: serde_json::Value =
+        serde_json::from_slice(&response).map_err(io::Error::other)?;
+    if document
+        .pointer("/result/type")
+        .and_then(serde_json::Value::as_str)
+        != Some("shutting_down")
+    {
+        return Err(io::Error::other("daemon rejected the stop request").into());
+    }
+    daemon_control::wait_until_stopped(&paths).await?;
     Ok(())
 }
 
@@ -186,8 +216,10 @@ fn shutdown_command() -> Result<api::Command, AppError> {
         write!(&mut encoded_id, "{byte:02x}")
             .map_err(|_| io::Error::other("request identifier encoding failed"))?;
     }
-    let request =
-        format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{encoded_id}"}}"#);
+    let request = format!(
+        r#"{{"version":{},"operation":"graceful_shutdown","request_id":"{encoded_id}"}}"#,
+        api::LOCAL_API_VERSION
+    );
     Ok(api::decode_command(request.as_bytes()).map_err(IpcError::from)?)
 }
 

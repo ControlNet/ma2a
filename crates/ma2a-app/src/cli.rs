@@ -17,6 +17,12 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Start the current state directory's daemon in the background.
+    Start,
+    /// Gracefully restart the current state directory's daemon.
+    Restart,
+    /// Gracefully stop the current state directory's daemon.
+    Stop,
     Daemon,
     #[command(hide = true)]
     DaemonDetached,
@@ -41,7 +47,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: UiCommand,
     },
-    Shutdown,
 }
 
 #[derive(Debug, Subcommand)]

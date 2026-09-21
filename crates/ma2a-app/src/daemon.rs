@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AppError,
-    autostart::{open_lock, wait_until_live},
+    daemon_control::{open_lock, wait_until_live},
 };
 
 pub(crate) async fn run(

@@ -6,43 +6,108 @@ use std::{
     time::Duration,
 };
 
-use ma2a_runtime::ipc::{IpcPaths, LocalApiClient};
+use ma2a_runtime::ipc::{IpcError, IpcPaths, LocalApiClient};
 
 use crate::AppError;
 
 const STARTUP_DEADLINE: Duration = Duration::from_secs(10);
 const MAX_RETRY_MILLIS: u64 = 100;
 
-pub(crate) async fn ensure_daemon(state_dir: &Path, paths: &IpcPaths) -> Result<(), AppError> {
-    let client = LocalApiClient::new(paths.clone());
-    match client.probe().await {
-        Ok(()) => return Ok(()),
-        Err(ma2a_runtime::ipc::IpcError::VersionMismatch) => {
-            return Err(ma2a_runtime::ipc::IpcError::VersionMismatch.into());
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum StartOutcome {
+    Started,
+    AlreadyRunning,
+}
+
+pub(crate) async fn is_running(paths: &IpcPaths) -> Result<bool, AppError> {
+    match LocalApiClient::new(paths.clone()).probe().await {
+        Ok(()) => Ok(true),
+        Err(IpcError::Io(error))
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Ok(false)
         }
-        Err(_) => {}
+        Err(error) => Err(error.into()),
     }
+}
+
+// This path never creates directories, takes startup locks, or spawns a process.
+pub(crate) async fn require(paths: &IpcPaths) -> Result<(), AppError> {
+    if is_running(paths).await? {
+        Ok(())
+    } else {
+        Err(AppError::DaemonStopped)
+    }
+}
+
+pub(crate) async fn start(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome, AppError> {
     paths.prepare()?;
     let startup_lock = open_lock(&paths.startup_lock_path())?;
     acquire_startup_lock(&startup_lock).await?;
-    match client.probe().await {
-        Ok(()) => return Ok(()),
-        Err(ma2a_runtime::ipc::IpcError::VersionMismatch) => {
-            return Err(ma2a_runtime::ipc::IpcError::VersionMismatch.into());
-        }
-        Err(_) => {}
+    start_locked(state_dir, paths).await
+}
+
+pub(crate) async fn restart(state_dir: &Path, paths: &IpcPaths) -> Result<(), AppError> {
+    paths.prepare()?;
+    let startup_lock = open_lock(&paths.startup_lock_path())?;
+    acquire_startup_lock(&startup_lock).await?;
+    match is_running(paths).await {
+        Ok(true) => crate::stop_daemon(paths.clone()).await?,
+        Ok(false) => {}
+        Err(AppError::Ipc(IpcError::VersionMismatch)) => stop_incompatible(paths).await?,
+        Err(error) => return Err(error),
+    }
+    start_locked(state_dir, paths).await?;
+    Ok(())
+}
+
+pub(crate) async fn stop(paths: &IpcPaths) -> Result<(), AppError> {
+    // Preserve the no-state-creation error for a stopped daemon, but allow the
+    // lifecycle-only compatibility path once the startup lock is held.
+    match require(paths).await {
+        Ok(()) | Err(AppError::Ipc(IpcError::VersionMismatch)) => {}
+        Err(error) => return Err(error),
+    }
+    let startup_lock = open_lock(&paths.startup_lock_path())?;
+    acquire_startup_lock(&startup_lock).await?;
+    match crate::stop_daemon(paths.clone()).await {
+        Err(AppError::Ipc(IpcError::VersionMismatch)) => stop_incompatible(paths).await,
+        result => result,
+    }
+}
+
+async fn stop_incompatible(paths: &IpcPaths) -> Result<(), AppError> {
+    eprintln!("daemon protocol is incompatible; stopping the existing daemon");
+    LocalApiClient::new(paths.clone())
+        .shutdown_compatible()
+        .await?;
+    wait_until_stopped(paths).await
+}
+
+async fn start_locked(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome, AppError> {
+    match is_running(paths).await {
+        Ok(true) => return Ok(StartOutcome::AlreadyRunning),
+        Ok(false) => {}
+        Err(AppError::Ipc(IpcError::VersionMismatch)) => stop_incompatible(paths).await?,
+        Err(error) => return Err(error),
     }
     let daemon_lock = open_lock(&paths.lock_path())?;
     match daemon_lock.try_lock() {
         Ok(()) => {
             paths.remove_stale_endpoint()?;
-            spawn_daemon(state_dir)?;
+            // The child must acquire this lock itself. Keep the startup lock
+            // held by the caller, but release the daemon lock before spawning.
             drop(daemon_lock);
+            spawn_daemon(state_dir)?;
         }
         Err(TryLockError::WouldBlock) => {}
         Err(TryLockError::Error(error)) => return Err(error.into()),
     }
-    wait_until_live(&client).await
+    wait_until_live(&LocalApiClient::new(paths.clone())).await?;
+    Ok(StartOutcome::Started)
 }
 
 async fn acquire_startup_lock(lock: &File) -> Result<(), AppError> {

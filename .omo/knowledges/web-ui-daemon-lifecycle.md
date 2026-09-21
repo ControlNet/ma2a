@@ -2,6 +2,8 @@
 
 Updated 2026-09-21 for manual WebUI control.
 
+Daemon lifecycle update (2026-09-22): all UI commands now require an already running daemon. Run `ma2a --state-dir "$STATE" start` before `ui init` or other UI commands. Even `ui status/stop` report an error if the daemon is absent. No UI command starts a daemon.
+
 - `crates/ma2a-app/src/daemon.rs` creates a stopped `WebLifecycle` and attaches it to private IPC. Starting a daemon or Endpoint never binds HTTP. Daemon shutdown stops WebUI before Runtime cleanup.
 - `ui init` uses the new `ui_init` local API operation. Store `PasswordTransition::Init` sets or resets the verifier atomically, increments the auth epoch, and revokes all prior sessions. It does not start HTTP. Lower-level explicit Set/Reset transitions remain available to local API callers.
 - `ui start` requires a password, accepts arbitrary binding IPs/hostnames, and starts or restarts a daemon-owned HTTP task. Defaults are 127.0.0.1 and OS-selected port 0. The user's explicit requirement is that `--host` is NOT restricted to loopback.

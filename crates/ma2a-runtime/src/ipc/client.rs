@@ -12,6 +12,8 @@ use super::{
 
 static NEXT_CORRELATION: AtomicU64 = AtomicU64::new(1);
 
+mod lifecycle;
+
 /// Exact-version client for the current user's local daemon.
 #[derive(Clone, Debug)]
 pub struct LocalApiClient {
@@ -30,7 +32,7 @@ impl LocalApiClient {
     /// Returns a transport, version, correlation, or local API error.
     pub async fn call(&self, command: &Command) -> Result<Vec<u8>, IpcError> {
         if command.operation() != "handshake" {
-            let handshake = api::decode_command(br#"{"version":1,"operation":"handshake"}"#)?;
+            let handshake = handshake_command()?;
             let response = self.roundtrip(&handshake).await?;
             validate_handshake(&response)?;
         }
@@ -47,25 +49,29 @@ impl LocalApiClient {
     /// # Errors
     /// Returns a transport error or [`IpcError::VersionMismatch`].
     pub async fn probe(&self) -> Result<(), IpcError> {
-        let command = api::decode_command(br#"{"version":1,"operation":"handshake"}"#);
+        let command = handshake_command();
         match command {
             Ok(command) => self
                 .roundtrip(&command)
                 .await
                 .and_then(|response| validate_handshake(&response)),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 
     async fn roundtrip(&self, command: &Command) -> Result<Vec<u8>, IpcError> {
-        let correlation = NEXT_CORRELATION.fetch_add(1, Ordering::Relaxed);
         let payload = api::encode_command(command)?;
+        self.roundtrip_payload(&payload).await
+    }
+
+    async fn roundtrip_payload(&self, payload: &[u8]) -> Result<Vec<u8>, IpcError> {
+        let correlation = NEXT_CORRELATION.fetch_add(1, Ordering::Relaxed);
         let mut stream = platform::connect(&self.paths).await?;
         write_frame(
             &mut stream,
             FrameRef {
                 correlation,
-                payload: &payload,
+                payload,
                 maximum: api::MAX_LOCAL_REQUEST_BYTES,
             },
         )
@@ -76,6 +82,14 @@ impl LocalApiClient {
         }
         Ok(response.payload)
     }
+}
+
+fn handshake_command() -> Result<Command, IpcError> {
+    let request = format!(
+        r#"{{"version":{},"operation":"handshake"}}"#,
+        api::LOCAL_API_VERSION
+    );
+    api::decode_command(request.as_bytes()).map_err(Into::into)
 }
 
 fn validate_handshake(response: &[u8]) -> Result<(), IpcError> {

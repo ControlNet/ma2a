@@ -23,6 +23,7 @@ pub(crate) async fn run_echo(
     let payload = match arguments.text {
         Some(text) => text,
         None if arguments.stdin => {
+            crate::daemon_control::require(&paths).await?;
             let mut input = String::new();
             io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
             input
