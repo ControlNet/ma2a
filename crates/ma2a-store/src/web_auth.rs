@@ -16,7 +16,7 @@ pub const ARGON2_TIME_COST: u32 = 2;
 pub const ARGON2_PARALLELISM: u32 = 1;
 /// Argon2id output size in bytes.
 pub const ARGON2_OUTPUT_BYTES: usize = 32;
-const PASSWORD_MIN_BYTES: usize = 12;
+const PASSWORD_MIN_BYTES: usize = 1;
 const PASSWORD_MAX_BYTES: usize = 1_024;
 
 /// Persisted password verifier metadata without recoverable credentials.
