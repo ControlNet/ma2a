@@ -47,7 +47,6 @@ export function PendingSnapshot(): ReactNode {
   return (
     <div className="pending" role="status">
       <strong>Waiting for an authoritative snapshot</strong>
-      <p>Lanes, rings and matrices appear only once the Runtime has answered.</p>
       <div aria-hidden="true" className="pending__bars">
         <span />
         <span />
@@ -61,7 +60,6 @@ export function SnapshotError({ onRetry }: { readonly onRetry: () => void }): Re
   return (
     <div className="snapshot-error" role="alert">
       <strong>Runtime snapshot is unavailable</strong>
-      <p>The console could not load authoritative Runtime state.</p>
       <button className="button button--primary" onClick={onRetry} type="button">
         Retry
       </button>

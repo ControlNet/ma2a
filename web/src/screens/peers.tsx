@@ -24,7 +24,7 @@ export function PeersScreen({
   const peers = peerList(runtime)
   return (
     <Section
-      description="Known peer Endpoints from signed Space membership, with Iroh transport observations overlaid where available. Membership is a signed fact and does not depend on whether a path has ever been seen."
+      description="Peer Endpoints from signed membership, with Iroh observations where available."
       title="Peers"
     >
       {runtime.spaces.some((space) => space.members === undefined) ? (
@@ -35,7 +35,6 @@ export function PeersScreen({
         </p>
       ) : null}
       <Card label="This Endpoint">
-        <Identifier value={runtime.endpoint.id} />
         <div className="cluster">
           <Pill tone={runtime.endpoint.status === "active" ? "direct" : "failed"}>
             {runtime.endpoint.status}
@@ -46,8 +45,7 @@ export function PeersScreen({
       </Card>
       {peers.length === 0 ? (
         <EmptyState title="No peer Endpoint known yet">
-          Once a Space has another member, it appears here whether or not Iroh has ever reported a
-          path to it.
+          Members of a Space appear here whether or not a path has been observed.
         </EmptyState>
       ) : (
         <ul className="peer-list">
@@ -90,7 +88,7 @@ export function PeerInspector({
   if (runtime === undefined) {
     return (
       <Inspector eyebrow="Peer" title="No snapshot">
-        <p className="field__help">Nothing is drawn until the Runtime answers.</p>
+        <p className="field__help">Waiting for the Runtime.</p>
       </Inspector>
     )
   }
@@ -110,7 +108,6 @@ export function PeerInspector({
                 fraction: runtime.peerConnections.length / LIMITS.connections,
                 value: `${runtime.peerConnections.length} / ${LIMITS.connections}`,
                 tone: "accent",
-                note: "The manager owns at most 128 active connections.",
               },
             ]}
           />
@@ -139,8 +136,7 @@ export function PeerInspector({
           )
         })()}
         <p className="field__help">
-          At most eight observations per peer, cleared at every restart. Numbers below a point are
-          the round-trip estimate in milliseconds.
+          Cleared at restart. Numbers are the round-trip estimate in ms.
         </p>
       </Card>
       <Card label="Observed">
@@ -150,11 +146,7 @@ export function PeerInspector({
           </Pill>
           <Pill tone={peer.tone}>{peer.badge}</Pill>
         </div>
-        <p className="field__help">
-          Which Space authorized a request is on the local API privacy exclusion list, alongside
-          private keys and invite secrets. A revocation in one Space never cancels an allow from
-          another.
-        </p>
+        <p className="field__help">The authorizing Space is never projected.</p>
       </Card>
       {message === undefined ? null : (
         <p className="field__help" role="status">

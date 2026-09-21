@@ -77,7 +77,7 @@ export function RelaysInspector({
             <input id="relay-url" name="public-url" pattern="https://.*" required type="url" />
           </Field>
           <Field
-            help="Separate Space IDs with commas or line breaks. The Runtime may serve only active Spaces it currently belongs to and that permit Private Relay Provider operation."
+            help="Comma or line separated. Only active Spaces that permit Provider operation may be served."
             id="relay-served"
             label="Served Space IDs"
           >

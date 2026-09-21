@@ -24,7 +24,7 @@ export function EchoScreen({
   const bytes = new TextEncoder().encode(payload).length
   return (
     <Section
-      description="Address one Endpoint directly. There is no Space selector: the receiver decides whether any one complete shared Space authorizes the call."
+      description="Address one Endpoint directly. The receiver decides whether a shared Space authorizes the call."
       title="Echo"
     >
       <div className="split">
@@ -48,7 +48,7 @@ export function EchoScreen({
             {...(result === undefined ? {} : { status: result })}
           >
             <Field
-              help="A denial is deliberately uniform. It never says which Space refused, or whether one exists."
+              help="Denials are uniform and never name a Space."
               id="echo-target"
               label="Target Endpoint ID"
             >
@@ -92,7 +92,6 @@ export function EchoScreen({
                     fraction: reply.duration_ms / LIMITS.echoDeadlineMs,
                     value: `${reply.duration_ms} / ${LIMITS.echoDeadlineMs} ms`,
                     tone: "direct",
-                    note: "Reported by the responder in the Echo v1 frame, saturated at 10 s.",
                   },
                 ]}
               />
@@ -101,9 +100,8 @@ export function EchoScreen({
         </Card>
         <Card label="What the Runtime keeps">
           <p className="field__help">
-            Echo has a ten second aggregate deadline and no semantic retries. The audit record holds
-            a request id, the authenticated peer, a bounded result class and a duration. Payload
-            bytes, Space IDs and authorization details are structurally absent.
+            A request id, the authenticated peer, a result class and a duration. Payload bytes and
+            Space IDs are structurally absent.
           </p>
           <div className="cluster">
             <Pill tone="accent">at most {LIMITS.echoStreamsPerPeer} streams per peer</Pill>
@@ -123,7 +121,7 @@ export function EchoInspector({
   if (runtime === undefined) {
     return (
       <Inspector eyebrow="Echo" title="No snapshot">
-        <p className="field__help">Nothing is drawn until the Runtime answers.</p>
+        <p className="field__help">Waiting for the Runtime.</p>
       </Inspector>
     )
   }
@@ -142,9 +140,7 @@ export function EchoInspector({
             </Pill>
           </div>
         </div>
-        <p className="field__help">
-          Totals only. No target, payload or history is retained across the snapshot.
-        </p>
+        <p className="field__help">Totals only; nothing else is retained.</p>
       </Card>
     </Inspector>
   )

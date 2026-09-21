@@ -102,16 +102,15 @@ test("exactly one reachability state is marked current", () => {
 })
 
 test("signed lanes and observed peers are separate, labelled bands", () => {
-  render(<LaneMap endpointId="7f3a9d51" lanes={LANES} peers={PEERS} />)
+  render(<LaneMap lanes={LANES} peers={PEERS} />)
 
   expect(screen.getByRole("heading", { name: "Signed authorization" })).toBeInTheDocument()
   expect(screen.getByRole("heading", { name: "Observed transport" })).toBeInTheDocument()
-  expect(screen.getByText(/with its signed member set/)).toBeInTheDocument()
   expect(screen.getByText("3 members")).toBeInTheDocument()
 })
 
 test("a peer that was never observed keeps its place in the observed band", () => {
-  render(<LaneMap endpointId="7f3a9d51" lanes={LANES} peers={PEERS} />)
+  render(<LaneMap lanes={LANES} peers={PEERS} />)
 
   expect(screen.getByText("never seen")).toBeInTheDocument()
 })
@@ -119,15 +118,7 @@ test("a peer that was never observed keeps its place in the observed band", () =
 test("selecting a peer reports the full identifier, not the abbreviation", async () => {
   const user = userEvent.setup()
   const onSelect = vi.fn()
-  render(
-    <LaneMap
-      endpointId="7f3a9d51"
-      lanes={LANES}
-      onSelect={onSelect}
-      peers={PEERS}
-      selected="4444444444444444"
-    />,
-  )
+  render(<LaneMap lanes={LANES} onSelect={onSelect} peers={PEERS} selected="4444444444444444" />)
 
   await user.click(screen.getByRole("button", { name: /never seen/ }))
 
@@ -139,9 +130,9 @@ test("selecting a peer reports the full identifier, not the abbreviation", async
 })
 
 test("zero Spaces explains the protocol isolation instead of drawing nothing", () => {
-  render(<LaneMap endpointId="7f3a9d51" lanes={[]} peers={[]} />)
+  render(<LaneMap lanes={[]} peers={[]} />)
 
-  expect(screen.getByText(/No Space, so no lane to draw/)).toBeInTheDocument()
+  expect(screen.getByText(/No Space yet/)).toBeInTheDocument()
   expect(screen.getByText(/ma2a\/enrollment\/1/)).toBeInTheDocument()
 })
 

@@ -16,7 +16,7 @@ export function SpacesScreen({
   if (runtime === undefined) return <PendingSnapshot />
   return (
     <Section
-      description="Every Space is an independently signed authorization domain. A grant in one is never combined with a grant in another."
+      description="Every Space is an independently signed authorization domain."
       title="Spaces"
     >
       {runtime.spaces.length === 0 ? (
@@ -140,7 +140,7 @@ export function SpacesInspector({
             </select>
           </Field>
           <Field
-            help="Between 1 ms and 5 m. Expiry is computed by the Runtime clock, not the browser."
+            help="1 ms to 5 minutes, on the Runtime clock."
             id="invite-ttl"
             label="Lifetime in milliseconds"
           >
@@ -187,7 +187,7 @@ export function SpacesInspector({
             </select>
           </Field>
           <Field
-            help="Revocation is Space-local. Another shared Space can still authorize this peer."
+            help="Space-local: another shared Space can still authorize this peer."
             id="revoke-endpoint"
             label="Endpoint ID"
           >

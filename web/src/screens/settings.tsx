@@ -54,10 +54,10 @@ export function SettingsScreen({
 }): ReactNode {
   return (
     <Section
-      description="The browser is the least trusted surface in this system. This page shows exactly how little it is allowed to hold."
+      description="The browser is the least trusted surface in this system."
       title="Settings"
     >
-      <Card label="Where each secret may be persisted or retained">
+      <Card label="Secret retention">
         <div className="scroll-x">
           <TrustChain boundaries={BOUNDARIES} secrets={SECRETS} />
         </div>
@@ -76,25 +76,21 @@ export function SettingsScreen({
           </li>
         </ul>
         <p className="field__help">
-          Handling is not retention. Signing in necessarily puts the passphrase in browser memory
-          and sends it to the same-origin Runtime; nothing keeps it. Protected storage holds an
-          Argon2id verifier and an invitation digest, never the passphrase or the ticket secret
-          themselves. The ticket file is the one place a ticket secret is retained, written once on
-          request for the operator to transfer and delete.
+          Handling is not retention. Protected storage holds an Argon2id verifier and an invitation
+          digest, never the secrets themselves. The ticket file is the one place a secret is
+          retained.
         </p>
       </Card>
       <div className="split">
         <Card label="Appearance">
           <ThemeToggle />
           <p className="field__help">
-            Follows the operating system until you pick one. Only this display preference is stored
-            in the browser.
+            Follows the system until you pick one. The only thing this browser stores.
           </p>
         </Card>
         <Card label="Password recovery">
           <p className="field__help">
-            A reset increments the authentication epoch and revokes every prior session. There is no
-            browser route for creating or resetting a passphrase.
+            A reset revokes every prior session. There is no browser route.
           </p>
           <div className="command">
             <code className="command__line">ma2a ui init</code>
@@ -103,8 +99,8 @@ export function SettingsScreen({
         </Card>
         <Card label="Browser storage">
           <p className="field__help">
-            MA2A places no passphrase, bearer token, verifier, invite secret or private key material
-            in localStorage, sessionStorage or a URL.
+            No passphrase, bearer token, verifier, invite secret or key material in localStorage,
+            sessionStorage or a URL.
           </p>
           <div className="cluster">
             <Pill tone="accent">{runtime?.uiAuth.active_sessions ?? "unknown"} active session</Pill>
@@ -160,8 +156,7 @@ export function SettingsInspector({
           <Pill tone="accent">CSRF per session</Pill>
         </div>
         <p className="field__help">
-          Active sessions: {runtime?.uiAuth.active_sessions ?? "unknown"}. An expired or revoked
-          session closes the event stream without emitting any state-bearing frame.
+          Active sessions: {runtime?.uiAuth.active_sessions ?? "unknown"}.
         </p>
       </Card>
       <div className="cluster">
