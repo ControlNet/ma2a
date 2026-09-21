@@ -16,6 +16,22 @@ impl StoreBackend {
     fn dispatch(&mut self, command: StoreCommand) -> bool {
         match command {
             StoreCommand::Initialize(reply) => drop(reply.send(self.initialize())),
+            StoreCommand::Revision(reply) => {
+                drop(reply.send(self.repository.revision().map_err(Into::into)));
+            }
+            StoreCommand::SpaceDetails {
+                endpoint_id,
+                space_id,
+                reply,
+            } => {
+                drop(
+                    reply.send(
+                        self.repository
+                            .space_details(endpoint_id, space_id)
+                            .map_err(Into::into),
+                    ),
+                );
+            }
             StoreCommand::Snapshot {
                 endpoint_id,
                 now_ms,

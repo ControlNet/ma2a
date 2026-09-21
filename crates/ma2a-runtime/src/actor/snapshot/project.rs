@@ -5,25 +5,18 @@ use crate::{
     error::{RuntimeError, RuntimeErrorKind},
 };
 
-pub(super) fn space_view(space: &ma2a_store::SnapshotSpace) -> Result<SnapshotSpaceView, RuntimeError> {
-    let members = space
-        .members()
-        .iter()
-        .map(|member| {
-            SpaceMemberView::new(
-                member.endpoint_id(),
-                member.label(),
-                member.echo(),
-                member.relay_provider(),
-            )
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+pub(super) fn space_view(
+    space: &ma2a_store::SnapshotSpace,
+) -> Result<SnapshotSpaceView, RuntimeError> {
     SnapshotSpaceView::new(
         space.space_id(),
         space.label(),
-        SpaceChainHead::new(space.generation(), space.chain_hash(), space.revoked_count()),
-        members,
+        SpaceChainHead::new(
+            space.generation(),
+            space.chain_hash(),
+            space.revoked_count(),
+        ),
+        space.member_count(),
     )
     .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
 }
@@ -97,4 +90,25 @@ pub(super) fn connection_view(
         observations,
     )
     .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
+}
+
+pub(super) fn detail_view(
+    detail: &ma2a_store::SpaceDetails,
+) -> Result<crate::api::SpaceDetailsView, RuntimeError> {
+    let space = space_view(&detail.space)?;
+    let members = detail
+        .members
+        .iter()
+        .map(|member| {
+            SpaceMemberView::new(
+                member.endpoint_id(),
+                member.label(),
+                member.echo(),
+                member.relay_provider(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+    crate::api::SpaceDetailsView::new(detail.revision, space, members)
+        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
 }

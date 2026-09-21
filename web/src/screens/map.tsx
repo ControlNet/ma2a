@@ -34,6 +34,13 @@ export function MapScreen({
       description="One Endpoint identity, one lane per independently authorized Space, and whatever Iroh currently reports about reaching anyone."
       title="Map"
     >
+      {runtime.spaces.some((space) => space.members === undefined) ? (
+        <p role="status">
+          {runtime.spaces.some((space) => space.membersError)
+            ? "Some signed members could not be loaded. Refresh to retry."
+            : "Loading signed members. The peer list is incomplete."}
+        </p>
+      ) : null}
       <LaneMap
         endpointId={runtime.endpoint.id}
         lanes={laneList(runtime)}

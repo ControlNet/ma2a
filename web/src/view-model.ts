@@ -23,7 +23,8 @@ export type SpaceView = {
   readonly memberCount: number
   readonly generation: number
   readonly chainHash: string
-  readonly members: readonly SpaceMemberView[]
+  readonly members: readonly SpaceMemberView[] | undefined
+  readonly membersError?: boolean
   readonly revokedCount: number
 }
 

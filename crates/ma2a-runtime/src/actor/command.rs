@@ -8,6 +8,11 @@ use crate::{
 };
 
 pub(crate) enum Command {
+    SpaceDetails(
+        ma2a_core::SpaceId,
+        oneshot::Sender<Result<Option<crate::api::SpaceDetailsView>, RuntimeError>>,
+    ),
+    SnapshotStamp(oneshot::Sender<Result<crate::api::SnapshotStampView, RuntimeError>>),
     Status(oneshot::Sender<RuntimeStatus>),
     Snapshot(oneshot::Sender<Result<crate::api::RuntimeSnapshot, RuntimeError>>),
     ObserveMemberships {

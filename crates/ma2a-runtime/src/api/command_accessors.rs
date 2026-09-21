@@ -21,7 +21,9 @@ impl Command {
 
     pub(crate) const fn space_show_id(&self) -> Option<SpaceId> {
         match self.kind {
-            CommandKind::SpaceShow(space_id) => Some(space_id),
+            CommandKind::SpaceShow(space_id) | CommandKind::SpaceDetailsFetch(space_id) => {
+                Some(space_id)
+            }
             _ => None,
         }
     }

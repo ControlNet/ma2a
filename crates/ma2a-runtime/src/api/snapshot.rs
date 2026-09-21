@@ -3,6 +3,8 @@
 use super::{ApiError, MAX_COLLECTION_ITEMS, snapshot_state::SnapshotState};
 use ma2a_core::EndpointId;
 
+#[cfg(test)]
+mod budget_tests;
 mod connection;
 mod control_round;
 mod member;
@@ -12,8 +14,10 @@ mod value;
 
 pub use connection::{ConnectionObservationView, ConnectionView};
 pub use control_round::{ControlRoundView, MAX_RETAINED_CONTROL_ROUNDS};
+pub use member::{
+    SnapshotSpaceView, SnapshotStampView, SpaceChainHead, SpaceDetailsView, SpaceMemberView,
+};
 pub use relay::{PrivateRelayCandidateView, PublicRelayFallbackView};
-pub use member::{SnapshotSpaceView, SpaceChainHead, SpaceMemberView};
 pub use space::SpaceView;
 pub(crate) use value::{endpoint_value, space_value, ui_auth_value};
 
@@ -43,7 +47,6 @@ impl EndpointView {
     }
 }
 
-
 /// Control synchronization state keyed only by peer Endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlSyncView {
@@ -63,7 +66,6 @@ impl ControlSyncView {
         }
     }
 }
-
 
 /// Local provider-role state and Iroh public-relay observation, kept apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,7 +254,7 @@ impl SnapshotCollections {
         control_sync: ControlSyncView,
         connections: Vec<ConnectionView>,
         private_relay_candidates: Vec<PrivateRelayCandidateView>,
-    public_relay_fallbacks: Vec<PublicRelayFallbackView>,
+        public_relay_fallbacks: Vec<PublicRelayFallbackView>,
         control_rounds: Vec<ControlRoundView>,
     ) -> Result<Self, ApiError> {
         if spaces.len() > MAX_COLLECTION_ITEMS

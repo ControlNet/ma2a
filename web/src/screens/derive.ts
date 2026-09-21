@@ -52,7 +52,7 @@ export function peerList(runtime: RuntimeViewData): ObservedPeer[] {
   const observed = new Map(runtime.peerConnections.map((peer) => [peer.endpointId, peer]))
   const members = new Map<string, string>()
   for (const space of runtime.spaces) {
-    for (const member of space.members) {
+    for (const member of space.members ?? []) {
       if (member.endpointId !== runtime.endpoint.id) members.set(member.endpointId, member.label)
     }
   }

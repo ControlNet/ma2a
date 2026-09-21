@@ -41,7 +41,6 @@ pub struct SnapshotSpace {
     member_count: u32,
     generation: u64,
     chain_hash: [u8; 32],
-    members: Vec<SnapshotMember>,
     revoked_count: u32,
 }
 
@@ -69,11 +68,6 @@ impl SnapshotSpace {
     /// Returns the latest accepted contiguous chain hash.
     pub const fn chain_hash(&self) -> [u8; 32] {
         self.chain_hash
-    }
-
-    /// Returns the latest complete sorted member set.
-    pub fn members(&self) -> &[SnapshotMember] {
-        &self.members
     }
 
     /// Returns the number of Space-local revocations carried forward.
@@ -161,25 +155,12 @@ impl Repository {
                     .ok_or(StoreError::SchemaMismatch {
                         detail: "snapshot local Space member is missing",
                     })?;
-                let members = chain
-                    .members()
-                    .iter()
-                    .map(|member| SnapshotMember {
-                        endpoint_id: member.endpoint_id(),
-                        label: member.label().to_owned(),
-                        echo: member.capabilities().allows(Capability::ECHO),
-                        relay_provider: member
-                            .capabilities()
-                            .allows(Capability::PRIVATE_RELAY_PROVIDER),
-                    })
-                    .collect();
                 Ok(SnapshotSpace {
                     space_id,
                     label,
                     member_count,
                     generation: chain.latest_generation(),
                     chain_hash: chain.latest_hash(),
-                    members,
                     revoked_count: u32::try_from(chain.revocations().len()).unwrap_or(u32::MAX),
                 })
             })
@@ -207,5 +188,73 @@ impl Repository {
             password_set,
             active_sessions,
         })
+    }
+}
+
+/// Complete members and their chain head, read in one transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SpaceDetails {
+    /// Revision of this read transaction.
+    pub revision: u64,
+    /// Summary corresponding to the member set.
+    pub space: SnapshotSpace,
+    /// Complete signed member set.
+    pub members: Vec<SnapshotMember>,
+}
+
+impl Repository {
+    /// Reads one Space only if the local Endpoint is still a signed member.
+    ///
+    /// # Errors
+    /// Returns a store error if the persisted chain is invalid or unreadable.
+    pub fn space_details(
+        &mut self,
+        endpoint_id: EndpointId,
+        space_id: SpaceId,
+    ) -> Result<Option<SpaceDetails>, StoreError> {
+        let transaction = self.connection.transaction()?;
+        let revision = transaction.query_row(
+            "SELECT revision FROM runtime_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let Some(chain) = crate::space_rows::load_chain(&transaction, space_id)? else {
+            return Ok(None);
+        };
+        let Some(local) = chain
+            .members()
+            .iter()
+            .find(|member| member.endpoint_id() == endpoint_id)
+        else {
+            return Ok(None);
+        };
+        let members = chain
+            .members()
+            .iter()
+            .map(|member| SnapshotMember {
+                endpoint_id: member.endpoint_id(),
+                label: member.label().to_owned(),
+                echo: member.capabilities().allows(Capability::ECHO),
+                relay_provider: member
+                    .capabilities()
+                    .allows(Capability::PRIVATE_RELAY_PROVIDER),
+            })
+            .collect();
+
+        let space = SnapshotSpace {
+            space_id,
+            label: local.label().to_owned(),
+            member_count: u32::try_from(chain.members().len()).unwrap_or(u32::MAX),
+            generation: chain.latest_generation(),
+            chain_hash: chain.latest_hash(),
+            revoked_count: u32::try_from(chain.revocations().len()).unwrap_or(u32::MAX),
+        };
+        transaction.commit()?;
+        Ok(Some(SpaceDetails {
+            revision,
+            space,
+            members,
+        }))
     }
 }

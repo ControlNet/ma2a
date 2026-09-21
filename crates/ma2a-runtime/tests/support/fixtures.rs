@@ -1,14 +1,13 @@
 use ma2a_core::{EndpointId, SpaceId};
 use ma2a_runtime::api::{
     CapabilityFlags, ClientSnapshotState, Command, CommandResult, ConnectionObservationView,
-    ConnectionView, ControlRoundView, ControlSyncView,
-    EchoReplyView, EchoSummaryView, EndpointView, HandshakeAuth, HandshakeState, HandshakeView,
-    InteractionCapabilities, ManagementCapabilities, NetworkSnapshotState, ObservedRelayStateView,
+    ConnectionView, ControlRoundView, ControlSyncView, EchoReplyView, EchoSummaryView,
+    EndpointView, HandshakeAuth, HandshakeState, HandshakeView, InteractionCapabilities,
+    ManagementCapabilities, NetworkSnapshotState, ObservedRelayStateView,
     PrivateRelayCandidateView, PrivateRelayView, PublicRelayFallbackView, PublicRelayView,
-    ReachabilityView, RelayAddress,
-    RelayCapabilities, RuntimeEvent, RuntimeSnapshot, RuntimeStatusView, SnapshotCollections,
-    SnapshotHeader, SnapshotSpaceView, SnapshotState, SpaceChainHead, SpaceMemberView,
-    SpaceView, UiAuthView, decode_command,
+    ReachabilityView, RelayAddress, RelayCapabilities, RuntimeEvent, RuntimeSnapshot,
+    RuntimeStatusView, SnapshotCollections, SnapshotHeader, SnapshotSpaceView, SnapshotState,
+    SpaceChainHead, SpaceMemberView, SpaceView, UiAuthView, decode_command,
 };
 
 type FixtureResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -28,12 +27,8 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
     let endpoint_id = endpoint_id()?;
     let endpoint = EndpointView::new(endpoint_id, "ma2a-runtime", true)?;
     let space = SpaceView::new(space_id()?, "ops", 3)?;
-    let snapshot_space = SnapshotSpaceView::new(
-        space_id()?,
-        "ops",
-        SpaceChainHead::new(4, [0x5a; 32], 1),
-        vec![SpaceMemberView::new(endpoint_id, "operator", true, false)?],
-    )?;
+    let snapshot_space =
+        SnapshotSpaceView::new(space_id()?, "ops", SpaceChainHead::new(4, [0x5a; 32], 1), 1)?;
     let control_sync = ControlSyncView::new(vec![endpoint_id])?;
     let ui_auth = UiAuthView::new(true, true, 2);
     let capabilities = CapabilityFlags::new(
@@ -82,6 +77,12 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
             "http://127.0.0.1:12345",
         )?),
         CommandResult::snapshot(snapshot),
+        CommandResult::space_details(ma2a_runtime::api::SpaceDetailsView::new(
+            7,
+            snapshot_space,
+            vec![SpaceMemberView::new(endpoint_id, "operator", true, false)?],
+        )?),
+        CommandResult::snapshot_stamp(ma2a_runtime::api::SnapshotStampView::new(7, [0x51; 16])),
         CommandResult::shutting_down(),
     ])
 }
@@ -131,7 +132,11 @@ fn snapshot(fixture: SnapshotFixture) -> FixtureResult<RuntimeSnapshot> {
             vec![space_id()?],
             true,
         )?],
-        vec![PublicRelayFallbackView::new("https://public.example", true, false)?],
+        vec![PublicRelayFallbackView::new(
+            "https://public.example",
+            true,
+            false,
+        )?],
         vec![ControlRoundView::new(1_700_000_000_000, 1, "succeeded")?],
     )?;
     let state = SnapshotState::new(
@@ -208,6 +213,8 @@ fn command_json() -> Vec<String> {
         format!(r#"{{"version":1,"operation":"session_revoke_all","request_id":"{REQUEST_ID}"}}"#),
         r#"{"version":1,"operation":"ui_open"}"#.to_owned(),
         r#"{"version":1,"operation":"snapshot_fetch"}"#.to_owned(),
+        format!(r#"{{"version":1,"operation":"space_details_fetch","space_id":"{SPACE_ID}"}}"#),
+        r#"{"version":1,"operation":"snapshot_stamp"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
     ]
 }

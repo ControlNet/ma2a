@@ -11,6 +11,12 @@ use crate::{
 
 pub(crate) enum StoreCommand {
     Initialize(oneshot::Sender<Result<super::Identity, RuntimeError>>),
+    Revision(oneshot::Sender<Result<u64, RuntimeError>>),
+    SpaceDetails {
+        endpoint_id: ma2a_core::EndpointId,
+        space_id: ma2a_core::SpaceId,
+        reply: oneshot::Sender<Result<Option<ma2a_store::SpaceDetails>, RuntimeError>>,
+    },
     Snapshot {
         endpoint_id: ma2a_core::EndpointId,
         now_ms: i64,

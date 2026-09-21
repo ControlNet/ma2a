@@ -29,8 +29,18 @@ export type SnapshotSpaceView = {
   readonly member_count: number
   readonly generation: number
   readonly chain_hash: string
-  readonly members: readonly SpaceMemberView[]
   readonly revoked_count: number
+}
+
+export type SpaceDetailsView = {
+  readonly revision: number
+  readonly space: SnapshotSpaceView
+  readonly members: readonly SpaceMemberView[]
+}
+
+export type SnapshotStampView = {
+  readonly revision: number
+  readonly runtime_boot_id: string
 }
 
 export type ConnectionObservationView = {
@@ -185,5 +195,7 @@ export type CommandResult =
   | { readonly type: "ui_password_reset"; readonly payload: UiAuthView }
   | { readonly type: "sessions_revoked"; readonly payload: UiAuthView }
   | { readonly type: "ui_opened"; readonly payload: UiOpenView }
+  | { readonly type: "space_details"; readonly payload: SpaceDetailsView }
+  | { readonly type: "snapshot_stamp"; readonly payload: SnapshotStampView }
   | { readonly type: "snapshot"; readonly payload: RuntimeSnapshot }
   | { readonly type: "shutting_down"; readonly payload: Record<string, never> }

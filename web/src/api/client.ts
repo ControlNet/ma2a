@@ -4,17 +4,21 @@ import { z } from "zod"
 import {
   parseRuntimeEvent,
   parseRuntimeSnapshot,
+  parseSpaceDetails,
   RuntimeApiPayloadError,
   type RuntimeEvent,
   type RuntimeSnapshot,
+  type SpaceDetails,
 } from "./codec"
 
 export {
   parseRuntimeEvent,
   parseRuntimeSnapshot,
+  parseSpaceDetails,
   RuntimeApiPayloadError,
   type RuntimeEvent,
   type RuntimeSnapshot,
+  type SpaceDetails,
 } from "./codec"
 export {
   RuntimeStateCoordinator,
@@ -60,6 +64,7 @@ export type RuntimeEventSource = {
 export type RuntimeEventSourceFactory = (url: string, init: EventSourceInit) => RuntimeEventSource
 
 export type RuntimeApiClient = {
+  readonly fetchSpaceDetails: (spaceId: string) => Promise<SpaceDetails>
   readonly fetchSnapshot: () => Promise<RuntimeSnapshot>
   readonly subscribe: (revision: number, callbacks: RuntimeEventCallbacks) => () => void
 }
@@ -81,6 +86,10 @@ export function createRuntimeApiClient(
   })
 
   return {
+    fetchSpaceDetails: async (spaceId) => {
+      if (!/^[0-9a-f]{64}$/.test(spaceId)) throw new RuntimeApiPathError(spaceId)
+      return parseSpaceDetails(await http.get(`/api/v1/spaces/${spaceId}`).json())
+    },
     fetchSnapshot: async () => {
       const payload: unknown = await http.get(snapshotPath).json()
       return parseRuntimeSnapshot(payload)
