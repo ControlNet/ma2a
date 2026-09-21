@@ -27,6 +27,13 @@ export function PeersScreen({
       description="Known peer Endpoints from signed Space membership, with Iroh transport observations overlaid where available. Membership is a signed fact and does not depend on whether a path has ever been seen."
       title="Peers"
     >
+      {runtime.spaces.some((space) => space.members === undefined) ? (
+        <p role="status">
+          {runtime.spaces.some((space) => space.membersError)
+            ? "Some signed members could not be loaded. Refresh to retry."
+            : "Loading signed members. The peer list is incomplete."}
+        </p>
+      ) : null}
       <Card label="This Endpoint">
         <Identifier value={runtime.endpoint.id} />
         <div className="cluster">

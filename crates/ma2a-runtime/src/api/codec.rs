@@ -75,6 +75,11 @@ fn parse_command(object: &Map<String, Value>) -> Result<Command, ApiError> {
         "ui_password_reset" => ui_password(object, false)?,
         "session_revoke_all" => request_only(object, false)?,
         "ui_open" => unit(object, CommandKind::UiOpen)?,
+        "snapshot_stamp" => unit(object, CommandKind::SnapshotStamp)?,
+        "space_details_fetch" => {
+            exact_fields(object, &["version", "operation", "space_id"])?;
+            CommandKind::SpaceDetailsFetch(space_id(object, "space_id")?)
+        }
         "snapshot_fetch" => unit(object, CommandKind::SnapshotFetch)?,
         "graceful_shutdown" => request_only(object, true)?,
         _ => return Err(ApiError::invalid_input()),
@@ -216,11 +221,12 @@ fn command_value(command: &Command) -> Value {
         | CommandKind::PrivateRelayStatus
         | CommandKind::PublicRelayStatus
         | CommandKind::UiOpen
+        | CommandKind::SnapshotStamp
         | CommandKind::SnapshotFetch => json!({"operation": operation}),
         CommandKind::SpaceCreate(id, name) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "name": name.as_str()})
         }
-        CommandKind::SpaceShow(space) => {
+        CommandKind::SpaceShow(space) | CommandKind::SpaceDetailsFetch(space) => {
             json!({"operation": operation, "space_id": encode_hex(space.as_bytes())})
         }
         CommandKind::SpaceRevoke(id, space, peer) => {

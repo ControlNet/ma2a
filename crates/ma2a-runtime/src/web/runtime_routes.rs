@@ -2,7 +2,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse as _, Response, Sse, sse::Event, sse::KeepAlive},
 };
@@ -77,7 +77,7 @@ pub(super) async fn events(
     let Ok(permit) = Arc::clone(&state.event_connections).try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let Ok((baseline, _)) = fetch_snapshot(&state).await else {
+    let Ok(baseline) = fetch_stamp(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let (sender, receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
@@ -113,7 +113,7 @@ impl EventProducer {
             if self.state.auth.validate(&self.bearer).await.is_err() {
                 return;
             }
-            let Ok((current, _)) = fetch_snapshot(&self.state).await else {
+            let Ok(current) = fetch_stamp(&self.state).await else {
                 let _result = self.sender.try_send(Ok(resync_event(self.cursor.revision)));
                 return;
             };
@@ -212,6 +212,70 @@ fn resync_event(revision: u64) -> Event {
     Event::default()
         .event("resync-required")
         .data(json!({"revision": revision}).to_string())
+}
+
+async fn fetch_stamp(state: &WebState) -> Result<SnapshotStamp, StatusCode> {
+    let runtime = state
+        .runtime
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let response = runtime
+        .call(&crate::api::Command::snapshot_stamp())
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let value: Value =
+        serde_json::from_slice(&response).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let payload = value
+        .pointer("/result/payload")
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(SnapshotStamp {
+        revision: payload
+            .get("revision")
+            .and_then(Value::as_u64)
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+        boot_id: payload
+            .get("runtime_boot_id")
+            .and_then(Value::as_str)
+            .filter(|id| id.len() == 32)
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+            .to_owned(),
+    })
+}
+
+pub(super) async fn space_details(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(bearer) = cookie(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if state.auth.authenticate(bearer).await.is_err() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let request = json!({"version": 1, "operation": "space_details_fetch", "space_id": id});
+    let Ok(command) = crate::api::decode_command(request.to_string().as_bytes()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(runtime) = state.runtime.as_ref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Ok(response) = runtime.call(&command).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&response) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    if value.get("error").and_then(Value::as_str) == Some("not_found") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if value.pointer("/result/type").and_then(Value::as_str) != Some("space_details") {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    value.pointer("/result/payload").map_or_else(
+        || StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        |payload| Json(payload.clone()).into_response(),
+    )
 }
 
 #[cfg(test)]

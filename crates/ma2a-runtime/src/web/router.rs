@@ -149,6 +149,10 @@ fn routes(state: WebState, runtime: bool) -> Router {
         .route("/api/v1/web/session/touch", post(super::touch_session));
     let router = if runtime {
         router
+            .route(
+                "/api/v1/spaces/{space_id}",
+                get(super::runtime_routes::space_details),
+            )
             .route("/api/v1/snapshot", get(super::runtime_routes::snapshot))
             .route("/api/v1/events", get(super::runtime_routes::events))
             .route(

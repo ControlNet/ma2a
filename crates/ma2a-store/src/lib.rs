@@ -70,7 +70,7 @@ pub use repository_state_models::{
     EndpointObservationUpdate, RelayConfiguration, RelayObservation, RelayTransportConfiguration,
     RuntimeMetadata, RuntimeMetadataUpdate,
 };
-pub use revision::{SnapshotSpace, SnapshotState};
+pub use revision::{SnapshotMember, SnapshotSpace, SnapshotState, SpaceDetails};
 pub use sessions::{
     SessionAdmission, SessionCreate, SessionDigests, SessionRecord, SessionTimestamps, SessionTouch,
 };

@@ -37,6 +37,8 @@ pub(super) fn result_value(result: &CommandResult) -> Value {
         | ResultKind::UiPasswordReset(value)
         | ResultKind::SessionsRevoked(value) => ui_auth_result_value(value),
         ResultKind::UiOpened(value) => ui_open_value(value),
+        ResultKind::SpaceDetails(value) => value.to_value(),
+        ResultKind::SnapshotStamp(value) => value.to_value(),
         ResultKind::Snapshot(value) => value.to_value(),
         ResultKind::ShuttingDown => json!({}),
     };

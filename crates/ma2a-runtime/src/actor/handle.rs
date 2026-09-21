@@ -24,6 +24,32 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
+    /// Returns complete signed details for one local Space.
+    ///
+    /// # Errors
+    /// Returns an error when the actor or store is unavailable.
+    pub async fn space_details(
+        &self,
+        id: SpaceId,
+    ) -> Result<Option<crate::api::SpaceDetailsView>, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::SpaceDetails(id, reply))
+            .await
+            .map_err(crate::store_client::channel_error)?;
+        response.await.map_err(crate::store_client::channel_error)?
+    }
+    pub(crate) async fn snapshot_stamp(
+        &self,
+    ) -> Result<crate::api::SnapshotStampView, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::SnapshotStamp(reply))
+            .await
+            .map_err(crate::store_client::channel_error)?;
+        response.await.map_err(crate::store_client::channel_error)?
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the handle owns independently constructed command, event, and observability channels"

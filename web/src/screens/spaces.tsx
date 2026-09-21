@@ -45,17 +45,25 @@ export function SpacesScreen({
                 <span className="eyebrow">
                   Signed members · {space.memberCount} of {LIMITS.members}
                 </span>
-                <ul className="members">
-                  {space.members.map((member) => (
-                    <li className="member" key={member.endpointId}>
-                      <span className="member__id">{shortId(member.endpointId)}</span>
-                      <span className="member__label">{member.label}</span>
-                      <span className="member__caps">
-                        {member.echo ? <Pill tone="direct">echo</Pill> : null}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                {space.members === undefined ? (
+                  <p role="status">
+                    {space.membersError
+                      ? "Members could not be loaded. Refresh to retry."
+                      : "Loading signed members…"}
+                  </p>
+                ) : (
+                  <ul className="members">
+                    {space.members.map((member) => (
+                      <li className="member" key={member.endpointId}>
+                        <span className="member__id">{shortId(member.endpointId)}</span>
+                        <span className="member__label">{member.label}</span>
+                        <span className="member__caps">
+                          {member.echo ? <Pill tone="direct">echo</Pill> : null}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </Card>
           ))}

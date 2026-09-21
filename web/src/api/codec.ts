@@ -21,9 +21,33 @@ const SpaceViewSchema = z.strictObject({
   member_count: U32Schema,
   generation: RevisionSchema,
   chain_hash: z.string().regex(/^[0-9a-f]{64}$/),
-  members: z.array(SpaceMemberViewSchema).max(64).readonly(),
   revoked_count: U32Schema,
 })
+const SpaceDetailsSchema = z
+  .strictObject({
+    revision: RevisionSchema,
+    space: SpaceViewSchema,
+    members: z.array(SpaceMemberViewSchema).max(64).readonly(),
+  })
+  .refine(
+    (detail) =>
+      detail.members.length === detail.space.member_count &&
+      detail.members.every(
+        (member, index) =>
+          index === 0 || (detail.members[index - 1]?.endpoint_id ?? "") < member.endpoint_id,
+      ),
+    "members must be complete, sorted and unique",
+  )
+export type SpaceDetails = z.infer<typeof SpaceDetailsSchema>
+
+export function parseSpaceDetails(value: unknown): SpaceDetails {
+  const result = SpaceDetailsSchema.safeParse(value)
+  if (!result.success) {
+    throw new RuntimeApiPayloadError(result.error.issues.map((issue) => issue.message))
+  }
+  return result.data
+}
+
 const ControlSyncViewSchema = z.strictObject({
   peer_endpoint_ids: z.array(EndpointIdSchema).max(256).readonly(),
 })

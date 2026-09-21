@@ -2,8 +2,8 @@ use serde_json::{Value, json};
 
 use super::{
     ConnectionObservationView, ConnectionView, ControlRoundView, EndpointView,
-    PrivateRelayCandidateView, PublicRelayFallbackView, RuntimeSnapshot,
-    SnapshotSpaceView, SpaceMemberView, SpaceView, UiAuthView,
+    PrivateRelayCandidateView, PublicRelayFallbackView, RuntimeSnapshot, SnapshotSpaceView,
+    SpaceMemberView, SpaceView, UiAuthView,
 };
 use crate::api::codec_fields::encode_hex;
 
@@ -61,7 +61,6 @@ fn snapshot_space_value(space: &SnapshotSpaceView) -> Value {
         "member_count": space.member_count,
         "generation": space.generation,
         "chain_hash": encode_hex(&space.chain_hash),
-        "members": space.members.iter().map(member_value).collect::<Vec<_>>(),
         "revoked_count": space.revoked_count,
     })
 }
@@ -97,4 +96,16 @@ fn public_relay_value(fallback: &PublicRelayFallbackView) -> Value {
 
 fn control_round_value(round: &ControlRoundView) -> Value {
     json!({"at_ms": round.at_ms, "peer_count": round.peer_count, "outcome": round.outcome})
+}
+
+impl super::SpaceDetailsView {
+    pub(crate) fn to_value(&self) -> Value {
+        json!({"revision": self.revision, "space": snapshot_space_value(&self.space),
+            "members": self.members.iter().map(member_value).collect::<Vec<_>>()})
+    }
+}
+impl super::SnapshotStampView {
+    pub(crate) fn to_value(self) -> Value {
+        json!({"revision": self.revision, "runtime_boot_id": encode_hex(&self.runtime_boot_id)})
+    }
 }

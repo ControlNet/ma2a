@@ -1,4 +1,5 @@
 import type { RuntimeSnapshot } from "./api/client"
+import type { SpaceDetails } from "./api/codec"
 import type { ConnectionState, RuntimeViewData } from "./view-model"
 import type { Tone } from "./viz/tone"
 
@@ -29,6 +30,8 @@ function reachabilityView(snapshot: RuntimeSnapshot): RuntimeViewData["reachabil
 export function runtimeViewFromSnapshot(
   snapshot: RuntimeSnapshot,
   connection: ConnectionState,
+  details: ReadonlyMap<string, SpaceDetails> = new Map(),
+  failedDetails: ReadonlySet<string> = new Set(),
 ): RuntimeViewData {
   const observedPath = snapshot.reachability.direct
     ? snapshot.reachability.relayed
@@ -53,7 +56,11 @@ export function runtimeViewFromSnapshot(
       memberCount: space.member_count,
       generation: space.generation,
       chainHash: space.chain_hash,
-      members: space.members.map((member) => ({
+      membersError: failedDetails.has(space.space_id),
+      members: (details.get(space.space_id)?.space.chain_hash === space.chain_hash
+        ? details.get(space.space_id)?.members
+        : undefined
+      )?.map((member) => ({
         endpointId: member.endpoint_id,
         label: member.label,
         echo: member.echo,

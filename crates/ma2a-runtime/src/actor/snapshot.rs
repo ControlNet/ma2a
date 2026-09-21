@@ -27,6 +27,30 @@ const fn reachability_label(state: ma2a_core::RelayReachability) -> &'static str
 use project::{connection_view, space_view};
 
 impl Actor {
+    pub(super) async fn handle_space_details(
+        &self,
+        id: ma2a_core::SpaceId,
+        reply: oneshot::Sender<Result<Option<crate::api::SpaceDetailsView>, RuntimeError>>,
+    ) {
+        let result = self
+            .store
+            .space_details(self.state.endpoint_id, id)
+            .await
+            .and_then(|detail| detail.as_ref().map(project::detail_view).transpose());
+        drop(reply.send(result));
+    }
+    pub(super) async fn handle_snapshot_stamp(
+        &self,
+        reply: oneshot::Sender<Result<crate::api::SnapshotStampView, RuntimeError>>,
+    ) {
+        let result = self
+            .store
+            .revision()
+            .await
+            .map(|revision| crate::api::SnapshotStampView::new(revision, self.state.boot_id));
+        drop(reply.send(result));
+    }
+
     pub(super) async fn handle_snapshot(
         &self,
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,

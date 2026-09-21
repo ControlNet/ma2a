@@ -9,7 +9,7 @@ use super::{ApiError, MAX_TEXT_BYTES};
 mod accessors;
 
 /// Exact ordered operation inventory carried by the schema and TypeScript contract.
-pub const COMMAND_NAMES: [&str; 24] = [
+pub const COMMAND_NAMES: [&str; 26] = [
     "handshake",
     "status",
     "endpoint_info",
@@ -33,6 +33,8 @@ pub const COMMAND_NAMES: [&str; 24] = [
     "session_revoke_all",
     "ui_open",
     "snapshot_fetch",
+    "space_details_fetch",
+    "snapshot_stamp",
     "graceful_shutdown",
 ];
 
@@ -118,6 +120,8 @@ pub(crate) enum CommandKind {
     SessionRevokeAll(RequestId),
     UiOpen,
     SnapshotFetch,
+    SpaceDetailsFetch(SpaceId),
+    SnapshotStamp,
     GracefulShutdown(RequestId),
 }
 
@@ -155,6 +159,8 @@ impl Command {
             | CommandKind::PublicRelayDisable(_)
             | CommandKind::PublicRelayStatus
             | CommandKind::EchoCall(_, _, _)
+            | CommandKind::SpaceDetailsFetch(_)
+            | CommandKind::SnapshotStamp
             | CommandKind::SnapshotFetch
             | CommandKind::UiOpen
             | CommandKind::GracefulShutdown(_) => Err(ApiError::invalid_input()),
@@ -204,6 +210,19 @@ impl Command {
         }
     }
 
+    /// Creates a complete Space detail query.
+    pub const fn space_details_fetch(id: SpaceId) -> Self {
+        Self {
+            kind: CommandKind::SpaceDetailsFetch(id),
+        }
+    }
+    /// Creates a lightweight durable revision query.
+    pub const fn snapshot_stamp() -> Self {
+        Self {
+            kind: CommandKind::SnapshotStamp,
+        }
+    }
+
     /// Returns the stable operation discriminant.
     pub const fn operation(&self) -> &'static str {
         match self.kind {
@@ -229,6 +248,8 @@ impl Command {
             CommandKind::UiPasswordReset(_, _) => "ui_password_reset",
             CommandKind::SessionRevokeAll(_) => "session_revoke_all",
             CommandKind::UiOpen => "ui_open",
+            CommandKind::SpaceDetailsFetch(_) => "space_details_fetch",
+            CommandKind::SnapshotStamp => "snapshot_stamp",
             CommandKind::SnapshotFetch => "snapshot_fetch",
             CommandKind::GracefulShutdown(_) => "graceful_shutdown",
         }
@@ -245,6 +266,8 @@ impl Command {
             | CommandKind::ControlSyncStatus(_)
             | CommandKind::PrivateRelayStatus
             | CommandKind::PublicRelayStatus
+            | CommandKind::SpaceDetailsFetch(_)
+            | CommandKind::SnapshotStamp
             | CommandKind::SnapshotFetch
             | CommandKind::UiOpen => None,
             CommandKind::SpaceCreate(id, _)

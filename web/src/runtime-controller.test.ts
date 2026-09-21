@@ -39,6 +39,7 @@ function fakeClient(fetchSnapshot: RuntimeApiClient["fetchSnapshot"]): {
   return {
     client: {
       fetchSnapshot,
+      fetchSpaceDetails: () => Promise.reject(new Error("No Space details in this fixture")),
       subscribe: (_revision, eventCallbacks) => {
         callbacks.push(eventCallbacks)
         let active = true

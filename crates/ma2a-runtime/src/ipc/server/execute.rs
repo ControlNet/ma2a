@@ -192,10 +192,33 @@ pub(super) async fn execute(
             let echoed = std::str::from_utf8(response.payload())
                 .map_err(|_| ProtocolError::INVALID_INPUT)?;
             CommandResult::echo(
-                EchoReplyView::new(response.responder_endpoint_id(), echoed, response.duration_ms())
-                    .map_err(|_| ProtocolError::INTERNAL)?,
+                EchoReplyView::new(
+                    response.responder_endpoint_id(),
+                    echoed,
+                    response.duration_ms(),
+                )
+                .map_err(|_| ProtocolError::INTERNAL)?,
             )
         }
+        "space_details_fetch" => CommandResult::space_details(
+            context
+                .handle
+                .space_details(
+                    command
+                        .space_show_id()
+                        .ok_or(ProtocolError::INVALID_INPUT)?,
+                )
+                .await
+                .map_err(|_| ProtocolError::UNAVAILABLE)?
+                .ok_or(ProtocolError::NOT_FOUND)?,
+        ),
+        "snapshot_stamp" => CommandResult::snapshot_stamp(
+            context
+                .handle
+                .snapshot_stamp()
+                .await
+                .map_err(|_| ProtocolError::UNAVAILABLE)?,
+        ),
         "snapshot_fetch" => CommandResult::snapshot(
             context
                 .handle

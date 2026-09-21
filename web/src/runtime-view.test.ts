@@ -13,20 +13,6 @@ test("projects only authoritative snapshot state into the console view", () => {
         member_count: 2,
         generation: 4,
         chain_hash: "dd".repeat(32),
-        members: [
-          {
-            endpoint_id: "00".repeat(32),
-            label: "operator",
-            echo: true,
-            relay_provider: false,
-          },
-          {
-            endpoint_id: "cd".repeat(32),
-            label: "peer",
-            echo: true,
-            relay_provider: false,
-          },
-        ],
         revoked_count: 1,
       },
     ],
@@ -68,7 +54,32 @@ test("projects only authoritative snapshot state into the console view", () => {
     ui_auth: { initialized: true, password_set: true, active_sessions: 2 },
   }
 
-  const view = runtimeViewFromSnapshot(snapshot, "online")
+  const space = snapshot.spaces[0]
+  if (space === undefined) throw new Error("missing Space fixture")
+  const details = new Map([
+    [
+      space.space_id,
+      {
+        revision: snapshot.revision,
+        space,
+        members: [
+          {
+            endpoint_id: "00".repeat(32),
+            label: "operator",
+            echo: true,
+            relay_provider: false,
+          },
+          {
+            endpoint_id: "cd".repeat(32),
+            label: "peer",
+            echo: true,
+            relay_provider: false,
+          },
+        ],
+      },
+    ],
+  ])
+  const view = runtimeViewFromSnapshot(snapshot, "online", details)
 
   expect(view).toMatchObject({
     revision: 9,
@@ -81,6 +92,7 @@ test("projects only authoritative snapshot state into the console view", () => {
     echoTotals: { successes: 3, failures: 1 },
     uiAuth: { active_sessions: 2 },
   })
+  expect(view.spaces[0]?.members).toHaveLength(2)
   expect(view.spaces[0]).toMatchObject({ name: "Operations", memberCount: 2, generation: 4 })
   expect(view.privateRelayCandidates[0]).toMatchObject({
     providerEndpointId: "ef".repeat(32),

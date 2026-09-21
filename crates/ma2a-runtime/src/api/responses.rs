@@ -36,6 +36,8 @@ pub(super) enum ResultKind {
     SessionsRevoked(UiAuthView),
     UiOpened(UiOpenView),
     Snapshot(RuntimeSnapshot),
+    SpaceDetails(super::SpaceDetailsView),
+    SnapshotStamp(super::SnapshotStampView),
     ShuttingDown,
 }
 
@@ -80,6 +82,8 @@ impl CommandResult {
             | ResultKind::PublicRelayStatus(_)
             | ResultKind::Echo(_)
             | ResultKind::UiOpened(_)
+            | ResultKind::SpaceDetails(_)
+            | ResultKind::SnapshotStamp(_)
             | ResultKind::Snapshot(_)
             | ResultKind::ShuttingDown => None,
         }
@@ -95,6 +99,14 @@ impl CommandResult {
         Self(ResultKind::Handshake(value))
     }
 
+    /// Creates a complete Space detail result.
+    pub const fn space_details(value: super::SpaceDetailsView) -> Self {
+        Self(ResultKind::SpaceDetails(value))
+    }
+    /// Creates a lightweight revision stamp result.
+    pub const fn snapshot_stamp(value: super::SnapshotStampView) -> Self {
+        Self(ResultKind::SnapshotStamp(value))
+    }
     /// Creates the authoritative snapshot result.
     pub const fn snapshot(value: RuntimeSnapshot) -> Self {
         Self(ResultKind::Snapshot(value))
@@ -207,6 +219,8 @@ impl CommandResult {
             ResultKind::UiPasswordReset(_) => "ui_password_reset",
             ResultKind::SessionsRevoked(_) => "sessions_revoked",
             ResultKind::UiOpened(_) => "ui_opened",
+            ResultKind::SpaceDetails(_) => "space_details",
+            ResultKind::SnapshotStamp(_) => "snapshot_stamp",
             ResultKind::Snapshot(_) => "snapshot",
             ResultKind::ShuttingDown => "shutting_down",
         }

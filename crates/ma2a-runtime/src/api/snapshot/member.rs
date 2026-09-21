@@ -49,7 +49,6 @@ pub struct SnapshotSpaceView {
     pub(crate) member_count: u32,
     pub(crate) generation: u64,
     pub(crate) chain_hash: [u8; 32],
-    pub(crate) members: Vec<SpaceMemberView>,
     pub(crate) revoked_count: u32,
 }
 
@@ -82,19 +81,17 @@ impl SnapshotSpaceView {
         id: SpaceId,
         name: &str,
         head: SpaceChainHead,
-        members: Vec<SpaceMemberView>,
+        member_count: u32,
     ) -> Result<Self, ApiError> {
-        if name.is_empty() || name.len() > 128 || members.len() > MAX_SPACE_MEMBERS {
+        if name.is_empty() || name.len() > 128 || member_count as usize > MAX_SPACE_MEMBERS {
             return Err(ApiError::invalid_input());
         }
-        let member_count = u32::try_from(members.len()).map_err(|_| ApiError::invalid_input())?;
         Ok(Self {
             id,
             name: name.to_owned(),
             member_count,
             generation: head.generation,
             chain_hash: head.chain_hash,
-            members,
             revoked_count: head.revoked_count,
         })
     }
@@ -109,5 +106,56 @@ impl SnapshotSpaceView {
     /// Returns invalid input when the name no longer fits the result bound.
     pub fn to_space_view(&self) -> Result<super::SpaceView, ApiError> {
         super::SpaceView::new(self.id, &self.name, self.member_count)
+    }
+}
+
+/// Complete members and the summary from the same durable revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceDetailsView {
+    pub(crate) revision: u64,
+    pub(crate) space: SnapshotSpaceView,
+    pub(crate) members: Vec<SpaceMemberView>,
+}
+
+impl SpaceDetailsView {
+    /// Constructs complete, bounded Space details.
+    ///
+    /// # Errors
+    /// Rejects incomplete membership or duplicate/unsorted member identities.
+    pub fn new(
+        revision: u64,
+        space: SnapshotSpaceView,
+        members: Vec<SpaceMemberView>,
+    ) -> Result<Self, ApiError> {
+        if members.len() != space.member_count as usize
+            || members
+                .iter()
+                .zip(members.iter().skip(1))
+                .any(|(left, right)| left.endpoint_id >= right.endpoint_id)
+        {
+            return Err(ApiError::invalid_input());
+        }
+        Ok(Self {
+            revision,
+            space,
+            members,
+        })
+    }
+}
+
+/// Lightweight durable revision and process identity for event polling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotStampView {
+    pub(crate) revision: u64,
+    pub(crate) runtime_boot_id: [u8; 16],
+}
+
+impl SnapshotStampView {
+    /// Creates a revision stamp for this Runtime boot.
+    pub const fn new(revision: u64, runtime_boot_id: [u8; 16]) -> Self {
+        Self {
+            revision,
+            runtime_boot_id,
+        }
     }
 }

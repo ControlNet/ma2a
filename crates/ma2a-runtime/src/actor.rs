@@ -93,6 +93,8 @@ impl Actor {
                     Some(Command::Status(reply)) => {
                         let _unsent = reply.send(self.state.clone());
                     }
+                    Some(Command::SpaceDetails(id, reply)) => self.handle_space_details(id, reply).await,
+                    Some(Command::SnapshotStamp(reply)) => self.handle_snapshot_stamp(reply).await,
                     Some(Command::Snapshot(reply)) => self.handle_snapshot(reply).await,
                     Some(Command::ObserveMemberships { memberships, reply }) => {
                         let _unsent = reply.send(self.observe_memberships(memberships).await);

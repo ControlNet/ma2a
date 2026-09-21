@@ -1,11 +1,11 @@
 import { HTTPError } from "ky"
-
 import {
   createRuntimeApiClient,
   type RuntimeApiClient,
   type RuntimeSnapshot,
   RuntimeStateCoordinator,
 } from "./api/client"
+import type { SpaceDetails } from "./api/codec"
 import { runtimeViewFromSnapshot } from "./runtime-view"
 import type { RuntimeViewData } from "./view-model"
 
@@ -36,6 +36,11 @@ export class RuntimeController {
   private retryAttempt = 0
   private recoveryPending = false
   private stopped = false
+  private readonly details = new Map<string, SpaceDetails>()
+  private readonly failedDetails = new Set<string>()
+  private detailEpoch = 0
+  private detailWorkers = 0
+  private readonly detailPending = new Set<string>()
 
   constructor(
     private readonly callbacks: RuntimeControllerCallbacks,
@@ -68,14 +73,18 @@ export class RuntimeController {
     this.cancelRetry?.()
     this.cancelRetry = undefined
     if (this.latestSnapshot !== undefined) {
-      this.callbacks.onRuntime(runtimeViewFromSnapshot(this.latestSnapshot, "uncertain"))
+      this.callbacks.onRuntime(
+        runtimeViewFromSnapshot(this.latestSnapshot, "uncertain", this.details, this.failedDetails),
+      )
     }
     await this.coordinator.resyncRequired()
     this.recoveryPending = false
     if (this.stopped) return
     if (this.coordinator.currentState().kind === "uncertain") {
       if (this.latestSnapshot !== undefined) {
-        this.callbacks.onRuntime(runtimeViewFromSnapshot(this.latestSnapshot, "offline"))
+        this.callbacks.onRuntime(
+          runtimeViewFromSnapshot(this.latestSnapshot, "offline", this.details, this.failedDetails),
+        )
       }
       this.scheduleRetry()
     }
@@ -83,6 +92,7 @@ export class RuntimeController {
 
   stop(): void {
     this.stopped = true
+    this.clearDetails()
     this.cancelRetry?.()
     this.cancelRetry = undefined
     this.closeEvents?.()
@@ -92,18 +102,106 @@ export class RuntimeController {
   private install(snapshot: RuntimeSnapshot): void {
     if (this.stopped) return
     this.latestSnapshot = snapshot
+    for (const [id, detail] of this.details) {
+      if (
+        !snapshot.spaces.some(
+          (space) => space.space_id === id && space.chain_hash === detail.space.chain_hash,
+        )
+      )
+        this.details.delete(id)
+    }
+    this.failedDetails.clear()
     this.retryAttempt = 0
     this.recoveryPending = false
     this.cancelRetry?.()
     this.cancelRetry = undefined
-    this.callbacks.onRuntime(runtimeViewFromSnapshot(snapshot, "online"))
+    this.callbacks.onRuntime(
+      runtimeViewFromSnapshot(snapshot, "online", this.details, this.failedDetails),
+    )
+    this.loadDetails()
     this.closeEvents?.()
     this.closeEvents = this.client.subscribe(snapshot.revision, {
       onEvent: () => void this.refresh(),
-      onResyncRequired: () => void this.refresh(),
-      onDisconnect: () => void this.refresh(),
+      onResyncRequired: () => {
+        this.clearDetails()
+        void this.refresh()
+      },
+      onDisconnect: () => {
+        this.clearDetails()
+        void this.refresh()
+      },
       onPayloadError: (error) => this.callbacks.onError(error),
     })
+  }
+
+  private clearDetails(): void {
+    this.detailEpoch += 1
+    this.details.clear()
+    this.failedDetails.clear()
+  }
+
+  private publishDetails(): void {
+    if (!this.stopped && this.latestSnapshot !== undefined) {
+      const connection =
+        this.coordinator.currentState().kind === "uncertain" ? "uncertain" : "online"
+      this.callbacks.onRuntime(
+        runtimeViewFromSnapshot(this.latestSnapshot, connection, this.details, this.failedDetails),
+      )
+    }
+  }
+
+  private loadDetails(): void {
+    if (this.stopped || this.latestSnapshot === undefined) return
+    for (const space of this.latestSnapshot.spaces) {
+      if (this.detailWorkers >= 4) break
+      const key = `${this.detailEpoch}:${space.space_id}:${space.chain_hash}`
+      if (
+        this.details.has(space.space_id) ||
+        this.failedDetails.has(space.space_id) ||
+        this.detailPending.has(key)
+      )
+        continue
+      const epoch = this.detailEpoch
+      this.detailWorkers += 1
+      this.detailPending.add(key)
+      void this.client
+        .fetchSpaceDetails(space.space_id)
+        .then((detail) => {
+          if (this.stopped || epoch !== this.detailEpoch) return
+          const current = this.latestSnapshot?.spaces.find(
+            (item) => item.space_id === space.space_id,
+          )
+          if (current === undefined || current.chain_hash !== space.chain_hash) return
+          if (
+            detail.space.space_id !== space.space_id ||
+            detail.space.chain_hash !== current.chain_hash ||
+            detail.space.member_count !== current.member_count ||
+            detail.space.generation !== current.generation
+          ) {
+            this.failedDetails.add(space.space_id)
+            this.callbacks.onError(
+              new Error("Space membership changed while loading; refresh to retry."),
+            )
+            return
+          }
+          this.details.set(space.space_id, detail)
+        })
+        .catch((error: unknown) => {
+          if (this.stopped || epoch !== this.detailEpoch) return
+          const current = this.latestSnapshot?.spaces.find(
+            (item) => item.space_id === space.space_id,
+          )
+          if (current?.chain_hash !== space.chain_hash) return
+          this.failedDetails.add(space.space_id)
+          this.handleError(error)
+        })
+        .finally(() => {
+          this.detailWorkers -= 1
+          this.detailPending.delete(key)
+          this.publishDetails()
+          this.loadDetails()
+        })
+    }
   }
 
   private handleError(error: unknown): void {
