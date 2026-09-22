@@ -12,6 +12,17 @@
 //! the canonical foreground `ma2a daemon` as a child of the test process. Only
 //! tests that are about `start`, `stop` and `restart` themselves create a real
 //! detached daemon, because only they are about that.
+//!
+//! What this guarantees, and what it cannot: when a test returns, fails with an
+//! error, or panics and unwinds, the fixture stops its daemon, reaps it, proves
+//! the daemon lock is free, and only then removes the state directory. If the
+//! lock cannot be proven free, the directory is left in place and the test
+//! fails. None of that can run if the test process itself is killed outright —
+//! `SIGKILL`, a runner crash, a machine crash — because nothing in a process
+//! runs after that. A daemon left behind then survives unless something outside
+//! the test ends it: nextest terminating a timed-out test's process group ends
+//! the foreground daemon, which shares that group, but not a detached one, which
+//! runs in a session of its own. Nothing here claims otherwise.
 
 #![allow(
     dead_code,
@@ -172,6 +183,11 @@ impl DaemonFixture {
             stop_child(&mut child);
         }
         prove_released(&self.runtime_dir())
+    }
+
+    /// Returns the process identifier of the daemon this test owns, if any.
+    pub(crate) fn owned_pid(&self) -> Option<u32> {
+        self.owned.as_ref().map(Child::id)
     }
 
     /// Reports whether the daemon this test owns is still running.

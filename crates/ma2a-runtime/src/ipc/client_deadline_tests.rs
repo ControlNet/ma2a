@@ -9,8 +9,10 @@ use std::{
     fs,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+use tokio::sync::oneshot;
 
 use crate::{
     api,
@@ -55,8 +57,7 @@ impl Drop for TempState {
 }
 
 /// Answers the handshake at once and every other command only after `delay`.
-async fn serve_slowly(paths: IpcPaths, delay: Duration) -> TestResult {
-    let listener = platform::bind(&paths)?;
+async fn serve_slowly(listener: platform::PlatformListener, delay: Duration) -> TestResult {
     loop {
         let mut stream = platform::accept(&listener).await?;
         let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
@@ -95,7 +96,8 @@ async fn call_against_slow_runtime(label: &str, request: &str) -> TestResult<Vec
     let state = TempState::new(label)?;
     let paths = IpcPaths::new(&state.0)?;
     paths.prepare()?;
-    let daemon = tokio::spawn(serve_slowly(paths.clone(), SLOW_RUNTIME_WORK));
+    let listener = platform::bind(&paths)?;
+    let daemon = tokio::spawn(serve_slowly(listener, SLOW_RUNTIME_WORK));
     let command = api::decode_command(request.as_bytes())?;
     let response = LocalApiClient::new(paths).call(&command).await;
     daemon.abort();
@@ -145,54 +147,66 @@ async fn space_leave_survives_an_authority_slower_than_the_transport_deadline() 
 /// The transport deadline still governs a frame that has begun and then stalls.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_truncated_reply_is_still_reported_as_a_broken_frame() -> TestResult {
-    // Given
+    // Given: a daemon already listening, which starts a reply and never ends it.
     let state = TempState::new("truncated")?;
     let paths = IpcPaths::new(&state.0)?;
     paths.prepare()?;
-    let serving = paths.clone();
-    let daemon = tokio::spawn(async move {
-        let listener = platform::bind(&serving).expect("bind");
-        loop {
-            let mut stream = platform::accept(&listener).await.expect("accept");
-            let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES)
-                .await
-                .expect("request");
-            let request: serde_json::Value =
-                serde_json::from_slice(&frame.payload).expect("request json");
-            if request.get("operation").and_then(serde_json::Value::as_str) == Some("handshake") {
-                let payload = br#"{"version":1,"request_id":null,"revision":1,"result":{"type":"handshake","payload":{}}}"#;
-                write_frame(
-                    &mut stream,
-                    FrameRef {
-                        correlation: frame.correlation,
-                        payload,
-                        maximum: api::MAX_LOCAL_RESPONSE_BYTES,
-                    },
-                )
-                .await
-                .expect("handshake reply");
-                continue;
-            }
-            // Announce a frame and then never finish it.
-            tokio::io::AsyncWriteExt::write_all(&mut stream, &64_u32.to_be_bytes())
-                .await
-                .expect("partial header");
-            tokio::io::AsyncWriteExt::flush(&mut stream)
-                .await
-                .expect("flush");
-            tokio::time::sleep(IO_DEADLINE * 4).await;
-        }
-    });
+    let listener = platform::bind(&paths)?;
+    let (stalled, stall_began) = oneshot::channel();
+    let daemon = tokio::spawn(stall_mid_reply(listener, stalled));
     let request = format!(
         r#"{{"version":1,"operation":"space_leave","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}"}}"#
     );
     let command = api::decode_command(request.as_bytes())?;
 
     // When
+    let started = Instant::now();
     let result = LocalApiClient::new(paths).call(&command).await;
+    let elapsed = started.elapsed();
     daemon.abort();
 
-    // Then
-    assert!(matches!(result, Err(IpcError::InvalidFrame)));
+    // Then: the partial frame really arrived, and it was the deadline that ended it.
+    assert!(
+        stall_began.await.is_ok(),
+        "the daemon never sent the partial reply; the call failed for another reason"
+    );
+    assert!(
+        matches!(result, Err(IpcError::InvalidFrame)),
+        "expected a broken frame, got {result:?}"
+    );
+    assert!(
+        elapsed >= IO_DEADLINE,
+        "the call ended after {elapsed:?}, before the frame deadline could have"
+    );
     Ok(())
+}
+
+/// Answers the handshake, then announces a reply frame and never finishes it.
+async fn stall_mid_reply(
+    listener: platform::PlatformListener,
+    stalled: oneshot::Sender<()>,
+) -> TestResult {
+    loop {
+        let mut stream = platform::accept(&listener).await?;
+        let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
+        let request: serde_json::Value = serde_json::from_slice(&frame.payload)?;
+        if request.get("operation").and_then(serde_json::Value::as_str) == Some("handshake") {
+            let payload = br#"{"version":1,"request_id":null,"revision":1,"result":{"type":"handshake","payload":{}}}"#;
+            write_frame(
+                &mut stream,
+                FrameRef {
+                    correlation: frame.correlation,
+                    payload,
+                    maximum: api::MAX_LOCAL_RESPONSE_BYTES,
+                },
+            )
+            .await?;
+            continue;
+        }
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &64_u32.to_be_bytes()).await?;
+        tokio::io::AsyncWriteExt::flush(&mut stream).await?;
+        let _observed = stalled.send(());
+        tokio::time::sleep(IO_DEADLINE * 4).await;
+        return Ok(());
+    }
 }

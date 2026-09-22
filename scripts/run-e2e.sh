@@ -4,7 +4,9 @@ set -eu
 runs=${MA2A_E2E_RUNS:-3}
 output=${MA2A_E2E_OUTPUT:-target/e2e-evidence}
 junit=target/nextest/ci/junit.xml
-expected_tests=51
+# The Phase One evidence scenarios. The jq program below names each of them;
+# the number of tests, by contrast, is read from nextest itself rather than
+# maintained here, so adding a test cannot silently fail the harness.
 expected_records=13
 
 case "$runs" in
@@ -16,6 +18,21 @@ mkdir -p "$output"
 commit=$(GIT_MASTER=1 git rev-parse HEAD)
 rustc_version=$(rustc --version)
 nextest_version=$(cargo nextest --version | sed -n '1p')
+# The authoritative inventory: every test nextest would run in this binary. An
+# ignored test is refused outright, because nextest does not run it and would
+# report the remainder as a clean pass.
+inventory="$output/inventory.txt"
+cargo nextest list -p ma2a-app --test e2e --profile ci --message-format json > "$output/inventory.json"
+jq -e -r '
+  [."rust-suites"[].testcases | to_entries[]] as $cases |
+  if ($cases | length) == 0 then error("nextest listed no E2E tests")
+  elif any($cases[]; .value.ignored) then error("an E2E test is ignored")
+  else $cases[].key end
+' "$output/inventory.json" > "$inventory.unsorted"
+LC_ALL=C sort "$inventory.unsorted" > "$inventory"
+rm -f "$inventory.unsorted"
+test -z "$(uniq -d "$inventory")" || { printf 'duplicate E2E test names\n' >&2; exit 1; }
+expected_tests=$(wc -l < "$inventory" | tr -d ' ')
 printf 'runs=%s expected_tests=%s expected_records=%s\n' \
   "$runs" "$expected_tests" "$expected_records" > "$output/summary.txt"
 printf 'source_commit=%s\nrustc=%s\nnextest=%s\n' \
@@ -36,14 +53,23 @@ while [ "$run" -le "$runs" ]; do
     *"tests=\"$expected_tests\""*"skipped=\"0\""*"failures=\"0\""*"errors=\"0\""*) ;;
     *) printf 'invalid JUnit totals in %s\n' "$report" >&2; exit 1 ;;
   esac
-  test "$(grep -c '<testcase ' "$report")" -eq "$expected_tests"
+  # Not only as many tests as listed, but exactly the listed ones, once each.
+  executed="$output/run-$run.tests.txt"
+  sed -n 's/^ *<testcase name="\([^"]*\)".*/\1/p' "$report" > "$executed.unsorted"
+  LC_ALL=C sort "$executed.unsorted" > "$executed"
+  rm -f "$executed.unsorted"
+  if ! cmp -s "$inventory" "$executed"; then
+    printf 'executed tests differ from the nextest inventory in %s\n' "$report" >&2
+    diff "$inventory" "$executed" >&2 || true
+    exit 1
+  fi
   test "$(wc -l < "$evidence")" -eq "$expected_records"
   jq -s -e '
     def exact($names): keys == ($names | sort);
     def ids: (.endpoint_ids | type == "object" and length > 0 and all(.[]; type == "string" and length > 0));
     def strings: type == "array" and all(.[]; type == "string" and length > 0);
     def numbers: type == "array" and length > 0 and all(.[]; type == "number");
-    length == 13 and
+    length == $expected and
     ([.[].scenario] | sort) == (["A","B","C","D","E","F","control-sync-active-dial","persistent-identity-restart","relay-outage-recovery","signer-claim-mismatch","slow-ipc-frame","sse-overflow-receiver-cleanup","store-process-kill-recovery"] | sort) and
     (group_by(.scenario) | all(length == 1)) and
     all(.[]; ids) and
@@ -109,7 +135,7 @@ while [ "$run" -le "$runs" ]; do
         exact(["accepted","address_high_water","endpoint_ids","relay_high_water","revision","scenario"]) and
         .accepted == false
       else false end)
-  ' "$evidence" >/dev/null
+  ' --argjson expected "$expected_records" "$evidence" >/dev/null
   records=$(wc -l < "$evidence")
   sha256sum "$log" "$report" "$evidence" > "$output/run-$run.sha256"
   sha256sum -c "$output/run-$run.sha256" >/dev/null

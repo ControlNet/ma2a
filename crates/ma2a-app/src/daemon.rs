@@ -97,17 +97,21 @@ async fn serve(state_dir: PathBuf, paths: IpcPaths) -> Result<(), AppError> {
         launch_nonce,
         RuntimeBoot::new(status.boot_id(), status.endpoint_id()),
     );
-    let serve_result = begin_serving(Launch {
-        paths: paths.clone(),
-        identity: identity.clone(),
-        handle: runtime.handle(),
-        control,
-        web: web.clone(),
-    })
+    let mut bound = false;
+    let serve_result = begin_serving(
+        Launch {
+            paths: paths.clone(),
+            identity: identity.clone(),
+            handle: runtime.handle(),
+            control,
+            web: web.clone(),
+        },
+        &mut bound,
+    )
     .await;
     web.stop().await;
     let shutdown_result = shutdown_runtime(runtime).await;
-    let cleanup_result = clean_up(&paths, &identity);
+    let cleanup_result = clean_up(&paths, &identity, bound);
     serve_result?;
     shutdown_result?;
     cleanup_result
@@ -122,7 +126,12 @@ struct Launch {
     web: ma2a_runtime::web::WebLifecycle,
 }
 
-async fn begin_serving(launch: Launch) -> Result<(), AppError> {
+/// Serves until asked to stop, recording in `bound` whether the endpoint is ours.
+async fn begin_serving(launch: Launch, bound: &mut bool) -> Result<(), AppError> {
+    // The record is made current before anything can answer, because a caller
+    // that reaches this daemon's endpoint and reads a dead daemon's record
+    // beside it would conclude that ownership is ambiguous and refuse to act.
+    write_record(&launch.paths, &launch.identity)?;
     reclaim_endpoint(&launch.paths).await?;
     let server = LocalApiServer::bind(
         launch.paths.clone(),
@@ -130,8 +139,9 @@ async fn begin_serving(launch: Launch) -> Result<(), AppError> {
         launch.control,
         launch.identity.clone(),
     )?;
+    *bound = true;
     // The endpoint is bound, so a caller can connect from this point on.
-    announce(&launch.paths, &launch.identity)?;
+    report_ready(&launch.identity)?;
     let cancellation = CancellationToken::new();
     let serving = server
         .with_web_lifecycle(launch.web)
@@ -164,16 +174,15 @@ async fn reclaim_endpoint(paths: &IpcPaths) -> Result<(), AppError> {
     Ok(paths.remove_stale_endpoint()?)
 }
 
-/// Records what this daemon is and reports readiness to whoever launched it.
+/// Reports readiness to whoever launched this daemon.
 ///
-/// The readiness record is also the launcher's ownership lease. Until it lands,
+/// The readiness report is also the launcher's ownership lease. Until it lands,
 /// the launcher still owns this process and will terminate it if the attempt
 /// fails. If it cannot land — the launcher died, the pipe is gone — then nothing
 /// owns this process any more, and carrying on would leave exactly the orphan
 /// the lease exists to prevent. A readiness report that cannot be delivered is
 /// therefore a failed start.
-fn announce(paths: &IpcPaths, identity: &DaemonIdentity) -> Result<(), AppError> {
-    write_record(paths, identity)?;
+fn report_ready(identity: &DaemonIdentity) -> Result<(), AppError> {
     let mut stdout = io::stdout();
     stdout.write_all(identity.ready_line().as_bytes())?;
     stdout.flush()?;
@@ -266,7 +275,16 @@ async fn shutdown_runtime(runtime: Runtime) -> Result<(), AppError> {
     }
 }
 
-fn clean_up(paths: &IpcPaths, identity: &DaemonIdentity) -> Result<(), AppError> {
+/// Removes what this daemon left behind, and nothing it did not create.
+///
+/// The endpoint is removed only when this daemon bound it. A daemon that refused
+/// to start because something else was still answering the endpoint must leave
+/// that endpoint exactly where it found it; unlinking it on the way out would
+/// undo the very refusal that protected it.
+fn clean_up(paths: &IpcPaths, identity: &DaemonIdentity, bound: bool) -> Result<(), AppError> {
     remove_record(paths, identity);
-    Ok(paths.remove_stale_endpoint()?)
+    if bound {
+        paths.remove_stale_endpoint()?;
+    }
+    Ok(())
 }

@@ -15,7 +15,9 @@ use tokio::sync::{Semaphore, oneshot};
 use crate::{
     Runtime,
     current_user::CurrentUserRuntime,
-    ipc::{CONNECTION_LIMIT, IpcPaths, LIFECYCLE_DEADLINE, LocalApiClient, LocalApiServer},
+    ipc::{
+        BUSINESS_CONNECTION_LIMIT, IpcPaths, LIFECYCLE_DEADLINE, LocalApiClient, LocalApiServer,
+    },
     web::{SystemClock, WebAuthConfig},
 };
 
@@ -98,7 +100,7 @@ async fn a_lifecycle_call_is_answered_while_the_business_plane_is_blocked() -> T
 async fn a_lifecycle_call_is_answered_when_every_business_slot_is_taken() -> TestResult {
     // Given
     let wedged = wedged("saturated-plane").await?;
-    let stalled = (0..CONNECTION_LIMIT)
+    let stalled = (0..BUSINESS_CONNECTION_LIMIT)
         .map(|_| {
             let client = wedged.client.clone();
             tokio::spawn(async move { client.probe().await })

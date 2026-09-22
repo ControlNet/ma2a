@@ -16,10 +16,18 @@ mod daemon_fixture;
 
 #[path = "daemon_lifecycle/adversarial.rs"]
 mod adversarial;
+#[cfg(unix)]
+#[path = "daemon_lifecycle/compatibility.rs"]
+mod compatibility;
 #[path = "daemon_lifecycle/explicit.rs"]
 mod explicit;
+#[cfg(unix)]
+#[path = "daemon_lifecycle/fakes.rs"]
+mod fakes;
 #[path = "daemon_lifecycle/identity.rs"]
 mod identity;
+#[path = "daemon_lifecycle/race.rs"]
+mod race;
 
 use daemon_fixture::{DaemonFixture, TestResult, TestValue};
 

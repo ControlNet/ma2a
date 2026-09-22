@@ -43,7 +43,11 @@ const IO_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 /// `Unresponsive` verdict instead of hanging the command that asked.
 pub const LIFECYCLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
-const CONNECTION_LIMIT: usize = 32;
+/// In-flight connections available to ordinary local API traffic.
+///
+/// This is the original concurrency budget and is deliberately unchanged by the
+/// lifecycle reserve below: business traffic still gets all 32 of it.
+const BUSINESS_CONNECTION_LIMIT: usize = 32;
 
 /// Connection slots kept back so lifecycle calls survive a saturated daemon.
 ///
@@ -51,6 +55,10 @@ const CONNECTION_LIMIT: usize = 32;
 /// otherwise consume every slot, and a caller asking "are you alive?" would be
 /// dropped without an answer by the daemon it is asking about. Connections taken
 /// from this reserve answer lifecycle calls and refuse everything else.
+///
+/// These are additional to [`BUSINESS_CONNECTION_LIMIT`] rather than carved out
+/// of it, so the daemon accepts at most 36 connections in total. Carving them
+/// out instead would have quietly reduced the business budget to 28.
 const LIFECYCLE_RESERVE: usize = 4;
 
 #[cfg(unix)]

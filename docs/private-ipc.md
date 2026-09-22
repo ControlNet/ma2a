@@ -24,8 +24,10 @@ proof that the lock owner has gone.
 | State | What it means | What a command does |
 | --- | --- | --- |
 | `Absent` | The daemon lock is free. | `start` launches; `stop` reports that nothing is running. |
-| `Ready` | The lock is held and a bounded lifecycle call was answered. | `start` is an idempotent success; `stop` proceeds. |
-| `Incompatible` | The lock is held by a daemon of another API version. | `start`/`restart`/`stop` use the cross-version stop contract. |
+| `Ready` | The lock is held, a bounded lifecycle call was answered, and the daemon speaks this API version. | `start` is an idempotent success; `stop` uses the lifecycle plane. |
+| `IncompatibleLifecycle` | As `Ready`, but the daemon speaks another business API version. | `start`/`restart`/`stop` stop it through the lifecycle plane. |
+| `LegacyCurrentApi` | The lock is held by a daemon of this API version that predates the lifecycle plane. | `start` is an idempotent success; `stop` uses bounded `graceful_shutdown`. |
+| `LegacyIncompatible` | The lock is held by a daemon of another API version that predates the lifecycle plane. | `start`/`restart`/`stop` use the bounded cross-version stop contract. |
 | `Unresponsive` | The lock is held and no lifecycle call was answered. | Every command fails closed. Nothing is launched or unlinked. |
 | `Conflicted` | Ownership and what answers the endpoint disagree. | Every command fails closed. Nothing is repaired by guessing. |
 
@@ -57,6 +59,12 @@ daemon behind.
 
 Concurrent start/stop/restart requests serialize through the stable startup lock with bounded
 exponential backoff; the daemon owns its separate lifetime lock.
+
+The foreground `daemon` does not take the startup lock, so a launcher's verdict of `Absent` can be
+overtaken by a foreground daemon claiming the directory before the launched child does. The launcher
+therefore never removes an endpoint. The launched child either claims the daemon lock and only then
+reclaims a stale endpoint, or finds the lock held and fails — and the launcher reports that failure
+after reaping it — leaving the winner's endpoint untouched.
 
 ## Proven Teardown
 
@@ -99,16 +107,17 @@ The default state directory is `$XDG_STATE_HOME/ma2a` on Unix when `XDG_STATE_HO
 The transport carries the existing bounded local API v1 JSON unchanged. Each message uses a
 12-byte header containing a four-byte big-endian payload length and an eight-byte big-endian
 correlation identifier. Requests are limited to 16,384 bytes and responses to 65,536 bytes. The
-server allows at most 32 in-flight connections.
+server allows 32 in-flight business connections, plus a reserve of four that answer lifecycle calls
+only, so it accepts at most 36 connections in total.
 
 Two planes share this one endpoint and are kept logically apart. Business commands go through the
 versioned local API, the durable mutation-replay lock and the Runtime actor. Lifecycle calls — "are
 you there, which daemon are you" and "please stop" — are answered from an identity record the daemon
 fixed before it began serving, and touch none of those. That separation exists because the moment a
 caller most needs to ask whether a daemon is alive is the moment its Runtime is stuck, and a probe
-that queues behind the stuck work answers nothing. Four of the 32 connection slots are reserved, so a
-lifecycle call is still answered when every business slot is held by callers blocked on the same
-Runtime.
+that queues behind the stuck work answers nothing. The four reserve connections sit beyond the 32
+business ones rather than inside them, so a lifecycle call is still answered when every business
+slot is held by callers blocked on the same Runtime, and business traffic keeps its full budget.
 
 The lifecycle envelope is deliberately not the local API envelope and carries no negotiation of its
 own, because its shape must never change. A daemon that predates it replies with the local API's
@@ -117,7 +126,7 @@ error envelope, which a caller reads as exactly that and falls back to the versi
 One deadline bounds transport. Once a frame has begun arriving, the rest of it must complete within
 two seconds; a peer that stalls mid-frame is malformed and returns `InvalidFrame`. The bytes of a
 frame already exist, so there is no legitimate reason for that transfer to be slow, and the bound
-also stops a stalled peer from holding one of the 32 connection slots.
+also stops a stalled peer from holding a connection slot.
 
 One further deadline bounds a complete lifecycle call, at five seconds. A lifecycle answer is
 assembled from data the daemon already holds, so the only thing that can make one slow is a daemon
@@ -148,11 +157,16 @@ each run, and a start that fails reports what the daemon itself recorded rather 
 deadline elapsed.
 
 Business clients perform an exact API-version handshake before every non-handshake command.
-Only explicit `start`, `stop`, and `restart` may recover from a version mismatch: the lifecycle
+Only explicit `start`, `stop`, and `restart` may recover from a version mismatch. A daemon that
+answers the lifecycle plane is stopped through it whatever business API version it reports, because
+that envelope never changes shape; its business version only decides whether business commands may
+reach it. A daemon that predates the lifecycle plane falls back to the older contract: the lifecycle
 client reads the daemon's advertised API version from a handshake or `version_mismatch` response
 and sends only `graceful_shutdown` using that version and a fresh request ID. It validates the
 response version, request ID, and `shutting_down` acknowledgement, then waits for the lifetime
-lock to be released before replacement. `stop` leaves the daemon stopped; `start/restart` launch
+lock to be released before replacement. That exchange runs on the business plane of a daemon this
+executable cannot inspect, so the whole of it is bounded by a ten-second compatibility deadline; a
+legacy daemon whose Runtime never acknowledges makes the command fail rather than hang. `stop` leaves the daemon stopped; `start/restart` launch
 the executable used by the invoking CLI. Business requests never negotiate or retry another version.
 
 Cross-version lifecycle compatibility requires retaining the private transport location, frame
@@ -172,8 +186,11 @@ connection, the daemon captures its process-token SID, impersonates the named-pi
 the impersonated thread token's SID, reverts through an RAII guard, and accepts only an exact SID
 match. Authorization never derives identity from a peer process identifier.
 
-A stale Unix socket is removed only after ownership has been proven absent — the daemon lock was
-free, or is now held by the removing daemon — and nothing answers the endpoint. A failed probe is
-never on its own a licence to unlink an endpoint while the lock is held. The daemon owns one
-Runtime instance, uses structured connection tasks with bounded backpressure, and removes its
-endpoint during graceful teardown while still holding the singleton lock.
+A stale Unix socket is removed only by a process that holds the daemon lock at that moment: a daemon
+that has just claimed it and found nothing answering the endpoint, or a `stop` that has acquired it
+after the daemon exited. A launcher that has merely observed the lock to be free removes nothing. A
+failed probe is never on its own a licence to unlink an endpoint while the lock is held. A daemon
+that refuses to start because something still answers the endpoint leaves that endpoint in place as
+it exits. The daemon owns one Runtime instance, uses structured connection tasks with bounded
+backpressure, and removes the endpoint it bound during graceful teardown while still holding the
+singleton lock.
