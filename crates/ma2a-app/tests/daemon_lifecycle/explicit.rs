@@ -84,10 +84,10 @@ fn operational_commands_fail_without_creating_daemon_state() -> TestResult {
         &["stop"],
     ];
     for arguments in commands {
-        let output = fixture
-            .command(arguments[0])
-            .args(&arguments[1..])
-            .output()?;
+        let (operation, remaining) = arguments
+            .split_first()
+            .ok_or("empty lifecycle command fixture")?;
+        let output = fixture.command(operation).args(remaining).output()?;
         assert_eq!(output.status.code(), Some(1), "{arguments:?}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("daemon is not running"),
@@ -108,14 +108,25 @@ fn start_is_idempotent_and_restart_preserves_identity_with_a_new_boot() -> TestR
     let fixture = Fixture::new()?;
     assert!(fixture.run("restart")?.status.success());
     let first = fixture.run_status()?;
-    assert!(first["runtime_boot_id"].is_string());
+    let first_boot = first
+        .get("runtime_boot_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing initial Runtime boot ID")?;
     assert!(fixture.run("start")?.status.success());
     let repeated = fixture.run_status()?;
-    assert_eq!(first["runtime_boot_id"], repeated["runtime_boot_id"]);
+    let repeated_boot = repeated
+        .get("runtime_boot_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing repeated Runtime boot ID")?;
+    assert_eq!(first_boot, repeated_boot);
 
     assert!(fixture.run("restart")?.status.success());
     let restarted = fixture.run_status()?;
-    assert_ne!(first["runtime_boot_id"], restarted["runtime_boot_id"]);
+    let restarted_boot = restarted
+        .get("runtime_boot_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing restarted Runtime boot ID")?;
+    assert_ne!(first_boot, restarted_boot);
     assert_eq!(
         first.pointer("/result/payload/endpoint/endpoint_id"),
         restarted.pointer("/result/payload/endpoint/endpoint_id")

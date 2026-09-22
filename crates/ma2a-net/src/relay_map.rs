@@ -75,10 +75,10 @@ impl LocalIrohRelayMap {
         let eligible_private = coverage.keys().cloned().collect::<BTreeSet<_>>();
         let home_private = coverage
             .iter()
-            .filter_map(|(candidate, covered_spaces)| {
-                (!active_spaces.is_empty() && *covered_spaces == active_spaces)
-                    .then(|| candidate.clone())
+            .filter(|(_, covered_spaces)| {
+                !active_spaces.is_empty() && **covered_spaces == active_spaces
             })
+            .map(|(candidate, _)| candidate.clone())
             .collect::<BTreeSet<_>>();
         let public_relays =
             public_fallback.map_or_else(Vec::new, |fallback| fallback.relay_urls().to_vec());

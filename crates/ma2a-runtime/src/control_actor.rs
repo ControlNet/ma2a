@@ -122,7 +122,11 @@ impl Actor {
     /// Retains a bounded in-memory round history. It is a diagnostic, never a log:
     /// it is not persisted and does not survive a restart.
     fn record_control_round(&mut self, succeeded: bool, synchronized_peers: &BTreeSet<EndpointId>) {
-        let Ok(at_ms) = self.clock.now_ms().map(|now| u64::try_from(now).unwrap_or(0)) else {
+        let Ok(at_ms) = self
+            .clock
+            .now_ms()
+            .map(|now| u64::try_from(now).unwrap_or(0))
+        else {
             return;
         };
         let outcome = if !succeeded {

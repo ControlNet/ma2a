@@ -68,6 +68,7 @@ pub(super) fn string(node: Node<'_>) -> Check {
     match node.specification.get("format").and_then(Value::as_str) {
         Some("lowercase_hex") => lowercase_hex(text, node.specification, node.path),
         Some("https_url_without_credentials") => https_url(text, node.path),
+        Some("ip_or_hostname") => ip_or_hostname(text, node.path),
         Some(format) => mismatch(node.path, &format!("unsupported string format {format}")),
         None => Ok(()),
     }
@@ -115,6 +116,28 @@ fn https_url(text: &str, path: &str) -> Check {
         mismatch(path, "HTTPS URL authority mismatch")
     } else {
         Ok(())
+    }
+}
+
+fn ip_or_hostname(text: &str, path: &str) -> Check {
+    if text.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(());
+    }
+    let hostname = text.strip_suffix('.').unwrap_or(text);
+    if !hostname.is_empty()
+        && hostname.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        Ok(())
+    } else {
+        mismatch(path, "IP address or hostname mismatch")
     }
 }
 

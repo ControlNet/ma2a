@@ -26,6 +26,10 @@ impl PrivateRelayCandidateView {
     ///
     /// # Errors
     /// Returns invalid input when the URL length or coverage set is out of bounds.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the fixed private relay wire fields"
+    )]
     pub fn new(
         provider_endpoint_id: EndpointId,
         relay_url: &str,

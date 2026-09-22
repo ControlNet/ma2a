@@ -18,6 +18,10 @@ pub struct ConnectionObservationView {
 
 impl ConnectionObservationView {
     /// Creates one retained observation without any authorization diagnostic.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the fixed observation wire fields"
+    )]
     pub const fn new(
         observed_at_ms: u64,
         path: &'static str,
@@ -49,6 +53,10 @@ impl ConnectionView {
     /// # Errors
     /// Returns invalid input when more observations are supplied than the
     /// telemetry cache is allowed to retain.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the fixed connection wire fields"
+    )]
     pub fn new(
         endpoint_id: EndpointId,
         state: &'static str,
