@@ -13,10 +13,10 @@ test("creates an invitation ticket through the Runtime without browser secret ma
   const user = userEvent.setup()
   const actions = runtimeActions()
   render(<SpacesInspector actions={actions} runtime={ONE_RUNTIME_FIXTURE} />)
-  const form = within(screen.getByRole("form", { name: "Create an invitation ticket" }))
+  const form = within(screen.getByRole("form", { name: "Invite to a Space" }))
 
-  await user.type(form.getByLabelText("Owner-only output path"), "/tmp/operations.invite")
-  await user.click(form.getByRole("button", { name: "Write ticket" }))
+  await user.type(form.getByLabelText("Owner-only ticket file"), "/tmp/operations.invite")
+  await user.click(form.getByRole("button", { name: "Create invite" }))
 
   expect(actions.createInvitation).toHaveBeenCalledWith(
     "test-space-operations",
@@ -29,10 +29,10 @@ test("the invitation form never renders the ticket secret it asks the Runtime to
   const user = userEvent.setup()
   const actions = runtimeActions()
   render(<SpacesInspector actions={actions} runtime={ONE_RUNTIME_FIXTURE} />)
-  const form = within(screen.getByRole("form", { name: "Create an invitation ticket" }))
+  const form = within(screen.getByRole("form", { name: "Invite to a Space" }))
 
-  await user.type(form.getByLabelText("Owner-only output path"), "/tmp/operations.invite")
-  await user.click(form.getByRole("button", { name: "Write ticket" }))
+  await user.type(form.getByLabelText("Owner-only ticket file"), "/tmp/operations.invite")
+  await user.click(form.getByRole("button", { name: "Create invite" }))
 
   expect(await screen.findByText(/secret never reaches this browser/)).toBeInTheDocument()
 })

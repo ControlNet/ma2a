@@ -82,8 +82,8 @@ export function App({
   }, [controlled, navigate, session])
 
   const login = useCallback(
-    async (passphrase: string): Promise<void> => {
-      const authenticatedSession = await loginAndTouchSession(passphrase)
+    async (password: string): Promise<void> => {
+      const authenticatedSession = await loginAndTouchSession(password)
       setSession(authenticatedSession)
       navigate(ROUTE_PATHS.overview)
     },

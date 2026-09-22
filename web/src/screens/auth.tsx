@@ -26,17 +26,17 @@ function AuthFrame({ children }: { readonly children: ReactNode }): ReactNode {
 export function LoginScreen({
   onLogin,
 }: {
-  readonly onLogin?: (passphrase: string) => Promise<void>
+  readonly onLogin?: (password: string) => Promise<void>
 }): ReactNode {
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
-    const passphrase = new FormData(event.currentTarget).get("passphrase")
-    if (typeof passphrase !== "string" || onLogin === undefined) return
+    const password = new FormData(event.currentTarget).get("password")
+    if (typeof password !== "string" || onLogin === undefined) return
     setPending(true)
     setFailed(false)
-    void onLogin(passphrase).then(
+    void onLogin(password).then(
       () => undefined,
       () => {
         setPending(false)
@@ -51,14 +51,14 @@ export function LoginScreen({
       </div>
       <form className="form" onSubmit={submit}>
         <div className="field">
-          <label className="field__label" htmlFor="passphrase">
-            Passphrase
+          <label className="field__label" htmlFor="password">
+            Password
           </label>
           <div className="field__row">
             <input
               autoComplete="current-password"
-              id="passphrase"
-              name="passphrase"
+              id="password"
+              name="password"
               required
               type="password"
             />
@@ -73,7 +73,7 @@ export function LoginScreen({
         </div>
         {failed ? (
           <p className="field__help" role="alert">
-            The passphrase was not accepted.
+            The password was not accepted.
           </p>
         ) : null}
       </form>
@@ -82,7 +82,7 @@ export function LoginScreen({
 }
 
 const COMMANDS = [
-  ["Set or reset the UI passphrase", "ma2a ui init"],
+  ["Set or reset the UI password", "ma2a ui init"],
   ["Start the WebUI", "ma2a ui start"],
 ] as const
 
@@ -93,7 +93,7 @@ export function SetupScreen(): ReactNode {
         <Pill filled tone="relay">
           Setup required
         </Pill>
-        <h1>Create the first passphrase from a trusted terminal</h1>
+        <h1>Create the first password from a trusted terminal</h1>
       </div>
       <dl className="commands">
         {COMMANDS.map(([label, command]) => (

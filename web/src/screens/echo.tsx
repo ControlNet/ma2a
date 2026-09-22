@@ -111,7 +111,7 @@ export function EchoInspector({
     <Inspector eyebrow="Echo" title="Recent outcomes">
       <Card label="Bounded totals">
         <div className="cluster">
-          <Donut label="echo" segments={echo.segments} value={String(echo.total)} />
+          <Donut label="Echo" segments={echo.segments} value={String(echo.total)} />
           <div className="stack-4">
             <Pill filled tone="direct">
               {runtime.echoTotals.successes} ok

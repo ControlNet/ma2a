@@ -21,6 +21,18 @@ export type RuntimeRetryScheduler = {
 
 const RETRY_DELAYS_MS = [250, 1_000, 4_000] as const
 
+/**
+ * How long a resync may run before the console reports the state as uncertain.
+ *
+ * A snapshot invalidation makes local state genuinely uncertain until the
+ * replacement snapshot lands, and that is what the coordinator tracks. Painting
+ * it immediately would flag every ordinary revision change, because the refetch
+ * that resolves it usually completes in milliseconds, so the reader sees a blink
+ * rather than a fact. The grace period reports only the uncertainty that lasts
+ * long enough to act on; a slow or failing resync still surfaces.
+ */
+export const UNCERTAIN_GRACE_MS = 400
+
 const browserRetryScheduler: RuntimeRetryScheduler = {
   schedule: (delayMs, task) => {
     const timeout = window.setTimeout(task, delayMs)
@@ -72,12 +84,14 @@ export class RuntimeController {
     this.recoveryPending = true
     this.cancelRetry?.()
     this.cancelRetry = undefined
-    if (this.latestSnapshot !== undefined) {
+    const settled = this.scheduler.schedule(UNCERTAIN_GRACE_MS, () => {
+      if (this.stopped || this.latestSnapshot === undefined) return
       this.callbacks.onRuntime(
         runtimeViewFromSnapshot(this.latestSnapshot, "uncertain", this.details, this.failedDetails),
       )
-    }
+    })
     await this.coordinator.resyncRequired()
+    settled()
     this.recoveryPending = false
     if (this.stopped) return
     if (this.coordinator.currentState().kind === "uncertain") {

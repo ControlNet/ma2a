@@ -7,7 +7,7 @@ import { Pill } from "./ui"
 function connectionPill(connection: RuntimeViewData["connection"]): ReactNode {
   if (connection === "online") return <Pill tone="direct">snapshot live</Pill>
   if (connection === "uncertain") return <Pill tone="relay">snapshot uncertain</Pill>
-  return <Pill tone="failed">runtime offline</Pill>
+  return <Pill tone="failed">Runtime offline</Pill>
 }
 
 export function TopStrip({
@@ -34,10 +34,6 @@ export function TopStrip({
             <Pill filled tone={runtime.reachability.tone}>
               {runtime.reachability.state}
             </Pill>
-            <span className="top-strip__revision">
-              <span className="eyebrow">rev</span>
-              <span className="mono">{runtime.revision}</span>
-            </span>
             {connectionPill(runtime.connection)}
           </>
         )}

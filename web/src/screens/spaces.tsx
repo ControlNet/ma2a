@@ -3,7 +3,7 @@ import { type ReactNode, useState } from "react"
 import { EmptyState, PendingSnapshot } from "../components/feedback"
 import { Field, Form, text } from "../components/form"
 import { Inspector } from "../components/inspector"
-import { Card, Mono, Pill, Section } from "../components/ui"
+import { Card, Pill, Section } from "../components/ui"
 import type { RuntimeActions } from "../runtime-actions"
 import type { RuntimeViewData } from "../view-model"
 import { LIMITS, shortId } from "./derive"
@@ -18,26 +18,19 @@ export function SpacesScreen({
     <Section title="Spaces">
       {runtime.spaces.length === 0 ? (
         <EmptyState title="No Space yet">
-          Create one here, or redeem an invitation ticket from the trusted terminal with
-          <code> ma2a space invite redeem</code>. Redemption has no browser route.
+          Create one here, or accept an invitation ticket from the trusted terminal with
+          <code> ma2a space accept</code>. Accepting has no browser route.
         </EmptyState>
       ) : (
         <div className="split">
           {runtime.spaces.map((space) => (
             <Card key={space.id} label={space.name}>
               <code className="identifier__value">{space.id}</code>
-              <div className="cluster">
-                <Pill tone="accent">generation {space.generation}</Pill>
-                {space.revokedCount === 0 ? null : (
+              {space.revokedCount === 0 ? null : (
+                <div className="cluster">
                   <Pill tone="failed">{space.revokedCount} revoked, carried forward</Pill>
-                )}
-              </div>
-              <div>
-                <span className="eyebrow">Chain hash</span>
-                <div>
-                  <Mono>{space.chainHash}</Mono>
                 </div>
-              </div>
+              )}
               <div>
                 <span className="eyebrow">
                   Signed members · {space.memberCount} of {LIMITS.members}
@@ -101,18 +94,18 @@ export function SpacesInspector({
           {...(message === undefined ? {} : { status: message })}
         >
           <Field
-            help="A local label only. The signed Space carries no name."
+            help="Shared metadata signed into the Space. Every member reads the same name, and names are not unique."
             id="space-name"
-            label="Local label"
+            label="Name"
           >
             <input id="space-name" maxLength={128} name="name" required />
           </Field>
         </Form>
       </Card>
-      <Card label="Create an invitation ticket">
+      <Card label="Invite to a Space">
         <Form
           disabled={disabled}
-          label="Create an invitation ticket"
+          label="Invite to a Space"
           onSubmit={(data) => {
             if (actions === undefined) return
             run(
@@ -125,7 +118,7 @@ export function SpacesInspector({
               "Ticket written by the Runtime. Its secret never reaches this browser.",
             )
           }}
-          submitLabel="Write ticket"
+          submitLabel="Create invite"
         >
           <Field id="invite-space" label="Space">
             <select id="invite-space" name="space-id" required>
@@ -137,9 +130,9 @@ export function SpacesInspector({
             </select>
           </Field>
           <Field
-            help="1 ms to 5 minutes, on the Runtime clock."
+            help="Milliseconds on the Runtime clock, from 1 ms to 5 minutes."
             id="invite-ttl"
-            label="Lifetime in milliseconds"
+            label="Ticket lifetime"
           >
             <input
               defaultValue={300000}
@@ -154,25 +147,25 @@ export function SpacesInspector({
           <Field
             help="The ticket is a bearer secret written once with owner-only permissions."
             id="invite-path"
-            label="Owner-only output path"
+            label="Owner-only ticket file"
           >
             <input id="invite-path" maxLength={4096} name="output-path" required />
           </Field>
         </Form>
       </Card>
-      <Card label="Revoke an Endpoint">
+      <Card label="Remove a member">
         <Form
           danger
           disabled={disabled}
-          label="Revoke an Endpoint"
+          label="Remove a member"
           onSubmit={(data) => {
             if (actions === undefined) return
             run(
               () => actions.revokeEndpoint(text(data, "space-id"), text(data, "endpoint-id")),
-              "Revocation recorded. It applies to this Space only.",
+              "Member removed. The revocation applies to this Space only.",
             )
           }}
-          submitLabel="Revoke"
+          submitLabel="Remove"
         >
           <Field id="revoke-space" label="Space">
             <select id="revoke-space" name="space-id" required>
@@ -184,7 +177,7 @@ export function SpacesInspector({
             </select>
           </Field>
           <Field
-            help="Space-local: another shared Space can still authorize this peer."
+            help="Records a Space-local revocation. Another shared Space can still authorize this peer."
             id="revoke-endpoint"
             label="Endpoint ID"
           >

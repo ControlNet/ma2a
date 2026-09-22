@@ -41,11 +41,11 @@ export function currentWebSession(): WebSession | undefined {
   return token?.success === true ? { csrfToken: token.data } : undefined
 }
 
-export async function loginAndTouchSession(passphrase: string): Promise<WebSession> {
+export async function loginAndTouchSession(password: string): Promise<WebSession> {
   try {
     const payload: unknown = await http
       .post(new URL("/api/v1/web/auth/login", window.location.origin), {
-        json: { password: passphrase },
+        json: { password },
       })
       .json()
     const session = LoginResponseSchema.parse(payload)

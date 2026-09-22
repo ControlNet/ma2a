@@ -85,7 +85,7 @@ test("every destination stays reachable at every width, with the current one mar
 test.each([
   [EMPTY_RUNTIME_FIXTURE, "No Space yet"],
   [ONE_RUNTIME_FIXTURE, "Signed members"],
-  [MANY_RUNTIME_FIXTURE, "generation 11"],
+  [MANY_RUNTIME_FIXTURE, "1 revoked, carried forward"],
 ] as const)("renders zero, one, and many Space states", (runtime, expectedText) => {
   render(<App initialPath="/spaces" runtime={runtime} />)
 

@@ -34,7 +34,6 @@ export function runtimeViewFromSnapshot(
       : "unknown"
   const reachability = reachabilityView(snapshot)
   return {
-    revision: snapshot.revision,
     connection,
     runtimeVersion: snapshot.endpoint.runtime_version,
     endpoint: {
@@ -46,8 +45,6 @@ export function runtimeViewFromSnapshot(
       id: space.space_id,
       name: space.name,
       memberCount: space.member_count,
-      generation: space.generation,
-      chainHash: space.chain_hash,
       membersError: failedDetails.has(space.space_id),
       members: (details.get(space.space_id)?.space.chain_hash === space.chain_hash
         ? details.get(space.space_id)?.members

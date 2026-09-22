@@ -59,12 +59,6 @@
   gap: var(--space-3);
 }
 
-.top-strip__revision {
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
 .brand-mark {
   display: inline-grid;
   place-items: center;
