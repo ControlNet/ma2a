@@ -23,11 +23,24 @@ use super::open_lock;
 pub(crate) enum DaemonState {
     /// The daemon lock is free, so no process owns this state directory.
     Absent,
-    /// A daemon owns the lock and answered. `None` means it speaks the current
-    /// local API but predates the lifecycle plane, so it cannot identify itself.
-    Ready(Option<Box<DaemonReport>>),
-    /// A daemon owns the lock and speaks a different local API version.
-    Incompatible,
+    /// A daemon owns the lock, answered the lifecycle plane, and speaks this
+    /// local API version. Both lifecycle and business commands reach it.
+    Ready(Box<DaemonReport>),
+    /// A daemon owns the lock and answered the lifecycle plane, but speaks a
+    /// different local API version.
+    ///
+    /// Business commands cannot reach it and lifecycle commands can. The
+    /// lifecycle envelope is fixed across versions precisely so that a daemon
+    /// built either side of a business-API change remains controllable, and
+    /// discarding that because its business API differs would leave it
+    /// stoppable only through the older, unbounded compatibility path.
+    IncompatibleLifecycle(Box<DaemonReport>),
+    /// A daemon owns the lock, speaks this local API version, and predates the
+    /// lifecycle plane, so it can only be asked through `graceful_shutdown`.
+    LegacyCurrentApi,
+    /// A daemon owns the lock, predates the lifecycle plane, and speaks a
+    /// different local API version.
+    LegacyIncompatible,
     /// A daemon owns the lock and did not answer a bounded lifecycle call.
     Unresponsive(String),
     /// Ownership and what answers the endpoint disagree.
@@ -51,8 +64,12 @@ impl DaemonState {
                  nothing was changed. Resolve it before starting or stopping a daemon"
             )),
             Self::Absent => AppError::DaemonStopped,
-            Self::Incompatible => AppError::Ipc(IpcError::VersionMismatch),
-            Self::Ready(_) => AppError::Daemon("the daemon is running".to_owned()),
+            Self::IncompatibleLifecycle(_) | Self::LegacyIncompatible => {
+                AppError::Ipc(IpcError::VersionMismatch)
+            }
+            Self::Ready(_) | Self::LegacyCurrentApi => {
+                AppError::Daemon("the daemon is running".to_owned())
+            }
         }
     }
 }
@@ -96,9 +113,12 @@ pub(crate) async fn endpoint_answers(paths: &IpcPaths) -> bool {
 }
 
 enum Responder {
+    /// Answered the lifecycle plane, whatever business version it reported.
     Lifecycle(Box<DaemonReport>),
+    /// No lifecycle plane, but completed this version's handshake.
     LocalApi,
-    Incompatible,
+    /// No lifecycle plane, and another local API version.
+    IncompatibleLocalApi,
     Silent(String),
 }
 
@@ -107,7 +127,7 @@ impl Responder {
         match self {
             Self::Lifecycle(_) => "a daemon",
             Self::LocalApi => "a daemon of this API version",
-            Self::Incompatible => "a daemon of another API version",
+            Self::IncompatibleLocalApi => "a daemon of another API version",
             Self::Silent(_) => "nothing",
         }
     }
@@ -116,10 +136,9 @@ impl Responder {
 async fn responder(paths: &IpcPaths) -> Responder {
     let client = LocalApiClient::new(paths.clone());
     match client.ping().await {
-        Ok(report) if report.api_version() == u64::from(api::LOCAL_API_VERSION) => {
-            Responder::Lifecycle(Box::new(report))
-        }
-        Ok(_) => Responder::Incompatible,
+        // The business version it reports does not decide this. A daemon that
+        // speaks the lifecycle plane is controllable through it either way.
+        Ok(report) => Responder::Lifecycle(Box::new(report)),
         // Answering, but not with a lifecycle record. That is a fact about the
         // responder, not about whether a daemon is there, so ask the question the
         // older contract can answer.
@@ -131,7 +150,7 @@ async fn responder(paths: &IpcPaths) -> Responder {
 async fn legacy_responder(client: &LocalApiClient) -> Responder {
     match tokio::time::timeout(LIFECYCLE_DEADLINE, client.probe()).await {
         Ok(Ok(())) => Responder::LocalApi,
-        Ok(Err(IpcError::VersionMismatch)) => Responder::Incompatible,
+        Ok(Err(IpcError::VersionMismatch)) => Responder::IncompatibleLocalApi,
         Ok(Err(error)) => Responder::Silent(error.to_string()),
         Err(_elapsed) => Responder::Silent("it did not complete a handshake in time".to_owned()),
     }
@@ -139,10 +158,15 @@ async fn legacy_responder(client: &LocalApiClient) -> Responder {
 
 fn owned_state(paths: &IpcPaths, responder: Responder) -> DaemonState {
     match responder {
-        Responder::Lifecycle(report) => recorded_disagreement(paths, &report)
-            .map_or_else(|| DaemonState::Ready(Some(report)), DaemonState::Conflicted),
-        Responder::LocalApi => DaemonState::Ready(None),
-        Responder::Incompatible => DaemonState::Incompatible,
+        Responder::Lifecycle(report) => match recorded_disagreement(paths, &report) {
+            Some(reason) => DaemonState::Conflicted(reason),
+            None if report.api_version() == u64::from(api::LOCAL_API_VERSION) => {
+                DaemonState::Ready(report)
+            }
+            None => DaemonState::IncompatibleLifecycle(report),
+        },
+        Responder::LocalApi => DaemonState::LegacyCurrentApi,
+        Responder::IncompatibleLocalApi => DaemonState::LegacyIncompatible,
         Responder::Silent(reason) => DaemonState::Unresponsive(reason),
     }
 }

@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{RuntimeHandle, current_user::CurrentUserRuntime};
 
 use super::{
-    CONNECTION_LIMIT, IpcError, IpcPaths, LIFECYCLE_RESERVE,
+    BUSINESS_CONNECTION_LIMIT, IpcError, IpcPaths, LIFECYCLE_RESERVE,
     lifecycle::{DaemonIdentity, RuntimeBoot},
     platform,
 };
@@ -76,7 +76,7 @@ impl LocalApiServer {
             replay: Arc::new(Mutex::new(())),
             web: None,
             identity: Arc::new(identity),
-            permits: Arc::new(Semaphore::new(CONNECTION_LIMIT)),
+            permits: Arc::new(Semaphore::new(BUSINESS_CONNECTION_LIMIT)),
             reserve: Arc::new(Semaphore::new(LIFECYCLE_RESERVE)),
         })
     }

@@ -51,12 +51,18 @@ impl ProcessIncarnation {
     /// Reports whether this exact incarnation is still running.
     ///
     /// `None` means the question cannot be answered here, which is not the same
-    /// as "no". Callers must treat it as unknown and fall back to an authority
-    /// that does not depend on the platform, such as the daemon lock.
+    /// as "no". The platform declines for several reasons that have nothing to do
+    /// with the process being gone — no permission to inspect it, no supported
+    /// query, a transient failure to read — and a process that cannot be found is
+    /// itself ambiguous, because an identifier is reused. Reading any of those as
+    /// "dead" would turn missing evidence into a conclusion. Callers must treat
+    /// `None` as unknown and fall back to an authority that does not depend on the
+    /// platform, such as the daemon lock.
     #[must_use]
     pub fn is_live(&self) -> Option<bool> {
         let recorded = self.started_at?;
-        Some(platform::started_at(self.pid) == Some(recorded))
+        // A missing reading stays missing: only two readings can disagree.
+        platform::started_at(self.pid).map(|current| current == recorded)
     }
 }
 
@@ -107,6 +113,16 @@ mod tests {
 
         // Then
         assert_eq!(recorded.is_live(), None);
+    }
+
+    /// Evidence that cannot be obtained stays unknown; it never becomes "dead".
+    #[test]
+    fn a_process_that_cannot_be_inspected_remains_unknown() {
+        // Given: an identifier the operating system will not describe.
+        let unknowable = ProcessIncarnation::recorded(u32::MAX, Some(1));
+
+        // Then
+        assert_eq!(unknowable.is_live(), None);
     }
 
     #[cfg(any(target_os = "linux", windows))]

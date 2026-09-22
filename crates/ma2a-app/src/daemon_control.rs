@@ -7,16 +7,17 @@ use std::{
     time::Duration,
 };
 
-use ma2a_runtime::ipc::{IpcError, IpcPaths, LocalApiClient};
+use ma2a_runtime::ipc::{DaemonReport, IpcError, IpcPaths, LocalApiClient};
 
 use crate::AppError;
 
+#[cfg(debug_assertions)]
+mod hold;
 mod legacy;
 mod spawn;
 mod state;
 mod teardown;
 
-use legacy::stop_incompatible;
 pub(crate) use spawn::LAUNCH_NONCE_VARIABLE;
 use spawn::spawn_daemon;
 pub(crate) use state::{DaemonState, classify, endpoint_answers};
@@ -46,9 +47,13 @@ pub(crate) enum StartOutcome {
 /// because telling a caller "not running" would invite it to start a second one.
 pub(crate) async fn require(paths: &IpcPaths) -> Result<(), AppError> {
     match classify(paths).await? {
-        DaemonState::Ready(_) => Ok(()),
+        // Both of these speak this version's business API; only one of them also
+        // speaks the lifecycle plane, which business commands do not need.
+        DaemonState::Ready(_) | DaemonState::LegacyCurrentApi => Ok(()),
         DaemonState::Absent => Err(AppError::DaemonStopped),
-        DaemonState::Incompatible => Err(IpcError::VersionMismatch.into()),
+        DaemonState::IncompatibleLifecycle(_) | DaemonState::LegacyIncompatible => {
+            Err(IpcError::VersionMismatch.into())
+        }
         refusal => Err(refusal.into_refusal()),
     }
 }
@@ -81,8 +86,10 @@ pub(crate) async fn restart(state_dir: &Path, paths: &IpcPaths) -> Result<(), Ap
     acquire_startup_lock(&startup_lock).await?;
     match classify(paths).await? {
         DaemonState::Absent => {}
-        DaemonState::Incompatible => stop_incompatible(paths).await?,
-        DaemonState::Ready(_) => {
+        DaemonState::Ready(_)
+        | DaemonState::IncompatibleLifecycle(_)
+        | DaemonState::LegacyCurrentApi
+        | DaemonState::LegacyIncompatible => {
             stop_locked(paths).await?;
             // Starting is only allowed once the previous owner is proven gone,
             // and the only thing that proves that is looking again.
@@ -99,14 +106,25 @@ pub(crate) async fn restart(state_dir: &Path, paths: &IpcPaths) -> Result<(), Ap
 
 async fn start_locked(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome, AppError> {
     match classify(paths).await? {
-        DaemonState::Ready(_) => return Ok(StartOutcome::AlreadyRunning),
+        DaemonState::Ready(_) | DaemonState::LegacyCurrentApi => {
+            return Ok(StartOutcome::AlreadyRunning);
+        }
         DaemonState::Absent => {}
-        DaemonState::Incompatible => stop_incompatible(paths).await?,
+        DaemonState::IncompatibleLifecycle(report) => {
+            legacy::announce_replacement();
+            stop_through_lifecycle(paths, &report).await?;
+        }
+        DaemonState::LegacyIncompatible => legacy::stop_incompatible(paths).await?,
         refusal => return Err(refusal.into_refusal()),
     }
-    // Ownership is proven absent and this process holds the startup lock, so any
-    // endpoint still here was left behind by a daemon that has gone.
-    paths.remove_stale_endpoint()?;
+    // Nothing is unlinked here. `ma2a daemon` does not take the startup lock, so
+    // between the classification above and this point a foreground daemon may
+    // have claimed ownership and bound the endpoint. Removing it from here would
+    // unlink a live daemon's socket and leave a process that still holds the lock
+    // but can no longer be addressed. Only the daemon that has actually acquired
+    // the lock reclaims an endpoint, which it does in `daemon::reclaim_endpoint`.
+    #[cfg(debug_assertions)]
+    hold::before_spawn().await;
     let _launched = spawn_daemon(state_dir, paths).await?;
     Ok(StartOutcome::Started)
 }
@@ -114,19 +132,29 @@ async fn start_locked(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome
 async fn stop_locked(paths: &IpcPaths) -> Result<(), AppError> {
     match classify(paths).await? {
         DaemonState::Absent => Err(AppError::DaemonStopped),
-        DaemonState::Ready(Some(report)) => {
-            LocalApiClient::new(paths.clone()).request_stop().await?;
-            wait_until_released(paths, Some(&report)).await
+        DaemonState::Ready(report) => stop_through_lifecycle(paths, &report).await,
+        DaemonState::IncompatibleLifecycle(report) => {
+            legacy::announce_replacement();
+            stop_through_lifecycle(paths, &report).await
         }
-        // A daemon of this API version that predates the lifecycle plane can only
-        // be asked through the command it does understand.
-        DaemonState::Ready(None) => {
-            legacy::request_shutdown(paths).await?;
-            wait_until_released(paths, None).await
-        }
-        DaemonState::Incompatible => stop_incompatible(paths).await,
+        // A daemon that predates the lifecycle plane can only be asked through
+        // the command it does understand, on the plane its Runtime serves.
+        DaemonState::LegacyCurrentApi => legacy::stop_current_api(paths).await,
+        DaemonState::LegacyIncompatible => legacy::stop_incompatible(paths).await,
         refusal => Err(refusal.into_refusal()),
     }
+}
+
+/// Stops a daemon through the fixed lifecycle plane and proves it went away.
+///
+/// The request is bounded by the lifecycle deadline and touches nothing the
+/// daemon's Runtime owns, so a Runtime that will never answer cannot prevent it.
+async fn stop_through_lifecycle(
+    paths: &IpcPaths,
+    departing: &DaemonReport,
+) -> Result<(), AppError> {
+    LocalApiClient::new(paths.clone()).request_stop().await?;
+    wait_until_released(paths, Some(departing)).await
 }
 
 async fn acquire_startup_lock(lock: &File) -> Result<(), AppError> {
