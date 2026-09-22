@@ -18,6 +18,10 @@ impl SpaceMemberView {
     ///
     /// # Errors
     /// Returns invalid input when the label length is outside the v1 bound.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the fixed member wire fields"
+    )]
     pub fn new(
         endpoint_id: EndpointId,
         label: &str,
@@ -77,6 +81,10 @@ impl SnapshotSpaceView {
     /// # Errors
     /// Returns invalid input when the name length is outside the bound or the
     /// member set exceeds the v1 maximum.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the fixed Space summary wire fields"
+    )]
     pub fn new(
         id: SpaceId,
         name: &str,

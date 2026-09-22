@@ -4,7 +4,7 @@ set -eu
 runs=${MA2A_E2E_RUNS:-3}
 output=${MA2A_E2E_OUTPUT:-target/e2e-evidence}
 junit=target/nextest/ci/junit.xml
-expected_tests=46
+expected_tests=51
 expected_records=13
 
 case "$runs" in
@@ -69,8 +69,10 @@ while [ "$run" -le "$runs" ]; do
       elif .scenario == "F" then
         exact(["connection_observations","control_sync_propagated","durable_received_high_water","endpoint_ids","iroh_observed_effective_home","iroh_observed_path","observed_home_after","observed_home_before","owner_runtime_endpoint_id","owner_runtime_high_water","reachability_state","record_sequences","record_sequences_after","record_sequences_before","scenario","supplied_relay_candidates","sync_revision"]) and
         .control_sync_propagated == true and (.durable_received_high_water | numbers) and
-        (.record_sequences_after | numbers) and (.record_sequences_before | numbers) and
-        .record_sequences == .record_sequences_after and .record_sequences_after == .durable_received_high_water and
+        (.owner_runtime_high_water | numbers) and (.record_sequences_after | numbers) and
+        (.record_sequences_before | numbers) and .record_sequences == .record_sequences_after and
+        .owner_runtime_high_water == .durable_received_high_water and
+        ([.record_sequences_after, .owner_runtime_high_water] | transpose | all(.[]; .[1] == .[0] + 1)) and
         (.supplied_relay_candidates | strings)
       elif .scenario == "control-sync-active-dial" then
         exact(["address_high_water","endpoint_ids","manifest_high_water","private_space_leaked","relay_high_water","scenario"]) and

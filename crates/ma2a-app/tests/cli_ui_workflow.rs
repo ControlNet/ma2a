@@ -95,7 +95,10 @@ async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> Tes
         String::from_utf8_lossy(&output.stderr)
     );
     let status: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let url = status["url"].as_str().ok_or("missing UI URL")?;
+    let url = status
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing UI URL")?;
     assert!(url.starts_with("http://127.0.0.1:"));
     assert!(!url.contains('@'));
     let restarted = fixture.run(&["restart"])?;
@@ -107,8 +110,11 @@ async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> Tes
     let stopped = fixture.run(&["ui", "status", "--json"])?;
     assert!(stopped.status.success());
     let stopped: serde_json::Value = serde_json::from_slice(&stopped.stdout)?;
-    assert_eq!(stopped["running"], false);
-    assert!(stopped["url"].is_null());
+    assert_eq!(
+        stopped.get("running").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert!(stopped.get("url").is_some_and(serde_json::Value::is_null));
     assert!(fixture.run(&["ui", "start"])?.status.success());
     Ok(())
 }

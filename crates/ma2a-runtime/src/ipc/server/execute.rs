@@ -1,16 +1,17 @@
-use ma2a_core::{EchoError, ProtocolError};
+use ma2a_core::ProtocolError;
 
 use crate::{
     RuntimeStatus,
     api::{
-        CapabilityFlags, Command, CommandResult, ControlSyncView, EchoReplyView, EndpointView,
-        HandshakeAuth, HandshakeState, HandshakeView, InteractionCapabilities,
-        ManagementCapabilities, RelayCapabilities, RuntimeStatusView,
+        CapabilityFlags, Command, CommandResult, EndpointView, HandshakeAuth, HandshakeState,
+        HandshakeView, InteractionCapabilities, ManagementCapabilities, RelayCapabilities,
+        RuntimeStatusView,
     },
 };
 
 use super::{ConnectionContext, IpcError};
 
+mod interaction;
 mod relay;
 mod space;
 
@@ -148,58 +149,9 @@ pub(super) async fn execute(
         }
         "public_relay_disable" => relay::public_disable(context).await?,
         "public_relay_status" => relay::public_status(context).await?,
-        "control_sync_status" => {
-            let peer = command
-                .control_sync_peer()
-                .ok_or(ProtocolError::INVALID_INPUT)?;
-            let synchronized = context
-                .handle
-                .control_sync_status(peer)
-                .await
-                .map_err(|_| ProtocolError::UNAVAILABLE)?;
-            CommandResult::control_sync_status(
-                ControlSyncView::new(if synchronized { vec![peer] } else { Vec::new() })
-                    .map_err(|_| ProtocolError::INTERNAL)?,
-            )
-        }
-        "control_sync_trigger" => {
-            let peer = command
-                .control_sync_peer()
-                .ok_or(ProtocolError::INVALID_INPUT)?;
-            context
-                .handle
-                .sync_control_with(peer)
-                .await
-                .map_err(|_| ProtocolError::UNAVAILABLE)?;
-            let synchronized = context
-                .handle
-                .control_sync_status(peer)
-                .await
-                .map_err(|_| ProtocolError::UNAVAILABLE)?;
-            CommandResult::control_sync_triggered(
-                ControlSyncView::new(if synchronized { vec![peer] } else { Vec::new() })
-                    .map_err(|_| ProtocolError::INTERNAL)?,
-            )
-        }
-        "echo_call" => {
-            let (request_id, target, payload) =
-                command.echo_call().ok_or(ProtocolError::INVALID_INPUT)?;
-            let response = context
-                .handle
-                .echo(request_id, target, payload.as_bytes())
-                .await
-                .map_err(echo_protocol_error)?;
-            let echoed = std::str::from_utf8(response.payload())
-                .map_err(|_| ProtocolError::INVALID_INPUT)?;
-            CommandResult::echo(
-                EchoReplyView::new(
-                    response.responder_endpoint_id(),
-                    echoed,
-                    response.duration_ms(),
-                )
-                .map_err(|_| ProtocolError::INTERNAL)?,
-            )
-        }
+        "control_sync_status" => interaction::control_sync_status(context, command).await?,
+        "control_sync_trigger" => interaction::control_sync_trigger(context, command).await?,
+        "echo_call" => interaction::echo(context, command).await?,
         "space_details_fetch" => CommandResult::space_details(
             context
                 .handle
@@ -253,19 +205,6 @@ pub(super) async fn execute(
             .map_err(|_| ProtocolError::INTERNAL)?,
         _ => return Err(ProtocolError::UNAVAILABLE),
     })
-}
-
-const fn echo_protocol_error(error: EchoError) -> ProtocolError {
-    match error {
-        EchoError::VersionMismatch => ProtocolError::VERSION_MISMATCH,
-        EchoError::InvalidInput => ProtocolError::INVALID_INPUT,
-        EchoError::Unauthorized => ProtocolError::UNAUTHORIZED,
-        EchoError::ConcurrencyExceeded => ProtocolError::CONFLICT,
-        EchoError::TimedOut | EchoError::Cancelled | EchoError::Unavailable => {
-            ProtocolError::UNAVAILABLE
-        }
-        EchoError::Internal => ProtocolError::INTERNAL,
-    }
 }
 
 #[cfg(test)]

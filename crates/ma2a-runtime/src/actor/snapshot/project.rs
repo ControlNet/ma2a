@@ -43,6 +43,10 @@ const fn observation_path_label(state: ma2a_net::ConnectionPathState) -> &'stati
     }
 }
 
+#[expect(
+    clippy::match_same_arms,
+    reason = "unknown future error classes retain the conservative transient label"
+)]
 const fn error_label(class: ma2a_net::ConnectionErrorClass) -> &'static str {
     match class {
         ma2a_net::ConnectionErrorClass::Transient => "transient",

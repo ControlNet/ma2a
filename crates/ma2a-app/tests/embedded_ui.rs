@@ -4,27 +4,18 @@
 
 #[path = "embedded_ui/http.rs"]
 mod http;
-#[path = "embedded_ui/support.rs"]
-mod support;
 
 use std::{
     error::Error,
     fs,
+    io::Write as _,
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
-use ma2a_runtime::{
-    current_user::CurrentUserRuntime,
-    web::{PasswordAction, SystemClock, WebAuthConfig},
-};
 use serde_json::Value;
-use zeroize::Zeroizing;
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 type TestValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -33,7 +24,6 @@ const PASSWORD: &str = "embedded-ui-process-password";
 
 struct Fixture {
     state_dir: PathBuf,
-    daemon: Child,
     port: u16,
 }
 
@@ -44,28 +34,32 @@ impl Fixture {
             std::env::temp_dir().join(format!("ma2a-embedded-ui-{}-{serial}", std::process::id()));
         fs::create_dir(&state_dir)?;
         fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700))?;
-        let mut daemon = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        let started = Command::new(env!("CARGO_BIN_EXE_ma2a"))
             .arg("--state-dir")
             .arg(&state_dir)
-            .arg("daemon")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let port = match support::wait_for_web_port(daemon.id()) {
+            .arg("start")
+            .output()?;
+        if !started.status.success() {
+            let _cleanup_result = fs::remove_dir_all(&state_dir);
+            return Err(format!(
+                "daemon start failed: {}",
+                String::from_utf8_lossy(&started.stderr)
+            )
+            .into());
+        }
+        let port = match start_web_ui(&state_dir) {
             Ok(port) => port,
             Err(error) => {
-                let _kill_result = daemon.kill();
-                let _wait_result = daemon.wait();
+                let _stop_result = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+                    .arg("--state-dir")
+                    .arg(&state_dir)
+                    .arg("stop")
+                    .output();
                 let _cleanup_result = fs::remove_dir_all(&state_dir);
                 return Err(error);
             }
         };
-        Ok(Self {
-            state_dir,
-            daemon,
-            port,
-        })
+        Ok(Self { state_dir, port })
     }
 
     fn get(&self, path: &str, cookie: Option<&str>) -> TestValue<http::HttpResponse> {
@@ -102,7 +96,6 @@ impl Drop for Fixture {
             .arg(&self.state_dir)
             .arg("stop")
             .output();
-        let _wait = self.daemon.wait();
         let _cleanup = fs::remove_dir_all(&self.state_dir);
     }
 }
@@ -113,26 +106,29 @@ async fn production_binary_serves_authenticated_embedded_console() -> TestResult
     let fixture = Fixture::start()?;
 
     // When
+    let login_page = fixture.get("/login", None)?;
     let setup = fixture.get("/setup", None)?;
     let redirected = fixture.get("/", None)?;
     let auth_state = fixture.get("/api/v1/web/auth/state", None)?;
     let protected = fixture.get("/api/v1/snapshot", None)?;
 
     // Then
-    assert_eq!(setup.status, 200);
-    assert_html_security(&setup)?;
-    assert_eq!(setup.header("cache-control")?, "no-cache");
+    assert_eq!(login_page.status, 200);
+    assert_html_security(&login_page)?;
+    assert_eq!(login_page.header("cache-control")?, "no-cache");
+    assert_eq!(setup.status, 307);
+    assert_eq!(setup.header("location")?, "/login");
     assert_eq!(redirected.status, 307);
-    assert_eq!(redirected.header("location")?, "/setup");
+    assert_eq!(redirected.header("location")?, "/login");
     assert_eq!(protected.status, 401);
     assert_eq!(protected.header("cache-control")?, "no-store");
     let state: Value = serde_json::from_slice(&auth_state.body)?;
     assert_eq!(
         state.get("state").and_then(Value::as_str),
-        Some("setup_required")
+        Some("configured")
     );
 
-    let index = std::str::from_utf8(&setup.body)?;
+    let index = std::str::from_utf8(&login_page.body)?;
     let script = embedded_asset(index, "<script type=\"module\" crossorigin src=\"/")?;
     let style = embedded_asset(index, "<link rel=\"stylesheet\" crossorigin href=\"/")?;
     assert!(
@@ -162,16 +158,6 @@ async fn production_binary_serves_authenticated_embedded_console() -> TestResult
     assert_eq!(missing.status, 404);
     assert_eq!(missing.header("cache-control")?, "no-store");
 
-    let control = CurrentUserRuntime::open_at(
-        &fixture.state_dir,
-        Arc::new(SystemClock::default()),
-        WebAuthConfig::default(),
-    )
-    .await?;
-    control
-        .web_auth()
-        .change_password(PasswordAction::Set, Zeroizing::new(PASSWORD.to_owned()))
-        .await?;
     let login = fixture.post(
         "/api/v1/web/auth/login",
         (&serde_json::json!({"password": PASSWORD}).to_string(), ""),
@@ -194,9 +180,54 @@ async fn production_binary_serves_authenticated_embedded_console() -> TestResult
     let deep_route = fixture.get("/spaces", Some(&cookie_header))?;
     assert_eq!(deep_route.status, 200);
     assert_eq!(deep_route.header("cache-control")?, "no-cache");
-    assert_eq!(deep_route.body, setup.body);
+    assert_eq!(deep_route.body, login_page.body);
     assert_revoke_all_signs_out(&fixture, &cookie_header, csrf)?;
     Ok(())
+}
+
+fn start_web_ui(state_dir: &Path) -> TestValue<u16> {
+    let mut init = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(state_dir)
+        .args(["ui", "init"])
+        .env("MA2A_PASSWORD_STDIN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    init.stdin
+        .take()
+        .ok_or("ui init stdin is unavailable")?
+        .write_all(format!("{PASSWORD}\n{PASSWORD}\n").as_bytes())?;
+    let initialized = init.wait_with_output()?;
+    if !initialized.status.success() {
+        return Err(format!(
+            "ui init failed: {}",
+            String::from_utf8_lossy(&initialized.stderr)
+        )
+        .into());
+    }
+    let started = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(state_dir)
+        .args(["ui", "start", "--json"])
+        .output()?;
+    if !started.status.success() {
+        return Err(format!(
+            "ui start failed: {}",
+            String::from_utf8_lossy(&started.stderr)
+        )
+        .into());
+    }
+    let status: Value = serde_json::from_slice(&started.stdout)?;
+    let url = status
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("ui start response has no URL")?;
+    let (_, port) = url
+        .rsplit_once(':')
+        .ok_or("ui start response has an invalid URL")?;
+    Ok(port.parse()?)
 }
 
 fn assert_revoke_all_signs_out(fixture: &Fixture, cookie_header: &str, csrf: &str) -> TestResult {

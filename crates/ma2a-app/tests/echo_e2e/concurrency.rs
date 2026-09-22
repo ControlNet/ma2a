@@ -47,6 +47,12 @@ async fn real_transport_rejects_seventeenth_stream_and_releases_capacity() -> Te
     let mut released_header = [0_u8; 37];
     released_receive.read_exact(&mut released_header).await?;
     assert_eq!(released_header[0], EchoError::InvalidInput.code());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while fixture.handle().echo_metrics().active_streams != 15 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
 
     let (mut replacement_send, mut replacement_receive) = connection.open_bi().await?;
     replacement_send.write_all(&request).await?;
