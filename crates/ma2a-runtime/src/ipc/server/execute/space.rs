@@ -1,7 +1,7 @@
 use iroh_tickets::Ticket as _;
 use ma2a_core::{EndpointId, ProtocolError, RequestId, SignedInviteTicket, SpaceId};
 
-use crate::api::CommandResult;
+use crate::{SpaceDepartureErrorCode, api::ApiError, api::CommandResult};
 
 use super::super::ConnectionContext;
 
@@ -112,7 +112,55 @@ pub(super) async fn show(
         .cloned()
         .and_then(|space| space.to_space_view().ok())
         .map(CommandResult::space)
-        .ok_or(ProtocolError::INVALID_INPUT)
+        .ok_or(ProtocolError::NOT_FOUND)
+}
+
+pub(super) async fn leave(
+    context: &ConnectionContext,
+    space_id: SpaceId,
+    request_id: RequestId,
+) -> Result<CommandResult, ApiError> {
+    // The summary is read before departure, because afterwards this Runtime is
+    // no longer a member and can no longer project the Space it just left.
+    let snapshot = context
+        .handle
+        .snapshot()
+        .await
+        .map_err(|_| ProtocolError::UNAVAILABLE)?;
+    let space = snapshot
+        .spaces()
+        .iter()
+        .find(|space| space.id() == space_id)
+        .cloned()
+        .ok_or(ProtocolError::NOT_FOUND)?;
+    context
+        .handle
+        .leave_space(space_id, request_id)
+        .await
+        .map_err(|error| departure_api_error(error.code()))?;
+    Ok(CommandResult::space_left(
+        space.to_space_view().map_err(|_| ProtocolError::INTERNAL)?,
+    ))
+}
+
+fn departure_api_error(code: SpaceDepartureErrorCode) -> ApiError {
+    if code == SpaceDepartureErrorCode::OWNER_CANNOT_LEAVE {
+        ApiError::with_remediation(
+            ProtocolError::UNAUTHORIZED,
+            "Space owner cannot leave its own Space",
+        )
+    } else if code == SpaceDepartureErrorCode::NOT_A_MEMBER {
+        ApiError::new(ProtocolError::NOT_FOUND)
+    } else if code == SpaceDepartureErrorCode::UNREACHABLE {
+        ApiError::with_remediation(
+            ProtocolError::UNAVAILABLE,
+            "the Space authority could not be reached; membership is unchanged",
+        )
+    } else if code == SpaceDepartureErrorCode::REJECTED {
+        ApiError::new(ProtocolError::CONFLICT)
+    } else {
+        ApiError::new(ProtocolError::INTERNAL)
+    }
 }
 
 pub(super) async fn redeem(

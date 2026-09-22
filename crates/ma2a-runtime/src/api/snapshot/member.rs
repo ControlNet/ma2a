@@ -104,8 +104,18 @@ impl SnapshotSpaceView {
         })
     }
 
+    /// Returns the verified Space identifier.
+    pub const fn space_id(&self) -> SpaceId {
+        self.id
+    }
+
     pub(crate) const fn id(&self) -> SpaceId {
         self.id
+    }
+
+    /// Returns the shared Space name every member projects identically.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Narrows to the command-result shape, which carries no chain head.

@@ -76,6 +76,9 @@ fn round_trips_every_command_variant_through_the_transport_neutral_codec() {
             r#"{{"version":1,"operation":"space_revoke","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}"}}"#
         ),
         format!(
+            r#"{{"version":1,"operation":"space_leave","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}"}}"#
+        ),
+        format!(
             r#"{{"version":1,"operation":"control_sync_status","peer_endpoint_id":"{ENDPOINT_ID}"}}"#
         ),
         format!(
@@ -229,8 +232,8 @@ fn rejects_oversize_input_before_parsing_or_callbacks() {
 #[test]
 fn freezes_version_variants_gap_policy_and_schema_hash() {
     assert_eq!(LOCAL_API_VERSION, 1);
-    assert_eq!(COMMAND_NAMES.len(), 29);
-    assert_eq!(RESULT_NAMES.len(), 25);
+    assert_eq!(COMMAND_NAMES.len(), 30);
+    assert_eq!(RESULT_NAMES.len(), 26);
     assert_eq!(ERROR_NAMES.len(), 9);
     assert_eq!(
         ERROR_NAMES,

@@ -105,6 +105,9 @@ impl Actor {
                     Some(Command::RevokeOwnedSpaceMember { space_id, endpoint_id, reply }) => {
                         let _unsent = reply.send(self.revoke_owned_space_member(space_id, endpoint_id).await);
                     }
+                    Some(Command::LeaveSpace { space_id, request_id, reply }) => {
+                        let _unsent = reply.send(self.leave_space(space_id, request_id).await);
+                    }
                     Some(Command::CreateEnrollmentInvite { creation, reply }) => {
                         let _unsent = reply.send(self.create_enrollment_invite(creation).await);
                     }

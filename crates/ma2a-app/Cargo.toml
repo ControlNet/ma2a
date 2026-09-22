@@ -44,6 +44,9 @@ tower = { version = "=0.5.3", features = ["util"] }
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["pty"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

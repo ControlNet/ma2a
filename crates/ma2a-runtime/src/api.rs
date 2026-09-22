@@ -113,6 +113,14 @@ impl ApiError {
         }
     }
 
+    /// Carries a short, non-secret operator hint alongside the protocol error.
+    pub(crate) const fn with_remediation(code: ProtocolError, remediation: &'static str) -> Self {
+        Self {
+            code,
+            remediation: Some(remediation),
+        }
+    }
+
     pub(crate) const fn version_mismatch() -> Self {
         Self {
             code: ProtocolError::VERSION_MISMATCH,
@@ -130,6 +138,12 @@ impl ApiError {
     /// Returns CLI-visible remediation for incompatible versions.
     pub const fn remediation(self) -> Option<&'static str> {
         self.remediation
+    }
+}
+
+impl From<ProtocolError> for ApiError {
+    fn from(code: ProtocolError) -> Self {
+        Self::new(code)
     }
 }
 

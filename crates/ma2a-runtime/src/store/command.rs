@@ -45,6 +45,15 @@ pub(crate) enum StoreCommand {
     },
     RevokeOwnedSpaceMember {
         request: super::OwnedMemberRevocation,
+        reply: oneshot::Sender<Result<super::RemovedMember, RuntimeError>>,
+    },
+    LoadSpaceChain {
+        space_id: ma2a_core::SpaceId,
+        reply: oneshot::Sender<Result<Option<ma2a_core::SpaceChain>, RuntimeError>>,
+    },
+    PersistDeparture {
+        chain: Box<ma2a_core::SpaceChain>,
+        local_endpoint_id: ma2a_core::EndpointId,
         reply: oneshot::Sender<
             Result<(u64, std::collections::BTreeSet<ma2a_core::SpaceId>), RuntimeError>,
         >,

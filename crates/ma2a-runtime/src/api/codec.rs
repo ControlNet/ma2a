@@ -69,6 +69,9 @@ fn command_value(command: &Command) -> Value {
         CommandKind::SpaceShow(space) | CommandKind::SpaceDetailsFetch(space) => {
             json!({"operation": operation, "space_id": encode_hex(space.as_bytes())})
         }
+        CommandKind::SpaceLeave(id, space) => {
+            json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "space_id": encode_hex(space.as_bytes())})
+        }
         CommandKind::SpaceRevoke(id, space, peer) => {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "space_id": encode_hex(space.as_bytes()), "peer_endpoint_id": encode_hex(peer.as_bytes())})
         }

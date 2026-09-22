@@ -66,7 +66,7 @@ smoke_credential="ma2a-release-smoke-password"
 printf '%s\n%s\n' "$smoke_credential" "$smoke_credential" |
   MA2A_PASSWORD_STDIN=1 "$binary" --state-dir "$state_dir" ui init >/dev/null
 
-created=$($binary --state-dir "$state_dir" space create --name release-smoke --json)
+created=$($binary --state-dir "$state_dir" space create release-smoke --json)
 jq -e '.result.payload.space_id | type == "string"' <<<"$created" >/dev/null
 
 url=$($binary --state-dir "$state_dir" ui start --json | jq -er .url)

@@ -1,10 +1,14 @@
-use std::fmt;
+use ed25519_dalek::Signature;
 
-use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
+#[path = "space/authority.rs"]
+mod authority;
+
+pub use authority::{SpaceAuthorityPublicKey, SpaceAuthoritySecret};
 
 use crate::policy::SpaceMemberV1;
 use crate::space_codec::{
-    Decoder, MAX_SPACE_OBJECT_LEN, buffer, write_array, write_bytes, write_map, write_uint,
+    Decoder, MAX_SPACE_OBJECT_LEN, buffer, write_array, write_bytes, write_map, write_text,
+    write_uint,
 };
 use crate::{ProtocolError, SpaceGenesisIdentity, SpaceGenesisOwner, SpaceId, SpacePolicyV1};
 
@@ -12,88 +16,8 @@ use crate::{ProtocolError, SpaceGenesisIdentity, SpaceGenesisOwner, SpaceId, Spa
 pub const GENESIS_SIGNATURE_DOMAIN: &[u8] = b"ma2a-space-genesis-signature-v1";
 /// Domain separator for the genesis link in a Space chain.
 pub const GENESIS_CHAIN_HASH_DOMAIN: &[u8] = b"ma2a-space-genesis-chain-hash-v1";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Validated Ed25519 public key for a Space authority.
-pub struct SpaceAuthorityPublicKey([u8; 32]);
-
-impl SpaceAuthorityPublicKey {
-    /// Parses and validates an Ed25519 authority public key.
-    ///
-    /// # Errors
-    /// Returns [`ProtocolError::INVALID_INPUT`] for an invalid length, point, or weak key.
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        let bytes = <&[u8; 32]>::try_from(bytes).map_err(|_| ProtocolError::INVALID_INPUT)?;
-        let key = VerifyingKey::from_bytes(bytes).map_err(|_| ProtocolError::INVALID_INPUT)?;
-        if key.is_weak() {
-            return Err(ProtocolError::INVALID_INPUT);
-        }
-        Ok(Self(*bytes))
-    }
-
-    /// Returns the exact public-key bytes.
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
-    fn verifying_key(self) -> Result<VerifyingKey, ProtocolError> {
-        VerifyingKey::from_bytes(&self.0).map_err(|_| ProtocolError::INVALID_INPUT)
-    }
-}
-
-/// Ed25519 signing key for a Space authority.
-pub struct SpaceAuthoritySecret(SigningKey);
-
-impl SpaceAuthoritySecret {
-    /// Constructs an authority signing key from a 32-byte seed.
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(SigningKey::from_bytes(&bytes))
-    }
-
-    /// Constructs an authority signing key from a protected 32-byte seed buffer.
-    ///
-    /// # Errors
-    /// Returns [`ProtocolError::INVALID_INPUT`] when `bytes` is not exactly 32 bytes.
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        let seed = <&[u8; 32]>::try_from(bytes).map_err(|_| ProtocolError::INVALID_INPUT)?;
-        Ok(Self(SigningKey::from_bytes(seed)))
-    }
-
-    /// Generates an authority signing key from the operating-system random source.
-    ///
-    /// # Errors
-    /// Returns [`ProtocolError::INTERNAL`] when secure randomness is unavailable.
-    pub fn random() -> Result<Self, ProtocolError> {
-        let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes).map_err(|_| ProtocolError::INTERNAL)?;
-        let key = Self::from_bytes(bytes);
-        bytes.fill(0);
-        Ok(key)
-    }
-
-    /// Returns the matching authority public key.
-    pub fn public_key(&self) -> SpaceAuthorityPublicKey {
-        SpaceAuthorityPublicKey(self.0.verifying_key().to_bytes())
-    }
-
-    /// Returns the 32-byte secret seed for protected storage.
-    pub fn secret_bytes(&self) -> [u8; 32] {
-        self.0.to_bytes()
-    }
-
-    pub(crate) fn sign(&self, domain: &[u8], body: &[u8]) -> [u8; 64] {
-        let mut message = Vec::with_capacity(domain.len() + body.len());
-        message.extend_from_slice(domain);
-        message.extend_from_slice(body);
-        self.0.sign(&message).to_bytes()
-    }
-}
-
-impl fmt::Debug for SpaceAuthoritySecret {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("SpaceAuthoritySecret([REDACTED])")
-    }
-}
+/// Maximum UTF-8 byte length of the shared Space name carried by genesis.
+pub const MAX_SPACE_NAME_LEN: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Unsigned version 1 Space genesis body.
@@ -103,6 +27,7 @@ pub struct SpaceGenesisV1 {
     authority: SpaceAuthorityPublicKey,
     initial_member: SpaceMemberV1,
     policy: SpacePolicyV1,
+    name: Option<String>,
 }
 
 impl SpaceGenesisV1 {
@@ -117,7 +42,20 @@ impl SpaceGenesisV1 {
             authority: identity.authority,
             initial_member: owner.initial_member,
             policy: owner.policy,
+            name: None,
         }
+    }
+
+    /// Binds the shared human-readable Space name into this genesis body.
+    ///
+    /// The name is signed with the rest of genesis and therefore also enters the
+    /// derived [`SpaceId`], so every enrolled member reads the same value.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::INVALID_INPUT`] for an empty, oversized, or control-bearing name.
+    pub fn with_name(mut self, name: &str) -> Result<Self, ProtocolError> {
+        self.name = Some(validate_name(name)?.to_owned());
+        Ok(self)
     }
 
     /// Creates a genesis body with a fresh operating-system random nonce.
@@ -163,10 +101,16 @@ impl SpaceGenesisV1 {
     pub const fn policy(&self) -> SpacePolicyV1 {
         self.policy
     }
+    /// Returns the shared Space name, absent only for pre-name legacy genesis bodies.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
 
     fn body_bytes(&self) -> Result<Vec<u8>, ProtocolError> {
         let mut output = buffer()?;
-        write_map(&mut output, 6)?;
+        // A named Space appends exactly one entry, so an unnamed legacy body still
+        // encodes byte-for-byte as it did before Space names existed.
+        write_map(&mut output, if self.name.is_some() { 7 } else { 6 })?;
         write_uint(&mut output, 0);
         write_array(&mut output, 2)?;
         write_uint(&mut output, 1);
@@ -181,12 +125,16 @@ impl SpaceGenesisV1 {
         self.initial_member.encode(&mut output)?;
         write_uint(&mut output, 5);
         self.policy.encode(&mut output)?;
+        if let Some(name) = &self.name {
+            write_uint(&mut output, 6);
+            write_text(&mut output, name)?;
+        }
         Ok(output)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
         let mut decoder = Decoder::new(bytes);
-        decoder.map(6)?;
+        let entries = decoder.map_one_of(&[6, 7])?;
         decoder.key(0)?;
         if decoder.array(2)? != 2 {
             return Err(ProtocolError::INVALID_INPUT);
@@ -205,11 +153,21 @@ impl SpaceGenesisV1 {
         let initial_member = SpaceMemberV1::decode(&mut decoder)?;
         decoder.key(5)?;
         let policy = SpacePolicyV1::decode(&mut decoder)?;
+        let name = if entries == 7 {
+            decoder.key(6)?;
+            Some(validate_name(decoder.text(MAX_SPACE_NAME_LEN)?)?.to_owned())
+        } else {
+            None
+        };
         decoder.finish()?;
-        Ok(Self::new(
+        let genesis = Self::new(
             SpaceGenesisIdentity::new(nonce, created_at_ms, authority)?,
             SpaceGenesisOwner::new(initial_member, policy),
-        ))
+        );
+        Ok(match name {
+            Some(name) => genesis.with_name(&name)?,
+            None => genesis,
+        })
     }
 }
 
@@ -272,6 +230,10 @@ impl SignedSpaceGenesisV1 {
     pub fn space_id(&self) -> SpaceId {
         SpaceId::derive(&self.canonical_body)
     }
+    /// Returns the shared Space name, absent only for pre-name legacy genesis bodies.
+    pub fn name(&self) -> Option<&str> {
+        self.genesis.name()
+    }
     /// Returns the genesis link hash used by the first manifest.
     pub fn chain_hash(&self) -> [u8; 32] {
         domain_hash(GENESIS_CHAIN_HASH_DOMAIN, &self.canonical_bytes)
@@ -306,6 +268,13 @@ impl SignedSpaceGenesisV1 {
             .verify_strict(&message, &Signature::from_bytes(&self.signature))
             .map_err(|_| ProtocolError::INVALID_INPUT)
     }
+}
+
+fn validate_name(name: &str) -> Result<&str, ProtocolError> {
+    if name.is_empty() || name.len() > MAX_SPACE_NAME_LEN || name.chars().any(char::is_control) {
+        return Err(ProtocolError::INVALID_INPUT);
+    }
+    Ok(name)
 }
 
 pub(crate) fn domain_hash(domain: &[u8], bytes: &[u8]) -> [u8; 32] {

@@ -1,15 +1,17 @@
-use std::{
-    fmt::Write as _,
-    io,
-    io::IsTerminal as _,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
-use ma2a_core::RequestId;
 use ma2a_runtime::ipc::IpcPaths;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::{AppError, cli};
+
+#[path = "space_invite.rs"]
+mod space_invite;
+#[path = "space_reference.rs"]
+mod space_reference;
+
+use space_invite::{InviteRequest, accept, invite};
+use space_reference::resolve_space;
 
 #[cfg(windows)]
 #[path = "space_windows.rs"]
@@ -33,8 +35,9 @@ pub(crate) async fn run(
             crate::call((state_dir, paths), super::unit_command("space_list")?, json).await
         }
         cli::SpaceCommand::Show { space, json } => {
+            let space_id = resolve_space(state_dir, &paths, &space).await?;
             let mut fields = Map::new();
-            fields.insert("space_id".to_owned(), Value::String(space));
+            fields.insert("space_id".to_owned(), Value::String(space_id));
             crate::call(
                 (state_dir, paths),
                 super::command("space_show", fields)?,
@@ -60,81 +63,44 @@ pub(crate) async fn run(
             )
             .await
         }
-        cli::SpaceCommand::Invite { command } => invite(state_dir, paths, command).await,
+        cli::SpaceCommand::Invite { space, ttl } => {
+            invite(
+                (state_dir, paths),
+                InviteRequest {
+                    space: &space,
+                    ttl: &ttl,
+                },
+            )
+            .await
+        }
+        cli::SpaceCommand::Accept => accept(state_dir, paths).await,
+        cli::SpaceCommand::Leave { space, json } => {
+            let space_id = resolve_space(state_dir, &paths, &space).await?;
+            let mut fields = super::request_fields()?;
+            fields.insert("space_id".to_owned(), Value::String(space_id));
+            crate::call(
+                (state_dir, paths),
+                super::command("space_leave", fields)?,
+                json,
+            )
+            .await
+        }
         cli::SpaceCommand::Member {
             command:
-                cli::MemberCommand::Revoke {
+                cli::MemberCommand::Remove {
                     space,
                     endpoint,
                     json,
                 },
         } => {
+            let space_id = resolve_space(state_dir, &paths, &space).await?;
             let mut fields = super::request_fields()?;
-            fields.insert("space_id".to_owned(), Value::String(space));
+            fields.insert("space_id".to_owned(), Value::String(space_id));
             fields.insert("peer_endpoint_id".to_owned(), Value::String(endpoint));
             crate::call(
                 (state_dir, paths),
                 super::command("space_revoke", fields)?,
                 json,
-            )
-            .await
-        }
-    }
-}
-
-async fn invite(
-    state_dir: &Path,
-    paths: IpcPaths,
-    invite_command: cli::InviteCommand,
-) -> Result<(), AppError> {
-    match invite_command {
-        cli::InviteCommand::Create {
-            space,
-            ttl,
-            file,
-            stdout,
-        } => {
-            let output_path = invite_output_path(state_dir, file, stdout)?;
-            let mut fields = super::request_fields()?;
-            fields.insert("space_id".to_owned(), Value::String(space));
-            fields.insert("ttl_ms".to_owned(), json!(parse_duration_ms(&ttl)?));
-            fields.insert(
-                "output_path".to_owned(),
-                Value::String(output_path.to_string_lossy().into_owned()),
-            );
-            crate::call(
-                (state_dir, paths),
-                super::command("space_invite", fields)?,
-                false,
-            )
-            .await?;
-            if stdout {
-                let invitation = std::fs::read_to_string(&output_path)?;
-                std::fs::remove_file(&output_path)?;
-                print!("{invitation}");
-            }
-            Ok(())
-        }
-        cli::InviteCommand::Redeem(arguments) => {
-            let invitation = match arguments.file {
-                Some(path) => read_owner_only_invitation(&path)?,
-                None if arguments.stdin => {
-                    crate::daemon_control::require(&paths).await?;
-                    let mut input = String::new();
-                    io::Read::read_to_string(&mut io::stdin().lock(), &mut input)?;
-                    input
-                }
-                None => return Err(AppError::Usage("invite redeem requires --stdin or --file")),
-            };
-            let mut fields = super::request_fields()?;
-            fields.insert(
-                "invitation".to_owned(),
-                Value::String(invitation.trim().to_owned()),
-            );
-            crate::call(
-                (state_dir, paths),
-                super::command("space_redeem", fields)?,
-                false,
             )
             .await
         }
@@ -192,49 +158,4 @@ async fn sync(runtime: (&Path, IpcPaths), request: SyncRequest) -> Result<(), Ap
         request.json,
     )
     .await
-}
-
-fn parse_duration_ms(value: &str) -> Result<u64, AppError> {
-    let (amount, multiplier) = if let Some(amount) = value.strip_suffix("ms") {
-        (amount, 1)
-    } else if let Some(amount) = value.strip_suffix('s') {
-        (amount, 1_000)
-    } else if let Some(amount) = value.strip_suffix('m') {
-        (amount, 60_000)
-    } else {
-        return Err(AppError::Usage("TTL must end in ms, s, or m"));
-    };
-    amount
-        .parse::<u64>()
-        .ok()
-        .and_then(|amount| amount.checked_mul(multiplier))
-        .filter(|ttl| (1..=300_000).contains(ttl))
-        .ok_or(AppError::Usage("TTL must be between 1ms and 5m"))
-}
-
-fn invite_output_path(
-    state_dir: &Path,
-    file: Option<PathBuf>,
-    stdout: bool,
-) -> Result<PathBuf, AppError> {
-    if let Some(path) = file {
-        return Ok(path);
-    }
-    if !stdout || !io::stdout().is_terminal() {
-        return Err(AppError::Usage(
-            "invite create requires --file or interactive --stdout",
-        ));
-    }
-    let request_id = RequestId::random()
-        .map_err(|_| io::Error::other("operating-system random source failed"))?;
-    Ok(state_dir.join(format!(".invite-{}", request_id_hex(request_id)?)))
-}
-
-fn request_id_hex(request_id: RequestId) -> Result<String, AppError> {
-    let mut encoded = String::with_capacity(32);
-    for byte in request_id.as_bytes() {
-        write!(&mut encoded, "{byte:02x}")
-            .map_err(|_| io::Error::other("request identifier encoding failed"))?;
-    }
-    Ok(encoded)
 }

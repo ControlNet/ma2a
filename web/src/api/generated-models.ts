@@ -185,6 +185,7 @@ export type CommandResult =
   | { readonly type: "space_invitation_created"; readonly payload: SpaceView }
   | { readonly type: "space_redeemed"; readonly payload: SpaceView }
   | { readonly type: "space_revoked"; readonly payload: SpaceView }
+  | { readonly type: "space_left"; readonly payload: SpaceView }
   | { readonly type: "control_sync_status"; readonly payload: ControlSyncView }
   | { readonly type: "control_sync_triggered"; readonly payload: ControlSyncView }
   | { readonly type: "private_relay_configured"; readonly payload: PrivateRelayView }

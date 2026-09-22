@@ -24,6 +24,7 @@ pub(super) enum ResultKind {
     SpaceInvitationCreated(SpaceView),
     SpaceRedeemed(SpaceView),
     SpaceRevoked(SpaceView),
+    SpaceLeft(SpaceView),
     ControlSyncStatus(ControlSyncView),
     ControlSyncTriggered(ControlSyncView),
     PrivateRelayConfigured(PrivateRelayView),
@@ -78,6 +79,7 @@ impl CommandResult {
             | ResultKind::SpaceInvitationCreated(_)
             | ResultKind::SpaceRedeemed(_)
             | ResultKind::SpaceRevoked(_)
+            | ResultKind::SpaceLeft(_)
             | ResultKind::ControlSyncStatus(_)
             | ResultKind::ControlSyncTriggered(_)
             | ResultKind::PrivateRelayConfigured(_)
@@ -155,6 +157,10 @@ impl CommandResult {
     pub const fn space_revoked(value: SpaceView) -> Self {
         Self(ResultKind::SpaceRevoked(value))
     }
+    /// Creates a Space departure result for the leaving member.
+    pub const fn space_left(value: SpaceView) -> Self {
+        Self(ResultKind::SpaceLeft(value))
+    }
     /// Creates a control-sync status result.
     pub const fn control_sync_status(value: ControlSyncView) -> Self {
         Self(ResultKind::ControlSyncStatus(value))
@@ -217,6 +223,7 @@ impl CommandResult {
             ResultKind::SpaceInvitationCreated(_) => "space_invitation_created",
             ResultKind::SpaceRedeemed(_) => "space_redeemed",
             ResultKind::SpaceRevoked(_) => "space_revoked",
+            ResultKind::SpaceLeft(_) => "space_left",
             ResultKind::ControlSyncStatus(_) => "control_sync_status",
             ResultKind::ControlSyncTriggered(_) => "control_sync_triggered",
             ResultKind::PrivateRelayConfigured(_) => "private_relay_configured",

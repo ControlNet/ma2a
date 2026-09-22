@@ -10,7 +10,7 @@ pub(super) fn space_view(
 ) -> Result<SnapshotSpaceView, RuntimeError> {
     SnapshotSpaceView::new(
         space.space_id(),
-        space.label(),
+        space.name(),
         SpaceChainHead::new(
             space.generation(),
             space.chain_hash(),

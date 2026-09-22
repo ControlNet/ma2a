@@ -49,6 +49,8 @@ mod enrollment;
 mod enrollment_replay;
 #[path = "../../ma2a-net/tests/relay_tls_paths.rs"]
 mod relay_tls;
+#[path = "space_departure.rs"]
+mod space_departure;
 #[path = "../../ma2a-runtime/tests/web_security.rs"]
 mod web;
 // CLIPPY-ALLOW: The release-gate binary composes two standalone Web integration targets.

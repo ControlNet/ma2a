@@ -27,11 +27,11 @@ fn password_value_is_rejected_from_argv_without_echoing_it() -> TestResult {
 #[test]
 fn invitation_value_is_rejected_from_argv_without_echoing_it() -> TestResult {
     // Given
-    let probe = "argv-probe-marker-two";
+    let probe = "ma2ainvite-argv-probe-marker-two";
 
     // When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["space", "invite", "redeem", probe])
+        .args(["space", "accept", probe])
         .output()?;
 
     // Then
@@ -41,11 +41,32 @@ fn invitation_value_is_rejected_from_argv_without_echoing_it() -> TestResult {
 }
 
 #[test]
+fn an_invitation_is_rejected_from_argv_on_every_command() -> TestResult {
+    // Given
+    let probe = "ma2ainvite-argv-probe-marker-anywhere";
+
+    // When
+    let invite = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "invite", probe])
+        .output()?;
+    let show = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "show", probe])
+        .output()?;
+
+    // Then
+    assert_eq!(invite.status.code(), Some(2));
+    assert_eq!(show.status.code(), Some(2));
+    assert_probe_absent(probe, &invite.stdout, &invite.stderr)?;
+    assert_probe_absent(probe, &show.stdout, &show.stderr)?;
+    Ok(())
+}
+
+#[test]
 fn invitation_from_stdin_is_not_reflected_on_rejection() -> TestResult {
     // Given
     let probe = "ma2ainvite-invalid-probe-marker";
     let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["space", "invite", "redeem", "--stdin"])
+        .args(["space", "accept"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -66,10 +87,10 @@ fn invitation_from_stdin_is_not_reflected_on_rejection() -> TestResult {
 }
 
 #[test]
-fn invitation_redeem_help_is_handled_by_clap() -> TestResult {
+fn space_accept_help_is_handled_by_clap() -> TestResult {
     // Given / When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["space", "invite", "redeem", "--help"])
+        .args(["space", "accept", "--help"])
         .output()?;
 
     // Then
@@ -84,7 +105,7 @@ fn invitation_value_with_help_is_rejected_without_echoing_it() -> TestResult {
 
     // When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["space", "invite", "redeem", probe, "--help"])
+        .args(["space", "accept", probe, "--help"])
         .output()?;
 
     // Then
@@ -94,34 +115,34 @@ fn invitation_value_with_help_is_rejected_without_echoing_it() -> TestResult {
 }
 
 #[test]
-fn invitation_value_after_stdin_is_rejected_without_echoing_it() -> TestResult {
-    // Given
-    let probe = "argv-probe-marker-after-stdin";
-
-    // When
-    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["space", "invite", "redeem", "--stdin", probe])
+fn space_accept_rejects_every_removed_input_flag() -> TestResult {
+    // Given / When
+    let stdin = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "accept", "--stdin"])
+        .output()?;
+    let file = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args(["space", "accept", "--file", "safe.ticket"])
         .output()?;
 
     // Then
-    assert_eq!(output.status.code(), Some(2));
-    assert_probe_absent(probe, &output.stdout, &output.stderr)?;
+    assert_eq!(stdin.status.code(), Some(2));
+    assert_eq!(file.status.code(), Some(2));
     Ok(())
 }
 
 #[test]
-fn invitation_value_after_file_is_rejected_without_echoing_it() -> TestResult {
-    // Given
-    let probe = "argv-probe-marker-after-file";
-
-    // When
+fn space_accept_still_accepts_the_global_state_directory() -> TestResult {
+    // Given / When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["space", "invite", "redeem", "--file", "safe.ticket", probe])
+        .args(["space", "accept", "--state-dir", "/nonexistent-ma2a-state"])
         .output()?;
 
     // Then
-    assert_eq!(output.status.code(), Some(2));
-    assert_probe_absent(probe, &output.stdout, &output.stderr)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        !stderr.contains("secret values are not accepted in argv"),
+        "{stderr}"
+    );
     Ok(())
 }
 
@@ -142,13 +163,13 @@ fn inline_password_value_is_rejected_without_echoing_it() -> TestResult {
 }
 
 #[test]
-fn dash_prefixed_invitation_value_is_rejected_without_echoing_it() -> TestResult {
+fn a_dash_prefixed_value_after_space_accept_is_rejected() -> TestResult {
     // Given
     let probe = "--dash-invite-probe-marker";
 
     // When
     let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["space", "invite", "redeem", "--stdin", probe])
+        .args(["space", "accept", probe])
         .output()?;
 
     // Then
@@ -170,23 +191,6 @@ fn dash_prefixed_password_value_is_rejected_without_echoing_it() -> TestResult {
     // Then
     assert_eq!(output.status.code(), Some(2));
     assert_probe_absent(probe, &output.stdout, &output.stderr)?;
-    Ok(())
-}
-
-#[test]
-fn inline_file_value_reaches_file_validation() -> TestResult {
-    // Given
-    let generic_rejection = "secret values are not accepted in argv";
-
-    // When
-    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .args(["space", "invite", "redeem", "--file=missing.ticket"])
-        .output()?;
-
-    // Then
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8(output.stderr)?;
-    assert!(!stderr.contains(generic_rejection));
     Ok(())
 }
 

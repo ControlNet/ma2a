@@ -20,7 +20,15 @@ Pending invitations transition atomically with the new signed Space generation. 
 
 The first valid redemption commits the complete canonical chain and the retry identity. The same Endpoint and RequestId may retrieve that committed chain after process restart. A changed RequestId or different Endpoint conflicts. Cancelled, expired, not-yet-valid, replay-conflict, invalid, and cross-Space requests return only a nonzero status with a zero page count, disclose no chain page, and do not advance Runtime revision or Space generation.
 
-Redemption preserves the latest manifest's outstanding revocations when signing generation N+1. A candidate that is already a current member conflicts without consuming the invitation or creating a redundant generation.
+Redemption preserves the latest manifest's outstanding revocations when signing generation N+1, except for the candidate's own. A previously removed Endpoint therefore rejoins only through a fresh owner-signed invitation, and generation N+1 carries it as a member instead of a stale revocation; earlier generations keep the revocation they recorded. A candidate that is already a current member conflicts without consuming the invitation or creating a redundant generation.
+
+## Departure
+
+A member leaves a Space over the same reserved enrollment ALPN. A departure request is exactly `"MLV1" || space_id:32 || request_id:16`; its magic prefix distinguishes it from an enrollment attempt, and any other framing is rejected. The transport authenticates the requesting Endpoint, so a request can only ever remove its sender.
+
+The authority accepts the request only for a Space it holds the authority key for and only when the requester is a current signed member that is not the Space's own initial member. It signs the next generation removing that Endpoint from `members` and adding it to `revocations`, exactly as an owner-initiated revocation does, and replies with status zero and one frame carrying the canonical public chain. A request from an Endpoint that was already removed and revoked returns that same chain, so a repeated departure converges instead of failing. Anything else returns a nonzero status and no frame.
+
+The leaving Runtime persists nothing until it has verified that the returned chain has the same genesis and Space ID, does not regress, excludes the requester from `members`, and revokes it. An unreachable or refusing authority leaves local membership untouched, so a departure is never reported as succeeding without an authority-signed removal. Phase 1 has no authority transfer, so a Space's own owner cannot leave it.
 
 ## Response framing
 

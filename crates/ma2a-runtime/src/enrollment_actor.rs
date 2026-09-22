@@ -147,6 +147,14 @@ impl Actor {
     }
 
     pub(crate) async fn handle_enrollment_call(&mut self, call: EnrollmentCall) {
+        // Departure shares the bootstrap ALPN and is distinguished by its magic prefix.
+        if call
+            .request()
+            .starts_with(&crate::departure::DEPARTURE_MAGIC)
+        {
+            self.handle_departure_call(call).await;
+            return;
+        }
         let Ok((ticket, redemption)) = decode_attempt(call.request(), call.remote_endpoint_id())
         else {
             call.respond(1, Vec::new());

@@ -20,7 +20,9 @@ flowchart LR
 
 - **Runtime**: one daemon for one current user and state directory.
 - **Endpoint**: the persistent Iroh identity owned by that Runtime.
-- **Space**: an independently signed authorization domain containing Endpoint memberships.
+- **Space**: an independently signed authorization domain containing Endpoint memberships. Its
+  `SpaceId` is the authoritative identity; its name is shared genesis metadata that every member
+  reads from the same signed chain and is deliberately not unique.
 - **Address record**: target-specific signed transport data for one Endpoint in one Space.
 - **Private Relay advertisement**: signed provider metadata scoped to one Space; it is not target
   address data.
@@ -38,6 +40,10 @@ cross-Space, and identity-mismatched objects fail closed.
 Enrollment is the only bounded zero-Space entry path. A one-time ticket identifies an intended
 Space and Endpoint; redemption is atomic and replay-safe. Normal Echo and control operations require
 one complete independently authorizing shared Space.
+
+Departure uses the same bounded bootstrap path in reverse: a member asks the Space authority to
+sign the next generation removing it, and persists only that authority-signed state. Membership is
+therefore only ever changed by the Space authority, never by local deletion.
 
 ## Release Boundary
 
