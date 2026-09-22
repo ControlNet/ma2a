@@ -187,3 +187,25 @@ fn lifecycle_commands_replace_or_stop_an_incompatible_daemon() -> TestResult {
     }
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn a_detached_daemon_that_refuses_to_start_records_why() -> TestResult {
+    // Given
+    let fixture = Fixture::new()?;
+    // The daemon refuses a state directory anyone else can read. Reaching that
+    // refusal is the point: it happens after the parent has already detached, so
+    // the reason exists only on the child's standard error.
+    fs::set_permissions(&fixture.state_dir, fs::Permissions::from_mode(0o755))?;
+
+    // When
+    let started = fixture.run("start")?;
+    let mut recorded = String::new();
+    fs::File::open(fixture.runtime_dir().join("daemon.log"))?.read_to_string(&mut recorded)?;
+
+    // Then
+    assert!(!started.status.success());
+    assert!(recorded.contains("state directory"), "{recorded}");
+    assert!(!fixture.runtime_dir().join("control.sock").exists());
+    Ok(())
+}

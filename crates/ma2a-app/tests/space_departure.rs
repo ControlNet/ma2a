@@ -11,8 +11,9 @@ use std::{
 };
 
 use ma2a_core::{
-    EndpointId, EnrollmentPage, InviteEntropy, MemberCapabilities, RequestId, SignedInviteTicket,
-    SpaceId, SpaceManifestMembership, SpaceMemberV1, SpacePolicyV1, default_member_label,
+    EndpointId, EnrollmentPage, InviteEntropy, MAX_ENROLLMENT_ARTIFACTS_PER_PAGE,
+    MemberCapabilities, RequestId, SignedInviteTicket, SpaceId, SpaceManifestMembership,
+    SpaceMemberV1, SpacePolicyV1, default_member_label,
 };
 use ma2a_runtime::{
     EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock, SpaceDepartureErrorCode,
@@ -429,8 +430,12 @@ async fn a_long_space_history_departs_through_bounded_pagination() -> TestResult
         default_member_label(owner_id),
         MemberCapabilities::new(true, true),
     )?;
+    // One manifest past a full page is all this needs: the point is that the
+    // departure chain spans more than one page, not that the history is long.
+    // Every extra generation is a signed advance that costs real time here.
+    let generations = u64::try_from(MAX_ENROLLMENT_ARTIFACTS_PER_PAGE)?;
     let mut repository = Repository::open(&owner_config)?;
-    for generation in 0..20_u64 {
+    for generation in 0..generations {
         repository.advance_owned_space(&OwnedSpaceUpdate::new(
             space_id,
             u64::try_from(NOW_MS)? + generation + 1,

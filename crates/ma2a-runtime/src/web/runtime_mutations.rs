@@ -40,8 +40,8 @@ pub(super) async fn mutation(State(state): State<WebState>, request: Request) ->
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let revoke_sessions = operation == "session_revoke_all";
-    runtime.call(&command).await.map_or_else(
-        |_| StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    super::gateway::call(runtime, &command).await.map_or_else(
+        |()| StatusCode::SERVICE_UNAVAILABLE.into_response(),
         |response| {
             serde_json::from_slice::<Value>(&response).map_or_else(
                 |_| StatusCode::INTERNAL_SERVER_ERROR.into_response(),

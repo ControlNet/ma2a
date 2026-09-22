@@ -167,7 +167,14 @@ impl Repository {
                     idle_expires_at_ms,
                 ),
             )?;
-            increment_revision(&transaction)?;
+            // Sliding a session deliberately does not advance the Runtime revision.
+            // Neither `last_seen_at_ms` nor `idle_expires_at_ms` reaches any snapshot
+            // projection, so a touch is not state the console can observe. Advancing
+            // for it would make every authenticated read a state change: the console
+            // reads the snapshot, the read slides its own session, the new revision
+            // is published as an invalidation, and the console reads again. Session
+            // creation, deletion and revocation still advance, because they change
+            // the `active_sessions` count the snapshot does carry.
             session.last_seen_at_ms = last_seen_at_ms;
             session.idle_expires_at_ms = idle_expires_at_ms;
             transaction.commit()?;

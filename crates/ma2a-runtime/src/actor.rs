@@ -68,6 +68,20 @@ pub(crate) struct Actor {
 }
 
 impl Actor {
+    /// Keeps the Runtime serving after a background maintenance step fails.
+    ///
+    /// Relay observation and the periodic refreshes are maintenance, not client
+    /// requests: they are driven by an Iroh watcher and a timer. Propagating one
+    /// transient failure out of the actor loop ends the actor, and nothing
+    /// restarts it, so a single bad refresh would silently disable an Endpoint
+    /// that is otherwise healthy. The failure is reported and the loop continues,
+    /// exactly as a failed control round already does.
+    fn absorb_background(step: &str, result: Result<(), RuntimeError>) {
+        if let Err(error) = result {
+            eprintln!("runtime background step failed, continuing: {step}: {error}");
+        }
+    }
+
     pub(crate) async fn initialize(&mut self) -> Result<(), RuntimeError> {
         self.refresh_local_control_publications().await?;
         self.state.revision = self
@@ -219,7 +233,8 @@ impl Actor {
                     }
                 },
                 observation = self.relay_observations.recv() => if let Some(observation) = observation {
-                    self.observe_iroh_relay(observation).await?;
+                    let observed = self.observe_iroh_relay(observation).await;
+                    Self::absorb_background("relay observation", observed);
                 },
                 joined = self.control_rounds.join_next(), if !self.control_rounds.is_empty() => {
                     if let Some(result) = joined {
@@ -227,8 +242,10 @@ impl Actor {
                     }
                 },
                 _ = periodic.tick() => {
-                    self.refresh_relay_candidates().await?;
-                    self.refresh_local_control_publications().await?;
+                    let refreshed = self.refresh_relay_candidates().await.map(|_changed| ());
+                    Self::absorb_background("relay candidate refresh", refreshed);
+                    let published = self.refresh_local_control_publications().await;
+                    Self::absorb_background("control publication refresh", published);
                     self.schedule_control_round(
                         crate::control_sync::ControlRoundTrigger::Periodic, None,
                     );

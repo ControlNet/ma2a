@@ -8,6 +8,7 @@ use crate::{
 
 use super::{Command, ShutdownAck};
 
+mod control;
 mod mutation_replay;
 
 /// Bounded command and event handle for the single-owner Runtime actor.
@@ -24,6 +25,16 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
+    /// Resolves once the Runtime actor has stopped accepting commands.
+    ///
+    /// The actor owns the only receiver, so this completes exactly when the actor
+    /// task has ended. A Runtime that has stopped can still be connected to, and
+    /// every command would then fail after the transport had already accepted the
+    /// request; callers use this to stop serving instead of answering nothing.
+    pub async fn stopped(&self) {
+        self.commands.closed().await;
+    }
+
     /// Returns complete signed details for one local Space.
     ///
     /// # Errors
@@ -164,14 +175,6 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))
     }
 
-    /// Schedules one bounded control reconciliation round.
-    ///
-    /// # Errors
-    /// Returns [`RuntimeError`] when the Runtime actor has stopped.
-    pub async fn sync_control(&self) -> Result<u64, RuntimeError> {
-        self.sync_control_scope(None).await
-    }
-
     /// Signs and commits the next manifest through the Runtime owner.
     ///
     /// # Errors
@@ -228,32 +231,6 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
     }
 
-    pub(crate) async fn sync_control_with(&self, peer: EndpointId) -> Result<u64, RuntimeError> {
-        self.sync_control_scope(Some(peer)).await
-    }
-
-    async fn sync_control_scope(&self, peer: Option<EndpointId>) -> Result<u64, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::SyncControl { peer, reply })
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
-        response
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
-    }
-
-    pub(crate) async fn control_sync_status(&self, peer: EndpointId) -> Result<bool, RuntimeError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::ControlSyncStatus { peer, reply })
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
-        response
-            .await
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))
-    }
-
     /// Subscribes to bounded best-effort Runtime events.
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
         self.events.subscribe()
@@ -299,14 +276,6 @@ impl RuntimeHandle {
     /// Returns body-processing metrics for authorization-ordering verification.
     pub fn echo_metrics(&self) -> ma2a_net::EchoMetricsSnapshot {
         self.echo_metrics.snapshot()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn control_schedules(&self) -> Vec<crate::control_sync::ControlRoundTrigger> {
-        self.control_schedule_events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
     }
 
     pub(crate) async fn shutdown(&self) -> Result<ShutdownAck, RuntimeError> {

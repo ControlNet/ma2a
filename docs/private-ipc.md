@@ -38,15 +38,35 @@ The transport carries the existing bounded local API v1 JSON unchanged. Each mes
 correlation identifier. Requests are limited to 16,384 bytes and responses to 65,536 bytes. The
 server allows at most 32 in-flight connections.
 
-Two deadlines apply, because transferring a frame and executing a command are different things.
-Once a frame has begun arriving, the rest of it must complete within two seconds; a peer that
-stalls mid-frame is malformed and returns `InvalidFrame`. Waiting for a reply to begin is instead
-bounded by the command's own deadline: twenty seconds for a local command, and ninety seconds for
-an operation that legitimately performs bounded remote work (`space_redeem`, `space_leave`,
-`space_invite`, `echo_call`, `control_sync_trigger`), which stays clear of the thirty-second
-enrollment and control-round exchanges and the ten-second Echo deadline underneath it. Exceeding a
-command deadline reports a command timeout, never malformed framing, so a Runtime still committing
-valid work is never misreported as a broken transport.
+One deadline applies, and it bounds transport only. Once a frame has begun arriving, the rest of
+it must complete within two seconds; a peer that stalls mid-frame is malformed and returns
+`InvalidFrame`. The bytes of a frame already exist, so there is no legitimate reason for that
+transfer to be slow, and the bound also stops a stalled peer from holding one of the 32 connection
+slots.
+
+Waiting for a reply to begin is deliberately unbounded. How long a Runtime takes to sign, commit,
+or reach a peer is not a transport property, and no duration placed here can distinguish work that
+is still progressing from work that never will. The exact signal already exists: a Runtime that
+stops closes its socket, and the unbounded read then ends immediately with end-of-file. A Runtime
+that can no longer answer commands exits rather than lingering, so that signal covers a stopped
+Runtime and a stalled one alike. Earlier revisions guessed a per-operation budget and reported
+failures for commands the daemon was still committing; no client-side command deadline remains.
+
+Remote work keeps its own deadlines inside the Runtime, where they are necessary: a peer Endpoint
+can stall forever without ever closing anything. Enrollment, departure, and control-round exchanges
+allow thirty seconds and Echo allows ten.
+
+The loopback HTTP adapter adds one bound of its own, because an HTTP request must be answered or
+refused rather than held open. It is a single generous limit applied at that boundary, far longer
+than any Runtime operation and never set per operation.
+
+A detached daemon reports readiness on a pipe it inherits from the process that started it: one
+line once its endpoint is bound and it can serve commands. The starter therefore returns as soon as
+the daemon is genuinely ready, learns of a daemon that died during startup through end-of-file, and
+reports that daemon's own recorded reason instead of a timeout. A generous last-resort bound covers
+a child that neither reports readiness nor exits, and the starter terminates the child it spawned
+rather than leaving it without an owner. A detached daemon's standard error is captured in an
+owner-private file in the runtime directory, truncated for each run.
 
 Business clients perform an exact API-version handshake before every non-handshake command.
 Only explicit `start`, `stop`, and `restart` may recover from a version mismatch: the lifecycle

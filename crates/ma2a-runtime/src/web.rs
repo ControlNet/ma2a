@@ -1,6 +1,7 @@
 mod assets;
 mod auth;
 mod csrf;
+mod gateway;
 mod headers;
 mod lifecycle;
 mod rate_limit;

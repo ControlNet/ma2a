@@ -14,7 +14,7 @@ use ma2a_runtime::{
     Runtime,
     api::{Command, decode_command},
     current_user::CurrentUserRuntime,
-    ipc::{IpcPaths, LocalApiClient, LocalApiServer},
+    ipc::{IpcPaths, LocalApiClient, LocalApiServer, ServerExit},
     web::{PasswordAction, SystemClock, WebAuthConfig},
 };
 use ma2a_store::StoreConfig;
@@ -250,5 +250,31 @@ async fn snapshot_fetch_returns_the_authoritative_runtime_projection() -> TestRe
     cancellation.cancel();
     server_task.await??;
     runtime.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_stops_accepting_once_its_runtime_stops() -> TestResult {
+    // Given
+    let state = TempState::new()?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let cancellation = CancellationToken::new();
+    let server_task = tokio::spawn(server.serve(cancellation.child_token()));
+
+    // When
+    let _report = runtime.shutdown().await?;
+    let exit = server_task.await??;
+
+    // Then
+    assert!(matches!(exit, ServerExit::RuntimeStopped));
+    assert!(!LocalApiClient::new(paths).is_live().await);
     Ok(())
 }

@@ -167,3 +167,51 @@ fn wrong_csrf_digest_does_not_touch_a_valid_session() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn sliding_a_session_does_not_advance_the_revision_but_revoking_it_does() -> TestResult {
+    // Given
+    let state = TempState::new("session-slide-revision")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let verifier = derive_password_verifier(b"session-slide-passphrase-9!")?;
+    let credential = repository
+        .change_password(
+            PasswordTransition::Set,
+            &PasswordReset {
+                verifier,
+                verifier_version: 1,
+                now_ms: 1,
+            },
+        )?
+        .ok_or("password setup did not commit")?;
+    let bearer = [7; 32];
+    repository.create_session(&SessionRecord::new(
+        SessionDigests::new(bearer, [8; 32]),
+        credential.auth_epoch(),
+        SessionTimestamps::new([2, 2], [100, 200]),
+    ))?;
+    let created_at = repository.revision()?;
+
+    // When
+    let slid = repository
+        .authenticate_and_touch_session(&bearer, SessionTouch::new(50, 25))?
+        .ok_or("a valid session was refused")?;
+    let after_slide = repository.revision()?;
+    let persisted = repository.session(&bearer)?.ok_or("session missing")?;
+    repository.revoke_all_sessions(60)?;
+    let after_revocation = repository.revision()?;
+
+    // Then
+    assert_eq!(slid, persisted);
+    assert_ne!(
+        persisted,
+        SessionRecord::new(
+            SessionDigests::new(bearer, [8; 32]),
+            credential.auth_epoch(),
+            SessionTimestamps::new([2, 2], [100, 200]),
+        )
+    );
+    assert_eq!(after_slide, created_at);
+    assert!(after_revocation > created_at);
+    Ok(())
+}

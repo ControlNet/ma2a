@@ -41,10 +41,9 @@ async fn fetch_snapshot(state: &WebState) -> Result<(SnapshotStamp, Value), Stat
         .runtime
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let response = runtime
-        .call(&crate::api::Command::snapshot_fetch())
+    let response = super::gateway::call(runtime, &crate::api::Command::snapshot_fetch())
         .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        .map_err(|()| StatusCode::SERVICE_UNAVAILABLE)?;
     let value: Value =
         serde_json::from_slice(&response).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let revision = value
@@ -82,7 +81,7 @@ pub(super) async fn space_details(
     let Some(runtime) = state.runtime.as_ref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Ok(response) = runtime.call(&command).await else {
+    let Ok(response) = super::gateway::call(runtime, &command).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let Ok(value) = serde_json::from_slice::<Value>(&response) else {
