@@ -8,6 +8,23 @@ pub const MAX_SPACE_MEMBERS: usize = 64;
 /// Maximum UTF-8 byte length of a Space member label.
 pub const MAX_MEMBER_LABEL_LEN: usize = 64;
 
+/// Returns the transitional member label for one Endpoint.
+///
+/// A member label names an Endpoint inside a Space and is deliberately not the
+/// Space name: the two are separate signed facts and reusing one as the other
+/// makes a Space look like a member. Phase 1 has no user-facing Endpoint naming,
+/// so the label is derived from the Endpoint's own identity and is therefore
+/// stable, unique, and never confusable with a Space name.
+pub fn default_member_label(endpoint_id: EndpointId) -> String {
+    use std::fmt::Write as _;
+    let mut label = String::with_capacity(25);
+    label.push_str("endpoint-");
+    for byte in endpoint_id.as_bytes().iter().take(8) {
+        let _written = write!(&mut label, "{byte:02x}");
+    }
+    label
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// A capability that a Space policy and member can grant.
 pub struct Capability(u8);

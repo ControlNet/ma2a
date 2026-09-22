@@ -1,5 +1,7 @@
 use iroh_tickets::Ticket as _;
-use ma2a_core::{EndpointId, ProtocolError, RequestId, SignedInviteTicket, SpaceId};
+use ma2a_core::{
+    EndpointId, ProtocolError, RequestId, SignedInviteTicket, SpaceId, default_member_label,
+};
 
 use crate::{SpaceDepartureErrorCode, api::ApiError, api::CommandResult};
 
@@ -120,8 +122,9 @@ pub(super) async fn leave(
     space_id: SpaceId,
     request_id: RequestId,
 ) -> Result<CommandResult, ApiError> {
-    // The summary is read before departure, because afterwards this Runtime is
-    // no longer a member and can no longer project the Space it just left.
+    // Identity is read before departure, because afterwards this Runtime is no
+    // longer a member and can no longer project the Space it just left. Only the
+    // Space's stable identity is carried forward; membership state would be stale.
     let snapshot = context
         .handle
         .snapshot()
@@ -133,14 +136,14 @@ pub(super) async fn leave(
         .find(|space| space.id() == space_id)
         .cloned()
         .ok_or(ProtocolError::NOT_FOUND)?;
+    let identity = crate::api::SpaceIdentityView::new(space.space_id(), space.name())
+        .map_err(|_| ProtocolError::INTERNAL)?;
     context
         .handle
         .leave_space(space_id, request_id)
         .await
         .map_err(|error| departure_api_error(error.code()))?;
-    Ok(CommandResult::space_left(
-        space.to_space_view().map_err(|_| ProtocolError::INTERNAL)?,
-    ))
+    Ok(CommandResult::space_left(identity))
 }
 
 fn departure_api_error(code: SpaceDepartureErrorCode) -> ApiError {
@@ -171,13 +174,21 @@ pub(super) async fn redeem(
     let ticket = SignedInviteTicket::decode_string(invitation.trim())
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
     let space_id = ticket.space_id();
+    // The joining member is labelled by its own Endpoint identity, never by the
+    // Space it is joining and never by a placeholder standing in for a person.
+    let local = context
+        .handle
+        .status()
+        .await
+        .map_err(|_| ProtocolError::UNAVAILABLE)?
+        .endpoint_id();
     context
         .handle
         .clone()
         .redeem_enrollment(crate::EnrollmentAttempt::new(
             ticket,
             request_id,
-            "local-endpoint".to_owned(),
+            default_member_label(local),
         ))
         .await
         .map_err(|error| enrollment_protocol_error(&error))?;

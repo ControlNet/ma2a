@@ -73,6 +73,10 @@ pub(crate) fn space_value(space: &SpaceView) -> Value {
     json!({"space_id": encode_hex(space.id.as_bytes()), "name": space.name, "member_count": space.member_count})
 }
 
+pub(crate) fn space_identity_value(space: &super::SpaceIdentityView) -> Value {
+    json!({"space_id": encode_hex(space.id.as_bytes()), "name": space.name})
+}
+
 pub(crate) fn ui_auth_value(auth: &UiAuthView) -> Value {
     json!({"initialized": auth.initialized, "password_set": auth.password_set, "active_sessions": auth.active_sessions})
 }

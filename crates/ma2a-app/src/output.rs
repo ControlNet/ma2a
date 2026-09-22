@@ -46,8 +46,8 @@ pub(crate) fn write_human(document: &Value) -> io::Result<()> {
         | "space_created"
         | "space_invitation_created"
         | "space_redeemed"
-        | "space_revoked"
-        | "space_left" => write_space(space_headline(result_type), payload),
+        | "space_revoked" => write_space(space_headline(result_type), payload),
+        "space_left" => write_space_identity(payload),
         _ => writeln!(io::stdout().lock(), "{payload}"),
     }
 }
@@ -58,7 +58,6 @@ fn space_headline(result_type: &str) -> Option<&'static str> {
         "space_invitation_created" => Some("Invited to Space"),
         "space_redeemed" => Some("Joined Space"),
         "space_revoked" => Some("Removed member from Space"),
-        "space_left" => Some("Left Space"),
         _ => None,
     }
 }
@@ -78,6 +77,15 @@ fn write_space(headline: Option<&str>, payload: &Value) -> io::Result<()> {
             .and_then(Value::as_u64)
             .unwrap_or_default()
     )
+}
+
+/// Departure reports only the Space it left; this Endpoint no longer holds
+/// authoritative membership for it, so no member count is printed.
+fn write_space_identity(payload: &Value) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "Left Space")?;
+    writeln!(stdout, "Name: {}", text(payload, "name"))?;
+    writeln!(stdout, "Space ID: {}", text(payload, "space_id"))
 }
 
 fn write_spaces(payload: &Value) -> io::Result<()> {

@@ -7,7 +7,7 @@ use super::{
         echo_reply_value, handshake_value, private_relay_value, public_relay_value, status_value,
         ui_auth_result_value, ui_status_value,
     },
-    snapshot::{endpoint_value, space_value},
+    snapshot::{endpoint_value, space_identity_value, space_value},
 };
 
 pub(super) fn result_value(result: &CommandResult) -> Value {
@@ -19,8 +19,8 @@ pub(super) fn result_value(result: &CommandResult) -> Value {
         | ResultKind::Space(value)
         | ResultKind::SpaceInvitationCreated(value)
         | ResultKind::SpaceRedeemed(value)
-        | ResultKind::SpaceRevoked(value)
-        | ResultKind::SpaceLeft(value) => space_value(value),
+        | ResultKind::SpaceRevoked(value) => space_value(value),
+        ResultKind::SpaceLeft(value) => space_identity_value(value),
         ResultKind::Spaces(values) => Value::Array(values.iter().map(space_value).collect()),
         ResultKind::ControlSyncStatus(value) | ResultKind::ControlSyncTriggered(value) => {
             json!({

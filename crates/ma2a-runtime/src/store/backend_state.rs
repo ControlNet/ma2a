@@ -19,19 +19,27 @@ impl StoreBackend {
             .map_err(Into::into)
     }
 
+    /// Persists an enrollment result and reports the membership the Store now holds.
+    ///
+    /// Membership is read back rather than assumed: a batch that the Store
+    /// legitimately refuses, such as a replayed older chain, must not leave the
+    /// Runtime believing it joined.
     pub(super) fn persist_enrollment(
         &mut self,
-        chain: ma2a_core::SpaceChain,
-        owner_address: ma2a_store::ValidatedAddressRecord,
-    ) -> Result<(u64, ma2a_core::SpaceChain), RuntimeError> {
+        request: super::EnrollmentPersistence,
+    ) -> Result<super::PersistedEnrollment, RuntimeError> {
         let revision = self
             .repository
             .persist_control_batch(&ma2a_store::ControlBatch::new(
-                vec![chain.clone()],
-                vec![owner_address],
+                vec![request.chain.clone()],
+                vec![*request.owner_address],
                 Vec::new(),
             ))?
             .map_or_else(|| self.repository.revision(), Ok)?;
-        Ok((revision, chain))
+        Ok(super::PersistedEnrollment {
+            revision,
+            chain: request.chain,
+            memberships: self.repository.memberships_for(request.local_endpoint_id)?,
+        })
     }
 }

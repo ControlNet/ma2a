@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use ma2a_core::{MemberCapabilities, SpaceId, SpaceMemberV1, SpacePolicyV1};
+use ma2a_core::{MemberCapabilities, SpaceId, SpaceMemberV1, SpacePolicyV1, default_member_label};
 
 use super::Actor;
 use crate::{error::RuntimeError, state::RuntimeEvent};
@@ -12,9 +12,11 @@ impl Actor {
     ) -> Result<SpaceId, RuntimeError> {
         let created_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;
+        // The Space name names the Space; the creator's member label names the
+        // creating Endpoint. Reusing one as the other makes a Space read as a member.
         let member = SpaceMemberV1::new(
             self.state.endpoint_id,
-            name.clone(),
+            default_member_label(self.state.endpoint_id),
             MemberCapabilities::new(true, true),
         )
         .map_err(|_| crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Control))?;

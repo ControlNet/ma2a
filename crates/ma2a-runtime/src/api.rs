@@ -38,7 +38,7 @@ pub use snapshot::{
     EndpointView, MAX_RETAINED_CONTROL_ROUNDS, ObservedRelayStateView, PrivateRelayCandidateView,
     PublicRelayFallbackView, ReachabilityView, RuntimeSnapshot, SnapshotCollections,
     SnapshotHeader, SnapshotSpaceView, SnapshotStampView, SpaceChainHead, SpaceDetailsView,
-    SpaceMemberView, SpaceView, UiAuthView,
+    SpaceIdentityView, SpaceMemberView, SpaceView, UiAuthView,
 };
 pub use snapshot_state::{ClientSnapshotState, NetworkSnapshotState, SnapshotState};
 

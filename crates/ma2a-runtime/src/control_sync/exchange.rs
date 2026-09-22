@@ -80,9 +80,6 @@ pub(crate) fn respond(
         revision: repository
             .revision()
             .map_err(|_| ControlRejection::Unavailable)?,
-        memberships: repository
-            .memberships_for(input.local_endpoint_id)
-            .map_err(|_| ControlRejection::Unavailable)?,
         lookup,
         changes,
     })
@@ -143,7 +140,6 @@ pub(crate) fn apply_response(
     let lookup = load_lookup(repository, input.local_endpoint_id, input.now_ms)?;
     Ok(ControlApplyOutcome {
         revision: repository.revision()?,
-        memberships: repository.memberships_for(input.local_endpoint_id)?,
         lookup,
         changes,
     })

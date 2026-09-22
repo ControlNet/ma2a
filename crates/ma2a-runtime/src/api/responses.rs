@@ -10,7 +10,9 @@ use super::{
         EchoReplyView, HandshakeView, PrivateRelayView, PublicRelayView, RuntimeStatusView,
         UiStatusView,
     },
-    snapshot::{ControlSyncView, EndpointView, RuntimeSnapshot, SpaceView, UiAuthView},
+    snapshot::{
+        ControlSyncView, EndpointView, RuntimeSnapshot, SpaceIdentityView, SpaceView, UiAuthView,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +26,7 @@ pub(super) enum ResultKind {
     SpaceInvitationCreated(SpaceView),
     SpaceRedeemed(SpaceView),
     SpaceRevoked(SpaceView),
-    SpaceLeft(SpaceView),
+    SpaceLeft(SpaceIdentityView),
     ControlSyncStatus(ControlSyncView),
     ControlSyncTriggered(ControlSyncView),
     PrivateRelayConfigured(PrivateRelayView),
@@ -158,7 +160,10 @@ impl CommandResult {
         Self(ResultKind::SpaceRevoked(value))
     }
     /// Creates a Space departure result for the leaving member.
-    pub const fn space_left(value: SpaceView) -> Self {
+    ///
+    /// It carries only stable identity, because after departure this Endpoint no
+    /// longer holds authoritative membership state for that Space.
+    pub const fn space_left(value: SpaceIdentityView) -> Self {
         Self(ResultKind::SpaceLeft(value))
     }
     /// Creates a control-sync status result.

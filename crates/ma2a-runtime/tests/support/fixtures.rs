@@ -62,8 +62,11 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::space(space.clone()),
         CommandResult::space_invitation_created(space.clone()),
         CommandResult::space_redeemed(space.clone()),
-        CommandResult::space_revoked(space.clone()),
-        CommandResult::space_left(space),
+        CommandResult::space_revoked(space),
+        CommandResult::space_left(ma2a_runtime::api::SpaceIdentityView::new(
+            space_id()?,
+            "ops",
+        )?),
         CommandResult::control_sync_status(control_sync.clone()),
         CommandResult::control_sync_triggered(control_sync),
         CommandResult::private_relay_configured(private_relay.clone()),

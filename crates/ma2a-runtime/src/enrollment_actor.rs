@@ -117,12 +117,23 @@ impl Actor {
             ),
         )
         .map_err(|_| EnrollmentError::from_status(1))?;
-        let (revision, chain) = self
+        let persisted = self
             .store
-            .persist_enrollment(chain, owner_address)
+            .persist_enrollment(crate::store::EnrollmentPersistence {
+                chain,
+                owner_address: Box::new(owner_address),
+                local_endpoint_id: self.state.endpoint_id,
+            })
             .await
             .map_err(|_| EnrollmentError::internal())?;
-        self.state.memberships.insert(chain.space_id());
+        let chain = persisted.chain;
+        // Membership comes from what the Store committed, never from the response.
+        // A replayed or otherwise refused chain must not look like a fresh join.
+        if !persisted.memberships.contains(&expected_space) {
+            return Err(EnrollmentError::from_status(1));
+        }
+        let revision = persisted.revision;
+        self.state.memberships = persisted.memberships;
         self.state.revision = revision;
         self.endpoint.set_control_enabled(true);
         self.refresh_control_lookup()

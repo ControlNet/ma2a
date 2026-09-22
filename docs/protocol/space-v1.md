@@ -42,6 +42,13 @@ The initial member record is `{0: endpoint_id, 1: label, 2: capability_bits}`. T
 `{0: echo_enabled, 1: private_relay_provider_enabled, 2: maximum_members}`. Capability bit `0`
 grants Echo and bit `1` grants private-relay-provider service.
 
+A member label names an Endpoint inside the Space and is a different signed fact from the Space
+name in key `6`; neither is ever written in place of the other, so a Space never appears in a
+member list. Phase 1 has no user-facing Endpoint naming, so both Space creation and enrollment
+derive the label from the member's own Endpoint identity, which keeps it stable, unique per
+Endpoint and impossible to confuse with a Space name. Nothing writes a placeholder label standing
+in for a person.
+
 The shared Space name is 1–128 UTF-8 bytes with no control characters. It is signed with the rest
 of genesis and therefore enters the derived `SpaceId`, so every enrolled member reads exactly the
 same name from the chain it already verifies; no member configures a local alias. Space names are

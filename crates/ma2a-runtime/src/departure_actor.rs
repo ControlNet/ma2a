@@ -1,7 +1,9 @@
 //! Actor-side Space departure: the leaving member's request and the Space
 //! authority's signed removal.
 
-use ma2a_core::{EndpointId, RequestId, SpaceChain, SpaceId};
+use ma2a_core::{
+    EndpointId, EnrollmentPage, RequestId, SpaceChain, SpaceId, validate_enrollment_pages,
+};
 use ma2a_net::EnrollmentCall;
 use tokio::sync::oneshot;
 
@@ -64,6 +66,11 @@ impl Actor {
         if authority_owner == local {
             return Err(SpaceDepartureError::owner_cannot_leave());
         }
+        // The address carries the authority's identity and nothing else on purpose.
+        // Iroh then resolves it through this Runtime's installed private
+        // `SpaceAddressLookup`, which serves only signed Space address records the
+        // Endpoint already holds. Public discovery is disabled, so departure uses
+        // the same authenticated target resolution as every other MA2A operation.
         let owner_addr = ma2a_net::EndpointAddr::from(
             authority_owner
                 .to_public_key()
@@ -77,11 +84,16 @@ impl Actor {
         if status != DEPARTURE_STATUS_OK {
             return Err(SpaceDepartureError::rejected());
         }
-        let [advanced] = pages.as_slice() else {
-            return Err(SpaceDepartureError::rejected());
-        };
+        // The authority answers with the same bounded page stream enrollment uses,
+        // so a long Space history still fits the transport, and the same validator
+        // re-verifies genesis, every authority signature, and contiguous ordering.
+        let advanced = pages
+            .iter()
+            .map(|page| EnrollmentPage::decode(page))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| SpaceDepartureError::rejected())?;
         let advanced =
-            SpaceChain::import_public(advanced).map_err(|_| SpaceDepartureError::rejected())?;
+            validate_enrollment_pages(&advanced).map_err(|_| SpaceDepartureError::rejected())?;
         if !accepts_departure(&chain, &advanced, local) {
             return Err(SpaceDepartureError::rejected());
         }
@@ -115,15 +127,29 @@ impl Actor {
             return;
         };
         match self.remove_departing_member(space_id, departing).await {
-            Ok(Some(chain)) => match chain.export_public() {
-                Ok(bytes) => call.respond(DEPARTURE_STATUS_OK, vec![bytes]),
-                Err(_) => call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new()),
+            Ok(Some(chain)) => match departure_pages(&chain) {
+                Ok(pages) => call.respond(DEPARTURE_STATUS_OK, pages),
+                Err(()) => call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new()),
             },
             Ok(None) => call.respond(DEPARTURE_STATUS_REJECTED, Vec::new()),
             Err(()) => call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new()),
         }
     }
+}
 
+/// Splits the advanced chain into the bounded pages the transport accepts.
+///
+/// Departure reuses enrollment's pagination rather than shipping one whole-chain
+/// frame, because a long-lived Space's history does not fit a single frame.
+fn departure_pages(chain: &SpaceChain) -> Result<Vec<Vec<u8>>, ()> {
+    EnrollmentPage::paginate(chain)
+        .map_err(|_| ())?
+        .iter()
+        .map(|page| page.encode().map_err(|_| ()))
+        .collect()
+}
+
+impl Actor {
     /// Returns the advanced chain, `Ok(None)` when the request is not authorized,
     /// and `Err(())` for local failures the requester must not distinguish.
     async fn remove_departing_member(

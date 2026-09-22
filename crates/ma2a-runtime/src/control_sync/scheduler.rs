@@ -78,7 +78,6 @@ impl ControlRoundRunner {
             };
             let ControlApplyOutcome {
                 revision,
-                memberships,
                 lookup: lookup_state,
                 changes: applied,
             } = self
@@ -93,14 +92,13 @@ impl ControlRoundRunner {
             install_lookup(&self.lookup, lookup_state)?;
             synchronized_peers.insert(peer);
             changes.merge(applied);
-            latest = Some((revision, memberships));
+            latest = Some(revision);
         }
         if had_peers && latest.is_none() {
             return Err(RuntimeError::new(crate::error::RuntimeErrorKind::Control));
         }
-        Ok(latest.map(|(revision, memberships)| ControlRoundOutcome {
+        Ok(latest.map(|revision| ControlRoundOutcome {
             revision,
-            memberships,
             synchronized_peers,
             changes,
         }))

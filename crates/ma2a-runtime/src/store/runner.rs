@@ -68,6 +68,10 @@ impl StoreBackend {
             StoreCommand::RevokeOwnedSpaceMember { request, reply } => {
                 drop(reply.send(self.revoke_owned_space_member(request)));
             }
+            StoreCommand::Memberships {
+                local_endpoint_id,
+                reply,
+            } => drop(reply.send(self.memberships(local_endpoint_id))),
             StoreCommand::LoadSpaceChain { space_id, reply } => {
                 drop(reply.send(self.load_space_chain(space_id)));
             }
@@ -141,11 +145,9 @@ impl StoreBackend {
                         .map_err(Into::into),
                 ),
             ),
-            StoreCommand::PersistEnrollment {
-                chain,
-                owner_address,
-                reply,
-            } => drop(reply.send(self.persist_enrollment(chain, *owner_address))),
+            StoreCommand::PersistEnrollment { request, reply } => {
+                drop(reply.send(self.persist_enrollment(*request)));
+            }
             StoreCommand::AddressRecord {
                 space_id,
                 endpoint_id,
