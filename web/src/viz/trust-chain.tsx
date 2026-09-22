@@ -20,7 +20,7 @@ const MARK: Record<SecretPresence, { readonly className: string; readonly readin
 
 /**
  * Where each secret is *retained*, and where it is merely handled on the way
- * through. Signing in necessarily passes a passphrase through the browser; the
+ * through. Signing in necessarily passes a password through the browser; the
  * point is that nothing keeps it there.
  */
 export function TrustChain({

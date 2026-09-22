@@ -7,12 +7,12 @@ import type { RuntimeActions } from "../runtime-actions"
 import type { RuntimeViewData } from "../view-model"
 import { type Boundary, TrustChain } from "../viz/trust-chain"
 
-const SECRETS = ["Passphrase", "Invitation ticket secret", "Endpoint and Space private keys"]
+const SECRETS = ["Password", "Invitation ticket secret", "Endpoint and Space private keys"]
 
 /**
- * Rows follow SECRETS. Retention is the question, not handling: a passphrase does
+ * Rows follow SECRETS. Retention is the question, not handling: a password does
  * pass through the browser on sign-in, and protected storage keeps only an
- * Argon2id verifier, never the passphrase itself.
+ * Argon2id verifier, never the password itself.
  */
 const BOUNDARIES: readonly Boundary[] = [
   {
@@ -87,7 +87,7 @@ export function SettingsScreen({
         </Card>
         <Card label="Browser storage">
           <p className="field__help">
-            No passphrase, bearer token, verifier, invite secret or key material in localStorage,
+            No password, bearer token, verifier, invite secret or key material in localStorage,
             sessionStorage or a URL.
           </p>
           <div className="cluster">

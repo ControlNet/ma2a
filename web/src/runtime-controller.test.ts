@@ -2,7 +2,11 @@ import { describe, expect, test } from "vitest"
 
 import type { RuntimeApiClient, RuntimeEventCallbacks } from "./api/client"
 import { runtimeSnapshot } from "./api/test-fixtures"
-import { RuntimeController, type RuntimeRetryScheduler } from "./runtime-controller"
+import {
+  RuntimeController,
+  type RuntimeRetryScheduler,
+  UNCERTAIN_GRACE_MS,
+} from "./runtime-controller"
 
 class ManualScheduler implements RuntimeRetryScheduler {
   readonly delays: number[] = []
@@ -32,15 +36,18 @@ class ManualScheduler implements RuntimeRetryScheduler {
 function fakeClient(fetchSnapshot: RuntimeApiClient["fetchSnapshot"]): {
   readonly client: RuntimeApiClient
   readonly callbacks: RuntimeEventCallbacks[]
+  readonly baselines: number[]
   readonly closed: () => number
 } {
   const callbacks: RuntimeEventCallbacks[] = []
+  const baselines: number[] = []
   let closed = 0
   return {
     client: {
       fetchSnapshot,
       fetchSpaceDetails: () => Promise.reject(new Error("No Space details in this fixture")),
-      subscribe: (_revision, eventCallbacks) => {
+      subscribe: (revision, eventCallbacks) => {
+        baselines.push(revision)
         callbacks.push(eventCallbacks)
         let active = true
         return () => {
@@ -51,6 +58,7 @@ function fakeClient(fetchSnapshot: RuntimeApiClient["fetchSnapshot"]): {
       },
     },
     callbacks,
+    baselines,
     closed: () => closed,
   }
 }
@@ -91,7 +99,9 @@ describe("runtime controller recovery", () => {
     expect(attempts).toBe(4)
     expect(errors).toEqual([failure, failure, failure, failure])
     expect(runtimes).toEqual([])
-    expect(scheduler.delays).toEqual([250, 1_000, 4_000])
+    expect(scheduler.delays.filter((delay) => delay !== UNCERTAIN_GRACE_MS)).toEqual([
+      250, 1_000, 4_000,
+    ])
     expect(scheduler.pending()).toBe(0)
   })
 
@@ -116,7 +126,7 @@ describe("runtime controller recovery", () => {
     given.callbacks[0]?.onDisconnect()
     await flushRecovery()
 
-    expect(connections).toEqual(["online", "uncertain", "offline"])
+    expect(connections).toEqual(["online", "offline"])
     expect(scheduler.pending()).toBe(1)
   })
 
@@ -128,11 +138,11 @@ describe("runtime controller recovery", () => {
       Promise.resolve(runtimeSnapshot(20)),
     ]
     const given = fakeClient(() => snapshots.shift() ?? Promise.reject(new TypeError("unexpected")))
-    const revisions: number[] = []
+    let installed = 0
     const controller = new RuntimeController(
       {
         onRuntime: (runtime) => {
-          if (runtime?.connection === "online") revisions.push(runtime.revision)
+          if (runtime?.connection === "online") installed += 1
         },
         onSessionExpired: () => undefined,
         onError: () => undefined,
@@ -147,7 +157,8 @@ describe("runtime controller recovery", () => {
     scheduler.runNext()
     await flushRecovery()
 
-    expect(revisions).toEqual([10, 20])
+    expect(installed).toBe(2)
+    expect(given.baselines).toEqual([10, 20])
     expect(given.callbacks).toHaveLength(2)
     expect(given.closed()).toBe(1)
     expect(scheduler.pending()).toBe(0)
@@ -178,4 +189,27 @@ describe("runtime controller recovery", () => {
     expect(given.closed()).toBe(1)
     expect(given.callbacks).toHaveLength(1)
   })
+})
+
+test("an ordinary revision change never paints the snapshot as uncertain", async () => {
+  const scheduler = new ManualScheduler()
+  const snapshots = [Promise.resolve(runtimeSnapshot(10)), Promise.resolve(runtimeSnapshot(11))]
+  const given = fakeClient(() => snapshots.shift() ?? Promise.reject(new TypeError("unexpected")))
+  const connections: (string | undefined)[] = []
+  const controller = new RuntimeController(
+    {
+      onRuntime: (runtime) => connections.push(runtime?.connection),
+      onSessionExpired: () => undefined,
+      onError: () => undefined,
+    },
+    given.client,
+    scheduler,
+  )
+  await controller.start()
+  given.callbacks[0]?.onEvent({ type: "snapshot_invalidated", revision: 11, changed: {} })
+  await flushRecovery()
+
+  expect(connections).not.toContain("uncertain")
+  expect(connections.at(-1)).toBe("online")
+  expect(scheduler.pending()).toBe(0)
 })

@@ -104,8 +104,8 @@ test("exactly one reachability state is marked current", () => {
 test("signed lanes and observed peers are separate, labelled bands", () => {
   render(<LaneMap lanes={LANES} peers={PEERS} />)
 
-  expect(screen.getByRole("heading", { name: "Signed authorization" })).toBeInTheDocument()
-  expect(screen.getByRole("heading", { name: "Observed transport" })).toBeInTheDocument()
+  expect(screen.getByRole("heading", { name: "Spaces" })).toBeInTheDocument()
+  expect(screen.getByRole("heading", { name: "Observed Peers" })).toBeInTheDocument()
   expect(screen.getByText("3 members")).toBeInTheDocument()
 })
 
@@ -143,7 +143,7 @@ test("the trust chain separates transient handling from retention", () => {
         { name: "Browser", guard: "session cookie", presence: ["transient", "never"] },
         { name: "Protected storage", guard: "0600 key files", presence: ["never", "retained"] },
       ]}
-      secrets={["passphrase", "private keys"]}
+      secrets={["password", "private keys"]}
     />,
   )
 

@@ -102,7 +102,7 @@ export function MapInspector({
       <Card label="Echo">
         <div className="cluster">
           <Donut
-            label="echo"
+            label="Echo"
             segments={echo.segments}
             value={echo.total === 0 ? "0" : String(echo.total)}
           />

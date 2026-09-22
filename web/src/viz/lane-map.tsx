@@ -81,7 +81,7 @@ export function LaneMap({
     <div className="lane-map">
       <div className="lane-map__bands">
         <section className="band band--signed">
-          <h2 className="band__title">Signed authorization</h2>
+          <h2 className="band__title">Spaces</h2>
           {lanes.length === 0 ? (
             <div className="lane-map__empty">
               <strong>No Space yet</strong>
@@ -106,7 +106,7 @@ export function LaneMap({
           )}
         </section>
         <section className="band band--observed">
-          <h2 className="band__title">Observed transport</h2>
+          <h2 className="band__title">Observed Peers</h2>
           {peers.length === 0 ? (
             <div className="lane-map__empty lane-map__empty--quiet">
               <strong>No peer observed yet</strong>

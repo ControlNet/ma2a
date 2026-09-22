@@ -3,7 +3,6 @@ import type { RuntimeViewData } from "../view-model"
 const ENDPOINT_ID = "test-endpoint-alpha-00000000000000000000000000000001"
 
 export const EMPTY_RUNTIME_FIXTURE = {
-  revision: 8,
   connection: "online",
   runtimeVersion: "0.1.0",
   endpoint: {
@@ -28,7 +27,6 @@ export const EMPTY_RUNTIME_FIXTURE = {
 
 export const ONE_RUNTIME_FIXTURE = {
   ...EMPTY_RUNTIME_FIXTURE,
-  revision: 12,
   reachability: {
     state: "AwaitingIrohHome",
     tone: "relay",
@@ -38,8 +36,6 @@ export const ONE_RUNTIME_FIXTURE = {
       id: "test-space-operations",
       name: "Operations",
       memberCount: 1,
-      generation: 0,
-      chainHash: "aa".repeat(32),
       members: [{ endpointId: ENDPOINT_ID, label: "operator", echo: true, relayProvider: true }],
       revokedCount: 0,
     },
@@ -56,7 +52,6 @@ export const ONE_RUNTIME_FIXTURE = {
 
 export const MANY_RUNTIME_FIXTURE = {
   ...ONE_RUNTIME_FIXTURE,
-  revision: 24,
   endpoint: {
     id: ENDPOINT_ID,
     status: "degraded",
@@ -68,8 +63,6 @@ export const MANY_RUNTIME_FIXTURE = {
       id: "test-space-laboratory",
       name: "Laboratory",
       memberCount: 3,
-      generation: 11,
-      chainHash: "bb".repeat(32),
       members: [
         { endpointId: ENDPOINT_ID, label: "operator", echo: true, relayProvider: true },
         { endpointId: "44".repeat(32), label: "field-station-2", echo: true, relayProvider: false },
@@ -81,8 +74,6 @@ export const MANY_RUNTIME_FIXTURE = {
       id: "test-space-field",
       name: "Field",
       memberCount: 2,
-      generation: 2,
-      chainHash: "cc".repeat(32),
       members: [
         { endpointId: ENDPOINT_ID, label: "operator", echo: true, relayProvider: true },
         { endpointId: "44".repeat(32), label: "field-station-2", echo: true, relayProvider: false },

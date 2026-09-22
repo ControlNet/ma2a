@@ -22,7 +22,7 @@ test("uses the login CSRF token through logout without browser storage", async (
   const sessionStorageWrite = vi.spyOn(window.sessionStorage, "setItem")
 
   // When
-  const session = await loginAndTouchSession("browser-login-passphrase-9!")
+  const session = await loginAndTouchSession("browser-login-password-9!")
   await logoutSession(session)
 
   // Then

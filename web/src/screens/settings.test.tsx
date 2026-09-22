@@ -29,7 +29,7 @@ test("revoke all forces local sign-out without calling authenticated logout", as
   expect(onLogout).not.toHaveBeenCalled()
 })
 
-test("the trust boundary is about retention, and says so about the passphrase", () => {
+test("the trust boundary is about retention, and says so about the password", () => {
   render(<SettingsScreen runtime={ONE_RUNTIME_FIXTURE} />)
 
   const browser = screen.getByRole("columnheader", { name: /Browser/ })

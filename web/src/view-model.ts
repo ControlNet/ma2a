@@ -21,8 +21,6 @@ export type SpaceView = {
   readonly id: string
   readonly name: string
   readonly memberCount: number
-  readonly generation: number
-  readonly chainHash: string
   readonly members: readonly SpaceMemberView[] | undefined
   readonly membersError?: boolean
   readonly revokedCount: number
@@ -82,7 +80,6 @@ export type ReachabilityView = {
 }
 
 export type RuntimeViewData = {
-  readonly revision: number
   readonly connection: ConnectionState
   readonly runtimeVersion: string
   readonly endpoint: EndpointView
