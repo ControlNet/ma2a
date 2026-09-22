@@ -34,26 +34,75 @@ snapshot and reports an error if the daemon is stopped; it never changes the run
 ## Spaces and Enrollment
 
 ```sh
-ma2a space create --name LABEL [--json]
+ma2a space create NAME [--json]
 ma2a space list [--json]
-ma2a space show --space SPACE_ID [--json]
-ma2a space invite create --space SPACE_ID --ttl 30s --file OWNER_ONLY_PATH
-ma2a space invite create --space SPACE_ID --ttl 5m --stdout
-ma2a space invite redeem --file OWNER_ONLY_PATH
-ma2a space invite redeem --stdin
-ma2a space member revoke --space SPACE_ID --endpoint ENDPOINT_ID [--json]
+ma2a space show SPACE_REF [--json]
+
+ma2a space invite SPACE_REF [--ttl DURATION]
+ma2a space accept
+ma2a space leave SPACE_REF [--json]
+
+ma2a space member remove SPACE_REF ENDPOINT_ID [--json]
 ma2a space sync status --endpoint ENDPOINT_ID [--json]
 ma2a space sync now --endpoint ENDPOINT_ID [--json]
 ```
 
-Invite TTL accepts `ms`, `s`, or `m` and must be between `1ms` and `5m`. Creation writes the ticket
-once using exclusive file creation and owner-only permissions. `--stdout` is accepted only on an
-interactive terminal; terminal history and capture tools may retain displayed output. Redemption
-accepts only a file or standard input. Invite tickets are never accepted as positional or option
-values and never appear in JSON responses.
+### Space names and `SPACE_REF`
 
-Revocation requires both the Space and Endpoint IDs. Synchronization targets the peer Endpoint;
-the Runtime derives shared Spaces internally.
+A Space keeps two identifiers. Its `SpaceId` is the immutable cryptographic identity; its name is
+shared metadata signed into the Space's genesis body, so every Endpoint that enrolls reads the same
+name without configuring anything locally. Names are not unique: two Spaces may both be called
+`lab` as long as their Space IDs differ. Spaces created before names were persisted display their
+canonical Space ID instead.
+
+Every command that identifies a Space takes a positional `SPACE_REF`:
+
+1. A complete Space ID resolves exactly.
+2. Otherwise the reference is matched exactly (no fuzzy matching) against the shared names of the
+   Spaces this Runtime belongs to.
+3. No match reports that the Space was not found.
+4. One match resolves automatically.
+5. Several matches fail with an ambiguity error that lists the matching Space IDs; nothing is
+   chosen for you, so pass the Space ID.
+
+```sh
+ma2a space show lab
+ma2a space show 4b2d...
+```
+
+### Invitations
+
+`ma2a space invite SPACE_REF` prints one single-use, owner-approved ticket to stdout and nothing
+else, so it pipes and copies cleanly. `--ttl` accepts `ms`, `s`, or `m` between `1ms` and `5m` and
+defaults to `5m`. Diagnostics go to stderr. Invite tickets are never accepted in argv and never
+appear in JSON responses.
+
+`ma2a space accept` reads one ticket without any flag. On an interactive terminal it prompts
+`Invite:` and reads one line without echoing it; otherwise it reads the ticket from stdin:
+
+```sh
+ma2a --state-dir "$STATE_A" space invite lab | ma2a --state-dir "$STATE_B" space accept
+```
+
+### Leaving and removing members
+
+`ma2a space leave SPACE_REF` is a membership operation, not a local deletion. The leaving Endpoint
+asks the Space authority to sign the next manifest generation removing it, and persists only that
+authority-signed state. If the authority cannot be reached the command fails and local membership
+is unchanged. A Space's own owner cannot leave its Space; Phase 1 has no authority transfer.
+
+`ma2a space member remove SPACE_REF ENDPOINT_ID` is the owner-side operation and remains a
+cryptographic Space revocation. A removed Endpoint can rejoin later through a fresh valid invite.
+
+Synchronization targets the peer Endpoint; the Runtime derives shared Spaces internally. `space
+sync status` and `space sync now` are diagnostics: normal Space workflows never require triggering
+control synchronization by hand.
+
+### Errors
+
+Human-readable commands report the Runtime's own protocol error, such as `invalid_input`,
+`not_found`, `conflict`, `expired` or `unauthorized`, together with any remediation the Runtime
+supplies. Secret material never appears in an error message.
 
 ## Relays
 

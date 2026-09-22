@@ -66,7 +66,11 @@ fn operational_commands_fail_without_creating_daemon_state() -> TestResult {
         &["status", "--json"],
         &["endpoint", "show"],
         &["space", "list"],
-        &["space", "create", "--name", "Explicit lifecycle"],
+        &["space", "create", "Explicit lifecycle"],
+        &["space", "show", "Explicit lifecycle"],
+        &["space", "invite", "Explicit lifecycle"],
+        &["space", "accept"],
+        &["space", "leave", "Explicit lifecycle"],
         &["relay", "private", "status"],
         &["relay", "public", "status"],
         &[

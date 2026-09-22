@@ -11,7 +11,7 @@ mod accessors;
 mod methods;
 
 /// Exact ordered operation inventory carried by the schema and TypeScript contract.
-pub const COMMAND_NAMES: [&str; 29] = [
+pub const COMMAND_NAMES: [&str; 30] = [
     "handshake",
     "status",
     "endpoint_info",
@@ -21,6 +21,7 @@ pub const COMMAND_NAMES: [&str; 29] = [
     "space_invite",
     "space_redeem",
     "space_revoke",
+    "space_leave",
     "control_sync_status",
     "control_sync_trigger",
     "private_relay_configure",
@@ -112,6 +113,7 @@ pub(crate) enum CommandKind {
     SpaceInvite(RequestId, SpaceId, u64, BoundedText),
     SpaceRedeem(RequestId, BoundedText),
     SpaceRevoke(RequestId, SpaceId, EndpointId),
+    SpaceLeave(RequestId, SpaceId),
     ControlSyncStatus(EndpointId),
     ControlSyncTrigger(RequestId, EndpointId),
     PrivateRelayConfigure(RequestId, PrivateRelayConfiguration),

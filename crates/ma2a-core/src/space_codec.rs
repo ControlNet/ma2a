@@ -101,6 +101,19 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// Accepts one of a small closed set of map lengths and returns the observed one.
+    ///
+    /// Version 1 objects grew exactly one optional trailing entry, so the accepted
+    /// lengths stay enumerated rather than bounded.
+    pub(crate) fn map_one_of(&mut self, accepted: &[usize]) -> Result<usize, ProtocolError> {
+        let length = self.length(5)?;
+        if accepted.contains(&length) {
+            Ok(length)
+        } else {
+            Err(ProtocolError::INVALID_INPUT)
+        }
+    }
+
     pub(crate) fn array(&mut self, maximum: usize) -> Result<usize, ProtocolError> {
         let length = self.length(4)?;
         if length <= maximum {

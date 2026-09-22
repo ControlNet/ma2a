@@ -13,10 +13,7 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
     // Given
     let state_dir = state_dir()?;
     assert!(run(&state_dir, &["start"])?.status.success());
-    let created = run(
-        &state_dir,
-        &["space", "create", "--name", "Revocable", "--json"],
-    )?;
+    let created = run(&state_dir, &["space", "create", "Revocable", "--json"])?;
     let created_response: Value = serde_json::from_slice(&created.stdout)?;
     let space_text = value(&created_response, "/result/payload/space_id")?;
     let endpoint = run(&state_dir, &["endpoint", "show", "--json"])?;
@@ -42,14 +39,7 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
     let revoked = run(
         &state_dir,
         &[
-            "space",
-            "member",
-            "revoke",
-            "--space",
-            space_text,
-            "--endpoint",
-            &peer_text,
-            "--json",
+            "space", "member", "remove", space_text, &peer_text, "--json",
         ],
     )?;
 

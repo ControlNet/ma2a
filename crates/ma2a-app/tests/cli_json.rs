@@ -64,7 +64,7 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
     let created = Command::new(env!("CARGO_BIN_EXE_ma2a"))
         .arg("--state-dir")
         .arg(&state_dir)
-        .args(["space", "create", "--name", "Personal", "--json"])
+        .args(["space", "create", "Personal", "--json"])
         .output()?;
 
     // Then
@@ -107,7 +107,7 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
     let shown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
         .arg("--state-dir")
         .arg(&state_dir)
-        .args(["space", "show", "--space", space_id, "--json"])
+        .args(["space", "show", space_id, "--json"])
         .output()?;
     let show_response: Value = serde_json::from_slice(&shown.stdout)?;
     assert_eq!(

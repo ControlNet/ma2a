@@ -74,7 +74,7 @@ pub use relay::{
     SignedPrivateRelayAdvertisementV1,
 };
 pub use space::{
-    GENESIS_CHAIN_HASH_DOMAIN, GENESIS_SIGNATURE_DOMAIN, SignedSpaceGenesisV1,
+    GENESIS_CHAIN_HASH_DOMAIN, GENESIS_SIGNATURE_DOMAIN, MAX_SPACE_NAME_LEN, SignedSpaceGenesisV1,
     SpaceAuthorityPublicKey, SpaceAuthoritySecret, SpaceGenesisV1,
 };
 pub use space_chain::{ManifestApplyOutcome, ManifestError, SpaceChain};

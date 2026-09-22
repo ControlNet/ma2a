@@ -53,6 +53,13 @@ impl Command {
         }
     }
 
+    pub(crate) const fn space_leave(&self) -> Option<SpaceId> {
+        match self.kind {
+            CommandKind::SpaceLeave(_, space_id) => Some(space_id),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn private_relay_configuration(&self) -> Option<&PrivateRelayConfiguration> {
         match &self.kind {
             CommandKind::PrivateRelayConfigure(_, configuration) => Some(configuration),

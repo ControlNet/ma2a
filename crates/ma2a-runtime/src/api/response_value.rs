@@ -19,7 +19,8 @@ pub(super) fn result_value(result: &CommandResult) -> Value {
         | ResultKind::Space(value)
         | ResultKind::SpaceInvitationCreated(value)
         | ResultKind::SpaceRedeemed(value)
-        | ResultKind::SpaceRevoked(value) => space_value(value),
+        | ResultKind::SpaceRevoked(value)
+        | ResultKind::SpaceLeft(value) => space_value(value),
         ResultKind::Spaces(values) => Value::Array(values.iter().map(space_value).collect()),
         ResultKind::ControlSyncStatus(value) | ResultKind::ControlSyncTriggered(value) => {
             json!({

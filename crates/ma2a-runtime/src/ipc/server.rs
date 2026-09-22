@@ -214,7 +214,7 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                 Ok(result) => result,
                 Err(error) => {
                     context.handle.abort_mutation_replay(request_id).await?;
-                    return Ok((api::encode_error(api::ApiError::new(error))?, false));
+                    return Ok((api::encode_error(error)?, false));
                 }
             };
             let revision = authoritative_revision(&command, status.revision(), context).await?;
@@ -225,7 +225,7 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                 let revision = api::snapshot_revision(&result).unwrap_or_else(|| status.revision());
                 (result, revision)
             }
-            Err(error) => return Ok((api::encode_error(api::ApiError::new(error))?, false)),
+            Err(error) => return Ok((api::encode_error(error)?, false)),
         },
     };
     let response = api::ApiResponse::new(command.request_id(), response_revision, result);

@@ -18,6 +18,7 @@ pub(super) fn command(object: &Map<String, Value>) -> Result<Command, ApiError> 
         "space_invite" => space_invite(object)?,
         "space_redeem" => space_redeem(object)?,
         "space_revoke" => space_revoke(object)?,
+        "space_leave" => space_leave(object)?,
         "control_sync_status" => control_sync_status(object)?,
         "control_sync_trigger" => control_sync_trigger(object)?,
         "private_relay_configure" => crate::api::codec_relay::private_configure(object)?,
@@ -89,6 +90,14 @@ fn space_revoke(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
         request_id(object, "request_id")?,
         space_id(object, "space_id")?,
         endpoint_id(object, "peer_endpoint_id")?,
+    ))
+}
+
+fn space_leave(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
+    exact_fields(object, &["version", "operation", "request_id", "space_id"])?;
+    Ok(CommandKind::SpaceLeave(
+        request_id(object, "request_id")?,
+        space_id(object, "space_id")?,
     ))
 }
 

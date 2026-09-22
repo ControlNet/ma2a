@@ -28,6 +28,11 @@ pub(crate) enum Command {
         endpoint_id: EndpointId,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
+    LeaveSpace {
+        space_id: SpaceId,
+        request_id: RequestId,
+        reply: oneshot::Sender<Result<u64, crate::SpaceDepartureError>>,
+    },
     CreateEnrollmentInvite {
         creation: EnrollmentCreation,
         reply: oneshot::Sender<Result<SignedInviteTicket, EnrollmentError>>,

@@ -26,7 +26,7 @@ CBOR byte string, not embedded as a nested CBOR value.
 
 ## Genesis Body
 
-`SpaceGenesisV1` is a six-entry map:
+`SpaceGenesisV1` is a six- or seven-entry map:
 
 | Key | Value |
 | --- | --- |
@@ -36,10 +36,18 @@ CBOR byte string, not embedded as a nested CBOR value.
 | `3` | 32-byte Ed25519 authority public key |
 | `4` | initial member record |
 | `5` | Space policy |
+| `6` | shared Space name, present only in a seven-entry body |
 
 The initial member record is `{0: endpoint_id, 1: label, 2: capability_bits}`. The policy is
 `{0: echo_enabled, 1: private_relay_provider_enabled, 2: maximum_members}`. Capability bit `0`
 grants Echo and bit `1` grants private-relay-provider service.
+
+The shared Space name is 1–128 UTF-8 bytes with no control characters. It is signed with the rest
+of genesis and therefore enters the derived `SpaceId`, so every enrolled member reads exactly the
+same name from the chain it already verifies; no member configures a local alias. Space names are
+deliberately not unique — two Spaces may share a name because their Space IDs differ. Key `6` is
+the only optional entry, and a body that omits it encodes byte-for-byte as it did before Space
+names existed, so Spaces created earlier stay valid and simply carry no name.
 
 The genesis signature is:
 

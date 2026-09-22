@@ -17,6 +17,8 @@ mod clock;
 mod connections;
 mod control_actor;
 mod control_sync;
+mod departure;
+mod departure_actor;
 mod echo_audit;
 mod enrollment;
 mod enrollment_actor;
@@ -32,6 +34,7 @@ pub use actor::RuntimeHandle;
 pub use authz::authorize_remote;
 pub use clock::RuntimeClock;
 pub use connections::RuntimeConnections;
+pub use departure::{SpaceDepartureError, SpaceDepartureErrorCode};
 pub use echo_audit::EchoAuditRecord;
 pub use enrollment::{
     EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EnrollmentErrorCode,

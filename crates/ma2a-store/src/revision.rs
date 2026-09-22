@@ -1,6 +1,21 @@
-use ma2a_core::{Capability, EndpointId, SpaceId};
+use std::fmt::Write as _;
+
+use ma2a_core::{Capability, EndpointId, SpaceChain, SpaceId};
 
 use crate::{Repository, StoreError};
+
+/// Reads the shared Space name, falling back to the canonical Space identifier
+/// for Spaces whose genesis predates persisted names.
+fn space_name(chain: &SpaceChain) -> String {
+    if let Some(name) = chain.genesis().name() {
+        return name.to_owned();
+    }
+    let mut fallback = String::with_capacity(64);
+    for byte in chain.space_id().as_bytes() {
+        let _written = write!(&mut fallback, "{byte:02x}");
+    }
+    fallback
+}
 
 /// One signed member of a Space, as the owner's own chain already records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +52,7 @@ impl SnapshotMember {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotSpace {
     space_id: SpaceId,
-    label: String,
+    name: String,
     member_count: u32,
     generation: u64,
     chain_hash: [u8; 32],
@@ -50,9 +65,10 @@ impl SnapshotSpace {
         self.space_id
     }
 
-    /// Returns the current signed label for the local Endpoint in this Space.
-    pub fn label(&self) -> &str {
-        &self.label
+    /// Returns the shared Space name signed into genesis, or the canonical
+    /// Space identifier for legacy Spaces created before names were persisted.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Returns the current derived member count.
@@ -147,17 +163,18 @@ impl Repository {
                         detail: "snapshot Space chain is missing",
                     },
                 )?;
-                let label = chain
+                if !chain
                     .members()
                     .iter()
-                    .find(|member| member.endpoint_id() == endpoint_id)
-                    .map(|member| member.label().to_owned())
-                    .ok_or(StoreError::SchemaMismatch {
+                    .any(|member| member.endpoint_id() == endpoint_id)
+                {
+                    return Err(StoreError::SchemaMismatch {
                         detail: "snapshot local Space member is missing",
-                    })?;
+                    });
+                }
                 Ok(SnapshotSpace {
                     space_id,
-                    label,
+                    name: space_name(&chain),
                     member_count,
                     generation: chain.latest_generation(),
                     chain_hash: chain.latest_hash(),
@@ -222,13 +239,13 @@ impl Repository {
         let Some(chain) = crate::space_rows::load_chain(&transaction, space_id)? else {
             return Ok(None);
         };
-        let Some(local) = chain
+        if !chain
             .members()
             .iter()
-            .find(|member| member.endpoint_id() == endpoint_id)
-        else {
+            .any(|member| member.endpoint_id() == endpoint_id)
+        {
             return Ok(None);
-        };
+        }
         let members = chain
             .members()
             .iter()
@@ -244,7 +261,7 @@ impl Repository {
 
         let space = SnapshotSpace {
             space_id,
-            label: local.label().to_owned(),
+            name: space_name(&chain),
             member_count: u32::try_from(chain.members().len()).unwrap_or(u32::MAX),
             generation: chain.latest_generation(),
             chain_hash: chain.latest_hash(),

@@ -210,7 +210,8 @@ impl RuntimeSnapshot {
         self.revision
     }
 
-    pub(crate) fn spaces(&self) -> &[SnapshotSpaceView] {
+    /// Returns every Space this Endpoint is a verified member of.
+    pub fn spaces(&self) -> &[SnapshotSpaceView] {
         &self.spaces
     }
 }

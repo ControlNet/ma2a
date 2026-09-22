@@ -188,7 +188,7 @@ impl Repository {
                 detail: "Space authority does not match genesis",
             });
         }
-        let (mut members, revocations) = chain.manifests().last().map_or_else(
+        let (mut members, mut revocations) = chain.manifests().last().map_or_else(
             || {
                 (
                     vec![chain.genesis().genesis().initial_member().clone()],
@@ -197,6 +197,10 @@ impl Repository {
             },
             |manifest| (manifest.members().to_vec(), manifest.revocations().to_vec()),
         );
+        // A previously removed Endpoint rejoins only through a fresh owner-signed
+        // invitation, and the new generation must carry membership rather than a
+        // stale revocation for it. Earlier generations keep their revocation.
+        revocations.retain(|revocation| revocation.endpoint_id() != input.endpoint_id);
         if members
             .binary_search_by_key(&input.endpoint_id, SpaceMemberV1::endpoint_id)
             .is_ok()

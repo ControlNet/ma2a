@@ -25,6 +25,7 @@ impl Command {
             | CommandKind::SpaceInvite(_, _, _, _)
             | CommandKind::SpaceRedeem(_, _)
             | CommandKind::SpaceRevoke(_, _, _)
+            | CommandKind::SpaceLeave(_, _)
             | CommandKind::ControlSyncStatus(_)
             | CommandKind::ControlSyncTrigger(_, _)
             | CommandKind::PrivateRelayConfigure(_, _)
@@ -141,6 +142,7 @@ impl Command {
             CommandKind::SpaceInvite(_, _, _, _) => "space_invite",
             CommandKind::SpaceRedeem(_, _) => "space_redeem",
             CommandKind::SpaceRevoke(_, _, _) => "space_revoke",
+            CommandKind::SpaceLeave(_, _) => "space_leave",
             CommandKind::ControlSyncStatus(_) => "control_sync_status",
             CommandKind::ControlSyncTrigger(_, _) => "control_sync_trigger",
             CommandKind::PrivateRelayConfigure(_, _) => "private_relay_configure",
@@ -185,6 +187,7 @@ impl Command {
             | CommandKind::SpaceInvite(id, _, _, _)
             | CommandKind::SpaceRedeem(id, _)
             | CommandKind::SpaceRevoke(id, _, _)
+            | CommandKind::SpaceLeave(id, _)
             | CommandKind::ControlSyncTrigger(id, _)
             | CommandKind::PrivateRelayConfigure(id, _)
             | CommandKind::PrivateRelayDisable(id)

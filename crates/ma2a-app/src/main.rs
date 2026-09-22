@@ -29,8 +29,14 @@ enum AppError {
     Command(commands::ui::UiCommandError),
     CurrentUser(CurrentUserError),
     DaemonStopped,
+    /// A caller-supplied reference the CLI could not turn into one object.
+    Invalid(String),
     Io(io::Error),
     Ipc(IpcError),
+    /// The named object does not exist for this Endpoint.
+    NotFound(String),
+    /// A typed Runtime protocol error, surfaced with its real name.
+    Protocol(String),
     Runtime(RuntimeError),
     Usage(&'static str),
 }
@@ -49,6 +55,9 @@ impl fmt::Display for AppError {
             Self::DaemonStopped => formatter.write_str(
                 "daemon is not running; run `ma2a start` with the same --state-dir first",
             ),
+            Self::Invalid(message) | Self::NotFound(message) | Self::Protocol(message) => {
+                formatter.write_str(message)
+            }
             Self::Io(error) => write!(formatter, "MA2A I/O failed: {error}"),
             Self::Ipc(error) => error.fmt(formatter),
             Self::Runtime(error) => error.fmt(formatter),
@@ -62,7 +71,11 @@ impl Error for AppError {
         match self {
             Self::Command(error) => Some(error),
             Self::CurrentUser(error) => Some(error),
-            Self::DaemonStopped | Self::Usage(_) => None,
+            Self::DaemonStopped
+            | Self::Invalid(_)
+            | Self::NotFound(_)
+            | Self::Protocol(_)
+            | Self::Usage(_) => None,
             Self::Io(error) => Some(error),
             Self::Ipc(error) => Some(error),
             Self::Runtime(error) => Some(error),
@@ -110,12 +123,14 @@ async fn main() -> ExitCode {
         Err(error) => {
             eprintln!("{error}");
             match error {
-                AppError::Usage(_) => ExitCode::from(2),
+                AppError::Invalid(_) | AppError::Usage(_) => ExitCode::from(2),
                 AppError::Command(_)
                 | AppError::CurrentUser(_)
                 | AppError::DaemonStopped
                 | AppError::Io(_)
                 | AppError::Ipc(_)
+                | AppError::NotFound(_)
+                | AppError::Protocol(_)
                 | AppError::Runtime(_) => ExitCode::FAILURE,
             }
         }
@@ -175,20 +190,33 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
     }
 }
 
+/// Sends one command to a running daemon and returns its raw response frame.
+async fn request(
+    runtime: (&std::path::Path, IpcPaths),
+    command: api::Command,
+) -> Result<Vec<u8>, AppError> {
+    let (_, paths) = runtime;
+    daemon_control::require(&paths).await?;
+    Ok(LocalApiClient::new(paths).call(&command).await?)
+}
+
 async fn call(
     runtime: (&std::path::Path, IpcPaths),
     command: api::Command,
     json: bool,
 ) -> Result<(), AppError> {
-    let (_, paths) = runtime;
-    daemon_control::require(&paths).await?;
-    let response = LocalApiClient::new(paths).call(&command).await?;
+    let response = request(runtime, command).await?;
+    let document: serde_json::Value =
+        serde_json::from_slice(&response).map_err(io::Error::other)?;
+    // A Runtime error envelope carries no result, so it is reported as the typed
+    // protocol error it is instead of being parsed as human output.
+    let outcome = output::reject_runtime_error(&document);
     if json {
         output::write_json(&response)?;
-    } else {
-        output::write_human(&response)?;
+    } else if outcome.is_ok() {
+        output::write_human(&document)?;
     }
-    Ok(())
+    outcome
 }
 
 async fn stop_daemon(paths: IpcPaths) -> Result<(), AppError> {

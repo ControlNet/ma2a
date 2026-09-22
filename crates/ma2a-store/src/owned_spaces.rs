@@ -13,10 +13,11 @@ pub struct SpaceCreation {
     created_at_ms: u64,
     initial_member: SpaceMemberV1,
     policy: SpacePolicyV1,
+    name: Option<String>,
 }
 
 impl SpaceCreation {
-    /// Creates one repository-owned Space request.
+    /// Creates one repository-owned Space request without a shared Space name.
     pub const fn new(
         created_at_ms: u64,
         initial_member: SpaceMemberV1,
@@ -26,7 +27,15 @@ impl SpaceCreation {
             created_at_ms,
             initial_member,
             policy,
+            name: None,
         }
+    }
+
+    /// Binds the shared Space name signed into genesis and read by every member.
+    #[must_use]
+    pub fn with_name(mut self, name: String) -> Self {
+        self.name = Some(name);
+        self
     }
 }
 
@@ -122,7 +131,11 @@ impl Repository {
             creation.created_at_ms,
             secret.public_key(),
             SpaceGenesisOwner::new(creation.initial_member.clone(), creation.policy),
-        )?
+        )?;
+        let genesis = match &creation.name {
+            Some(name) => genesis.with_name(name)?,
+            None => genesis,
+        }
         .sign(&secret)?;
         let chain = SpaceChain::from_genesis(genesis)?;
         let mut reference = String::with_capacity(70);

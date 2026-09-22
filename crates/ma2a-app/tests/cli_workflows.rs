@@ -3,7 +3,7 @@
 use std::{
     error::Error,
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -42,8 +42,12 @@ impl Fixture {
     }
 
     fn create_space(&self) -> TestValue<String> {
-        assert_success(&self.run(&["start"])?)?;
-        let output = self.run(&["space", "create", "--name", "Workflows", "--json"])?;
+        self.create_named_space("Workflows")
+    }
+
+    fn create_named_space(&self, name: &str) -> TestValue<String> {
+        let _started = self.run(&["start"])?;
+        let output = self.run(&["space", "create", name, "--json"])?;
         assert_success(&output)?;
         let response: Value = serde_json::from_slice(&output.stdout)?;
         response
@@ -62,48 +66,31 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn invite_creation_writes_once_to_an_owner_only_file() -> TestResult {
+fn invite_prints_only_the_ticket_and_defaults_to_five_minutes() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
     let space = fixture.create_space()?;
-    let ticket = fixture.0.join("invite.ticket");
 
     // When
-    let created = fixture.run(&[
-        "space",
-        "invite",
-        "create",
-        "--space",
-        &space,
-        "--ttl",
-        "30s",
-        "--file",
-        path_text(&ticket)?,
-    ])?;
+    let by_name = fixture.run(&["space", "invite", "Workflows"])?;
+    let by_id = fixture.run(&["space", "invite", &space, "--ttl", "30s"])?;
 
     // Then
-    assert_success(&created)?;
-    assert!(!String::from_utf8(created.stdout)?.contains("ma2ainvite"));
-    let invitation = fs::read_to_string(&ticket)?;
-    assert!(invitation.starts_with("ma2ainvite"));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        assert_eq!(fs::metadata(&ticket)?.permissions().mode() & 0o777, 0o600);
-    }
-    let repeated = fixture.run(&[
-        "space",
-        "invite",
-        "create",
-        "--space",
-        &space,
-        "--ttl",
-        "30s",
-        "--file",
-        path_text(&ticket)?,
-    ])?;
-    assert!(!repeated.status.success());
-    assert_eq!(fs::read_to_string(ticket)?, invitation);
+    assert_success(&by_name)?;
+    assert_success(&by_id)?;
+    let ticket = String::from_utf8(by_name.stdout)?;
+    assert_eq!(
+        ticket.lines().count(),
+        1,
+        "stdout must carry only the ticket"
+    );
+    assert!(ticket.starts_with("ma2ainvite"), "{ticket}");
+    assert!(String::from_utf8(by_id.stdout)?.starts_with("ma2ainvite"));
+    let leftovers = fs::read_dir(&fixture.0)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(".invite-"))
+        .count();
+    assert_eq!(leftovers, 0, "the temporary ticket file must be removed");
     let status: Value = serde_json::from_slice(&fixture.run(&["status", "--json"])?.stdout)?;
     let actor_revision = status
         .get("revision")
@@ -115,30 +102,147 @@ fn invite_creation_writes_once_to_an_owner_only_file() -> TestResult {
 }
 
 #[test]
-fn invite_creation_rejects_noninteractive_stdout_and_invalid_ttl() -> TestResult {
+fn invite_rejects_an_invalid_ttl_and_an_unknown_space() -> TestResult {
     // Given
     let fixture = Fixture::new()?;
     let space = fixture.create_space()?;
 
     // When
-    let stdout = fixture.run(&[
-        "space", "invite", "create", "--space", &space, "--ttl", "30s", "--stdout",
-    ])?;
-    let ttl = fixture.run(&[
-        "space",
-        "invite",
-        "create",
-        "--space",
-        &space,
-        "--ttl",
-        "6m",
-        "--file",
-        path_text(&fixture.0.join("invalid.ticket"))?,
-    ])?;
+    let ttl = fixture.run(&["space", "invite", &space, "--ttl", "6m"])?;
+    let unknown = fixture.run(&["space", "invite", "absent"])?;
 
     // Then
-    assert_eq!(stdout.status.code(), Some(2));
     assert_eq!(ttl.status.code(), Some(2));
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8(unknown.stderr)?.contains("no Space named"));
+    Ok(())
+}
+
+#[test]
+fn duplicate_space_names_resolve_by_identifier_and_fail_as_ambiguous_by_name() -> TestResult {
+    // Given
+    let fixture = Fixture::new()?;
+    let first = fixture.create_named_space("lab")?;
+    let unique = fixture.create_named_space("unique")?;
+
+    // When
+    let single = fixture.run(&["space", "show", "lab", "--json"])?;
+    let second = fixture.create_named_space("lab")?;
+    let ambiguous = fixture.run(&["space", "show", "lab"])?;
+    let by_id = fixture.run(&["space", "show", &second, "--json"])?;
+    let other = fixture.run(&["space", "show", "unique", "--json"])?;
+
+    // Then
+    assert_success(&single)?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&single.stdout)?
+            .pointer("/result/payload/space_id")
+            .and_then(Value::as_str),
+        Some(first.as_str())
+    );
+    assert_ne!(first, second);
+    assert_eq!(ambiguous.status.code(), Some(2));
+    let stderr = String::from_utf8(ambiguous.stderr)?;
+    assert!(
+        stderr.contains(&first) && stderr.contains(&second),
+        "{stderr}"
+    );
+    assert!(stderr.contains("use the Space ID instead"), "{stderr}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&by_id.stdout)?
+            .pointer("/result/payload/space_id")
+            .and_then(Value::as_str),
+        Some(second.as_str())
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&other.stdout)?
+            .pointer("/result/payload/space_id")
+            .and_then(Value::as_str),
+        Some(unique.as_str())
+    );
+    Ok(())
+}
+
+#[test]
+fn human_space_output_names_the_space_and_its_identifier() -> TestResult {
+    // Given
+    let fixture = Fixture::new()?;
+    let space = fixture.create_named_space("lab")?;
+
+    // When
+    let shown = fixture.run(&["space", "show", "lab"])?;
+
+    // Then
+    assert_success(&shown)?;
+    let stdout = String::from_utf8(shown.stdout)?;
+    assert!(stdout.contains("Name: lab"), "{stdout}");
+    assert!(stdout.contains(&format!("Space ID: {space}")), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn a_runtime_error_envelope_reports_its_real_protocol_error() -> TestResult {
+    // Given
+    let fixture = Fixture::new()?;
+    let _space = fixture.create_space()?;
+    let absent = "0".repeat(64);
+
+    // When
+    let shown = fixture.run(&["space", "show", &absent])?;
+
+    // Then
+    assert!(!shown.status.success());
+    let stderr = String::from_utf8(shown.stderr)?;
+    assert!(stderr.contains("not_found"), "{stderr}");
+    assert!(!stderr.contains("missing its result type"), "{stderr}");
+    Ok(())
+}
+
+#[test]
+fn the_space_owner_cannot_leave_its_own_space() -> TestResult {
+    // Given
+    let fixture = Fixture::new()?;
+    let _space = fixture.create_named_space("owned")?;
+
+    // When
+    let left = fixture.run(&["space", "leave", "owned"])?;
+
+    // Then
+    assert!(!left.status.success());
+    let stderr = String::from_utf8(left.stderr)?;
+    assert!(
+        stderr.contains("Space owner cannot leave its own Space"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("unauthorized"), "{stderr}");
+    let listed = fixture.run(&["space", "list", "--json"])?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&listed.stdout)?
+            .pointer("/result/payload")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "a refused departure must not remove local membership"
+    );
+    Ok(())
+}
+
+#[test]
+fn removed_space_syntax_is_rejected() -> TestResult {
+    // Given
+    let fixture = Fixture::new()?;
+
+    // When
+    let named = fixture.run(&["space", "create", "--name", "Legacy"])?;
+    let selector = fixture.run(&["space", "show", "--space", &"0".repeat(64)])?;
+    let nested_invite = fixture.run(&["space", "invite", "create", "--space", &"0".repeat(64)])?;
+    let redeem = fixture.run(&["space", "invite", "redeem", "--stdin"])?;
+    let revoke = fixture.run(&["space", "member", "revoke", "--space", &"0".repeat(64)])?;
+
+    // Then
+    for rejected in [named, selector, nested_invite, redeem, revoke] {
+        assert_eq!(rejected.status.code(), Some(2));
+    }
     Ok(())
 }
 
@@ -232,8 +336,4 @@ fn assert_success(output: &Output) -> TestResult {
     } else {
         Err(String::from_utf8_lossy(&output.stderr).into_owned().into())
     }
-}
-
-fn path_text(path: &Path) -> Result<&str, Box<dyn Error + Send + Sync>> {
-    path.to_str().ok_or_else(|| "test path is not UTF-8".into())
 }

@@ -59,66 +59,70 @@ pub(crate) enum EndpointCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum SpaceCommand {
+    /// Create a Space with a shared name every member will see.
     Create {
-        #[arg(long)]
+        /// Human-readable Space name; names need not be unique.
+        #[arg(value_name = "NAME")]
         name: String,
         #[arg(long)]
         json: bool,
     },
+    /// List the Spaces this Endpoint belongs to.
     List {
         #[arg(long)]
         json: bool,
     },
+    /// Show one Space by name or Space ID.
     Show {
-        #[arg(long)]
+        /// Space name or complete Space ID.
+        #[arg(value_name = "SPACE_REF")]
         space: String,
         #[arg(long)]
         json: bool,
     },
+    /// Print a single-use invite ticket for a Space to stdout.
     Invite {
-        #[command(subcommand)]
-        command: InviteCommand,
+        /// Space name or complete Space ID.
+        #[arg(value_name = "SPACE_REF")]
+        space: String,
+        /// Invite lifetime such as 30s or 5m.
+        #[arg(long, value_name = "DURATION", default_value = DEFAULT_INVITE_TTL)]
+        ttl: String,
     },
+    /// Join a Space by reading an invite ticket from the terminal or stdin.
+    Accept,
+    /// Ask the Space authority to remove this Endpoint from a Space.
+    Leave {
+        /// Space name or complete Space ID.
+        #[arg(value_name = "SPACE_REF")]
+        space: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Administer the membership of a Space this Endpoint owns.
     Member {
         #[command(subcommand)]
         command: MemberCommand,
     },
+    /// Inspect or trigger control synchronization for diagnostics.
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
     },
 }
 
-#[derive(Debug, Subcommand)]
-pub(crate) enum InviteCommand {
-    Create {
-        #[arg(long)]
-        space: String,
-        #[arg(long)]
-        ttl: String,
-        #[arg(long, conflicts_with = "stdout")]
-        file: Option<PathBuf>,
-        #[arg(long, conflicts_with = "file")]
-        stdout: bool,
-    },
-    Redeem(InviteRedeemArgs),
-}
-
-#[derive(Debug, Args)]
-#[group(required = true, multiple = false)]
-pub(crate) struct InviteRedeemArgs {
-    #[arg(long)]
-    pub(crate) stdin: bool,
-    #[arg(long)]
-    pub(crate) file: Option<PathBuf>,
-}
+/// Invites stay short-lived by default so an unused ticket expires on its own.
+pub(crate) const DEFAULT_INVITE_TTL: &str = "5m";
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum MemberCommand {
-    Revoke {
-        #[arg(long)]
+    /// Revoke another Endpoint's membership of a Space this Endpoint owns.
+    Remove {
+        /// Space name or complete Space ID.
+        #[arg(value_name = "SPACE_REF")]
         space: String,
-        #[arg(long)]
+        /// Complete Endpoint ID to remove.
+        #[arg(value_name = "ENDPOINT_ID")]
         endpoint: String,
         #[arg(long)]
         json: bool,

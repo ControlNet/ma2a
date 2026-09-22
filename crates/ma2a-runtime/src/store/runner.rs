@@ -68,6 +68,16 @@ impl StoreBackend {
             StoreCommand::RevokeOwnedSpaceMember { request, reply } => {
                 drop(reply.send(self.revoke_owned_space_member(request)));
             }
+            StoreCommand::LoadSpaceChain { space_id, reply } => {
+                drop(reply.send(self.load_space_chain(space_id)));
+            }
+            StoreCommand::PersistDeparture {
+                chain,
+                local_endpoint_id,
+                reply,
+            } => {
+                drop(reply.send(self.persist_departure(&chain, local_endpoint_id)));
+            }
             StoreCommand::SetEndpointBindPort { port, reply } => {
                 drop(reply.send(self.set_endpoint_bind_port(port)));
             }
@@ -151,18 +161,7 @@ impl StoreBackend {
                 update,
                 local_endpoint_id,
                 reply,
-            } => {
-                let result = self
-                    .repository
-                    .advance_owned_space(&update)
-                    .and_then(|advanced| {
-                        Ok((
-                            advanced.revision(),
-                            self.repository.memberships_for(local_endpoint_id)?,
-                        ))
-                    });
-                drop(reply.send(result.map_err(Into::into)));
-            }
+            } => drop(reply.send(self.advance_owned_space(&update, local_endpoint_id))),
             StoreCommand::PublishAddress {
                 publisher,
                 local_endpoint_id,

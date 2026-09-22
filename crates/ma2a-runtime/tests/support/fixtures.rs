@@ -62,7 +62,8 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::space(space.clone()),
         CommandResult::space_invitation_created(space.clone()),
         CommandResult::space_redeemed(space.clone()),
-        CommandResult::space_revoked(space),
+        CommandResult::space_revoked(space.clone()),
+        CommandResult::space_left(space),
         CommandResult::control_sync_status(control_sync.clone()),
         CommandResult::control_sync_triggered(control_sync),
         CommandResult::private_relay_configured(private_relay.clone()),
@@ -181,6 +182,9 @@ fn command_json() -> Vec<String> {
         ),
         format!(
             r#"{{"version":1,"operation":"space_revoke","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"space_leave","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}"}}"#
         ),
         format!(
             r#"{{"version":1,"operation":"control_sync_status","peer_endpoint_id":"{ENDPOINT_ID}"}}"#

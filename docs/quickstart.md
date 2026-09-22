@@ -47,18 +47,32 @@ Use `ui status` to query it or `ui stop` to stop only WebUI. Stop the isolated R
 
 ```sh
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" start
-./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" space create --name primary
+./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" space create primary
 ./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" space list
 ```
 
-Enrollment tickets are secret bearer material. Prefer owner-only files:
+The name you give is shared Space metadata: every Endpoint that joins reads `primary` without
+configuring anything. Commands that name a Space accept either that name or the full Space ID.
+
+## Invite a second Endpoint
+
+An invitation is single-use, owner-approved, and short-lived (five minutes by default). `space
+invite` prints only the ticket, and `space accept` reads one without ever taking it from the
+command line:
 
 ```sh
-./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" \
-  space invite create --space SPACE_ID --ttl 5m --file invite.ma2a
 ./ma2a --state-dir "$HOME/.local/state/ma2a-peer" start
-./ma2a --state-dir "$HOME/.local/state/ma2a-peer" \
-  space invite redeem --file invite.ma2a
+./ma2a --state-dir "$HOME/.local/state/ma2a-quickstart" space invite primary |
+  ./ma2a --state-dir "$HOME/.local/state/ma2a-peer" space accept
+```
+
+Run `space accept` on its own to be prompted for a ticket instead; the prompt does not echo it.
+
+A member can hand its membership back, which asks the Space authority to sign a new generation
+removing it:
+
+```sh
+./ma2a --state-dir "$HOME/.local/state/ma2a-peer" space leave primary
 ```
 
 See [operations.md](operations.md) for lifecycle, backup boundaries, relay configuration, and

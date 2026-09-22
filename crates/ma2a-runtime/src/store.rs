@@ -14,7 +14,7 @@ pub(crate) use crate::store_client::channel_error;
 
 pub(crate) use command::StoreCommand;
 pub(crate) use identity::Identity;
-pub(crate) use membership::OwnedMemberRevocation;
+pub(crate) use membership::{OwnedMemberRevocation, RemovedMember};
 
 pub(crate) const STORE_CAPACITY: usize = 8;
 #[derive(Clone, Debug)]

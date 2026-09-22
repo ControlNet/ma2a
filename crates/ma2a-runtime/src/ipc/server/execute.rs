@@ -3,9 +3,9 @@ use ma2a_core::ProtocolError;
 use crate::{
     RuntimeStatus,
     api::{
-        CapabilityFlags, Command, CommandResult, EndpointView, HandshakeAuth, HandshakeState,
-        HandshakeView, InteractionCapabilities, ManagementCapabilities, RelayCapabilities,
-        RuntimeStatusView,
+        ApiError, CapabilityFlags, Command, CommandResult, EndpointView, HandshakeAuth,
+        HandshakeState, HandshakeView, InteractionCapabilities, ManagementCapabilities,
+        RelayCapabilities, RuntimeStatusView,
     },
 };
 
@@ -50,6 +50,7 @@ fn uses_post_execution_actor_revision(operation: &str) -> bool {
             | "space_invite"
             | "space_redeem"
             | "space_revoke"
+            | "space_leave"
             | "private_relay_configure"
             | "private_relay_disable"
             | "public_relay_configure"
@@ -75,7 +76,7 @@ pub(super) async fn execute(
     command: &Command,
     status: &RuntimeStatus,
     context: &ConnectionContext,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     Ok(match command.operation() {
         "handshake" => CommandResult::handshake(
             HandshakeView::new(
@@ -134,6 +135,11 @@ pub(super) async fn execute(
             let (space_id, endpoint_id) =
                 command.space_revoke().ok_or(ProtocolError::INVALID_INPUT)?;
             space::revoke(context, space_id, endpoint_id).await?
+        }
+        "space_leave" => {
+            let space_id = command.space_leave().ok_or(ProtocolError::INVALID_INPUT)?;
+            let request_id = command.request_id().ok_or(ProtocolError::INVALID_INPUT)?;
+            space::leave(context, space_id, request_id).await?
         }
         "private_relay_configure" => relay::private_configure(context, command).await?,
         "private_relay_disable" => relay::private_disable(context).await?,
@@ -203,7 +209,7 @@ pub(super) async fn execute(
             .send(command.clone())
             .await
             .map_err(|_| ProtocolError::INTERNAL)?,
-        _ => return Err(ProtocolError::UNAVAILABLE),
+        _ => return Err(ProtocolError::UNAVAILABLE.into()),
     })
 }
 
