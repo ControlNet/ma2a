@@ -60,7 +60,9 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
         .login(Zeroizing::new("web-runtime-passphrase-9!".to_owned()))
         .await?;
     let paths = IpcPaths::new(state.path())?;
-    let api_server = LocalApiServer::bind(paths.clone(), runtime.handle(), control.clone())?;
+    let api_server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control.clone(), None)
+            .await?;
     let cancellation = CancellationToken::new();
     let api_task = tokio::spawn(api_server.serve(cancellation.child_token()));
     let router = build_runtime_router(
@@ -252,7 +254,8 @@ async fn full_spaces_keep_snapshot_details_and_events_within_the_frame_budget() 
     let session = control.web_auth().login(support::password()).await?;
     let cookie = format!("ma2a_session={}", session.bearer());
     let paths = IpcPaths::new(state.path())?;
-    let api_server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let api_server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let cancellation = CancellationToken::new();
     let api_task = tokio::spawn(api_server.serve(cancellation.child_token()));
     let client = LocalApiClient::new(paths);

@@ -1,14 +1,7 @@
 //! Installed MA2A command and singleton daemon entry point.
 
-use std::{
-    error::Error,
-    fmt::{self, Write as _},
-    io,
-    path::PathBuf,
-    process::ExitCode,
-};
+use std::{error::Error, fmt, io, path::PathBuf, process::ExitCode};
 
-use ma2a_core::RequestId;
 use ma2a_runtime::{
     RuntimeError, api,
     current_user::CurrentUserError,
@@ -28,6 +21,8 @@ mod embedded_web {
 enum AppError {
     Command(commands::ui::UiCommandError),
     CurrentUser(CurrentUserError),
+    /// A lifecycle action refused to act on a daemon it could not safely act on.
+    Daemon(String),
     DaemonStopped,
     /// A caller-supplied reference the CLI could not turn into one object.
     Invalid(String),
@@ -55,9 +50,10 @@ impl fmt::Display for AppError {
             Self::DaemonStopped => formatter.write_str(
                 "daemon is not running; run `ma2a start` with the same --state-dir first",
             ),
-            Self::Invalid(message) | Self::NotFound(message) | Self::Protocol(message) => {
-                formatter.write_str(message)
-            }
+            Self::Daemon(message)
+            | Self::Invalid(message)
+            | Self::NotFound(message)
+            | Self::Protocol(message) => formatter.write_str(message),
             Self::Io(error) => write!(formatter, "MA2A I/O failed: {error}"),
             Self::Ipc(error) => error.fmt(formatter),
             Self::Runtime(error) => error.fmt(formatter),
@@ -71,7 +67,8 @@ impl Error for AppError {
         match self {
             Self::Command(error) => Some(error),
             Self::CurrentUser(error) => Some(error),
-            Self::DaemonStopped
+            Self::Daemon(_)
+            | Self::DaemonStopped
             | Self::Invalid(_)
             | Self::NotFound(_)
             | Self::Protocol(_)
@@ -126,6 +123,7 @@ async fn main() -> ExitCode {
                 AppError::Invalid(_) | AppError::Usage(_) => ExitCode::from(2),
                 AppError::Command(_)
                 | AppError::CurrentUser(_)
+                | AppError::Daemon(_)
                 | AppError::DaemonStopped
                 | AppError::Io(_)
                 | AppError::Ipc(_)
@@ -219,38 +217,6 @@ async fn call(
     outcome
 }
 
-async fn stop_daemon(paths: IpcPaths) -> Result<(), AppError> {
-    daemon_control::require(&paths).await?;
-    let command = shutdown_command()?;
-    let response = LocalApiClient::new(paths.clone()).call(&command).await?;
-    let document: serde_json::Value =
-        serde_json::from_slice(&response).map_err(io::Error::other)?;
-    if document
-        .pointer("/result/type")
-        .and_then(serde_json::Value::as_str)
-        != Some("shutting_down")
-    {
-        return Err(io::Error::other("daemon rejected the stop request").into());
-    }
-    daemon_control::wait_until_stopped(&paths).await?;
-    Ok(())
-}
-
-fn shutdown_command() -> Result<api::Command, AppError> {
-    let request_id = RequestId::random()
-        .map_err(|_| io::Error::other("operating-system random source failed"))?;
-    let mut encoded_id = String::with_capacity(32);
-    for byte in request_id.as_bytes() {
-        write!(&mut encoded_id, "{byte:02x}")
-            .map_err(|_| io::Error::other("request identifier encoding failed"))?;
-    }
-    let request = format!(
-        r#"{{"version":{},"operation":"graceful_shutdown","request_id":"{encoded_id}"}}"#,
-        api::LOCAL_API_VERSION
-    );
-    Ok(api::decode_command(request.as_bytes()).map_err(IpcError::from)?)
-}
-
 fn default_state_dir() -> Result<PathBuf, AppError> {
     #[cfg(windows)]
     let root = PathBuf::from(
@@ -267,22 +233,10 @@ fn default_state_dir() -> Result<PathBuf, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{embedded_web, shutdown_command};
+    use super::embedded_web;
 
     #[test]
     fn embedded_frontend_is_present_when_binary_is_built() {
         assert!(!embedded_web::WEB_ASSETS.is_empty());
-    }
-
-    #[test]
-    fn shutdown_commands_use_fresh_request_identifiers() {
-        // Given
-        let first = shutdown_command().expect("first shutdown command");
-
-        // When
-        let second = shutdown_command().expect("second shutdown command");
-
-        // Then
-        assert_ne!(first.request_id(), second.request_id());
     }
 }

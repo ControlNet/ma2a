@@ -15,11 +15,19 @@ ma2a endpoint show [--json]
 ma2a daemon
 ```
 
-`start` explicitly starts the daemon in the background, waits for readiness, and returns to the
-shell. An already running, protocol-compatible daemon is reused without restarting it. `restart` gracefully stops the
-running daemon and starts it again; if stopped, it starts it. `stop` waits for graceful teardown
-and reports an error if no daemon is running. These commands use the same `--state-dir` as the
-business commands. The old `shutdown` command is removed.
+`start` explicitly starts the daemon in the background and returns once that daemon has reported
+readiness for this launch. An already running, protocol-compatible daemon is reused without
+restarting it and `start` reports `daemon already running`. A `start` that fails has already
+terminated and reaped the process it launched. `restart` stops the running daemon to proven absence
+and then starts it again; if stopped, it starts it, and if the previous daemon cannot be proven gone
+it fails rather than starting a second one. `stop` returns only once the daemon has released the
+state directory, and reports an error if no daemon is running. These commands use the same
+`--state-dir` as the business commands. The old `shutdown` command is removed.
+
+A daemon that still owns the state directory but has stopped answering, or ownership that cannot be
+accounted for, makes every lifecycle command fail closed with an explanation. MA2A never starts a
+second daemon beside one whose departure has not been proven. See
+[operations.md](operations.md#runtime-lifecycle) for what to do about it.
 
 If the daemon's API version is incompatible, `start` and `restart` automatically stop it through
 the lifecycle compatibility path and launch the current CLI executable. `stop` uses the same
@@ -27,8 +35,9 @@ compatibility path to stop the old daemon and leaves it stopped. Business and UI
 perform this replacement. A different package version alone does not trigger replacement;
 use `restart` to switch a compatible daemon to the updated executable.
 
-`daemon` runs in the foreground for direct supervision. WebUI is stopped by default, including
-after `restart`. No business or UI command implicitly starts the daemon. `status` reads the Runtime
+`daemon` runs in the foreground for direct supervision and writes one readiness record to standard
+output when it is serving. It treats an interrupt or a termination signal as graceful shutdown.
+WebUI is stopped by default, including after `restart`. No business or UI command implicitly starts the daemon. `status` reads the Runtime
 snapshot and reports an error if the daemon is stopped; it never changes the running state.
 
 ## Spaces and Enrollment

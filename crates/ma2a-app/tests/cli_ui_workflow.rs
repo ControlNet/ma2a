@@ -1,15 +1,6 @@
 //! Process-level daemon-owned UI workflow coverage.
 
-use std::{
-    error::Error,
-    fs,
-    path::PathBuf,
-    process::Command,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::sync::Arc;
 
 use ma2a_runtime::{
     api::Command as ApiCommand,
@@ -18,9 +9,10 @@ use ma2a_runtime::{
 };
 use zeroize::Zeroizing;
 
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-type TestValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+#[path = "support/daemon_fixture.rs"]
+mod daemon_fixture;
+
+use daemon_fixture::{DaemonFixture, TestResult};
 
 #[derive(Debug)]
 struct FixedClock;
@@ -31,55 +23,24 @@ impl Clock for FixedClock {
     }
 }
 
-struct Fixture(PathBuf);
-
-impl Fixture {
-    fn new() -> TestValue<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ma2a-cli-ui-workflow-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(path))
-    }
-
-    fn run(&self, arguments: &[&str]) -> Result<std::process::Output, std::io::Error> {
-        Command::new(env!("CARGO_BIN_EXE_ma2a"))
-            .arg("--state-dir")
-            .arg(&self.0)
-            .args(arguments)
-            .output()
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _shutdown = self.run(&["stop"]);
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> TestResult {
-    // Given
-    let fixture = Fixture::new()?;
-    let started = fixture.run(&["start"])?;
+    // Given: a real detached daemon, because this test is about `restart`.
+    let mut fixture = DaemonFixture::idle("cli-ui-workflow")?;
+    let started = fixture.start_detached()?;
     assert!(
         started.status.success(),
         "{}",
         String::from_utf8_lossy(&started.stderr)
     );
     assert!(!fixture.run(&["ui", "start", "--json"])?.status.success());
-    let control =
-        CurrentUserRuntime::open_at(&fixture.0, Arc::new(FixedClock), WebAuthConfig::default())
-            .await?;
+    let control = CurrentUserRuntime::open_at(
+        fixture.state_dir(),
+        Arc::new(FixedClock),
+        WebAuthConfig::default(),
+    )
+    .await?;
     control
         .send(ApiCommand::ui_password_set(Zeroizing::new(
             "secure-process-test-password".to_owned(),
@@ -116,5 +77,5 @@ async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> Tes
     );
     assert!(stopped.get("url").is_some_and(serde_json::Value::is_null));
     assert!(fixture.run(&["ui", "start"])?.status.success());
-    Ok(())
+    fixture.shutdown()
 }

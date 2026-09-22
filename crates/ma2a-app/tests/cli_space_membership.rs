@@ -1,49 +1,43 @@
 //! Installed-CLI coverage for the piped invite/accept and leave workflows.
 
 use std::{
-    error::Error,
-    fs,
-    path::PathBuf,
+    path::Path,
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 use ma2a_core::SpaceId;
 use ma2a_store::{Repository, StoreConfig};
 use serde_json::Value;
 
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-type TestValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+#[path = "support/daemon_fixture.rs"]
+mod daemon_fixture;
 
-struct Endpoint(PathBuf);
+use daemon_fixture::{DaemonFixture, TestResult, TestValue};
+
+/// One Endpoint, with the daemon serving it owned by this test.
+struct Endpoint(DaemonFixture);
 
 impl Endpoint {
     fn start(label: &str) -> TestValue<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ma2a-cli-membership-{label}-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        }
-        let endpoint = Self(path);
-        succeed(&endpoint.run(&["start"])?)?;
-        Ok(endpoint)
+        Ok(Self(DaemonFixture::running(&format!(
+            "cli-membership-{label}"
+        ))?))
+    }
+
+    fn path(&self) -> &Path {
+        self.0.state_dir()
     }
 
     fn command(&self, arguments: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_ma2a"));
-        command.arg("--state-dir").arg(&self.0).args(arguments);
-        command
+        self.0.command(arguments)
     }
 
-    fn run(&self, arguments: &[&str]) -> Result<Output, std::io::Error> {
-        self.command(arguments).output()
+    fn run(&self, arguments: &[&str]) -> TestValue<Output> {
+        self.0.run(arguments)
+    }
+
+    fn shutdown(self) -> TestResult {
+        self.0.shutdown()
     }
 
     fn spaces(&self) -> TestValue<Vec<Value>> {
@@ -57,13 +51,6 @@ impl Endpoint {
     }
 }
 
-impl Drop for Endpoint {
-    fn drop(&mut self) {
-        let _shutdown = self.run(&["stop"]);
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
-
 fn succeed(output: &Output) -> TestResult {
     if output.status.success() {
         Ok(())
@@ -73,7 +60,7 @@ fn succeed(output: &Output) -> TestResult {
 }
 
 /// Reads the signed member labels for one Space from a state directory.
-fn member_labels(state_dir: &PathBuf, space_id: SpaceId) -> TestValue<Vec<String>> {
+fn member_labels(state_dir: &Path, space_id: SpaceId) -> TestValue<Vec<String>> {
     Ok(Repository::open(&StoreConfig::new(state_dir))?
         .load_space_chain(space_id)?
         .ok_or("Space chain is missing")?
@@ -145,14 +132,14 @@ fn a_piped_invite_joins_a_named_space_and_a_member_can_leave_it() -> TestResult 
     // member may be labelled "lab" and no placeholder may stand in for an
     // Endpoint. This is what the console reads, so it must be right in the data.
     let space = SpaceId::try_from(hex_bytes(&space_id)?.as_slice())?;
-    let labels = member_labels(&owner.0, space)?;
+    let labels = member_labels(owner.path(), space)?;
     assert_eq!(labels.len(), 2, "{labels:?}");
     for label in &labels {
         assert_ne!(label, "lab");
         assert_ne!(label, "local-endpoint");
         assert!(label.starts_with("endpoint-"), "{labels:?}");
     }
-    assert_eq!(member_labels(&member.0, space)?, labels);
+    assert_eq!(member_labels(member.path(), space)?, labels);
 
     // The owner cannot leave, and a member's departure is authority-signed.
     let refused = owner.run(&["space", "leave", "lab"])?;
@@ -205,5 +192,6 @@ fn a_piped_invite_joins_a_named_space_and_a_member_can_leave_it() -> TestResult 
         !departed.contains("Members:"),
         "post-departure output must not report membership: {departed}"
     );
-    Ok(())
+    member.shutdown()?;
+    owner.shutdown()
 }

@@ -60,7 +60,8 @@ async fn twenty_clients_share_one_runtime_endpoint_and_teardown_cleanly() -> Tes
     .await?;
     let endpoint_id = runtime.handle().status().await?.endpoint_id();
     let paths = IpcPaths::new(&state.0)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let cancellation = CancellationToken::new();
     let server_task = tokio::spawn(server.serve(cancellation.child_token()));
     let command = decode_command(br#"{"version":1,"operation":"status"}"#)?;
@@ -103,7 +104,8 @@ async fn ui_session_control_executes_through_the_live_daemon() -> TestResult {
     )
     .await?;
     let paths = IpcPaths::new(&state.0)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let cancellation = CancellationToken::new();
     let server_task = tokio::spawn(server.serve(cancellation.child_token()));
     let command = Command::session_revoke_all()?;
@@ -138,7 +140,8 @@ async fn password_set_updates_daemon_handshake_and_authoritative_revision() -> T
     )
     .await?;
     let paths = IpcPaths::new(&state.0)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let cancellation = CancellationToken::new();
     let server_task = tokio::spawn(server.serve(cancellation.child_token()));
     let client = LocalApiClient::new(paths);
@@ -198,7 +201,8 @@ async fn snapshot_fetch_returns_the_authoritative_runtime_projection() -> TestRe
         )
         .await?;
     let paths = IpcPaths::new(&state.0)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let cancellation = CancellationToken::new();
     let server_task = tokio::spawn(server.serve(cancellation.child_token()));
     let command = decode_command(br#"{"version":1,"operation":"snapshot_fetch"}"#)?;
@@ -265,7 +269,8 @@ async fn a_server_stops_accepting_once_its_runtime_stops() -> TestResult {
     )
     .await?;
     let paths = IpcPaths::new(&state.0)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let cancellation = CancellationToken::new();
     let server_task = tokio::spawn(server.serve(cancellation.child_token()));
 

@@ -23,11 +23,10 @@ async fn pending_mutation_fails_closed_after_runtime_restart() -> TestResult {
         WebAuthConfig::default(),
     )
     .await?;
-    let server = LiveServer::spawn(LocalApiServer::bind(
-        paths.clone(),
-        second_runtime.handle(),
-        control,
-    )?);
+    let server = LiveServer::spawn(
+        LocalApiServer::bind_for_launch(paths.clone(), second_runtime.handle(), control, None)
+            .await?,
+    );
     let client = LocalApiClient::new(paths);
     client.probe().await?;
     let conflict = api::decode_command(

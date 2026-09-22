@@ -1,9 +1,17 @@
-use std::{fs::TryLockError, path::PathBuf, sync::Arc};
+//! Running the daemon that owns one state directory.
+
+use std::{
+    fs::{File, OpenOptions, TryLockError},
+    io::{self, Write as _},
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use ma2a_runtime::{
     Runtime,
     current_user::CurrentUserRuntime,
-    ipc::{IpcPaths, LocalApiClient, LocalApiServer, ServerExit},
+    ipc::{DaemonIdentity, DaemonReport, IpcPaths, LocalApiServer, RuntimeBoot, ServerExit},
     web::{SystemClock, WebAuthConfig},
 };
 use ma2a_store::StoreConfig;
@@ -11,43 +19,27 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AppError,
-    daemon_control::{READY_TOKEN, open_lock, wait_until_live},
+    daemon_control::{LAUNCH_NONCE_VARIABLE, endpoint_answers, open_lock},
 };
 
-/// Tells the parent that spawned this daemon that it can now serve commands.
+/// Bounds a graceful Runtime shutdown before this process leaves regardless.
 ///
-/// A detached daemon has no other way to report this, and without it the parent
-/// can only poll a socket against a guessed budget: it cannot tell a slow start
-/// from a dead child, and a child that starts after the parent gave up is left
-/// with no owner. One line on the inherited pipe answers both exactly. Only a
-/// detached daemon writes it; a foreground one is already visible to its caller.
-fn signal_ready(detached: bool) {
-    use std::io::Write as _;
+/// A Runtime that will not finish closing would otherwise keep the daemon, and
+/// with it the singleton lock, alive indefinitely: the caller that asked it to
+/// stop would wait for a release that never comes, and so would every later
+/// start. Leaving on a bound is the escalation, and the operating system then
+/// releases the lock and every handle as this process ends.
+const RUNTIME_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(20);
 
-    if !detached {
-        return;
-    }
-    let mut stdout = std::io::stdout();
-    let _announced = writeln!(stdout, "{READY_TOKEN}");
-    let _flushed = stdout.flush();
-}
-
-/// Reports a Runtime that stopped underneath the transport as a daemon failure.
+/// Keeps the singleton lock open for exactly as long as this process lives.
 ///
-/// Cancellation and a completed graceful shutdown are ordinary exits. A Runtime
-/// that stopped on its own is not: the daemon can no longer answer anything, so
-/// it must fail loudly and let its supervisor or the operator start a new one
-/// rather than linger as an endpoint that accepts requests and abandons them.
-fn finish_serving(result: Result<ServerExit, ma2a_runtime::ipc::IpcError>) -> Result<(), AppError> {
-    match result {
-        Ok(ServerExit::RuntimeStopped) => Err(std::io::Error::other(
-            "the Runtime stopped; the daemon cannot answer any command",
-        )
-        .into()),
-        Ok(_) => Ok(()),
-        Err(error) => Err(AppError::from(error)),
-    }
-}
+/// The lock is never closed deliberately. Releasing it is left to the operating
+/// system, which does it as part of this process ending, so another process
+/// acquiring it has *observed* this daemon exit rather than inferred it from a
+/// quiet socket. Dropping the lock during teardown instead would open a window
+/// in which a replacement starts while this Runtime is still closing, which is
+/// how one state directory ends up with two of them.
+static SINGLETON_LOCK: OnceLock<File> = OnceLock::new();
 
 pub(crate) async fn run(
     state_dir: PathBuf,
@@ -56,24 +48,34 @@ pub(crate) async fn run(
 ) -> Result<(), AppError> {
     #[cfg(unix)]
     if detach_session {
-        rustix::process::setsid().map_err(std::io::Error::from)?;
+        rustix::process::setsid().map_err(io::Error::from)?;
     }
     paths.prepare()?;
+    claim_singleton(&paths)?;
+    serve(state_dir, paths).await
+}
+
+/// Claims the state directory, or refuses to run beside an existing owner.
+///
+/// Waiting for the other daemon and then reporting success, as an earlier
+/// revision did, made a launch look like it had produced the daemon that answers
+/// when it had produced nothing. A launch that did not become the owner failed.
+fn claim_singleton(paths: &IpcPaths) -> Result<(), AppError> {
     let lock = open_lock(&paths.lock_path())?;
     match lock.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            wait_until_live(&LocalApiClient::new(paths)).await?;
-            signal_ready(detach_session);
-            return Ok(());
+        Ok(()) => {
+            let _held_until_exit = SINGLETON_LOCK.set(lock);
+            Ok(())
         }
-        Err(TryLockError::Error(error)) => return Err(error.into()),
+        Err(TryLockError::WouldBlock) => Err(AppError::Daemon(
+            "another daemon already owns this state directory".to_owned(),
+        )),
+        Err(TryLockError::Error(error)) => Err(error.into()),
     }
-    if LocalApiClient::new(paths.clone()).is_live().await {
-        signal_ready(detach_session);
-        return Ok(());
-    }
-    paths.remove_stale_endpoint()?;
+}
+
+async fn serve(state_dir: PathBuf, paths: IpcPaths) -> Result<(), AppError> {
+    let launch_nonce = std::env::var(LAUNCH_NONCE_VARIABLE).ok();
     let runtime = Runtime::start(StoreConfig::new(&state_dir)).await?;
     let control = CurrentUserRuntime::open_at(
         &state_dir,
@@ -87,36 +89,184 @@ pub(crate) async fn run(
         ma2a_runtime::web::WebRuntimeDependencies::new(
             control.web_auth().clone(),
             ma2a_runtime::web::WebAssets::new(crate::embedded_web::WEB_ASSETS),
-            LocalApiClient::new(paths.clone()),
+            ma2a_runtime::ipc::LocalApiClient::new(paths.clone()),
         ),
     );
-    let serve_result = match LocalApiServer::bind(paths.clone(), runtime.handle(), control) {
-        Ok(server) => {
-            // The endpoint is bound, so a caller can connect from here on.
-            signal_ready(detach_session);
-            let cancellation = CancellationToken::new();
-            let serving = server
-                .with_web_lifecycle(web.clone())
-                .serve(cancellation.child_token());
-            tokio::pin!(serving);
-            tokio::select! {
-                result = &mut serving => finish_serving(result),
-                signal = tokio::signal::ctrl_c() => {
-                    cancellation.cancel();
-                    match signal {
-                        Ok(()) => finish_serving(serving.await),
-                        Err(error) => Err(error.into()),
-                    }
-                }
-            }
-        }
-        Err(error) => Err(error.into()),
-    };
+    let status = runtime.handle().status().await?;
+    let identity = DaemonIdentity::of_current_process(
+        launch_nonce,
+        RuntimeBoot::new(status.boot_id(), status.endpoint_id()),
+    );
+    let serve_result = begin_serving(Launch {
+        paths: paths.clone(),
+        identity: identity.clone(),
+        handle: runtime.handle(),
+        control,
+        web: web.clone(),
+    })
+    .await;
     web.stop().await;
-    let shutdown_result = runtime.shutdown().await.map_err(AppError::from);
-    let cleanup_result = paths.remove_stale_endpoint().map_err(AppError::from);
-    drop(lock);
+    let shutdown_result = shutdown_runtime(runtime).await;
+    let cleanup_result = clean_up(&paths, &identity);
     serve_result?;
     shutdown_result?;
     cleanup_result
+}
+
+/// Everything one daemon launch serves with, opened independently and used once.
+struct Launch {
+    paths: IpcPaths,
+    identity: DaemonIdentity,
+    handle: ma2a_runtime::RuntimeHandle,
+    control: CurrentUserRuntime,
+    web: ma2a_runtime::web::WebLifecycle,
+}
+
+async fn begin_serving(launch: Launch) -> Result<(), AppError> {
+    reclaim_endpoint(&launch.paths).await?;
+    let server = LocalApiServer::bind(
+        launch.paths.clone(),
+        launch.handle,
+        launch.control,
+        launch.identity.clone(),
+    )?;
+    // The endpoint is bound, so a caller can connect from this point on.
+    announce(&launch.paths, &launch.identity)?;
+    let cancellation = CancellationToken::new();
+    let serving = server
+        .with_web_lifecycle(launch.web)
+        .serve(cancellation.child_token());
+    tokio::pin!(serving);
+    tokio::select! {
+        result = &mut serving => finish_serving(result),
+        signal = termination_requested() => {
+            cancellation.cancel();
+            match signal {
+                Ok(()) => finish_serving(serving.await),
+                Err(error) => Err(error.into()),
+            }
+        }
+    }
+}
+
+/// Removes an endpoint left behind, having first confirmed nothing is using it.
+///
+/// This daemon holds the singleton lock, so any endpoint here belongs to an
+/// owner that has gone. If something is nonetheless still answering, it is not
+/// accounted for and must not be unlinked underneath.
+async fn reclaim_endpoint(paths: &IpcPaths) -> Result<(), AppError> {
+    if endpoint_answers(paths).await {
+        return Err(AppError::Daemon(
+            "something is still answering this state directory's endpoint; refusing to replace it"
+                .to_owned(),
+        ));
+    }
+    Ok(paths.remove_stale_endpoint()?)
+}
+
+/// Records what this daemon is and reports readiness to whoever launched it.
+///
+/// The readiness record is also the launcher's ownership lease. Until it lands,
+/// the launcher still owns this process and will terminate it if the attempt
+/// fails. If it cannot land — the launcher died, the pipe is gone — then nothing
+/// owns this process any more, and carrying on would leave exactly the orphan
+/// the lease exists to prevent. A readiness report that cannot be delivered is
+/// therefore a failed start.
+fn announce(paths: &IpcPaths, identity: &DaemonIdentity) -> Result<(), AppError> {
+    write_record(paths, identity)?;
+    let mut stdout = io::stdout();
+    stdout.write_all(identity.ready_line().as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn write_record(paths: &IpcPaths, identity: &DaemonIdentity) -> Result<(), AppError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut record = options.open(paths.daemon_record_path())?;
+    record.write_all(identity.metadata().as_bytes())?;
+    record.flush()?;
+    Ok(())
+}
+
+/// Removes the daemon record, but only while it still describes this daemon.
+///
+/// A record naming another launch belongs to a daemon that took over after this
+/// one, and erasing it would take away a live daemon's identity.
+fn remove_record(paths: &IpcPaths, identity: &DaemonIdentity) {
+    let path = paths.daemon_record_path();
+    let ours = std::fs::read(&path)
+        .ok()
+        .and_then(|recorded| DaemonReport::parse(&recorded))
+        .is_some_and(|recorded| {
+            recorded.launch_nonce() == identity.launch_nonce()
+                && recorded.incarnation().pid() == std::process::id()
+        });
+    if ours {
+        let _removed = std::fs::remove_file(path);
+    }
+}
+
+/// Waits for the operating system's request that this daemon stop.
+///
+/// A detached daemon has no terminal, so an interrupt alone would never reach
+/// it; termination is the signal a launcher, a supervisor or an operator
+/// actually sends, and answering it is what makes graceful termination real.
+async fn termination_requested() -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _interrupted = interrupt.recv() => Ok(()),
+            _terminated = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(windows)]
+    {
+        tokio::signal::ctrl_c().await
+    }
+}
+
+/// Reports a Runtime that stopped underneath the transport as a daemon failure.
+///
+/// Cancellation and a completed graceful shutdown are ordinary exits. A Runtime
+/// that stopped on its own is not: the daemon can no longer answer anything, so
+/// it must fail loudly and let its supervisor or the operator start a new one
+/// rather than linger as an endpoint that accepts requests and abandons them.
+fn finish_serving(result: Result<ServerExit, ma2a_runtime::ipc::IpcError>) -> Result<(), AppError> {
+    match result {
+        Ok(ServerExit::RuntimeStopped) => Err(io::Error::other(
+            "the Runtime stopped; the daemon cannot answer any command",
+        )
+        .into()),
+        Ok(_) => Ok(()),
+        Err(error) => Err(AppError::from(error)),
+    }
+}
+
+async fn shutdown_runtime(runtime: Runtime) -> Result<(), AppError> {
+    match tokio::time::timeout(RUNTIME_SHUTDOWN_DEADLINE, runtime.shutdown()).await {
+        Ok(result) => {
+            let _report = result?;
+            Ok(())
+        }
+        Err(_elapsed) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "the Runtime did not finish shutting down; the daemon is exiting anyway",
+        )
+        .into()),
+    }
+}
+
+fn clean_up(paths: &IpcPaths, identity: &DaemonIdentity) -> Result<(), AppError> {
+    remove_record(paths, identity);
+    Ok(paths.remove_stale_endpoint()?)
 }

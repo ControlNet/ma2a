@@ -1,63 +1,19 @@
-//! Credential commands exercised through an explicitly started daemon.
+//! Credential commands exercised through a daemon this test owns.
 
-use std::{
-    error::Error,
-    fs::{self, OpenOptions, TryLockError},
-    path::PathBuf,
-    process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::fs::{OpenOptions, TryLockError};
 
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+#[path = "support/daemon_fixture.rs"]
+mod daemon_fixture;
 
-struct Fixture(PathBuf);
-
-impl Fixture {
-    fn new() -> TestResultValue<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let state_dir = std::env::temp_dir().join(format!(
-            "ma2a-credential-daemon-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&state_dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(state_dir))
-    }
-
-    fn command(&self, arguments: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_ma2a"));
-        command
-            .arg("--state-dir")
-            .arg(&self.0)
-            .args(arguments)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _shutdown = self.command(&["stop"]).output();
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
-}
-
-type TestResultValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
+use daemon_fixture::{DaemonFixture, TestResult};
 
 #[test]
 fn sessions_revoke_all_uses_the_running_daemon_control_path() -> TestResult {
     // Given
-    let fixture = Fixture::new()?;
-    assert!(fixture.command(&["start"]).output()?.status.success());
+    let fixture = DaemonFixture::running("credential-daemon")?;
 
     // When
-    let output = fixture.command(&["ui", "revoke-all"]).output()?;
+    let output = fixture.run(&["ui", "revoke-all"])?;
 
     // Then
     assert!(
@@ -72,22 +28,22 @@ fn sessions_revoke_all_uses_the_running_daemon_control_path() -> TestResult {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
-        .open(fixture.0.join("run-v1/daemon.lock"))?;
+        .open(fixture.runtime_dir().join("daemon.lock"))?;
     assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
 fn singular_session_revoke_all_is_rejected_by_cli() -> TestResult {
     // Given
-    let fixture = Fixture::new()?;
+    let fixture = DaemonFixture::idle("credential-cli")?;
 
     // When
-    let output = fixture.command(&["ui", "session", "revoke-all"]).output()?;
+    let output = fixture.run(&["ui", "session", "revoke-all"])?;
 
     // Then
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8(output.stderr)?;
     assert_eq!(stderr, "unknown command; run ma2a --help\n");
-    Ok(())
+    fixture.shutdown()
 }

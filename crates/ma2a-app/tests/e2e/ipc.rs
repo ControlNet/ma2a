@@ -33,7 +33,8 @@ async fn concurrent_private_ipc_clients_share_one_runtime_and_teardown() -> Test
             .parent()
             .ok_or("state path missing")?,
     )?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let cancellation = CancellationToken::new();
     let task = tokio::spawn(server.serve(cancellation.child_token()));
     let command = decode_command(br#"{"version":1,"operation":"status"}"#)?;

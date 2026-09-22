@@ -41,7 +41,9 @@ async fn sse_queue_overflow_resyncs_and_dropped_receiver_releases_permit() -> Te
         .login(Zeroizing::new("sse-overflow-passphrase-9!".to_owned()))
         .await?;
     let paths = IpcPaths::new(state_dir)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control.clone())?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control.clone(), None)
+            .await?;
     let cancellation = CancellationToken::new();
     let task = tokio::spawn(server.serve(cancellation.child_token()));
     let router = build_runtime_router(

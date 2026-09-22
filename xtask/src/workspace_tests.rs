@@ -8,7 +8,7 @@ const EXPECTED_MEMBERS: [&str; 6] = [
     "ma2a-store",
     "xtask",
 ];
-const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 5] = [
+const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 6] = [
     (
         "crates/ma2a-app/src/commands/workflows/space_windows.rs",
         concat!(
@@ -21,6 +21,13 @@ const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 5] = [
         concat!(
             "allow(unsafe",
             "_code, reason = \"audited Windows SID FFI boundary\")"
+        ),
+    ),
+    (
+        "crates/ma2a-runtime/src/ipc/lifecycle/process_windows.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows process-times FFI boundary\")"
         ),
     ),
     (

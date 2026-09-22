@@ -1,32 +1,19 @@
 //! Stable machine-readable CLI output coverage.
 
-use std::{
-    error::Error,
-    fs,
-    path::PathBuf,
-    process::Command,
-    sync::atomic::{AtomicU64, Ordering},
-};
-
 use serde_json::Value;
 
-type TestResult = Result<(), Box<dyn Error>>;
+#[path = "support/daemon_fixture.rs"]
+mod daemon_fixture;
 
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+use daemon_fixture::{DaemonFixture, TestResult};
 
 #[test]
 fn status_json_uses_the_local_api_envelope() -> TestResult {
     // Given
-    let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-    let state_dir = state_dir(serial)?;
-    start(&state_dir)?;
+    let fixture = DaemonFixture::running("cli-json-status")?;
 
     // When
-    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .args(["status", "--json"])
-        .output()?;
+    let output = fixture.run(&["status", "--json"])?;
 
     // Then
     assert!(
@@ -40,32 +27,16 @@ fn status_json_uses_the_local_api_envelope() -> TestResult {
         Some("snapshot")
     );
 
-    let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .arg("stop")
-        .output();
-    fs::remove_dir_all(state_dir)?;
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the process scenario keeps creation, restart, and durable label proofs visible"
-)]
 fn space_create_commits_membership_through_the_runtime() -> TestResult {
     // Given
-    let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-    let state_dir = state_dir(serial)?;
-    start(&state_dir)?;
+    let mut fixture = DaemonFixture::running("cli-json-space")?;
 
     // When
-    let created = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .args(["space", "create", "Personal", "--json"])
-        .output()?;
+    let created = fixture.run(&["space", "create", "Personal", "--json"])?;
 
     // Then
     assert!(
@@ -92,11 +63,7 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
         .pointer("/result/payload/space_id")
         .and_then(Value::as_str)
         .ok_or("missing created Space ID")?;
-    let listed = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .args(["space", "list", "--json"])
-        .output()?;
+    let listed = fixture.run(&["space", "list", "--json"])?;
     let list_response: Value = serde_json::from_slice(&listed.stdout)?;
     assert_eq!(
         list_response
@@ -104,11 +71,7 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
             .and_then(Value::as_str),
         Some("spaces")
     );
-    let shown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .args(["space", "show", space_id, "--json"])
-        .output()?;
+    let shown = fixture.run(&["space", "show", space_id, "--json"])?;
     let show_response: Value = serde_json::from_slice(&shown.stdout)?;
     assert_eq!(
         show_response
@@ -116,11 +79,7 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
             .and_then(Value::as_str),
         Some("space")
     );
-    let status = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .args(["status", "--json"])
-        .output()?;
+    let status = fixture.run(&["status", "--json"])?;
     let snapshot: Value = serde_json::from_slice(&status.stdout)?;
     assert_eq!(
         snapshot.get("revision").and_then(Value::as_u64),
@@ -140,17 +99,10 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
         Some("Personal")
     );
 
-    let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .arg("stop")
-        .output();
-    start(&state_dir)?;
-    let restarted = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .args(["space", "list", "--json"])
-        .output()?;
+    // A fresh Runtime boot over the same store is what proves the label is durable.
+    fixture.stop_owned()?;
+    fixture.start_owned()?;
+    let restarted = fixture.run(&["space", "list", "--json"])?;
     let restarted_response: Value = serde_json::from_slice(&restarted.stdout)?;
     assert_eq!(
         restarted_response
@@ -158,37 +110,5 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
             .and_then(Value::as_str),
         Some("Personal")
     );
-
-    let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .arg("stop")
-        .output();
-    fs::remove_dir_all(state_dir)?;
-    Ok(())
-}
-
-fn start(state_dir: &std::path::Path) -> TestResult {
-    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(state_dir)
-        .arg("start")
-        .output()?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
-}
-
-fn state_dir(serial: u64) -> Result<PathBuf, std::io::Error> {
-    let path = std::env::temp_dir().join(format!("ma2a-cli-json-{}-{serial}", std::process::id()));
-    fs::create_dir(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(path)
+    fixture.shutdown()
 }

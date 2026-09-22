@@ -1,69 +1,31 @@
 //! Process-level invite input security coverage.
 
-use std::{
-    error::Error,
-    fs,
-    path::PathBuf,
-    process::{Command, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{fs, path::PathBuf, process::Stdio};
 
 use serde_json::Value;
 
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-type TestValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+#[path = "support/daemon_fixture.rs"]
+mod daemon_fixture;
 
-struct Fixture(PathBuf);
+use daemon_fixture::{DaemonFixture, TestResult, TestValue};
 
-impl Fixture {
-    fn new() -> TestValue<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ma2a-cli-invite-security-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(path))
-    }
-
-    fn run(&self, arguments: &[&str]) -> Result<Output, std::io::Error> {
-        Command::new(env!("CARGO_BIN_EXE_ma2a"))
-            .arg("--state-dir")
-            .arg(&self.0)
-            .args(arguments)
-            .output()
-    }
-
-    fn create_space(&self, name: &str) -> TestValue<String> {
-        let _started = self.run(&["start"])?;
-        let output = self.run(&["space", "create", name, "--json"])?;
-        let response: Value = serde_json::from_slice(&output.stdout)?;
-        response
-            .pointer("/result/payload/space_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| "missing created Space ID".into())
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _shutdown = self.run(&["stop"]);
-        let _cleanup = fs::remove_dir_all(&self.0);
-    }
+/// Starts an owned daemon with one Space, ready to issue invites for it.
+fn with_space(name: &str) -> TestValue<(DaemonFixture, String)> {
+    let fixture = DaemonFixture::running("cli-invite-security")?;
+    let output = fixture.run_ok(&["space", "create", name, "--json"])?;
+    let response: Value = serde_json::from_slice(&output.stdout)?;
+    let space = response
+        .pointer("/result/payload/space_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or("missing created Space ID")?;
+    Ok((fixture, space))
 }
 
 #[test]
 fn the_invite_ticket_never_enters_a_runtime_json_envelope() -> TestResult {
     // Given
-    let fixture = Fixture::new()?;
-    let _space = fixture.create_space("secrets")?;
+    let (fixture, _space) = with_space("secrets")?;
     let invite = fixture.run(&["space", "invite", "secrets"])?;
     assert!(
         invite.status.success(),
@@ -81,14 +43,13 @@ fn the_invite_ticket_never_enters_a_runtime_json_envelope() -> TestResult {
     assert!(!listed.contains(&ticket), "invite leaked into space list");
     assert!(!status.contains(&ticket), "invite leaked into the snapshot");
     assert!(!String::from_utf8(invite.stderr)?.contains(&ticket));
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
 fn the_owner_only_ticket_file_does_not_survive_invite_creation() -> TestResult {
     // Given
-    let fixture = Fixture::new()?;
-    let _space = fixture.create_space("ephemeral")?;
+    let (fixture, _space) = with_space("ephemeral")?;
 
     // When
     let invite = fixture.run(&["space", "invite", "ephemeral"])?;
@@ -99,7 +60,7 @@ fn the_owner_only_ticket_file_does_not_survive_invite_creation() -> TestResult {
         "{}",
         String::from_utf8_lossy(&invite.stderr)
     );
-    let residue = fs::read_dir(&fixture.0)?
+    let residue = fs::read_dir(fixture.state_dir())?
         .filter_map(Result::ok)
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.starts_with(".invite-"))
@@ -108,7 +69,7 @@ fn the_owner_only_ticket_file_does_not_survive_invite_creation() -> TestResult {
         residue.is_empty(),
         "ticket residue left behind: {residue:?}"
     );
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
@@ -116,15 +77,10 @@ fn piped_acceptance_needs_no_flag_and_reaches_the_runtime() -> TestResult {
     use std::io::Write as _;
 
     // Given
-    let fixture = Fixture::new()?;
-    let _space = fixture.create_space("piped")?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&fixture.0)
-        .args(["space", "accept"])
+    let (fixture, _space) = with_space("piped")?;
+    let mut child = fixture
+        .command(&["space", "accept"])
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .spawn()?;
     child
         .stdin
@@ -141,7 +97,7 @@ fn piped_acceptance_needs_no_flag_and_reaches_the_runtime() -> TestResult {
     // Reaching Runtime validation proves stdin was consumed without a flag.
     assert!(stderr.contains("invalid_input"), "{stderr}");
     assert!(!stderr.contains("requires"), "{stderr}");
-    Ok(())
+    fixture.shutdown()
 }
 
 /// The hidden prompt reads whatever terminal standard input is attached to, so a
@@ -161,8 +117,7 @@ fn interactive_acceptance_prompts_for_the_ticket_without_echoing_it() -> TestRes
     use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 
     // Given
-    let fixture = Fixture::new()?;
-    let _space = fixture.create_space("interactive")?;
+    let (fixture, _space) = with_space("interactive")?;
     let controller = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
     grantpt(&controller)?;
     unlockpt(&controller)?;
@@ -174,10 +129,8 @@ fn interactive_acceptance_prompts_for_the_ticket_without_echoing_it() -> TestRes
         .read(true)
         .write(true)
         .open(&device)?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&fixture.0)
-        .args(["space", "accept"])
+    let mut child = fixture
+        .command(&["space", "accept"])
         .stdin(Stdio::from(terminal.try_clone()?))
         .stdout(Stdio::from(terminal.try_clone()?))
         .stderr(Stdio::from(terminal))
@@ -203,5 +156,5 @@ fn interactive_acceptance_prompts_for_the_ticket_without_echoing_it() -> TestRes
         !transcript.contains("not-a-valid-ticket"),
         "the prompt must not echo the ticket: {transcript}"
     );
-    Ok(())
+    fixture.shutdown()
 }

@@ -1,5 +1,7 @@
+//! Deciding what to do about a state directory's daemon, and proving it happened.
+
 use std::{
-    fs::{File, OpenOptions, TryLockError},
+    fs::{File, OpenOptions},
     io,
     path::Path,
     time::Duration,
@@ -9,17 +11,24 @@ use ma2a_runtime::ipc::{IpcError, IpcPaths, LocalApiClient};
 
 use crate::AppError;
 
+mod legacy;
 mod spawn;
-pub(crate) use spawn::READY_TOKEN;
+mod state;
+mod teardown;
+
+use legacy::stop_incompatible;
+pub(crate) use spawn::LAUNCH_NONCE_VARIABLE;
 use spawn::spawn_daemon;
+pub(crate) use state::{DaemonState, classify, endpoint_answers};
+pub(crate) use teardown::wait_until_released;
 
 /// Last-resort bound on a daemon that neither reports readiness nor exits.
 ///
-/// Startup no longer waits on this: the daemon reports readiness on a pipe, so
-/// the common case returns as soon as it is actually ready and a daemon that
-/// dies is noticed at once through end-of-file. This only stops a caller hanging
-/// forever on a child that does neither, so it is deliberately generous; a tight
-/// value here failed cold starts that were still legitimately progressing.
+/// Startup does not wait on this: the daemon reports readiness on a pipe, so the
+/// common case returns as soon as it is genuinely ready and a daemon that dies is
+/// noticed at once through end-of-file. This only stops a caller hanging forever
+/// on a child that does neither, so it is deliberately generous; a tight value
+/// here failed cold starts that were still legitimately progressing.
 const STARTUP_DEADLINE: Duration = Duration::from_secs(60);
 
 const MAX_RETRY_MILLIS: u64 = 100;
@@ -30,42 +39,21 @@ pub(crate) enum StartOutcome {
     AlreadyRunning,
 }
 
-pub(crate) async fn is_running(paths: &IpcPaths) -> Result<bool, AppError> {
-    match LocalApiClient::new(paths.clone()).probe().await {
-        Ok(()) => Ok(true),
-        Err(IpcError::Io(error)) if reports_no_daemon(error.kind()) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Reports whether a handshake transport failure means no usable daemon answers.
+/// Requires a daemon that can serve business commands.
 ///
-/// A peer that closes the handshake instead of answering it is not a usable
-/// daemon, however it got into that state. Returning the raw transport error
-/// left `stop` and `restart` unable to act on a daemon that still holds the
-/// endpoint but answers nothing, which is exactly when a caller most needs them
-/// to work. Taking the daemon lock still prevents starting a second Runtime
-/// beside one that has not finished exiting.
-const fn reports_no_daemon(kind: io::ErrorKind) -> bool {
-    matches!(
-        kind,
-        io::ErrorKind::NotFound
-            | io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::BrokenPipe
-    )
-}
-
-// This path never creates directories, takes startup locks, or spawns a process.
+/// This path never creates directories, takes the startup lock, or launches
+/// anything. An owner that has stopped answering is reported as exactly that,
+/// because telling a caller "not running" would invite it to start a second one.
 pub(crate) async fn require(paths: &IpcPaths) -> Result<(), AppError> {
-    if is_running(paths).await? {
-        Ok(())
-    } else {
-        Err(AppError::DaemonStopped)
+    match classify(paths).await? {
+        DaemonState::Ready(_) => Ok(()),
+        DaemonState::Absent => Err(AppError::DaemonStopped),
+        DaemonState::Incompatible => Err(IpcError::VersionMismatch.into()),
+        refusal => Err(refusal.into_refusal()),
     }
 }
 
+/// Starts the daemon for this state directory, or reports why it will not.
 pub(crate) async fn start(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome, AppError> {
     paths.prepare()?;
     let startup_lock = open_lock(&paths.startup_lock_path())?;
@@ -73,64 +61,72 @@ pub(crate) async fn start(state_dir: &Path, paths: &IpcPaths) -> Result<StartOut
     start_locked(state_dir, paths).await
 }
 
+/// Stops the daemon and returns only once it has released the state directory.
+pub(crate) async fn stop(paths: &IpcPaths) -> Result<(), AppError> {
+    // Classify before creating anything. Stopping a directory no daemon has ever
+    // used must not be the thing that brings that directory into existence.
+    if matches!(classify(paths).await?, DaemonState::Absent) {
+        return Err(AppError::DaemonStopped);
+    }
+    paths.prepare()?;
+    let startup_lock = open_lock(&paths.startup_lock_path())?;
+    acquire_startup_lock(&startup_lock).await?;
+    stop_locked(paths).await
+}
+
+/// Stops to proven absence and then starts. It never does only the second half.
 pub(crate) async fn restart(state_dir: &Path, paths: &IpcPaths) -> Result<(), AppError> {
     paths.prepare()?;
     let startup_lock = open_lock(&paths.startup_lock_path())?;
     acquire_startup_lock(&startup_lock).await?;
-    match is_running(paths).await {
-        Ok(true) => crate::stop_daemon(paths.clone()).await?,
-        Ok(false) => {}
-        Err(AppError::Ipc(IpcError::VersionMismatch)) => stop_incompatible(paths).await?,
-        Err(error) => return Err(error),
+    match classify(paths).await? {
+        DaemonState::Absent => {}
+        DaemonState::Incompatible => stop_incompatible(paths).await?,
+        DaemonState::Ready(_) => {
+            stop_locked(paths).await?;
+            // Starting is only allowed once the previous owner is proven gone,
+            // and the only thing that proves that is looking again.
+            match classify(paths).await? {
+                DaemonState::Absent => {}
+                remaining => return Err(remaining.into_refusal()),
+            }
+        }
+        refusal => return Err(refusal.into_refusal()),
     }
     start_locked(state_dir, paths).await?;
     Ok(())
 }
 
-pub(crate) async fn stop(paths: &IpcPaths) -> Result<(), AppError> {
-    // Preserve the no-state-creation error for a stopped daemon, but allow the
-    // lifecycle-only compatibility path once the startup lock is held.
-    match require(paths).await {
-        Ok(()) | Err(AppError::Ipc(IpcError::VersionMismatch)) => {}
-        Err(error) => return Err(error),
-    }
-    let startup_lock = open_lock(&paths.startup_lock_path())?;
-    acquire_startup_lock(&startup_lock).await?;
-    match crate::stop_daemon(paths.clone()).await {
-        Err(AppError::Ipc(IpcError::VersionMismatch)) => stop_incompatible(paths).await,
-        result => result,
-    }
-}
-
-async fn stop_incompatible(paths: &IpcPaths) -> Result<(), AppError> {
-    eprintln!("daemon protocol is incompatible; stopping the existing daemon");
-    LocalApiClient::new(paths.clone())
-        .shutdown_compatible()
-        .await?;
-    wait_until_stopped(paths).await
-}
-
 async fn start_locked(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome, AppError> {
-    match is_running(paths).await {
-        Ok(true) => return Ok(StartOutcome::AlreadyRunning),
-        Ok(false) => {}
-        Err(AppError::Ipc(IpcError::VersionMismatch)) => stop_incompatible(paths).await?,
-        Err(error) => return Err(error),
+    match classify(paths).await? {
+        DaemonState::Ready(_) => return Ok(StartOutcome::AlreadyRunning),
+        DaemonState::Absent => {}
+        DaemonState::Incompatible => stop_incompatible(paths).await?,
+        refusal => return Err(refusal.into_refusal()),
     }
-    let daemon_lock = open_lock(&paths.lock_path())?;
-    match daemon_lock.try_lock() {
-        Ok(()) => {
-            paths.remove_stale_endpoint()?;
-            // The child must acquire this lock itself. Keep the startup lock
-            // held by the caller, but release the daemon lock before spawning.
-            drop(daemon_lock);
-            spawn_daemon(state_dir, paths).await?;
-        }
-        Err(TryLockError::WouldBlock) => {}
-        Err(TryLockError::Error(error)) => return Err(error.into()),
-    }
-    wait_until_live(&LocalApiClient::new(paths.clone())).await?;
+    // Ownership is proven absent and this process holds the startup lock, so any
+    // endpoint still here was left behind by a daemon that has gone.
+    paths.remove_stale_endpoint()?;
+    let _launched = spawn_daemon(state_dir, paths).await?;
     Ok(StartOutcome::Started)
+}
+
+async fn stop_locked(paths: &IpcPaths) -> Result<(), AppError> {
+    match classify(paths).await? {
+        DaemonState::Absent => Err(AppError::DaemonStopped),
+        DaemonState::Ready(Some(report)) => {
+            LocalApiClient::new(paths.clone()).request_stop().await?;
+            wait_until_released(paths, Some(&report)).await
+        }
+        // A daemon of this API version that predates the lifecycle plane can only
+        // be asked through the command it does understand.
+        DaemonState::Ready(None) => {
+            legacy::request_shutdown(paths).await?;
+            wait_until_released(paths, None).await
+        }
+        DaemonState::Incompatible => stop_incompatible(paths).await,
+        refusal => Err(refusal.into_refusal()),
+    }
 }
 
 async fn acquire_startup_lock(lock: &File) -> Result<(), AppError> {
@@ -139,11 +135,11 @@ async fn acquire_startup_lock(lock: &File) -> Result<(), AppError> {
         loop {
             match lock.try_lock() {
                 Ok(()) => return Ok::<(), AppError>(()),
-                Err(TryLockError::WouldBlock) => {
+                Err(std::fs::TryLockError::WouldBlock) => {
                     tokio::time::sleep(retry_delay(attempt)).await;
-                    attempt += 1;
+                    attempt = attempt.saturating_add(1);
                 }
-                Err(TryLockError::Error(error)) => return Err(error.into()),
+                Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
             }
         }
     })
@@ -185,56 +181,10 @@ const fn retry_delay(attempt: u32) -> Duration {
     })
 }
 
-pub(crate) async fn wait_until_live(client: &LocalApiClient) -> Result<(), AppError> {
-    tokio::time::timeout(STARTUP_DEADLINE, async {
-        let mut attempt = 0;
-        loop {
-            match client.probe().await {
-                Ok(()) => return Ok::<(), AppError>(()),
-                Err(ma2a_runtime::ipc::IpcError::VersionMismatch) => {
-                    return Err(ma2a_runtime::ipc::IpcError::VersionMismatch.into());
-                }
-                Err(_) => {
-                    tokio::time::sleep(retry_delay(attempt)).await;
-                    attempt += 1;
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon startup timed out"))??;
-    Ok(())
-}
-
-pub(crate) async fn wait_until_stopped(paths: &IpcPaths) -> Result<(), AppError> {
-    let client = LocalApiClient::new(paths.clone());
-    tokio::time::timeout(STARTUP_DEADLINE, async {
-        let mut attempt = 0;
-        loop {
-            if !client.is_live().await {
-                let lock = open_lock(&paths.lock_path())?;
-                match lock.try_lock() {
-                    Ok(()) => {
-                        paths.remove_stale_endpoint()?;
-                        return Ok(());
-                    }
-                    Err(TryLockError::WouldBlock) => {}
-                    Err(TryLockError::Error(error)) => return Err(AppError::Io(error)),
-                }
-            }
-            tokio::time::sleep(retry_delay(attempt)).await;
-            attempt += 1;
-        }
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "daemon shutdown timed out"))??;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{MAX_RETRY_MILLIS, reports_no_daemon, retry_delay};
-    use std::{io, time::Duration};
+    use super::{MAX_RETRY_MILLIS, retry_delay};
+    use std::time::Duration;
 
     #[test]
     fn retry_delay_grows_and_stays_bounded() {
@@ -251,22 +201,5 @@ mod tests {
                 .into_iter()
                 .all(|delay| delay <= Duration::from_millis(MAX_RETRY_MILLIS))
         );
-    }
-
-    #[test]
-    fn a_peer_that_abandons_the_handshake_counts_as_no_daemon() {
-        // Given
-        let abandoned = [
-            io::ErrorKind::UnexpectedEof,
-            io::ErrorKind::ConnectionReset,
-            io::ErrorKind::BrokenPipe,
-        ];
-        let absent = [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused];
-        let genuine = [io::ErrorKind::PermissionDenied, io::ErrorKind::TimedOut];
-
-        // Then
-        assert!(abandoned.into_iter().all(reports_no_daemon));
-        assert!(absent.into_iter().all(reports_no_daemon));
-        assert!(!genuine.into_iter().any(reports_no_daemon));
     }
 }
