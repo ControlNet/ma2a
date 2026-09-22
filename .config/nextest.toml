@@ -1,5 +1,11 @@
 [test-groups]
-ma2a-processes = { max-threads = 4 }
+# One ma2a-app test starts whole Runtimes, each with its own Iroh endpoint and
+# SQLite database, so a slot here costs several processes rather than one thread.
+# Sharing the global thread count let four such tests run at once, which pushed
+# startup and exchange budgets past their deadlines and failed a different test
+# on every run while each one passed alone. Half the global count keeps those
+# tests honest while unit tests still use the remaining slots.
+ma2a-processes = { max-threads = 2 }
 
 [profile.default]
 test-threads = 4

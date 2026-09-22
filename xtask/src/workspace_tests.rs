@@ -166,9 +166,24 @@ fn process_heavy_app_tests_have_a_bounded_nextest_group() -> Result<(), Box<dyn 
         .and_then(toml::Value::as_integer);
 
     // Then
-    assert_eq!(default_threads, Some(4));
-    assert_eq!(ci_threads, Some(4));
-    assert_eq!(max_threads, Some(4));
+    let max_threads = max_threads.ok_or("ma2a-processes max-threads missing")?;
+    let default_threads = default_threads.ok_or("default test-threads missing")?;
+    let ci_threads = ci_threads.ok_or("ci test-threads missing")?;
+    assert_eq!(default_threads, 4);
+    assert_eq!(ci_threads, 4);
+    // A group equal to the global thread count bounds nothing, because every
+    // slot may still hold a process-heavy test. That is how these tests came to
+    // run four at a time, each starting whole Runtimes, until budgets that are
+    // generous for one of them failed a different test on every run.
+    assert!(max_threads >= 1, "the group must admit at least one test");
+    assert!(
+        max_threads < default_threads,
+        "ma2a-processes must leave slots for the rest of the suite"
+    );
+    assert!(
+        max_threads < ci_threads,
+        "ma2a-processes must leave slots for the rest of the suite in CI"
+    );
     assert!(default_overrides.iter().any(|override_value| {
         override_value.get("filter").and_then(toml::Value::as_str) == Some("package(ma2a-app)")
             && override_value

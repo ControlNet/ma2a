@@ -31,6 +31,12 @@ pub enum ServerExit {
     Cancelled,
     /// A client completed the graceful shutdown command.
     ShutdownRequested,
+    /// The Runtime actor stopped, so no command can be answered any more.
+    ///
+    /// Accepting connections after this point produces a daemon that completes a
+    /// handshake and then closes every request without a response, which reads to
+    /// a caller as a corrupt transport rather than a stopped Runtime.
+    RuntimeStopped,
 }
 
 #[derive(Debug)]
@@ -86,6 +92,7 @@ impl LocalApiServer {
                 shutdown = shutdown_receiver.recv() => {
                     if shutdown.is_some() { break ServerExit::ShutdownRequested; }
                 }
+                () = self.handle.stopped() => break ServerExit::RuntimeStopped,
                 accepted = platform::accept(&self.listener) => {
                     let stream = accepted?;
                     let permit = match std::sync::Arc::clone(&permits).try_acquire_owned() {

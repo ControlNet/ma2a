@@ -2,7 +2,6 @@ use std::{
     fs::{File, OpenOptions, TryLockError},
     io,
     path::Path,
-    process::{Command, Stdio},
     time::Duration,
 };
 
@@ -10,7 +9,19 @@ use ma2a_runtime::ipc::{IpcError, IpcPaths, LocalApiClient};
 
 use crate::AppError;
 
-const STARTUP_DEADLINE: Duration = Duration::from_secs(10);
+mod spawn;
+pub(crate) use spawn::READY_TOKEN;
+use spawn::spawn_daemon;
+
+/// Last-resort bound on a daemon that neither reports readiness nor exits.
+///
+/// Startup no longer waits on this: the daemon reports readiness on a pipe, so
+/// the common case returns as soon as it is actually ready and a daemon that
+/// dies is noticed at once through end-of-file. This only stops a caller hanging
+/// forever on a child that does neither, so it is deliberately generous; a tight
+/// value here failed cold starts that were still legitimately progressing.
+const STARTUP_DEADLINE: Duration = Duration::from_secs(60);
+
 const MAX_RETRY_MILLIS: u64 = 100;
 
 #[derive(Clone, Copy, Debug)]
@@ -22,16 +33,28 @@ pub(crate) enum StartOutcome {
 pub(crate) async fn is_running(paths: &IpcPaths) -> Result<bool, AppError> {
     match LocalApiClient::new(paths.clone()).probe().await {
         Ok(()) => Ok(true),
-        Err(IpcError::Io(error))
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            Ok(false)
-        }
+        Err(IpcError::Io(error)) if reports_no_daemon(error.kind()) => Ok(false),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Reports whether a handshake transport failure means no usable daemon answers.
+///
+/// A peer that closes the handshake instead of answering it is not a usable
+/// daemon, however it got into that state. Returning the raw transport error
+/// left `stop` and `restart` unable to act on a daemon that still holds the
+/// endpoint but answers nothing, which is exactly when a caller most needs them
+/// to work. Taking the daemon lock still prevents starting a second Runtime
+/// beside one that has not finished exiting.
+const fn reports_no_daemon(kind: io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        io::ErrorKind::NotFound
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
+    )
 }
 
 // This path never creates directories, takes startup locks, or spawns a process.
@@ -101,7 +124,7 @@ async fn start_locked(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome
             // The child must acquire this lock itself. Keep the startup lock
             // held by the caller, but release the daemon lock before spawning.
             drop(daemon_lock);
-            spawn_daemon(state_dir)?;
+            spawn_daemon(state_dir, paths).await?;
         }
         Err(TryLockError::WouldBlock) => {}
         Err(TryLockError::Error(error)) => return Err(error.into()),
@@ -150,27 +173,6 @@ pub(crate) fn open_lock(path: &Path) -> Result<File, AppError> {
             .write(true)
             .open(path)?)
     }
-}
-
-fn spawn_daemon(state_dir: &Path) -> Result<(), AppError> {
-    let executable = std::env::current_exe()?;
-    let mut command = Command::new(executable);
-    command
-        .arg("--state-dir")
-        .arg(state_dir)
-        .arg("daemon-detached")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-    let _child = command.spawn()?;
-    Ok(())
 }
 
 const fn retry_delay(attempt: u32) -> Duration {
@@ -231,8 +233,8 @@ pub(crate) async fn wait_until_stopped(paths: &IpcPaths) -> Result<(), AppError>
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_RETRY_MILLIS, retry_delay};
-    use std::time::Duration;
+    use super::{MAX_RETRY_MILLIS, reports_no_daemon, retry_delay};
+    use std::{io, time::Duration};
 
     #[test]
     fn retry_delay_grows_and_stays_bounded() {
@@ -249,5 +251,22 @@ mod tests {
                 .into_iter()
                 .all(|delay| delay <= Duration::from_millis(MAX_RETRY_MILLIS))
         );
+    }
+
+    #[test]
+    fn a_peer_that_abandons_the_handshake_counts_as_no_daemon() {
+        // Given
+        let abandoned = [
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::BrokenPipe,
+        ];
+        let absent = [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused];
+        let genuine = [io::ErrorKind::PermissionDenied, io::ErrorKind::TimedOut];
+
+        // Then
+        assert!(abandoned.into_iter().all(reports_no_daemon));
+        assert!(absent.into_iter().all(reports_no_daemon));
+        assert!(!genuine.into_iter().any(reports_no_daemon));
     }
 }

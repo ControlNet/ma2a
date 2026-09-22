@@ -21,38 +21,14 @@ pub use server::{LocalApiServer, ServerExit};
 /// Bounds the transfer of one frame's bytes once the frame has begun arriving.
 ///
 /// This is a transport property: a peer that has started a frame and then stalls
-/// is malformed, whatever the command behind it was doing.
+/// is malformed, whatever the command behind it was doing. It is deliberately the
+/// only deadline this transport imposes. Waiting for a local Runtime to finish a
+/// command needs no deadline, because a Runtime that stops is a Runtime whose
+/// socket closes, and the read then ends immediately and exactly. Guessing how
+/// long legitimate work may take instead produced failures for work that was
+/// still progressing, which is what this transport must never report.
 const IO_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
-/// Bounds how long a client waits for a purely local command to answer.
-///
-/// Local commands keep the original two-second budget so every responsive
-/// caller, including the Web console's event polling, still notices a stalled
-/// daemon immediately. Separating it from [`IO_DEADLINE`] is what lets a slow
-/// Runtime be reported as a command timeout instead of a malformed frame.
-const COMMAND_DEADLINE: std::time::Duration = IO_DEADLINE;
-/// Bounds commands whose execution legitimately includes bounded remote work.
-///
-/// Enrollment and departure allow a 30-second aggregate exchange, control rounds
-/// allow 30 seconds and Echo allows 10, so this leaves headroom above the
-/// slowest of them rather than racing it.
-const NETWORK_COMMAND_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
 const CONNECTION_LIMIT: usize = 32;
-
-/// Returns how long a client waits for `operation` to answer.
-///
-/// Operations that reach the network keep their own bounded deadlines inside the
-/// Runtime; this only stops the client from abandoning them early and reporting
-/// a failure for work the daemon is still committing.
-fn response_deadline(operation: &str) -> std::time::Duration {
-    if matches!(
-        operation,
-        "space_redeem" | "space_leave" | "space_invite" | "echo_call" | "control_sync_trigger"
-    ) {
-        NETWORK_COMMAND_DEADLINE
-    } else {
-        COMMAND_DEADLINE
-    }
-}
 
 #[cfg(unix)]
 use unix as platform;
@@ -102,6 +78,11 @@ impl IpcPaths {
         self.runtime_dir.join("startup.lock")
     }
 
+    /// Returns the owner-private file a detached daemon writes diagnostics to.
+    pub fn log_path(&self) -> PathBuf {
+        self.runtime_dir.join("daemon.log")
+    }
+
     #[cfg(unix)]
     /// Returns the Unix domain socket path.
     pub fn socket_path(&self) -> PathBuf {
@@ -135,8 +116,6 @@ pub enum IpcError {
     UnauthorizedPeer,
     /// A frame was empty, oversized, incomplete, or stalled mid-transfer.
     InvalidFrame,
-    /// The Runtime did not answer a well-formed command within its deadline.
-    ResponseTimeout,
     /// A response did not carry the request correlation identifier.
     CorrelationMismatch,
     /// The daemon handshake did not report the exact supported API version.
@@ -159,9 +138,6 @@ impl fmt::Display for IpcError {
                 formatter.write_str("private IPC peer is not the current user")
             }
             Self::InvalidFrame => formatter.write_str("private IPC frame is invalid"),
-            Self::ResponseTimeout => {
-                formatter.write_str("Runtime did not answer before the command deadline")
-            }
             Self::CorrelationMismatch => {
                 formatter.write_str("private IPC response correlation mismatch")
             }

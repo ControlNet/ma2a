@@ -21,10 +21,6 @@ use zeroize::Zeroizing;
 use super::harness::{TempState, TestResult, emit};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one live SSE scenario keeps overflow, receiver cleanup, and teardown behavior together"
-)]
 async fn sse_queue_overflow_resyncs_and_dropped_receiver_releases_permit() -> TestResult {
     let state = TempState::new("sse-overflow")?;
     let config = state.config();
@@ -59,23 +55,7 @@ async fn sse_queue_overflow_resyncs_and_dropped_receiver_releases_permit() -> Te
     )
     .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12_346))));
     let cookie = format!("ma2a_session={}", session.bearer());
-    let snapshot = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/snapshot")
-                .header("host", "127.0.0.1:43211")
-                .header("cookie", &cookie)
-                .body(Body::empty())?,
-        )
-        .await?;
-    let snapshot: serde_json::Value =
-        serde_json::from_slice(&to_bytes(snapshot.into_body(), 65_536).await?)?;
-    let revision = snapshot
-        .get("revision")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or("snapshot revision missing")?;
-
+    let revision = current_revision(&router, &cookie).await?;
     let mut streams = Vec::new();
     for _ in 0..8 {
         streams.push(open_stream(&router, revision, &cookie).await?);
@@ -117,7 +97,9 @@ async fn sse_queue_overflow_resyncs_and_dropped_receiver_releases_permit() -> Te
     assert!(
         bytes
             .windows(22)
-            .any(|window| window == b"event: resync-required")
+            .any(|window| window == b"event: resync-required"),
+        "stream carried no resync: {}",
+        String::from_utf8_lossy(&bytes)
     );
     emit(&serde_json::json!({
         "scenario": "sse-overflow-receiver-cleanup",
@@ -130,6 +112,29 @@ async fn sse_queue_overflow_resyncs_and_dropped_receiver_releases_permit() -> Te
     task.await??;
     runtime.shutdown().await?;
     Ok(())
+}
+
+/// Reads the revision the Runtime would accept as an event-stream baseline now.
+async fn current_revision(
+    router: &axum::Router,
+    cookie: &str,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    let snapshot = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/snapshot")
+                .header("host", "127.0.0.1:43211")
+                .header("cookie", cookie)
+                .body(Body::empty())?,
+        )
+        .await?;
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&to_bytes(snapshot.into_body(), 65_536).await?)?;
+    snapshot
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "snapshot revision missing".into())
 }
 
 async fn open_stream(

@@ -171,10 +171,9 @@ async fn fetch_stamp(state: &WebState) -> Result<SnapshotStamp, StatusCode> {
         .runtime
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let response = runtime
-        .call(&crate::api::Command::snapshot_stamp())
+    let response = crate::web::gateway::call(runtime, &crate::api::Command::snapshot_stamp())
         .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        .map_err(|()| StatusCode::SERVICE_UNAVAILABLE)?;
     let value: Value =
         serde_json::from_slice(&response).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let payload = value
