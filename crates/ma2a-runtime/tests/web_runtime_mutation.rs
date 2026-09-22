@@ -80,9 +80,10 @@ async fn runtime_mutation_requires_authentication_csrf_and_typed_json() -> TestR
         .login(Zeroizing::new("web-runtime-passphrase-9!".to_owned()))
         .await?;
     let paths = IpcPaths::new(state.path())?;
-    let api_server = LocalApiServer::bind(paths.clone(), runtime.handle(), control.clone())?;
+    let handle = runtime.handle();
+    let bound = LocalApiServer::bind_for_launch(paths.clone(), handle, control.clone(), None);
     let cancellation = CancellationToken::new();
-    let api_task = tokio::spawn(api_server.serve(cancellation.child_token()));
+    let api_task = tokio::spawn(bound.await?.serve(cancellation.child_token()));
     let router = build_runtime_router(
         WebRuntimeDependencies::new(
             control.web_auth().clone(),

@@ -16,8 +16,6 @@ mod harness;
 mod ipc;
 #[path = "e2e/ipc_slow.rs"]
 mod ipc_slow;
-#[path = "e2e/recovery.rs"]
-mod recovery;
 #[path = "e2e/recovery_transaction.rs"]
 mod recovery_transaction;
 #[path = "e2e/relay_common.rs"]

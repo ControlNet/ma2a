@@ -4,8 +4,58 @@ use ma2a_core::RequestId;
 use serde_json::{Value, json};
 
 use super::{IpcError, LocalApiClient, api};
+use crate::ipc::{
+    LIFECYCLE_DEADLINE,
+    lifecycle::{DaemonReport, LifecycleRequest},
+};
 
 impl LocalApiClient {
+    /// Asks the daemon process to identify itself within a bounded interval.
+    ///
+    /// # Errors
+    /// Returns a transport error, [`IpcError::NoLifecyclePlane`] when the
+    /// responder predates this plane, or a timed-out I/O error when no answer
+    /// arrives before [`LIFECYCLE_DEADLINE`].
+    pub async fn ping(&self) -> Result<DaemonReport, IpcError> {
+        self.lifecycle_call(LifecycleRequest::Ping, "pong").await
+    }
+
+    /// Asks the daemon process to begin graceful shutdown.
+    ///
+    /// Acceptance is not teardown: the caller must still prove that the daemon
+    /// released its lock before reporting that it stopped.
+    ///
+    /// # Errors
+    /// Returns the same failures as [`Self::ping`].
+    pub async fn request_stop(&self) -> Result<DaemonReport, IpcError> {
+        self.lifecycle_call(LifecycleRequest::Stop, "stopping")
+            .await
+    }
+
+    async fn lifecycle_call(
+        &self,
+        request: LifecycleRequest,
+        expected: &str,
+    ) -> Result<DaemonReport, IpcError> {
+        let response = tokio::time::timeout(
+            LIFECYCLE_DEADLINE,
+            self.roundtrip_payload(&request.encode()),
+        )
+        .await
+        .map_err(|_elapsed| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the daemon did not answer a lifecycle call",
+            )
+        })??;
+        let report = DaemonReport::parse(&response).ok_or(IpcError::NoLifecyclePlane)?;
+        if report.operation() == expected {
+            Ok(report)
+        } else {
+            Err(IpcError::NoLifecyclePlane)
+        }
+    }
+
     /// Requests graceful shutdown using the daemon's reported API version.
     ///
     /// This compatibility exception is only for explicit daemon lifecycle commands.

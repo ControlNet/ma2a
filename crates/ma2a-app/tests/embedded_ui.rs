@@ -5,61 +5,31 @@
 #[path = "embedded_ui/http.rs"]
 mod http;
 
-use std::{
-    error::Error,
-    fs,
-    io::Write as _,
-    os::unix::fs::PermissionsExt as _,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{io::Write as _, path::Path, process::Stdio};
 
 use serde_json::Value;
 
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-type TestValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+#[path = "support/daemon_fixture.rs"]
+mod daemon_fixture;
+
+use daemon_fixture::{DaemonFixture, TestResult, TestValue};
+
 const PASSWORD: &str = "embedded-ui-process-password";
 
 struct Fixture {
-    state_dir: PathBuf,
+    daemon: DaemonFixture,
     port: u16,
 }
 
 impl Fixture {
     fn start() -> TestValue<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let state_dir =
-            std::env::temp_dir().join(format!("ma2a-embedded-ui-{}-{serial}", std::process::id()));
-        fs::create_dir(&state_dir)?;
-        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700))?;
-        let started = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .arg("start")
-            .output()?;
-        if !started.status.success() {
-            let _cleanup_result = fs::remove_dir_all(&state_dir);
-            return Err(format!(
-                "daemon start failed: {}",
-                String::from_utf8_lossy(&started.stderr)
-            )
-            .into());
-        }
-        let port = match start_web_ui(&state_dir) {
-            Ok(port) => port,
-            Err(error) => {
-                let _stop_result = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-                    .arg("--state-dir")
-                    .arg(&state_dir)
-                    .arg("stop")
-                    .output();
-                let _cleanup_result = fs::remove_dir_all(&state_dir);
-                return Err(error);
-            }
-        };
-        Ok(Self { state_dir, port })
+        let daemon = DaemonFixture::running("embedded-ui")?;
+        let port = start_web_ui(daemon.state_dir())?;
+        Ok(Self { daemon, port })
+    }
+
+    fn shutdown(self) -> TestResult {
+        self.daemon.shutdown()
     }
 
     fn get(&self, path: &str, cookie: Option<&str>) -> TestValue<http::HttpResponse> {
@@ -86,17 +56,6 @@ impl Fixture {
             )
             .as_bytes(),
         )
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _shutdown = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-            .arg("--state-dir")
-            .arg(&self.state_dir)
-            .arg("stop")
-            .output();
-        let _cleanup = fs::remove_dir_all(&self.state_dir);
     }
 }
 
@@ -182,18 +141,13 @@ async fn production_binary_serves_authenticated_embedded_console() -> TestResult
     assert_eq!(deep_route.header("cache-control")?, "no-cache");
     assert_eq!(deep_route.body, login_page.body);
     assert_revoke_all_signs_out(&fixture, &cookie_header, csrf)?;
-    Ok(())
+    fixture.shutdown()
 }
 
 fn start_web_ui(state_dir: &Path) -> TestValue<u16> {
-    let mut init = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(state_dir)
-        .args(["ui", "init"])
+    let mut init = ma2a(state_dir, &["ui", "init"])
         .env("MA2A_PASSWORD_STDIN", "1")
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .spawn()?;
     init.stdin
         .take()
@@ -207,11 +161,7 @@ fn start_web_ui(state_dir: &Path) -> TestValue<u16> {
         )
         .into());
     }
-    let started = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(state_dir)
-        .args(["ui", "start", "--json"])
-        .output()?;
+    let started = ma2a(state_dir, &["ui", "start", "--json"]).output()?;
     if !started.status.success() {
         return Err(format!(
             "ui start failed: {}",
@@ -228,6 +178,18 @@ fn start_web_ui(state_dir: &Path) -> TestValue<u16> {
         .rsplit_once(':')
         .ok_or("ui start response has an invalid URL")?;
     Ok(port.parse()?)
+}
+
+fn ma2a(state_dir: &Path, arguments: &[&str]) -> std::process::Command {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ma2a"));
+    command
+        .arg("--state-dir")
+        .arg(state_dir)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
 }
 
 fn assert_revoke_all_signs_out(fixture: &Fixture, cookie_header: &str, csrf: &str) -> TestResult {

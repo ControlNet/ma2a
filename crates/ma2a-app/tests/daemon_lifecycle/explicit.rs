@@ -1,4 +1,4 @@
-use super::{Fixture, TestResult};
+use super::{DaemonFixture, TestResult, TestValue, status_json};
 
 #[cfg(unix)]
 use std::{
@@ -9,9 +9,7 @@ use std::{
 };
 
 #[cfg(unix)]
-fn incompatible_daemon(
-    fixture: &Fixture,
-) -> Result<JoinHandle<std::io::Result<()>>, Box<dyn std::error::Error + Send + Sync>> {
+fn incompatible_daemon(fixture: &DaemonFixture) -> TestValue<JoinHandle<std::io::Result<()>>> {
     fs::create_dir(fixture.runtime_dir())?;
     fs::set_permissions(fixture.runtime_dir(), fs::Permissions::from_mode(0o700))?;
     let daemon_lock = OpenOptions::new()
@@ -61,7 +59,7 @@ fn incompatible_daemon(
 
 #[test]
 fn operational_commands_fail_without_creating_daemon_state() -> TestResult {
-    let fixture = Fixture::new()?;
+    let fixture = DaemonFixture::idle("lifecycle-no-implicit-state")?;
     let commands: &[&[&str]] = &[
         &["status", "--json"],
         &["endpoint", "show"],
@@ -88,10 +86,7 @@ fn operational_commands_fail_without_creating_daemon_state() -> TestResult {
         &["stop"],
     ];
     for arguments in commands {
-        let (operation, remaining) = arguments
-            .split_first()
-            .ok_or("empty lifecycle command fixture")?;
-        let output = fixture.command(operation).args(remaining).output()?;
+        let output = fixture.run(arguments)?;
         assert_eq!(output.status.code(), Some(1), "{arguments:?}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("daemon is not running"),
@@ -99,33 +94,39 @@ fn operational_commands_fail_without_creating_daemon_state() -> TestResult {
         );
         assert!(output.stdout.is_empty(), "{arguments:?}");
         assert_eq!(
-            std::fs::read_dir(&fixture.state_dir)?.count(),
+            std::fs::read_dir(fixture.state_dir())?.count(),
             0,
             "{arguments:?} created state"
         );
     }
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
 fn start_is_idempotent_and_restart_preserves_identity_with_a_new_boot() -> TestResult {
-    let fixture = Fixture::new()?;
-    assert!(fixture.run("restart")?.status.success());
-    let first = fixture.run_status()?;
+    let mut fixture = DaemonFixture::idle("lifecycle-idempotent")?;
+    assert!(fixture.run(&["restart"])?.status.success());
+    fixture.adopt_detached();
+    let first = status_json(&fixture)?;
     let first_boot = first
         .get("runtime_boot_id")
         .and_then(serde_json::Value::as_str)
         .ok_or("missing initial Runtime boot ID")?;
-    assert!(fixture.run("start")?.status.success());
-    let repeated = fixture.run_status()?;
+    let repeated_start = fixture.run(&["start"])?;
+    assert!(repeated_start.status.success());
+    assert_eq!(
+        String::from_utf8(repeated_start.stdout)?,
+        "daemon already running\n"
+    );
+    let repeated = status_json(&fixture)?;
     let repeated_boot = repeated
         .get("runtime_boot_id")
         .and_then(serde_json::Value::as_str)
         .ok_or("missing repeated Runtime boot ID")?;
     assert_eq!(first_boot, repeated_boot);
 
-    assert!(fixture.run("restart")?.status.success());
-    let restarted = fixture.run_status()?;
+    assert!(fixture.run(&["restart"])?.status.success());
+    let restarted = status_json(&fixture)?;
     let restarted_boot = restarted
         .get("runtime_boot_id")
         .and_then(serde_json::Value::as_str)
@@ -136,29 +137,32 @@ fn start_is_idempotent_and_restart_preserves_identity_with_a_new_boot() -> TestR
         restarted.pointer("/result/payload/endpoint/endpoint_id")
     );
 
-    assert!(fixture.run("stop")?.status.success());
-    let status = fixture.run("status")?;
+    assert!(fixture.run(&["stop"])?.status.success());
+    let status = fixture.run(&["status"])?;
     assert!(!status.status.success());
     assert!(String::from_utf8_lossy(&status.stderr).contains("daemon is not running"));
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
 fn old_shutdown_command_is_removed() -> TestResult {
-    let fixture = Fixture::new()?;
-    assert_eq!(fixture.run("shutdown")?.status.code(), Some(2));
+    let fixture = DaemonFixture::idle("lifecycle-removed-command")?;
+    assert_eq!(fixture.run(&["shutdown"])?.status.code(), Some(2));
     assert!(!fixture.runtime_dir().exists());
-    Ok(())
+    fixture.shutdown()
 }
 
 #[cfg(unix)]
 #[test]
 fn lifecycle_commands_replace_or_stop_an_incompatible_daemon() -> TestResult {
     for operation in ["start", "restart", "stop"] {
-        let fixture = Fixture::new()?;
+        let mut fixture = DaemonFixture::idle("lifecycle-incompatible")?;
         let server = incompatible_daemon(&fixture)?;
 
-        let output = fixture.run(operation)?;
+        let output = fixture.run(&[operation])?;
+        if operation != "stop" {
+            fixture.adopt_detached();
+        }
 
         assert!(
             output.status.success(),
@@ -173,39 +177,52 @@ fn lifecycle_commands_replace_or_stop_an_incompatible_daemon() -> TestResult {
             .join()
             .map_err(|_| "incompatible daemon server panicked")??;
         if operation == "stop" {
-            let status = fixture.run("status")?;
+            let status = fixture.run(&["status"])?;
             assert!(!status.status.success());
         } else {
-            let status = fixture.run_status()?;
             assert_eq!(
-                status
+                status_json(&fixture)?
                     .pointer("/result/type")
                     .and_then(serde_json::Value::as_str),
                 Some("snapshot")
             );
         }
+        fixture.shutdown()?;
     }
     Ok(())
 }
 
+/// A daemon of another API version is reported as exactly that, at once.
+///
+/// The lifecycle plane is new, so a daemon that does not answer it is not
+/// thereby unknown: the versioned handshake still says what it is, and saying so
+/// promptly is what stops a caller waiting out a startup deadline for an answer
+/// it already has.
 #[cfg(unix)]
 #[test]
-fn a_detached_daemon_that_refuses_to_start_records_why() -> TestResult {
+fn an_incompatible_daemon_reports_a_version_mismatch_without_waiting() -> TestResult {
+    use std::time::{Duration, Instant};
+
     // Given
-    let fixture = Fixture::new()?;
-    // The daemon refuses a state directory anyone else can read. Reaching that
-    // refusal is the point: it happens after the parent has already detached, so
-    // the reason exists only on the child's standard error.
-    fs::set_permissions(&fixture.state_dir, fs::Permissions::from_mode(0o755))?;
+    let fixture = DaemonFixture::idle("lifecycle-version-mismatch")?;
+    let server = incompatible_daemon(&fixture)?;
 
     // When
-    let started = fixture.run("start")?;
-    let mut recorded = String::new();
-    fs::File::open(fixture.runtime_dir().join("daemon.log"))?.read_to_string(&mut recorded)?;
+    let started = Instant::now();
+    let output = fixture.run(&["status", "--json"])?;
+    let elapsed = started.elapsed();
 
     // Then
-    assert!(!started.status.success());
-    assert!(recorded.contains("state directory"), "{recorded}");
-    assert!(!fixture.runtime_dir().join("control.sock").exists());
-    Ok(())
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("handshake version mismatch"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    assert!(fixture.run(&["stop"])?.status.success());
+    server
+        .join()
+        .map_err(|_| "incompatible daemon server panicked")??;
+    fixture.shutdown()
 }

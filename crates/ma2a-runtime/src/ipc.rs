@@ -7,6 +7,7 @@ use std::{
 
 mod client;
 mod framing;
+mod lifecycle;
 mod server;
 #[cfg(unix)]
 mod unix;
@@ -16,6 +17,10 @@ mod windows;
 mod windows_security;
 
 pub use client::LocalApiClient;
+pub use lifecycle::{
+    DaemonIdentity, DaemonReport, LifecycleRequest, ProcessIncarnation, RuntimeBoot,
+    random_launch_nonce,
+};
 pub use server::{LocalApiServer, ServerExit};
 
 /// Bounds the transfer of one frame's bytes once the frame has begun arriving.
@@ -28,7 +33,25 @@ pub use server::{LocalApiServer, ServerExit};
 /// long legitimate work may take instead produced failures for work that was
 /// still progressing, which is what this transport must never report.
 const IO_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Bounds one complete lifecycle call, unlike a business call which is unbounded.
+///
+/// A lifecycle answer is assembled from data the daemon already holds, so the
+/// only thing that can make one slow is a daemon that is no longer able to serve
+/// — which is precisely the answer the caller is trying to obtain. Waiting past
+/// this point cannot turn into a reply, so the wait is converted into the
+/// `Unresponsive` verdict instead of hanging the command that asked.
+pub const LIFECYCLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 const CONNECTION_LIMIT: usize = 32;
+
+/// Connection slots kept back so lifecycle calls survive a saturated daemon.
+///
+/// Business connections that are all blocked on the same stuck Runtime would
+/// otherwise consume every slot, and a caller asking "are you alive?" would be
+/// dropped without an answer by the daemon it is asking about. Connections taken
+/// from this reserve answer lifecycle calls and refuse everything else.
+const LIFECYCLE_RESERVE: usize = 4;
 
 #[cfg(unix)]
 use unix as platform;
@@ -83,6 +106,16 @@ impl IpcPaths {
         self.runtime_dir.join("daemon.log")
     }
 
+    /// Returns the owner-private record describing the daemon launch in charge.
+    ///
+    /// This file is a witness, never an authority. [`Self::lock_path`] decides who
+    /// owns the state directory; this only says which launch, process incarnation
+    /// and Runtime boot that owner claims to be, so a caller can tell a stale
+    /// record from the daemon actually answering.
+    pub fn daemon_record_path(&self) -> PathBuf {
+        self.runtime_dir.join("daemon.json")
+    }
+
     #[cfg(unix)]
     /// Returns the Unix domain socket path.
     pub fn socket_path(&self) -> PathBuf {
@@ -120,6 +153,12 @@ pub enum IpcError {
     CorrelationMismatch,
     /// The daemon handshake did not report the exact supported API version.
     VersionMismatch,
+    /// Something answered the endpoint but does not speak the lifecycle protocol.
+    ///
+    /// This is a fact about the responder, never about whether a daemon exists.
+    /// A caller that sees it falls back to the versioned handshake to find out
+    /// what it is talking to.
+    NoLifecyclePlane,
     /// Platform transport I/O failed.
     Io(io::Error),
     /// Local API parsing or encoding failed.
@@ -142,6 +181,9 @@ impl fmt::Display for IpcError {
                 formatter.write_str("private IPC response correlation mismatch")
             }
             Self::VersionMismatch => formatter.write_str("private IPC handshake version mismatch"),
+            Self::NoLifecyclePlane => {
+                formatter.write_str("the daemon does not speak the lifecycle protocol")
+            }
             Self::Io(error) => write!(formatter, "private IPC I/O failed: {error}"),
             Self::Api(error) => write!(formatter, "local API failed: {error}"),
             Self::Runtime(error) => write!(formatter, "Runtime request failed: {error}"),

@@ -1,6 +1,6 @@
 //! Installed CLI coverage for explicit Space member revocation.
 
-use std::{error::Error, fs, path::PathBuf, process::Command};
+use std::error::Error;
 
 use ma2a_core::{
     EndpointId, MemberCapabilities, SpaceId, SpaceManifestMembership, SpaceMemberV1,
@@ -9,21 +9,26 @@ use ma2a_core::{
 use ma2a_store::{OwnedSpaceUpdate, Repository, StoreConfig};
 use serde_json::Value;
 
-type TestResult = Result<(), Box<dyn Error>>;
+#[path = "support/daemon_fixture.rs"]
+mod daemon_fixture;
+
+use daemon_fixture::DaemonFixture;
+
+type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 
 #[test]
 fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
     // Given
-    let state_dir = state_dir()?;
-    assert!(run(&state_dir, &["start"])?.status.success());
-    let created = run(&state_dir, &["space", "create", "Revocable", "--json"])?;
+    let mut fixture = DaemonFixture::running("cli-revoke")?;
+    let created = fixture.run_ok(&["space", "create", "Revocable", "--json"])?;
     let created_response: Value = serde_json::from_slice(&created.stdout)?;
     let space_text = value(&created_response, "/result/payload/space_id")?;
-    let endpoint = run(&state_dir, &["endpoint", "show", "--json"])?;
+    let endpoint = fixture.run_ok(&["endpoint", "show", "--json"])?;
     let endpoint_response: Value = serde_json::from_slice(&endpoint.stdout)?;
     let owner_text = value(&endpoint_response, "/result/payload/endpoint_id")?;
-    let shutdown = run(&state_dir, &["stop"])?;
-    assert!(shutdown.status.success());
+    // The store is opened directly below, so the daemon that owns it must be
+    // proven gone first rather than merely asked to leave.
+    fixture.stop_owned()?;
     let space_id = SpaceId::try_from(hex_bytes::<32>(space_text)?.as_slice())?;
     let owner_id = EndpointId::try_from(hex_bytes::<32>(owner_text)?.as_slice())?;
     let peer_id = EndpointId::try_from(
@@ -34,17 +39,14 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
         ]
         .as_slice(),
     )?;
-    add_peer(&state_dir, space_id, (owner_id, peer_id))?;
-    assert!(run(&state_dir, &["start"])?.status.success());
+    add_peer(fixture.state_dir(), space_id, (owner_id, peer_id))?;
+    fixture.start_owned()?;
     let peer_text = encode_hex(peer_id.as_bytes())?;
 
     // When
-    let revoked = run(
-        &state_dir,
-        &[
-            "space", "member", "remove", space_text, &peer_text, "--json",
-        ],
-    )?;
+    let revoked = fixture.run(&[
+        "space", "member", "remove", space_text, &peer_text, "--json",
+    ])?;
 
     // Then
     assert!(
@@ -60,16 +62,14 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
             .and_then(Value::as_u64),
         Some(1)
     );
-    let status: Value = serde_json::from_slice(&run(&state_dir, &["status", "--json"])?.stdout)?;
+    let status = fixture.json(&["status", "--json"])?;
     assert_eq!(
         status
             .pointer("/result/payload/spaces/0/member_count")
             .and_then(Value::as_u64),
         Some(1)
     );
-    let _shutdown = run(&state_dir, &["stop"]);
-    fs::remove_dir_all(state_dir)?;
-    Ok(())
+    fixture.shutdown()
 }
 
 fn add_peer(
@@ -100,25 +100,14 @@ fn add_peer(
     Ok(())
 }
 
-fn run(
-    state_dir: &std::path::Path,
-    arguments: &[&str],
-) -> Result<std::process::Output, std::io::Error> {
-    Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(state_dir)
-        .args(arguments)
-        .output()
-}
-
-fn value<'a>(document: &'a Value, pointer: &str) -> Result<&'a str, Box<dyn Error>> {
+fn value<'a>(document: &'a Value, pointer: &str) -> Result<&'a str, Box<dyn Error + Send + Sync>> {
     document
         .pointer(pointer)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("missing string at {pointer}").into())
 }
 
-fn hex_bytes<const N: usize>(value: &str) -> Result<[u8; N], Box<dyn Error>> {
+fn hex_bytes<const N: usize>(value: &str) -> Result<[u8; N], Box<dyn Error + Send + Sync>> {
     if value.len() != N * 2 {
         return Err("invalid hexadecimal length".into());
     }
@@ -136,15 +125,4 @@ fn encode_hex(bytes: &[u8]) -> Result<String, std::fmt::Error> {
         write!(&mut encoded, "{byte:02x}")?;
     }
     Ok(encoded)
-}
-
-fn state_dir() -> Result<PathBuf, std::io::Error> {
-    let path = std::env::temp_dir().join(format!("ma2a-cli-revoke-{}", std::process::id()));
-    fs::create_dir(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(path)
 }

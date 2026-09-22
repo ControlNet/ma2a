@@ -1,16 +1,4 @@
-use std::{
-    fs,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
-
-use ma2a_core::ProtocolError;
-use ma2a_store::{MutationReplayRecord, MutationReplayRequest, StoreConfig};
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
+use std::sync::Arc;
 
 use crate::{
     Runtime,
@@ -19,75 +7,23 @@ use crate::{
     ipc::{IpcError, IpcPaths, LocalApiClient, ServerExit},
     web::{SystemClock, WebAuthConfig},
 };
+use ma2a_core::ProtocolError;
+use ma2a_store::{MutationReplayRecord, MutationReplayRequest, StoreConfig};
 
 use super::LocalApiServer;
 
+#[path = "server_tests/lifecycle.rs"]
+mod lifecycle;
 #[path = "server_tests/pending_replay.rs"]
 mod pending_replay;
+#[path = "server_tests/support.rs"]
+mod support;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+use support::{LiveServer, TempState};
+
 const PEER_ENDPOINT_ID: &str = "5866666666666666666666666666666666666666666666666666666666666666";
-
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
-
-struct TempState(PathBuf);
-
-impl TempState {
-    fn new() -> TestResult<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ma2a-shutdown-server-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(path))
-    }
-}
-
-impl Drop for TempState {
-    fn drop(&mut self) {
-        let _cleanup_result = fs::remove_dir_all(&self.0);
-    }
-}
-
-struct LiveServer {
-    cancellation: CancellationToken,
-    task: Option<JoinHandle<Result<ServerExit, IpcError>>>,
-}
-
-impl LiveServer {
-    fn spawn(server: LocalApiServer) -> Self {
-        let cancellation = CancellationToken::new();
-        let task = tokio::spawn(server.serve(cancellation.child_token()));
-        Self {
-            cancellation,
-            task: Some(task),
-        }
-    }
-
-    async fn cancel(mut self) -> TestResult<ServerExit> {
-        self.cancellation.cancel();
-        let task = self
-            .task
-            .take()
-            .ok_or_else(|| std::io::Error::other("live server task missing"))?;
-        Ok(task.await??)
-    }
-}
-
-impl Drop for LiveServer {
-    fn drop(&mut self) {
-        self.cancellation.cancel();
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-    }
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResult {
@@ -102,7 +38,8 @@ async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResul
     .await?;
     let paths = IpcPaths::new(&state.0)?;
     let handle = runtime.handle();
-    let server = LocalApiServer::bind(paths.clone(), handle.clone(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), handle.clone(), control, None).await?;
     let seeded = api::decode_command(
         br#"{"version":1,"operation":"space_create","request_id":"01010101010101010101010101010101","name":"seed"}"#,
     )?;
@@ -173,11 +110,10 @@ async fn successful_mutation_replays_and_conflicts_after_runtime_restart() -> Te
         WebAuthConfig::default(),
     )
     .await?;
-    let first_server = LiveServer::spawn(LocalApiServer::bind(
-        paths.clone(),
-        first_runtime.handle(),
-        first_control,
-    )?);
+    let first_server = LiveServer::spawn(
+        LocalApiServer::bind_for_launch(paths.clone(), first_runtime.handle(), first_control, None)
+            .await?,
+    );
     let first_client = LocalApiClient::new(paths.clone());
     first_client.probe().await?;
     let committed = first_client.call(&command).await?;
@@ -191,11 +127,15 @@ async fn successful_mutation_replays_and_conflicts_after_runtime_restart() -> Te
         WebAuthConfig::default(),
     )
     .await?;
-    let second_server = LiveServer::spawn(LocalApiServer::bind(
-        paths.clone(),
-        second_runtime.handle(),
-        second_control,
-    )?);
+    let second_server = LiveServer::spawn(
+        LocalApiServer::bind_for_launch(
+            paths.clone(),
+            second_runtime.handle(),
+            second_control,
+            None,
+        )
+        .await?,
+    );
     let second_client = LocalApiClient::new(paths);
     second_client.probe().await?;
     let conflict = api::decode_command(
@@ -234,7 +174,8 @@ async fn control_sync_commands_report_no_peers_without_spaces() -> TestResult {
     )
     .await?;
     let paths = IpcPaths::new(&state.0)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let live_server = LiveServer::spawn(server);
     let client = LocalApiClient::new(paths);
     client.probe().await?;

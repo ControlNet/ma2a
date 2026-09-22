@@ -1,27 +1,23 @@
 use std::sync::Arc;
 
-use ma2a_core::ProtocolError;
-use serde_json::Value;
 use tokio::{
-    sync::{Mutex, Semaphore, TryAcquireError, mpsc},
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore, TryAcquireError, mpsc},
     task::JoinSet,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    RuntimeHandle,
-    api::{self},
-    current_user::CurrentUserRuntime,
-};
+use crate::{RuntimeHandle, current_user::CurrentUserRuntime};
 
 use super::{
-    CONNECTION_LIMIT, IpcError, IpcPaths,
-    framing::{FrameRef, read_frame, write_frame},
+    CONNECTION_LIMIT, IpcError, IpcPaths, LIFECYCLE_RESERVE,
+    lifecycle::{DaemonIdentity, RuntimeBoot},
     platform,
 };
 
+mod dispatch;
 mod execute;
-use execute::{authoritative_revision, execute};
+
+use dispatch::handle_connection;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -48,17 +44,28 @@ pub struct LocalApiServer {
     control: CurrentUserRuntime,
     replay: Arc<Mutex<()>>,
     web: Option<crate::web::WebLifecycle>,
+    identity: Arc<DaemonIdentity>,
+    permits: Arc<Semaphore>,
+    reserve: Arc<Semaphore>,
 }
 
 impl LocalApiServer {
     /// Binds the platform endpoint after validating its private location.
     ///
+    /// `identity` is answered verbatim to every lifecycle call, so it must
+    /// describe the launch that is about to serve and must not change afterwards.
+    ///
     /// # Errors
     /// Returns a platform transport or authorization error when binding fails.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the server owns the endpoint, the Runtime, the control plane and its own identity as four independent things"
+    )]
     pub fn bind(
         paths: IpcPaths,
         handle: RuntimeHandle,
         control: CurrentUserRuntime,
+        identity: DaemonIdentity,
     ) -> Result<Self, IpcError> {
         let listener = platform::bind(&paths)?;
         Ok(Self {
@@ -68,7 +75,49 @@ impl LocalApiServer {
             control,
             replay: Arc::new(Mutex::new(())),
             web: None,
+            identity: Arc::new(identity),
+            permits: Arc::new(Semaphore::new(CONNECTION_LIMIT)),
+            reserve: Arc::new(Semaphore::new(LIFECYCLE_RESERVE)),
         })
+    }
+
+    /// Binds the endpoint and adopts the running Runtime's own identity.
+    ///
+    /// The identity is read once, here, while the Runtime is certain to answer.
+    /// From then on the lifecycle plane holds it as data, which is what lets it
+    /// keep answering after the Runtime cannot.
+    ///
+    /// # Errors
+    /// Returns a Runtime error when the actor cannot report its boot, or a
+    /// platform transport or authorization error when binding fails.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the same four independent things, with the launch marker in place of a built identity"
+    )]
+    pub async fn bind_for_launch(
+        paths: IpcPaths,
+        handle: RuntimeHandle,
+        control: CurrentUserRuntime,
+        launch_nonce: Option<String>,
+    ) -> Result<Self, IpcError> {
+        let status = handle.status().await?;
+        let identity = DaemonIdentity::of_current_process(
+            launch_nonce,
+            RuntimeBoot::new(status.boot_id(), status.endpoint_id()),
+        );
+        Self::bind(paths, handle, control, identity)
+    }
+
+    /// Returns the connection slots business traffic competes for.
+    #[cfg(test)]
+    pub(super) fn business_slots(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.permits)
+    }
+
+    /// Returns the lock every business command must take before it can execute.
+    #[cfg(test)]
+    pub(super) fn business_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.replay)
     }
 
     /// Associates the explicitly controlled daemon Web UI service.
@@ -83,7 +132,6 @@ impl LocalApiServer {
     /// # Errors
     /// Returns transport, Runtime, framing, or connection task failures.
     pub async fn serve(self, cancellation: CancellationToken) -> Result<ServerExit, IpcError> {
-        let permits = std::sync::Arc::new(Semaphore::new(CONNECTION_LIMIT));
         let (shutdown_sender, mut shutdown_receiver) = mpsc::channel(1);
         let mut tasks = JoinSet::new();
         let exit = loop {
@@ -95,11 +143,7 @@ impl LocalApiServer {
                 () = self.handle.stopped() => break ServerExit::RuntimeStopped,
                 accepted = platform::accept(&self.listener) => {
                     let stream = accepted?;
-                    let permit = match std::sync::Arc::clone(&permits).try_acquire_owned() {
-                        Ok(permit) => permit,
-                        Err(TryAcquireError::NoPermits) => continue,
-                        Err(TryAcquireError::Closed) => return Err(IpcError::InvalidFrame),
-                    };
+                    let Some(admission) = admit(&self.permits, &self.reserve)? else { continue };
                     let context = ConnectionContext {
                         paths: self.paths.clone(),
                         handle: self.handle.clone(),
@@ -107,10 +151,12 @@ impl LocalApiServer {
                         replay: Arc::clone(&self.replay),
                         shutdown_sender: shutdown_sender.clone(),
                         web: self.web.clone(),
+                        identity: Arc::clone(&self.identity),
                     };
                     tasks.spawn(async move {
-                        let _permit = permit;
-                        handle_connection(stream, context).await
+                        let lifecycle_only = admission.lifecycle_only;
+                        let _permit = admission.permit;
+                        handle_connection(stream, context, lifecycle_only).await
                     });
                 }
                 joined = tasks.join_next(), if !tasks.is_empty() => {
@@ -131,6 +177,36 @@ impl LocalApiServer {
     }
 }
 
+struct Admission {
+    permit: OwnedSemaphorePermit,
+    lifecycle_only: bool,
+}
+
+/// Admits a connection, falling back to the reserve kept for lifecycle calls.
+///
+/// `Ok(None)` means every slot including the reserve is taken, which is the only
+/// case where a connection is dropped unanswered.
+fn admit(
+    permits: &Arc<Semaphore>,
+    reserve: &Arc<Semaphore>,
+) -> Result<Option<Admission>, IpcError> {
+    match Arc::clone(permits).try_acquire_owned() {
+        Ok(permit) => Ok(Some(Admission {
+            permit,
+            lifecycle_only: false,
+        })),
+        Err(TryAcquireError::NoPermits) => match Arc::clone(reserve).try_acquire_owned() {
+            Ok(permit) => Ok(Some(Admission {
+                permit,
+                lifecycle_only: true,
+            })),
+            Err(TryAcquireError::NoPermits) => Ok(None),
+            Err(TryAcquireError::Closed) => Err(IpcError::InvalidFrame),
+        },
+        Err(TryAcquireError::Closed) => Err(IpcError::InvalidFrame),
+    }
+}
+
 struct ConnectionContext {
     paths: IpcPaths,
     handle: RuntimeHandle,
@@ -138,142 +214,7 @@ struct ConnectionContext {
     replay: Arc<Mutex<()>>,
     shutdown_sender: mpsc::Sender<()>,
     web: Option<crate::web::WebLifecycle>,
-}
-
-async fn handle_connection(
-    mut stream: platform::PlatformStream,
-    context: ConnectionContext,
-) -> Result<(), IpcError> {
-    platform::authorize(&stream, &context.paths)?;
-    let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
-    let preflight = api::decode_command(&frame.payload);
-    let (encoded, requests_shutdown) = match preflight {
-        Ok(_) => dispatch(&frame.payload, &context).await?,
-        Err(error) => (api::encode_error(error)?, false),
-    };
-    write_frame(
-        &mut stream,
-        FrameRef {
-            correlation: frame.correlation,
-            payload: &encoded,
-            maximum: api::MAX_LOCAL_RESPONSE_BYTES,
-        },
-    )
-    .await?;
-    if requests_shutdown {
-        let _send_result = context.shutdown_sender.send(()).await;
-    }
-    Ok(())
-}
-
-async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>, bool), IpcError> {
-    let command = api::decode_command(input)?;
-    // Volatile lifecycle instructions execute on every call and never enter durable replay.
-    // They must not hold the mutation lock while closing HTTP requests using this IPC.
-    let _replay = if command.is_ui_lifecycle() {
-        None
-    } else {
-        Some(context.replay.lock().await)
-    };
-    let fingerprint = match command.request_id() {
-        Some(request_id) => Some((request_id, api::command_fingerprint(&command)?)),
-        None => None,
-    };
-    if let Some((request_id, fingerprint)) = fingerprint {
-        if let Some(entry) = context.handle.mutation_replay(request_id).await? {
-            match entry {
-                ma2a_store::MutationReplayState::Pending(found) if found == fingerprint => {
-                    return Ok((
-                        api::encode_error(api::ApiError::new(ProtocolError::UNAVAILABLE))?,
-                        false,
-                    ));
-                }
-                ma2a_store::MutationReplayState::Completed(entry)
-                    if entry.fingerprint() == fingerprint =>
-                {
-                    let response = entry.response().to_vec();
-                    return Ok((response.clone(), response_requests_shutdown(&response)?));
-                }
-                ma2a_store::MutationReplayState::Pending(_)
-                | ma2a_store::MutationReplayState::Completed(_) => {
-                    return Ok((
-                        api::encode_error(api::ApiError::new(ProtocolError::CONFLICT))?,
-                        false,
-                    ));
-                }
-                _ => {
-                    return Ok((
-                        api::encode_error(api::ApiError::new(ProtocolError::UNAVAILABLE))?,
-                        false,
-                    ));
-                }
-            }
-        }
-        context
-            .handle
-            .reserve_mutation_replay(request_id, fingerprint)
-            .await?;
-    }
-    let status = context.handle.status().await?;
-    let (result, response_revision) = match fingerprint {
-        Some((request_id, _)) => {
-            let result = match execute(&command, &status, context).await {
-                Ok(result) => result,
-                Err(error) => {
-                    context.handle.abort_mutation_replay(request_id).await?;
-                    return Ok((api::encode_error(error)?, false));
-                }
-            };
-            let revision = authoritative_revision(&command, status.revision(), context).await?;
-            (result, revision)
-        }
-        None => match execute(&command, &status, context).await {
-            Ok(result) => {
-                let revision = api::snapshot_revision(&result).unwrap_or_else(|| status.revision());
-                (result, revision)
-            }
-            Err(error) => return Ok((api::encode_error(error)?, false)),
-        },
-    };
-    let response = api::ApiResponse::new(command.request_id(), response_revision, result);
-    let encoded = if command.operation() == "snapshot_fetch" {
-        encode_stamped_snapshot_response(&response, status.boot_id())?
-    } else {
-        api::encode_response(&response)?
-    };
-    if let Some((request_id, fingerprint)) = fingerprint {
-        let record = ma2a_store::MutationReplayRecord::new(
-            ma2a_store::MutationReplayRequest::new(request_id, fingerprint),
-            response_revision,
-            encoded.clone(),
-        )
-        .map_err(crate::RuntimeError::from)?;
-        context.handle.record_mutation_replay(record).await?;
-    }
-    Ok((encoded, response.result_type() == "shutting_down"))
-}
-
-fn response_requests_shutdown(response: &[u8]) -> Result<bool, IpcError> {
-    let value: Value = serde_json::from_slice(response).map_err(|_| IpcError::InvalidFrame)?;
-    Ok(value.pointer("/result/type").and_then(Value::as_str) == Some("shutting_down"))
-}
-
-fn encode_stamped_snapshot_response(
-    response: &api::ApiResponse,
-    boot_id: [u8; 16],
-) -> Result<Vec<u8>, IpcError> {
-    let encoded = api::encode_response(response)?;
-    let mut value: Value = serde_json::from_slice(&encoded).map_err(|_| IpcError::InvalidFrame)?;
-    value.as_object_mut().ok_or(IpcError::InvalidFrame)?.insert(
-        "runtime_boot_id".to_owned(),
-        Value::String(api::encode_hex(&boot_id)),
-    );
-    let encoded = serde_json::to_vec(&value).map_err(|_| IpcError::InvalidFrame)?;
-    if encoded.len() > api::MAX_LOCAL_RESPONSE_BYTES {
-        Err(IpcError::InvalidFrame)
-    } else {
-        Ok(encoded)
-    }
+    identity: Arc<DaemonIdentity>,
 }
 
 #[cfg(test)]

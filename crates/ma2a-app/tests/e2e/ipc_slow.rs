@@ -27,7 +27,8 @@ async fn slow_partial_ipc_frame_is_bounded_while_unrelated_client_progresses() -
     )
     .await?;
     let paths = IpcPaths::new(state_dir)?;
-    let server = LocalApiServer::bind(paths.clone(), runtime.handle(), control)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
     let cancellation = CancellationToken::new();
     let task = tokio::spawn(server.serve(cancellation.child_token()));
 

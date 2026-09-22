@@ -9,6 +9,26 @@ Use `--state-dir ABSOLUTE_PATH` for isolated
 instances. The default locations and private IPC protections are documented in
 [private-ipc.md](private-ipc.md).
 
+`start` returns only once the daemon it launched has identified itself, and `stop` returns only once
+that daemon has released the state directory. A `start` that fails has already terminated and reaped
+the process it launched, so a failed start never leaves a daemon behind.
+
+If a daemon still owns a state directory but has stopped answering, every lifecycle command fails
+closed and says so, naming the process where the platform can report it:
+
+```text
+a daemon still owns this state directory but is not answering (…); it was not replaced.
+Stop that process, then run `ma2a start`
+```
+
+MA2A will not start a second daemon beside it, unlink its endpoint, or repair ownership it cannot
+account for. End that process yourself — `ma2a` writes the owning process identifier to
+`run-v1/daemon.json` while it runs — and then start again. The same applies when ownership and the
+responding daemon disagree, which is reported as ambiguous rather than silently resolved.
+
+Never delete a state directory to recover from this. Removing `run-v1` unlinks the socket and the
+lock of a process that is still running, which leaves a daemon nothing can address.
+
 After replacing the executable, explicitly switch the running daemon to it with:
 
 ```sh

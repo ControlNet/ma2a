@@ -1,44 +1,39 @@
 //! Process-level coverage for invite, relay, and daemon-owned UI workflows.
 
-use std::{
-    error::Error,
-    fs,
-    path::PathBuf,
-    process::{Command, Output},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{fs, path::Path, process::Output};
 
 use ma2a_store::{Repository, StoreConfig};
 use serde_json::Value;
 
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-type TestValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
-static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+#[path = "support/daemon_fixture.rs"]
+mod daemon_fixture;
 
-struct Fixture(PathBuf);
+use daemon_fixture::{DaemonFixture, TestResult, TestValue};
+
+/// The workflow tests all need one daemon with one Space, and nothing else.
+struct Fixture(DaemonFixture);
 
 impl Fixture {
     fn new() -> TestValue<Self> {
-        let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ma2a-cli-workflows-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(Self(path))
+        Ok(Self(DaemonFixture::running("cli-workflows")?))
     }
 
-    fn run(&self, arguments: &[&str]) -> Result<Output, std::io::Error> {
-        Command::new(env!("CARGO_BIN_EXE_ma2a"))
-            .arg("--state-dir")
-            .arg(&self.0)
-            .args(arguments)
-            .output()
+    fn path(&self) -> &Path {
+        self.0.state_dir()
+    }
+
+    fn run(&self, arguments: &[&str]) -> TestValue<Output> {
+        self.0.run(arguments)
+    }
+
+    /// Ends this daemon and starts a new one over the same state directory.
+    fn restart(&mut self) -> TestResult {
+        self.0.stop_owned()?;
+        self.0.start_owned()
+    }
+
+    fn shutdown(self) -> TestResult {
+        self.0.shutdown()
     }
 
     fn create_space(&self) -> TestValue<String> {
@@ -46,7 +41,6 @@ impl Fixture {
     }
 
     fn create_named_space(&self, name: &str) -> TestValue<String> {
-        let _started = self.run(&["start"])?;
         let output = self.run(&["space", "create", name, "--json"])?;
         assert_success(&output)?;
         let response: Value = serde_json::from_slice(&output.stdout)?;
@@ -55,13 +49,6 @@ impl Fixture {
             .and_then(Value::as_str)
             .map(str::to_owned)
             .ok_or_else(|| "missing created Space ID".into())
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _shutdown = self.run(&["stop"]);
-        let _cleanup = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -86,7 +73,7 @@ fn invite_prints_only_the_ticket_and_defaults_to_five_minutes() -> TestResult {
     );
     assert!(ticket.starts_with("ma2ainvite"), "{ticket}");
     assert!(String::from_utf8(by_id.stdout)?.starts_with("ma2ainvite"));
-    let leftovers = fs::read_dir(&fixture.0)?
+    let leftovers = fs::read_dir(fixture.path())?
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name().to_string_lossy().starts_with(".invite-"))
         .count();
@@ -96,9 +83,9 @@ fn invite_prints_only_the_ticket_and_defaults_to_five_minutes() -> TestResult {
         .get("revision")
         .and_then(Value::as_u64)
         .ok_or("missing Runtime revision")?;
-    let persisted_revision = Repository::open(&StoreConfig::new(&fixture.0))?.revision()?;
+    let persisted_revision = Repository::open(&StoreConfig::new(fixture.path()))?.revision()?;
     assert_eq!(actor_revision, persisted_revision);
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
@@ -115,7 +102,7 @@ fn invite_rejects_an_invalid_ttl_and_an_unknown_space() -> TestResult {
     assert_eq!(ttl.status.code(), Some(2));
     assert!(!unknown.status.success());
     assert!(String::from_utf8(unknown.stderr)?.contains("no Space named"));
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
@@ -160,7 +147,7 @@ fn duplicate_space_names_resolve_by_identifier_and_fail_as_ambiguous_by_name() -
             .and_then(Value::as_str),
         Some(unique.as_str())
     );
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
@@ -177,7 +164,7 @@ fn human_space_output_names_the_space_and_its_identifier() -> TestResult {
     let stdout = String::from_utf8(shown.stdout)?;
     assert!(stdout.contains("Name: lab"), "{stdout}");
     assert!(stdout.contains(&format!("Space ID: {space}")), "{stdout}");
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
@@ -195,7 +182,7 @@ fn a_runtime_error_envelope_reports_its_real_protocol_error() -> TestResult {
     let stderr = String::from_utf8(shown.stderr)?;
     assert!(stderr.contains("not_found"), "{stderr}");
     assert!(!stderr.contains("missing its result type"), "{stderr}");
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
@@ -224,7 +211,7 @@ fn the_space_owner_cannot_leave_its_own_space() -> TestResult {
         Some(1),
         "a refused departure must not remove local membership"
     );
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
@@ -243,13 +230,13 @@ fn removed_space_syntax_is_rejected() -> TestResult {
     for rejected in [named, selector, nested_invite, redeem, revoke] {
         assert_eq!(rejected.status.code(), Some(2));
     }
-    Ok(())
+    fixture.shutdown()
 }
 
 #[test]
 fn external_private_and_public_relays_configure_status_and_disable() -> TestResult {
     // Given
-    let fixture = Fixture::new()?;
+    let mut fixture = Fixture::new()?;
     let space = fixture.create_space()?;
 
     // When
@@ -310,8 +297,8 @@ fn external_private_and_public_relays_configure_status_and_disable() -> TestResu
             .and_then(Value::as_str),
         Some("https://public.example")
     );
-    assert_success(&fixture.run(&["stop"])?)?;
-    assert_success(&fixture.run(&["start"])?)?;
+    // A new Runtime boot over the same store proves the relay survived it.
+    fixture.restart()?;
     let restored_private: Value = serde_json::from_slice(
         &fixture
             .run(&["relay", "private", "status", "--json"])?
@@ -327,7 +314,7 @@ fn external_private_and_public_relays_configure_status_and_disable() -> TestResu
     );
     assert_success(&fixture.run(&["relay", "private", "disable"])?)?;
     assert_success(&fixture.run(&["relay", "public", "disable"])?)?;
-    Ok(())
+    fixture.shutdown()
 }
 
 fn assert_success(output: &Output) -> TestResult {
