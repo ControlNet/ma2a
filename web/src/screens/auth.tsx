@@ -94,7 +94,6 @@ export function SetupScreen(): ReactNode {
           Setup required
         </Pill>
         <h1>Create the first passphrase from a trusted terminal</h1>
-        <p>Management state stays hidden until the Runtime holds a password verifier.</p>
       </div>
       <dl className="commands">
         {COMMANDS.map(([label, command]) => (

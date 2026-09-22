@@ -3,14 +3,6 @@ import type { SpaceDetails } from "./api/codec"
 import type { ConnectionState, RuntimeViewData } from "./view-model"
 import type { Tone } from "./viz/tone"
 
-const REACHABILITY_DETAIL: Record<RuntimeViewData["reachability"]["state"], string> = {
-  NoActiveSpaces: "A zero-Space Endpoint contributes no private relay candidate at all.",
-  DegradedNoCommonHome:
-    "No relay covers every active Space and public fallback is off. Direct paths may still work.",
-  AwaitingIrohHome: "Compatible candidates exist. Iroh has not reported a connected home yet.",
-  IrohHomeConnected: "Iroh reports a connected home drawn from the candidate map MA2A supplied.",
-}
-
 const REACHABILITY_TONE: Record<RuntimeViewData["reachability"]["state"], Tone> = {
   NoActiveSpaces: "none",
   DegradedNoCommonHome: "failed",
@@ -24,7 +16,7 @@ const REACHABILITY_TONE: Record<RuntimeViewData["reachability"]["state"], Tone> 
  */
 function reachabilityView(snapshot: RuntimeSnapshot): RuntimeViewData["reachability"] {
   const state = snapshot.reachability.state
-  return { state, tone: REACHABILITY_TONE[state], detail: REACHABILITY_DETAIL[state] }
+  return { state, tone: REACHABILITY_TONE[state] }
 }
 
 export function runtimeViewFromSnapshot(

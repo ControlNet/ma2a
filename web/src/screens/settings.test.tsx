@@ -37,5 +37,5 @@ test("the trust boundary is about retention, and says so about the passphrase", 
   expect(screen.getAllByText("handled transiently, not retained").length).toBeGreaterThan(0)
   expect(screen.getAllByText("retained here").length).toBeGreaterThan(0)
   expect(screen.getByText("ma2a ui init")).toBeInTheDocument()
-  expect(screen.getByText(/Handling is not retention/)).toBeInTheDocument()
+  expect(screen.getByText(/handled in passing, not kept/)).toBeInTheDocument()
 })

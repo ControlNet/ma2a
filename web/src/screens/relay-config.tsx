@@ -89,7 +89,7 @@ export function RelaysInspector({
                 <input id="relay-cert" name="cert" required />
               </Field>
               <Field
-                help="Only the path is sent to the daemon. PEM bytes never enter the browser, the local API or logs."
+                help="Only the path is sent to the daemon, never the PEM bytes."
                 id="relay-key"
                 label="TLS private key path"
               >
@@ -119,7 +119,7 @@ export function RelaysInspector({
           submitLabel="Configure public"
         >
           <Field
-            help="Fallback is explicit. MA2A never promotes it automatically."
+            help="MA2A never promotes fallback automatically."
             id="public-url"
             label="HTTPS relay URL"
           >

@@ -15,10 +15,7 @@ export function SpacesScreen({
 }): ReactNode {
   if (runtime === undefined) return <PendingSnapshot />
   return (
-    <Section
-      description="Every Space is an independently signed authorization domain."
-      title="Spaces"
-    >
+    <Section title="Spaces">
       {runtime.spaces.length === 0 ? (
         <EmptyState title="No Space yet">
           Create one here, or redeem an invitation ticket from the trusted terminal with

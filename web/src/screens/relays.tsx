@@ -15,20 +15,16 @@ export function RelaysScreen({
 }): ReactNode {
   if (runtime === undefined) return <PendingSnapshot />
   return (
-    <Section
-      description="MA2A filters candidates and hands them to Iroh. Iroh alone probes, selects a home and upgrades to direct."
-      title="Relays"
-    >
-      <Card label="Reachability, as the Runtime names it">
+    <Section title="Relays">
+      <Card label="Reachability">
         <StateMachine current={runtime.reachability.state} states={REACHABILITY_STATES} />
       </Card>
       <div className="split">
-        <Card label="Relay advertisements and candidate selection">
+        <Card label="Relay candidates">
           {runtime.privateRelayCandidates.length === 0 &&
           runtime.publicRelayFallbacks.length === 0 ? (
             <EmptyState title="No relay advertisement or fallback">
-              No Private Relay advertisement and no configured Public Relay Fallback are present in
-              this snapshot.
+              None in this snapshot.
             </EmptyState>
           ) : (
             <>
@@ -50,9 +46,6 @@ export function RelaysScreen({
                       spaces={runtime.spaces.map((space) => space.name)}
                     />
                   </div>
-                  <p className="field__help">
-                    Only a candidate covering every active Space is supplied to Iroh.
-                  </p>
                 </div>
               )}
               {runtime.publicRelayFallbacks.length === 0 ? null : (
@@ -83,11 +76,7 @@ export function RelaysScreen({
               {`${candidateCount(runtime)} supplied`}
             </Pill>
           </div>
-          <p className="field__help">
-            A Private Relay is a role hosted by an MA2A Endpoint; a Public Relay Fallback is
-            external infrastructure with no Endpoint identity. A supplied candidate is not a
-            reachability guarantee.
-          </p>
+          <p className="field__help">A supplied candidate is not a reachability guarantee.</p>
         </Card>
         <Card label="Iroh transport observation">
           <MeterList
@@ -120,10 +109,7 @@ export function RelaysScreen({
               },
             ]}
           />
-          <p className="field__help">
-            A service this Runtime hosts for other Endpoints. It says nothing about this
-            Endpoint&apos;s own reachability.
-          </p>
+          <p className="field__help">Says nothing about this Endpoint&apos;s own reachability.</p>
         </Card>
       </div>
     </Section>

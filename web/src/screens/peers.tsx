@@ -23,10 +23,7 @@ export function PeersScreen({
   if (runtime === undefined) return <PendingSnapshot />
   const peers = peerList(runtime)
   return (
-    <Section
-      description="Peer Endpoints from signed membership, with Iroh observations where available."
-      title="Peers"
-    >
+    <Section title="Peers">
       {runtime.spaces.some((space) => space.members === undefined) ? (
         <p role="status">
           {runtime.spaces.some((space) => space.membersError)
@@ -39,13 +36,12 @@ export function PeersScreen({
           <Pill tone={runtime.endpoint.status === "active" ? "direct" : "failed"}>
             {runtime.endpoint.status}
           </Pill>
-          <Pill tone="none">aggregate path: {runtime.endpoint.observedPath}</Pill>
           <Pill tone="accent">runtime {runtime.runtimeVersion}</Pill>
         </div>
       </Card>
       {peers.length === 0 ? (
         <EmptyState title="No peer Endpoint known yet">
-          Members of a Space appear here whether or not a path has been observed.
+          They appear once a Space has another member.
         </EmptyState>
       ) : (
         <ul className="peer-list">
@@ -146,7 +142,6 @@ export function PeerInspector({
           </Pill>
           <Pill tone={peer.tone}>{peer.badge}</Pill>
         </div>
-        <p className="field__help">The authorizing Space is never projected.</p>
       </Card>
       {message === undefined ? null : (
         <p className="field__help" role="status">
