@@ -18,7 +18,6 @@ export const EMPTY_RUNTIME_FIXTURE = {
   reachability: {
     state: "NoActiveSpaces",
     tone: "none",
-    detail: "A zero-Space Endpoint contributes no private relay candidate at all.",
   },
   controlSync: { peer_endpoint_ids: [] },
   controlRounds: [],
@@ -33,7 +32,6 @@ export const ONE_RUNTIME_FIXTURE = {
   reachability: {
     state: "AwaitingIrohHome",
     tone: "relay",
-    detail: "Compatible candidates exist. Iroh has not reported a connected home yet.",
   },
   spaces: [
     {
@@ -107,7 +105,6 @@ export const MANY_RUNTIME_FIXTURE = {
   reachability: {
     state: "DegradedNoCommonHome",
     tone: "failed",
-    detail: "No Private Relay is compatible with every active Space.",
   },
   observedRelayState: { privateRelayProviderRunning: true, publicRelayConnected: false },
   controlSync: { peer_endpoint_ids: ["44".repeat(32)] },

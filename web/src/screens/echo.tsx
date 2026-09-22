@@ -23,92 +23,73 @@ export function EchoScreen({
   if (runtime === undefined) return <PendingSnapshot />
   const bytes = new TextEncoder().encode(payload).length
   return (
-    <Section
-      description="Address one Endpoint directly. The receiver decides whether a shared Space authorizes the call."
-      title="Echo"
-    >
-      <div className="split">
-        <Card label="Request">
-          <Form
-            disabled={actions === undefined || bytes > LIMITS.echoPayload}
-            label="Send an Echo"
-            onSubmit={(data) => {
-              if (actions === undefined) return
-              setResult("Echo in progress…")
-              setReply(undefined)
-              void actions.echo(text(data, "target"), payload).then(
-                (received) => {
-                  setReply(received)
-                  setResult(undefined)
-                },
-                () => setResult("Echo failed or was not authorized."),
-              )
-            }}
-            submitLabel="Send Echo"
-            {...(result === undefined ? {} : { status: result })}
-          >
-            <Field
-              help="Denials are uniform and never name a Space."
-              id="echo-target"
-              label="Target Endpoint ID"
-            >
-              <input id="echo-target" name="target" pattern="[0-9a-f]{64}" required />
-            </Field>
-            <Field id="echo-payload" label="Payload">
-              <textarea
-                id="echo-payload"
-                name="payload"
-                onChange={(event) => setPayload(event.currentTarget.value)}
-                rows={3}
-                value={payload}
-              />
-            </Field>
+    <Section title="Echo">
+      <Card label="Request">
+        <Form
+          disabled={actions === undefined || bytes > LIMITS.echoPayload}
+          label="Send an Echo"
+          onSubmit={(data) => {
+            if (actions === undefined) return
+            setResult("Echo in progress…")
+            setReply(undefined)
+            void actions.echo(text(data, "target"), payload).then(
+              (received) => {
+                setReply(received)
+                setResult(undefined)
+              },
+              () => setResult("Echo failed or was not authorized."),
+            )
+          }}
+          submitLabel="Send Echo"
+          {...(result === undefined ? {} : { status: result })}
+        >
+          <Field help="64 hexadecimal characters." id="echo-target" label="Target Endpoint ID">
+            <input id="echo-target" name="target" pattern="[0-9a-f]{64}" required />
+          </Field>
+          <Field id="echo-payload" label="Payload">
+            <textarea
+              id="echo-payload"
+              name="payload"
+              onChange={(event) => setPayload(event.currentTarget.value)}
+              rows={3}
+              value={payload}
+            />
+          </Field>
+          <MeterList
+            label="Echo bounds"
+            meters={[
+              {
+                label: "Payload bytes",
+                fraction: bytes / LIMITS.echoPayload,
+                value: `${bytes} / ${LIMITS.echoPayload}`,
+                tone: bytes > LIMITS.echoPayload ? "failed" : "accent",
+              },
+            ]}
+          />
+        </Form>
+        {reply === undefined ? null : (
+          <div className="stack-4" role="status">
+            <div className="cluster">
+              <Pill filled tone="direct">
+                reply from {shortId(reply.target_endpoint_id)}
+              </Pill>
+              <Pill tone="accent">{reply.duration_ms} ms</Pill>
+            </div>
+            <code className="identifier__value">{reply.payload}</code>
             <MeterList
-              label="Echo bounds"
+              label="Echo deadline"
               meters={[
                 {
-                  label: "Payload bytes",
-                  fraction: bytes / LIMITS.echoPayload,
-                  value: `${bytes} / ${LIMITS.echoPayload}`,
-                  tone: bytes > LIMITS.echoPayload ? "failed" : "accent",
+                  label: "Aggregate deadline used",
+                  fraction: reply.duration_ms / LIMITS.echoDeadlineMs,
+                  value: `${reply.duration_ms} / ${LIMITS.echoDeadlineMs} ms`,
+                  tone: "direct",
                 },
               ]}
             />
-          </Form>
-          {reply === undefined ? null : (
-            <div className="stack-4" role="status">
-              <div className="cluster">
-                <Pill filled tone="direct">
-                  reply from {shortId(reply.target_endpoint_id)}
-                </Pill>
-                <Pill tone="accent">{reply.duration_ms} ms</Pill>
-              </div>
-              <code className="identifier__value">{reply.payload}</code>
-              <MeterList
-                label="Echo deadline"
-                meters={[
-                  {
-                    label: "Aggregate deadline used",
-                    fraction: reply.duration_ms / LIMITS.echoDeadlineMs,
-                    value: `${reply.duration_ms} / ${LIMITS.echoDeadlineMs} ms`,
-                    tone: "direct",
-                  },
-                ]}
-              />
-            </div>
-          )}
-        </Card>
-        <Card label="What the Runtime keeps">
-          <p className="field__help">
-            A request id, the authenticated peer, a result class and a duration. Payload bytes and
-            Space IDs are structurally absent.
-          </p>
-          <div className="cluster">
-            <Pill tone="accent">at most {LIMITS.echoStreamsPerPeer} streams per peer</Pill>
-            <Pill tone="accent">at most {LIMITS.connections} runtime-wide</Pill>
           </div>
-        </Card>
-      </div>
+        )}
+      </Card>
     </Section>
   )
 }
@@ -140,7 +121,6 @@ export function EchoInspector({
             </Pill>
           </div>
         </div>
-        <p className="field__help">Totals only; nothing else is retained.</p>
       </Card>
     </Inspector>
   )

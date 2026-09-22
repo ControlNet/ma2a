@@ -95,7 +95,6 @@ export function MapInspector({
     >
       <Card label="Relay reachability">
         <StateMachine compact current={runtime.reachability.state} states={REACHABILITY_STATES} />
-        <p className="field__help">{runtime.reachability.detail}</p>
       </Card>
       <Card label="Observed paths">
         <StackBar caption="Observed paths by peer" parts={pathParts(runtime)} />
@@ -119,7 +118,6 @@ export function MapInspector({
         ) : (
           <RoundBars rounds={runtime.controlRounds} />
         )}
-        <p className="field__help">Every 60–89 s, at most 4 peers per Space. In memory only.</p>
       </Card>
       <Card label="Bounded capacity">
         <MeterList label="Bounded capacity" meters={boundMeters(runtime)} />

@@ -53,10 +53,7 @@ export function SettingsScreen({
   readonly runtime: RuntimeViewData | undefined
 }): ReactNode {
   return (
-    <Section
-      description="The browser is the least trusted surface in this system."
-      title="Settings"
-    >
+    <Section title="Settings">
       <Card label="Secret retention">
         <div className="scroll-x">
           <TrustChain boundaries={BOUNDARIES} secrets={SECRETS} />
@@ -75,23 +72,14 @@ export function SettingsScreen({
             never present
           </li>
         </ul>
-        <p className="field__help">
-          Handling is not retention. Protected storage holds an Argon2id verifier and an invitation
-          digest, never the secrets themselves. The ticket file is the one place a secret is
-          retained.
-        </p>
       </Card>
       <div className="split">
         <Card label="Appearance">
           <ThemeToggle />
-          <p className="field__help">
-            Follows the system until you pick one. The only thing this browser stores.
-          </p>
+          <p className="field__help">Follows the system until you pick one.</p>
         </Card>
         <Card label="Password recovery">
-          <p className="field__help">
-            A reset revokes every prior session. There is no browser route.
-          </p>
+          <p className="field__help">A reset revokes every prior session.</p>
           <div className="command">
             <code className="command__line">ma2a ui init</code>
             <code className="command__line">ma2a ui revoke-all</code>

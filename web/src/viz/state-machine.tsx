@@ -43,7 +43,7 @@ export function StateMachine({
             >
               {state.name}
             </span>
-            {compact ? null : <span className="state__gloss">{state.gloss}</span>}
+            {compact || !active ? null : <span className="state__gloss">{state.gloss}</span>}
           </li>
         )
       })}

@@ -52,22 +52,17 @@ export function Card({
 
 export function Section({
   title,
-  description,
   actions,
   children,
 }: {
   readonly title: string
-  readonly description?: string
   readonly actions?: ReactNode
   readonly children: ReactNode
 }): ReactNode {
   return (
     <section className="section">
       <header className="section__head">
-        <div>
-          <h1 className="section__title">{title}</h1>
-          {description === undefined ? null : <p className="section__lede">{description}</p>}
-        </div>
+        <h1 className="section__title">{title}</h1>
         {actions === undefined ? null : <div className="cluster">{actions}</div>}
       </header>
       {children}

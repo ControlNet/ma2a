@@ -79,7 +79,6 @@ export type ReachabilityStateName =
 export type ReachabilityView = {
   readonly state: ReachabilityStateName
   readonly tone: Tone
-  readonly detail: string
 }
 
 export type RuntimeViewData = {

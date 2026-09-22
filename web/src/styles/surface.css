@@ -144,11 +144,3 @@
   font-weight: 700;
   letter-spacing: -0.025em;
 }
-
-.section__lede {
-  max-inline-size: 66ch;
-  margin: var(--space-2) 0 0;
-  color: var(--text-muted);
-  font-size: 0.8125rem;
-  line-height: 1.6;
-}
