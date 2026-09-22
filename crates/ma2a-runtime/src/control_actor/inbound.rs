@@ -64,11 +64,8 @@ impl Actor {
             responder.respond(Err(ControlRejection::Unavailable));
             return;
         }
-        self.state.revision = self.state.revision.max(outcome.revision);
-        self.state.memberships = outcome.memberships;
+        let _changed = self.adopt_control_memberships(outcome.revision).await;
         self.synchronized_control_peers.insert(remote_endpoint_id);
-        self.endpoint
-            .set_control_enabled(!self.state.memberships.is_empty());
         if self.refresh_relay_candidates().await.is_err() {
             responder.respond(Err(ControlRejection::Unavailable));
             return;

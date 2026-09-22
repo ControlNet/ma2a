@@ -64,6 +64,16 @@ impl StoreBackend {
         ))
     }
 
+    /// Reads the Space memberships the Store currently holds for this Endpoint.
+    pub(super) fn memberships(
+        &self,
+        local_endpoint_id: EndpointId,
+    ) -> Result<BTreeSet<SpaceId>, RuntimeError> {
+        self.repository
+            .memberships_for(local_endpoint_id)
+            .map_err(Into::into)
+    }
+
     pub(super) fn load_space_chain(
         &self,
         space_id: SpaceId,

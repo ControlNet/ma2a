@@ -5,14 +5,18 @@ use serde_json::Value;
 use crate::api::{self, Command};
 
 use super::{
-    IpcError, IpcPaths,
-    framing::{FrameRef, read_frame, write_frame},
-    platform,
+    COMMAND_DEADLINE, IpcError, IpcPaths,
+    framing::{FrameRef, read_frame_within, write_frame},
+    platform, response_deadline,
 };
 
 static NEXT_CORRELATION: AtomicU64 = AtomicU64::new(1);
 
 mod lifecycle;
+
+#[cfg(all(test, unix))]
+#[path = "client_deadline_tests.rs"]
+mod deadline_tests;
 
 /// Exact-version client for the current user's local daemon.
 #[derive(Clone, Debug)]
@@ -61,10 +65,22 @@ impl LocalApiClient {
 
     async fn roundtrip(&self, command: &Command) -> Result<Vec<u8>, IpcError> {
         let payload = api::encode_command(command)?;
-        self.roundtrip_payload(&payload).await
+        // A command that legitimately performs bounded remote work must be given
+        // its own completion deadline; the transport deadline still bounds the
+        // frame itself once the Runtime starts answering.
+        self.roundtrip_within(&payload, response_deadline(command.operation()))
+            .await
     }
 
     async fn roundtrip_payload(&self, payload: &[u8]) -> Result<Vec<u8>, IpcError> {
+        self.roundtrip_within(payload, COMMAND_DEADLINE).await
+    }
+
+    async fn roundtrip_within(
+        &self,
+        payload: &[u8],
+        deadline: std::time::Duration,
+    ) -> Result<Vec<u8>, IpcError> {
         let correlation = NEXT_CORRELATION.fetch_add(1, Ordering::Relaxed);
         let mut stream = platform::connect(&self.paths).await?;
         write_frame(
@@ -76,7 +92,8 @@ impl LocalApiClient {
             },
         )
         .await?;
-        let response = read_frame(&mut stream, api::MAX_LOCAL_RESPONSE_BYTES).await?;
+        let response =
+            read_frame_within(&mut stream, api::MAX_LOCAL_RESPONSE_BYTES, deadline).await?;
         if response.correlation != correlation {
             return Err(IpcError::CorrelationMismatch);
         }

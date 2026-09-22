@@ -97,15 +97,11 @@ impl Actor {
             Ok(Some(outcome)) => {
                 let changes = outcome.changes;
                 let synchronized_peers = outcome.synchronized_peers;
-                if self.state.memberships != outcome.memberships {
+                if self.adopt_control_memberships(outcome.revision).await {
                     self.synchronized_control_peers.clear();
                 }
-                self.state.revision = self.state.revision.max(outcome.revision);
-                self.state.memberships = outcome.memberships;
                 self.synchronized_control_peers
                     .extend(synchronized_peers.iter().copied());
-                self.endpoint
-                    .set_control_enabled(!self.state.memberships.is_empty());
                 let succeeded = self.refresh_relay_candidates().await.is_ok();
                 if succeeded {
                     self.schedule_control_changes(changes);
@@ -177,6 +173,25 @@ impl Actor {
         for trigger in changes.triggers() {
             self.schedule_control_round(trigger, None);
         }
+    }
+
+    /// Re-reads durable membership after a control exchange and reports a change.
+    ///
+    /// A control round computes its membership snapshot when it runs and may
+    /// complete after a newer local change, such as a departure, has already
+    /// committed. Adopting that snapshot would resurrect membership the Store has
+    /// already removed, so the authoritative set is read back instead of trusting
+    /// the round's copy.
+    async fn adopt_control_memberships(&mut self, revision: u64) -> bool {
+        self.state.revision = self.state.revision.max(revision);
+        let Ok(memberships) = self.store.memberships(self.state.endpoint_id).await else {
+            return false;
+        };
+        let changed = self.state.memberships != memberships;
+        self.state.memberships = memberships;
+        self.endpoint
+            .set_control_enabled(!self.state.memberships.is_empty());
+        changed
     }
 
     pub(crate) async fn refresh_control_lookup(&self) -> Result<(), RuntimeError> {

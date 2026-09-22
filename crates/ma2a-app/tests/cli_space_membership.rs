@@ -8,6 +8,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use ma2a_core::SpaceId;
+use ma2a_store::{Repository, StoreConfig};
 use serde_json::Value;
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
@@ -70,6 +72,31 @@ fn succeed(output: &Output) -> TestResult {
     }
 }
 
+/// Reads the signed member labels for one Space from a state directory.
+fn member_labels(state_dir: &PathBuf, space_id: SpaceId) -> TestValue<Vec<String>> {
+    Ok(Repository::open(&StoreConfig::new(state_dir))?
+        .load_space_chain(space_id)?
+        .ok_or("Space chain is missing")?
+        .members()
+        .iter()
+        .map(|member| member.label().to_owned())
+        .collect())
+}
+
+fn hex_bytes(value: &str) -> TestValue<Vec<u8>> {
+    if value.len() != 64 {
+        return Err("Space identifier must be 64 hexadecimal characters".into());
+    }
+    (0..32)
+        .map(|index| {
+            let pair = value
+                .get(index * 2..index * 2 + 2)
+                .ok_or_else(|| "truncated Space identifier".into());
+            pair.and_then(|pair| u8::from_str_radix(pair, 16).map_err(Into::into))
+        })
+        .collect()
+}
+
 fn text(value: &Value, pointer: &str) -> String {
     value
         .pointer(pointer)
@@ -114,18 +141,33 @@ fn a_piped_invite_joins_a_named_space_and_a_member_can_leave_it() -> TestResult 
     succeed(&shown)?;
     assert!(String::from_utf8(shown.stdout)?.contains("Name: lab"));
 
+    // The Space name and the member labels are separate signed facts, so no
+    // member may be labelled "lab" and no placeholder may stand in for an
+    // Endpoint. This is what the console reads, so it must be right in the data.
+    let space = SpaceId::try_from(hex_bytes(&space_id)?.as_slice())?;
+    let labels = member_labels(&owner.0, space)?;
+    assert_eq!(labels.len(), 2, "{labels:?}");
+    for label in &labels {
+        assert_ne!(label, "lab");
+        assert_ne!(label, "local-endpoint");
+        assert!(label.starts_with("endpoint-"), "{labels:?}");
+    }
+    assert_eq!(member_labels(&member.0, space)?, labels);
+
     // The owner cannot leave, and a member's departure is authority-signed.
     let refused = owner.run(&["space", "leave", "lab"])?;
     assert!(!refused.status.success());
     assert!(String::from_utf8(refused.stderr)?.contains("Space owner cannot leave its own Space"));
     let left = member.run(&["space", "leave", "lab", "--json"])?;
     succeed(&left)?;
-    assert_eq!(
-        text(
-            &serde_json::from_slice::<Value>(&left.stdout)?,
-            "/result/type"
-        ),
-        "space_left"
+    let departure: Value = serde_json::from_slice(&left.stdout)?;
+    assert_eq!(text(&departure, "/result/type"), "space_left");
+    assert_eq!(text(&departure, "/result/payload/name"), "lab");
+    assert_eq!(text(&departure, "/result/payload/space_id"), space_id);
+    // Departure must not report pre-leave membership as post-leave state.
+    assert!(
+        departure.pointer("/result/payload/member_count").is_none(),
+        "{departure}"
     );
     assert!(member.spaces()?.is_empty());
     let owner_spaces = owner.spaces()?;
@@ -151,5 +193,17 @@ fn a_piped_invite_joins_a_named_space_and_a_member_can_leave_it() -> TestResult 
     succeed(&rejoin.wait_with_output()?)?;
     succeed(&rejoined)?;
     assert_eq!(member.spaces()?.len(), 1);
+
+    // Human departure output names the Space it left and nothing it can no
+    // longer speak for.
+    let departed = member.run(&["space", "leave", "lab"])?;
+    succeed(&departed)?;
+    let departed = String::from_utf8(departed.stdout)?;
+    assert!(departed.contains("Left Space"), "{departed}");
+    assert!(departed.contains("Name: lab"), "{departed}");
+    assert!(
+        !departed.contains("Members:"),
+        "post-departure output must not report membership: {departed}"
+    );
     Ok(())
 }

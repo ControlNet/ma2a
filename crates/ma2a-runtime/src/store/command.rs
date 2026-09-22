@@ -47,6 +47,11 @@ pub(crate) enum StoreCommand {
         request: super::OwnedMemberRevocation,
         reply: oneshot::Sender<Result<super::RemovedMember, RuntimeError>>,
     },
+    Memberships {
+        local_endpoint_id: ma2a_core::EndpointId,
+        reply:
+            oneshot::Sender<Result<std::collections::BTreeSet<ma2a_core::SpaceId>, RuntimeError>>,
+    },
     LoadSpaceChain {
         space_id: ma2a_core::SpaceId,
         reply: oneshot::Sender<Result<Option<ma2a_core::SpaceChain>, RuntimeError>>,
@@ -91,9 +96,8 @@ pub(crate) enum StoreCommand {
         reply: oneshot::Sender<Result<EnrollmentOutcome, RuntimeError>>,
     },
     PersistEnrollment {
-        chain: ma2a_core::SpaceChain,
-        owner_address: Box<ma2a_store::ValidatedAddressRecord>,
-        reply: oneshot::Sender<Result<(u64, ma2a_core::SpaceChain), RuntimeError>>,
+        request: Box<super::EnrollmentPersistence>,
+        reply: oneshot::Sender<Result<super::PersistedEnrollment, RuntimeError>>,
     },
     AddressRecord {
         space_id: ma2a_core::SpaceId,

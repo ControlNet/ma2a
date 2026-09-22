@@ -12,6 +12,11 @@ export type SpaceView = {
   readonly member_count: number
 }
 
+export type SpaceIdentityView = {
+  readonly space_id: SpaceId
+  readonly name: string
+}
+
 export type ControlSyncView = {
   readonly peer_endpoint_ids: readonly EndpointId[]
 }
@@ -185,7 +190,7 @@ export type CommandResult =
   | { readonly type: "space_invitation_created"; readonly payload: SpaceView }
   | { readonly type: "space_redeemed"; readonly payload: SpaceView }
   | { readonly type: "space_revoked"; readonly payload: SpaceView }
-  | { readonly type: "space_left"; readonly payload: SpaceView }
+  | { readonly type: "space_left"; readonly payload: SpaceIdentityView }
   | { readonly type: "control_sync_status"; readonly payload: ControlSyncView }
   | { readonly type: "control_sync_triggered"; readonly payload: ControlSyncView }
   | { readonly type: "private_relay_configured"; readonly payload: PrivateRelayView }

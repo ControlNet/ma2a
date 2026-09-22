@@ -3,7 +3,7 @@ mod pages;
 mod scheduler;
 mod scope;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use ma2a_core::{ControlRequestV1, EndpointId, SpaceAuthorizationView};
 use ma2a_net::{
@@ -43,7 +43,6 @@ pub(crate) struct ControlAuthorizationInput {
 #[derive(Debug)]
 pub(crate) struct ControlApplyOutcome {
     pub(crate) revision: u64,
-    pub(crate) memberships: BTreeSet<ma2a_core::SpaceId>,
     pub(crate) lookup: ControlLookupState,
     pub(crate) changes: ControlChanges,
 }
@@ -52,7 +51,6 @@ pub(crate) struct ControlApplyOutcome {
 pub(crate) struct ControlRespondOutcome {
     pub(crate) response: Vec<u8>,
     pub(crate) revision: u64,
-    pub(crate) memberships: BTreeSet<ma2a_core::SpaceId>,
     pub(crate) lookup: ControlLookupState,
     pub(crate) changes: ControlChanges,
 }

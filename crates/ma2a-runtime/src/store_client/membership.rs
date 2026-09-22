@@ -26,6 +26,19 @@ impl StoreClient {
         response.await.map_err(channel_error)?
     }
 
+    pub(crate) async fn memberships(
+        &self,
+        local_endpoint_id: ma2a_core::EndpointId,
+    ) -> Result<std::collections::BTreeSet<ma2a_core::SpaceId>, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.send(StoreCommand::Memberships {
+            local_endpoint_id,
+            reply,
+        })
+        .await?;
+        response.await.map_err(channel_error)?
+    }
+
     pub(crate) async fn load_space_chain(
         &self,
         space_id: ma2a_core::SpaceId,

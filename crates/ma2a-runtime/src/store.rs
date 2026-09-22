@@ -16,6 +16,20 @@ pub(crate) use command::StoreCommand;
 pub(crate) use identity::Identity;
 pub(crate) use membership::{OwnedMemberRevocation, RemovedMember};
 
+/// Everything one enrollment commit needs from the caller.
+pub(crate) struct EnrollmentPersistence {
+    pub(crate) chain: ma2a_core::SpaceChain,
+    pub(crate) owner_address: Box<ma2a_store::ValidatedAddressRecord>,
+    pub(crate) local_endpoint_id: ma2a_core::EndpointId,
+}
+
+/// Durable outcome of one enrollment, including the membership the Store holds.
+pub(crate) struct PersistedEnrollment {
+    pub(crate) revision: u64,
+    pub(crate) chain: ma2a_core::SpaceChain,
+    pub(crate) memberships: std::collections::BTreeSet<ma2a_core::SpaceId>,
+}
+
 pub(crate) const STORE_CAPACITY: usize = 8;
 #[derive(Clone, Debug)]
 pub(crate) struct StoreClient {

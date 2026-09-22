@@ -63,7 +63,7 @@ pub use manifest_inputs::{SpaceManifestLink, SpaceManifestMembership};
 pub use ontology::{RuntimeIdentity, ServiceKind, SpaceMembership};
 pub use policy::{
     Capability, MAX_MEMBER_LABEL_LEN, MAX_SPACE_MEMBERS, MemberCapabilities, SpaceMemberV1,
-    SpacePolicyV1, SpaceRevocationV1,
+    SpacePolicyV1, SpaceRevocationV1, default_member_label,
 };
 pub use reachability::RelayReachability;
 pub use relay::{

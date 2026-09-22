@@ -2,7 +2,10 @@
 
 use std::{error::Error, fs, path::PathBuf, process::Command};
 
-use ma2a_core::{EndpointId, MemberCapabilities, SpaceId, SpaceManifestMembership, SpaceMemberV1};
+use ma2a_core::{
+    EndpointId, MemberCapabilities, SpaceId, SpaceManifestMembership, SpaceMemberV1,
+    default_member_label,
+};
 use ma2a_store::{OwnedSpaceUpdate, Repository, StoreConfig};
 use serde_json::Value;
 
@@ -79,12 +82,12 @@ fn add_peer(
     let mut members = vec![
         SpaceMemberV1::new(
             owner_id,
-            "local-endpoint".to_owned(),
+            default_member_label(owner_id),
             MemberCapabilities::new(true, true),
         )?,
         SpaceMemberV1::new(
             peer_id,
-            "revocable-peer".to_owned(),
+            default_member_label(peer_id),
             MemberCapabilities::new(true, false),
         )?,
     ];

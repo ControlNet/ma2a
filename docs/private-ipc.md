@@ -35,8 +35,18 @@ The default state directory is `$XDG_STATE_HOME/ma2a` on Unix when `XDG_STATE_HO
 
 The transport carries the existing bounded local API v1 JSON unchanged. Each message uses a
 12-byte header containing a four-byte big-endian payload length and an eight-byte big-endian
-correlation identifier. Requests are limited to 16,384 bytes, responses to 65,536 bytes, and each
-I/O operation has a two-second deadline. The server allows at most 32 in-flight connections.
+correlation identifier. Requests are limited to 16,384 bytes and responses to 65,536 bytes. The
+server allows at most 32 in-flight connections.
+
+Two deadlines apply, because transferring a frame and executing a command are different things.
+Once a frame has begun arriving, the rest of it must complete within two seconds; a peer that
+stalls mid-frame is malformed and returns `InvalidFrame`. Waiting for a reply to begin is instead
+bounded by the command's own deadline: twenty seconds for a local command, and ninety seconds for
+an operation that legitimately performs bounded remote work (`space_redeem`, `space_leave`,
+`space_invite`, `echo_call`, `control_sync_trigger`), which stays clear of the thirty-second
+enrollment and control-round exchanges and the ten-second Echo deadline underneath it. Exceeding a
+command deadline reports a command timeout, never malformed framing, so a Runtime still committing
+valid work is never misreported as a broken transport.
 
 Business clients perform an exact API-version handshake before every non-handshake command.
 Only explicit `start`, `stop`, and `restart` may recover from a version mismatch: the lifecycle

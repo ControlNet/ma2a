@@ -18,7 +18,7 @@ Unknown fields, duplicate JSON object members, and unknown operations are reject
 
 ## Commands And Results
 
-The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `f6824ef5433cc96314148b4e75bf3d50cd2e8e89a90fa7507a4758774f85039e`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 26 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
+The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `f09b77a5d1809d93809be557ac1554fe06b5e7304d38b497a4886b0cd330497e`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 26 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
 
 Successful responses contain required `version`, nullable `request_id`, `revision`, and discriminated `result` fields. Error responses contain required `version`, `error`, and nullable `remediation` fields. TypeScript exposes `LocalApiSuccessResponse`, `LocalApiErrorResponse`, and their `LocalApiResponse` union.
 
@@ -26,7 +26,10 @@ The `echo_call` command carries a request ID, target Endpoint ID, and UTF-8 payl
 
 The pre-authorization `handshake` result exposes only Runtime version, Endpoint ID, revision, initialization/password status, and capability flags. It contains no Space details. Client-visible values never contain key material, invitation secrets, session bearers, password verifiers, or `authorized_via` diagnostics.
 
-`space_leave` carries a request ID and a `space_id` and returns `space_left`. It is a membership operation, not a local deletion: the leaving member sends an authenticated request over the enrollment ALPN to the Space authority, which signs the next manifest generation removing that member and returns the advanced signed chain. The leaving Runtime persists only a chain whose signed membership excludes it and whose revocations include it. A Space's own authority-holding Endpoint cannot leave and receives `unauthorized` with remediation. An unreachable authority returns `unavailable`; nothing local is removed.
+`space_leave` carries a request ID and a `space_id` and returns `space_left`, whose payload is the
+`space_identity` model: the Space's `space_id` and shared `name` only. It deliberately carries no
+`member_count`, because after departure this Endpoint holds no authoritative membership for that
+Space and reporting the pre-departure count would present stale state as current. It is a membership operation, not a local deletion: the leaving member sends an authenticated request over the enrollment ALPN to the Space authority, which signs the next manifest generation removing that member and returns the advanced signed chain. The leaving Runtime persists only a chain whose signed membership excludes it and whose revocations include it. A Space's own authority-holding Endpoint cannot leave and receives `unauthorized` with remediation. An unreachable authority returns `unavailable`; nothing local is removed.
 
 `ui_init` atomically establishes or replaces the Web password and revokes existing sessions. The public CLI uses this operation for both first setup and recovery. Lower-level `ui_password_set` and `ui_password_reset` operations retain their explicit preconditions for local API callers.
 
