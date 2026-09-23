@@ -11,6 +11,21 @@ use crate::{
 
 impl StoreClient {
     pub(crate) async fn observe(&self, state: &RuntimeStatus) -> Result<u64, RuntimeError> {
+        self.observe_with_mode(state, false).await
+    }
+
+    pub(crate) async fn observe_if_changed(
+        &self,
+        state: &RuntimeStatus,
+    ) -> Result<u64, RuntimeError> {
+        self.observe_with_mode(state, true).await
+    }
+
+    async fn observe_with_mode(
+        &self,
+        state: &RuntimeStatus,
+        if_changed: bool,
+    ) -> Result<u64, RuntimeError> {
         let (reply, response) = oneshot::channel();
         let observation = EndpointObservationUpdate {
             observed_at_ms: SystemClock.now_ms()?,
@@ -19,8 +34,12 @@ impl StoreClient {
             relay_address_count: observation_count(state.endpoint_addr.relay_urls().count())?,
             membership_count: observation_count(state.membership_count())?,
         };
-        self.send(StoreCommand::Observe { observation, reply })
-            .await?;
+        self.send(StoreCommand::Observe {
+            observation,
+            if_changed,
+            reply,
+        })
+        .await?;
         response.await.map_err(channel_error)?
     }
 }

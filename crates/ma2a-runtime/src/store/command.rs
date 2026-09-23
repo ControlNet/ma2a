@@ -74,6 +74,7 @@ pub(crate) enum StoreCommand {
     },
     Observe {
         observation: EndpointObservationUpdate,
+        if_changed: bool,
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
     CleanShutdown {

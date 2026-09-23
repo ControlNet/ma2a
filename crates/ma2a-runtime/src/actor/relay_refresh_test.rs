@@ -21,7 +21,11 @@ use crate::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actor_relay_refresh_automatically_publishes_next_address_record() -> TestResult {
+#[expect(
+    clippy::too_many_lines,
+    reason = "the injected failure sequence and convergence assertions share one fixture"
+)]
+async fn relay_map_failures_retry_without_committing_actor_or_churning_address() -> TestResult {
     let state_dir = TempState::new()?;
     let config = StoreConfig::new(state_dir.path());
     let backend = StoreBackend::open(&config)?;
@@ -103,14 +107,48 @@ async fn actor_relay_refresh_automatically_publishes_next_address_record() -> Te
             relay_url,
         },
     )?;
+    let before_revision = actor.state.revision;
 
+    actor.maintenance.fail_once(
+        crate::actor::maintenance::FaultPoint::RelayMapApply,
+        crate::error::RuntimeError::from(ma2a_store::StoreError::Io(
+            std::io::ErrorKind::Interrupted.into(),
+        )),
+    );
+    assert!(actor.refresh_relay_candidates().await.is_err());
+    assert_eq!(actor.state.relay.private_coverage().count(), 0);
+    assert_eq!(actor.state.revision, before_revision);
+    actor.maintenance.fail_once(
+        crate::actor::maintenance::FaultPoint::RelayObservationPersist,
+        crate::error::RuntimeError::from(ma2a_store::StoreError::Io(
+            std::io::ErrorKind::Interrupted.into(),
+        )),
+    );
+    assert!(actor.refresh_relay_candidates().await.is_err());
+    assert_eq!(actor.state.relay.private_coverage().count(), 0);
+    assert_eq!(actor.state.revision, before_revision);
     let changed = actor.refresh_relay_candidates().await?;
+    assert_eq!(actor.maintenance.relay_map_apply_attempts, 3);
     let updated = repository
         .address_record(authorization.space_id(), identity.endpoint_id)?
         .ok_or("updated address record missing")?;
 
     assert!(changed);
-    assert_eq!(updated.sequence(), initial.sequence() + 1);
+    assert!(actor.state.revision > before_revision);
+    assert_eq!(actor.state.relay.private_coverage().count(), 1);
+    let applied_map = actor
+        .store
+        .load_relay_map(identity.endpoint_id, u64::try_from(NOW_MS)?)
+        .await?;
+    assert!(!actor.endpoint.replace_relay_map(&applied_map).await?);
+    // The signed address represents Iroh's observed address, which has not
+    // changed merely because the candidate set changed.
+    assert_eq!(updated.sequence(), initial.sequence());
+    let revision = repository.revision()?;
+    for _ in 0..3 {
+        assert!(!actor.refresh_relay_candidates().await?);
+    }
+    assert_eq!(repository.revision()?, revision);
     actor.control_rounds.shutdown().await;
     let Actor {
         endpoint,

@@ -141,18 +141,42 @@ impl RelayReachabilityState {
 
 impl Actor {
     pub(crate) async fn refresh_relay_candidates(&mut self) -> Result<bool, RuntimeError> {
+        #[cfg(test)]
+        {
+            self.maintenance
+                .candidate_refresh_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.maintenance
+                .check(crate::actor::maintenance::FaultPoint::RelayCandidateLoad)?;
+        }
         let now_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
         let candidates = self
             .store
             .load_relay_map(self.state.endpoint_id, now_ms)
             .await?;
-        if !self.state.relay.replace_candidates(candidates.clone()) {
+        let mut staged = self.state.relay.clone();
+        if !staged.replace_candidates(candidates.clone()) {
             return Ok(false);
         }
+        #[cfg(test)]
+        {
+            self.maintenance.relay_map_apply_attempts += 1;
+            self.maintenance
+                .check(crate::actor::maintenance::FaultPoint::RelayMapApply)?;
+        }
         self.endpoint.replace_relay_map(&candidates).await?;
-        self.persist_relay_observations().await?;
-        self.publish_local_address_with_mode(true).await?;
+        let before_revision = self.state.revision;
+        let observed_revision = self.persist_relay_observations(&staged).await?;
+        let address_result = self.publish_local_address_with_mode(false).await;
+        self.state.revision = before_revision;
+        let address_revision = address_result?;
+        let mut revision = observed_revision.max(address_revision);
+        if revision <= before_revision {
+            revision = self.store.advance_revision().await?;
+        }
+        self.state.relay = staged;
+        self.state.revision = revision;
         Ok(true)
     }
 
@@ -160,29 +184,57 @@ impl Actor {
         &mut self,
         observation: IrohRelayObservation,
     ) -> Result<(), RuntimeError> {
-        let direct_reachable = observation.endpoint_addr().ip_addrs().next().is_some();
-        self.state.direct_reachable = direct_reachable;
-        let endpoint_changed = self.state.endpoint_data != *observation.endpoint_data();
-        let relay_changed = self.state.relay.observe(&observation);
-        if !endpoint_changed && !relay_changed {
+        // Iroh sends complete snapshots. Keep the latest desired snapshot until
+        // every durable projection is reconciled, even if no event is repeated.
+        self.maintenance.pending_observation = Some(observation);
+        self.reconcile_pending_iroh_observation().await
+    }
+
+    pub(crate) async fn reconcile_pending_iroh_observation(&mut self) -> Result<(), RuntimeError> {
+        let Some(observation) = self.maintenance.pending_observation.as_ref() else {
             return Ok(());
+        };
+        let mut staged = self.state.clone();
+        staged.direct_reachable = observation.endpoint_addr().ip_addrs().next().is_some();
+        let endpoint_changed = staged.endpoint_data != *observation.endpoint_data();
+        let relay_changed = staged.relay.observe(observation);
+        staged.endpoint_addr = observation.endpoint_addr().clone();
+        staged.endpoint_data = observation.endpoint_data().clone();
+        if endpoint_changed || relay_changed {
+            let before_revision = self.state.revision;
+            let relay = staged.relay.clone();
+            let observed_revision = self.persist_relay_observations(&relay).await?;
+            #[cfg(test)]
+            self.maintenance
+                .check(crate::actor::maintenance::FaultPoint::EndpointObservationPersist)?;
+            let metadata_revision = self.store.observe_if_changed(&staged).await?;
+            let mut revision = observed_revision.max(metadata_revision);
+            if endpoint_changed {
+                let address_result = self.publish_local_address_with_mode(false).await;
+                self.state.revision = before_revision;
+                revision = revision.max(address_result?);
+            }
+            if revision <= before_revision {
+                revision = self.store.advance_revision().await?;
+            }
+            staged.revision = revision;
         }
-        self.state.endpoint_addr = observation.endpoint_addr().clone();
-        self.state.endpoint_data = observation.endpoint_data().clone();
-        self.persist_relay_observations().await?;
-        self.state.revision = self.store.observe(&self.state).await?;
-        if endpoint_changed {
-            self.publish_local_address_with_mode(true).await?;
-        }
+        self.state = staged;
+        self.maintenance.pending_observation = None;
         Ok(())
     }
 
-    async fn persist_relay_observations(&mut self) -> Result<(), RuntimeError> {
+    async fn persist_relay_observations(
+        &self,
+        relay: &RelayReachabilityState,
+    ) -> Result<u64, RuntimeError> {
         let observed_at_ms = self.clock.now_ms()?;
-        let observations = self.state.relay.persisted_observations(observed_at_ms)?;
+        let observations = relay.persisted_observations(observed_at_ms)?;
+        #[cfg(test)]
+        self.maintenance
+            .check(crate::actor::maintenance::FaultPoint::RelayObservationPersist)?;
         let revision = self.store.record_relay_observations(observations).await?;
-        self.state.revision = self.state.revision.max(revision);
-        Ok(())
+        Ok(revision)
     }
 }
 

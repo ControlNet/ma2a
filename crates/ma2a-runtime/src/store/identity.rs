@@ -16,10 +16,25 @@ pub(crate) struct Identity {
 }
 
 impl StoreBackend {
+    pub(super) fn record_observation(
+        &mut self,
+        observation: &ma2a_store::EndpointObservationUpdate,
+        if_changed: bool,
+    ) -> Result<u64, RuntimeError> {
+        let result = if if_changed {
+            self.repository
+                .record_endpoint_observation_if_changed(observation)
+        } else {
+            self.repository.record_endpoint_observation(observation)
+        };
+        result.map_err(Into::into)
+    }
+
     pub(crate) fn open(config: &StoreConfig) -> Result<Self, RuntimeError> {
         Ok(Self {
             repository: ma2a_store::Repository::open(config)?,
             key_store: ma2a_store::KeyStore::open(config.state_dir())?,
+            pending_relay_publication: None,
         })
     }
 

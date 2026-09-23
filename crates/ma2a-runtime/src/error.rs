@@ -49,6 +49,7 @@ pub(crate) enum RuntimeErrorKind {
     Random,
     Clock,
     ObservationOverflow,
+    AddressObservationUnavailable,
     Shutdown,
     Control,
 }
@@ -56,6 +57,15 @@ pub(crate) enum RuntimeErrorKind {
 impl RuntimeError {
     pub(crate) const fn new(kind: RuntimeErrorKind) -> Self {
         Self(kind)
+    }
+
+    /// Background maintenance retries only recognized temporary operational failures.
+    pub(crate) fn is_retryable_background(&self) -> bool {
+        match &self.0 {
+            RuntimeErrorKind::Store(error) => error.is_retryable_maintenance(),
+            RuntimeErrorKind::AddressObservationUnavailable => true,
+            _ => false,
+        }
     }
 
     /// Returns a stable non-secret error classification.
@@ -73,7 +83,9 @@ impl RuntimeError {
             RuntimeErrorKind::Clock => ErrorCodeKind::Clock,
             RuntimeErrorKind::ObservationOverflow => ErrorCodeKind::ObservationOverflow,
             RuntimeErrorKind::Shutdown => ErrorCodeKind::Shutdown,
-            RuntimeErrorKind::Control => ErrorCodeKind::Control,
+            RuntimeErrorKind::AddressObservationUnavailable | RuntimeErrorKind::Control => {
+                ErrorCodeKind::Control
+            }
         };
         RuntimeErrorCode(kind)
     }
@@ -103,6 +115,9 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::ObservationOverflow => {
                 formatter.write_str("Runtime observation count exceeded u64")
             }
+            RuntimeErrorKind::AddressObservationUnavailable => {
+                formatter.write_str("Iroh has not supplied a live address observation yet")
+            }
             RuntimeErrorKind::Shutdown => {
                 formatter.write_str("Runtime shutdown did not join every owned task")
             }
@@ -126,6 +141,7 @@ impl Error for RuntimeError {
             | RuntimeErrorKind::Random
             | RuntimeErrorKind::Clock
             | RuntimeErrorKind::ObservationOverflow
+            | RuntimeErrorKind::AddressObservationUnavailable
             | RuntimeErrorKind::Shutdown
             | RuntimeErrorKind::Control => None,
         }
@@ -135,6 +151,30 @@ impl Error for RuntimeError {
 impl From<StoreError> for RuntimeError {
     fn from(error: StoreError) -> Self {
         Self(RuntimeErrorKind::Store(error))
+    }
+}
+
+impl From<ma2a_net::AddressPublisherError> for RuntimeError {
+    fn from(error: ma2a_net::AddressPublisherError) -> Self {
+        match error {
+            ma2a_net::AddressPublisherError::Store(error)
+            | ma2a_net::AddressPublisherError::Validation(
+                ma2a_net::AddressRecordValidationError::Store(error),
+            ) => Self::from(error),
+            ma2a_net::AddressPublisherError::ObservationUnavailable => {
+                Self::new(RuntimeErrorKind::AddressObservationUnavailable)
+            }
+            _ => Self::new(RuntimeErrorKind::Control),
+        }
+    }
+}
+
+impl From<ma2a_net::PrivateRelayAdvertisementPublishError> for RuntimeError {
+    fn from(error: ma2a_net::PrivateRelayAdvertisementPublishError) -> Self {
+        match error {
+            ma2a_net::PrivateRelayAdvertisementPublishError::Store(error) => Self::from(error),
+            _ => Self::new(RuntimeErrorKind::Control),
+        }
     }
 }
 
@@ -153,5 +193,22 @@ impl From<InvalidEndpointSecret> for RuntimeError {
 impl From<tokio::task::JoinError> for RuntimeError {
     fn from(error: tokio::task::JoinError) -> Self {
         Self(RuntimeErrorKind::Task(error))
+    }
+}
+
+#[cfg(test)]
+mod background_policy_test {
+    use super::RuntimeError;
+
+    #[test]
+    fn only_unavailable_live_address_observation_is_retryable() {
+        assert!(
+            RuntimeError::from(ma2a_net::AddressPublisherError::ObservationUnavailable)
+                .is_retryable_background()
+        );
+        assert!(
+            !RuntimeError::from(ma2a_net::AddressPublisherError::ObservationPoisoned)
+                .is_retryable_background()
+        );
     }
 }

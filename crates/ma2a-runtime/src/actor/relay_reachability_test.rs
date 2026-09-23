@@ -1,27 +1,25 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use iroh::SecretKey;
-use ma2a_core::{
-    MemberCapabilities, PrivateRelayAdvertisementScope, PrivateRelayAdvertisementV1,
-    PrivateRelayAdvertisementValidity, RelayReachability, SpaceAuthorizationView,
-    SpaceManifestMembership, SpaceMemberV1, SpacePolicyV1,
-};
+use ma2a_core::{AddressEndpointDataV1, RelayReachability};
 use ma2a_net::{
-    AdvertisementValidationContext, EndpointBindOptions, IrohHomeRelayObservation,
-    IrohRelayObservation, PrivateRelayAdvertisementValidator, RelayUrl, RuntimeEndpoint,
+    EndpointBindOptions, IrohHomeRelayObservation, IrohRelayObservation, RelayUrl, RuntimeEndpoint,
     SpaceAddressLookup,
 };
-use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
+use ma2a_store::{Repository, StoreConfig};
 use tokio::sync::mpsc;
 
 use super::{FixedClock, NOW_MS, TempState, TestResult};
+#[path = "relay_reachability_fixture.rs"]
+mod fixture;
 use crate::{
     actor::Actor,
     state::{Connectivity, RuntimeStatus},
     store::{STORE_CAPACITY, StoreBackend, StoreClient},
 };
+use fixture::{AdvertisementFixture, create_space_with_relay, store_advertisement};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(start_paused = true)]
 #[expect(
     clippy::too_many_lines,
     reason = "the integration scenario keeps setup, observation, persistence, and cleanup visible"
@@ -82,7 +80,7 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     let awaiting = RelayReachability::AwaitingIrohHome;
     assert_eq!(status.relay_reachability(), awaiting);
     let echo_metrics = endpoint.echo_metrics();
-    let (mut actor, _handle, _cancellation) = Actor::new(
+    let (mut actor, handle, _cancellation) = Actor::new(
         status,
         endpoint,
         store,
@@ -109,7 +107,44 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
     )?;
 
     // When
-    actor.observe_iroh_relay(observation).await?;
+    // Deliberately stale Actor projection: the live Iroh snapshot must replace it.
+    actor.state.endpoint_data = AddressEndpointDataV1::from_parts(Vec::new(), None)?;
+    let before_revision = actor.state.revision;
+    actor.maintenance.fail_once(
+        crate::actor::maintenance::FaultPoint::EndpointObservationPersist,
+        crate::error::RuntimeError::from(ma2a_store::StoreError::Io(
+            std::io::ErrorKind::Interrupted.into(),
+        )),
+    );
+    actor.maintenance.fail_once(
+        crate::actor::maintenance::FaultPoint::AddressPublication,
+        crate::error::RuntimeError::from(ma2a_store::StoreError::Io(
+            std::io::ErrorKind::Interrupted.into(),
+        )),
+    );
+    assert!(actor.observe_iroh_relay(observation.clone()).await.is_err());
+    assert_eq!(
+        actor.maintenance.pending_observation,
+        Some(observation.clone())
+    );
+    assert_ne!(actor.state.endpoint_data, *observation.endpoint_data());
+    assert_eq!(actor.state.revision, before_revision);
+    assert!(actor.reconcile_pending_iroh_observation().await.is_err());
+    assert_eq!(actor.state.revision, before_revision);
+    let published_sequence = repository
+        .address_record(authorization.space_id(), identity.endpoint_id)?
+        .ok_or("address publication did not commit before lookup failure")?
+        .sequence();
+    actor.reconcile_pending_iroh_observation().await?;
+    assert!(actor.maintenance.pending_observation.is_none());
+    assert!(actor.state.revision > before_revision);
+    assert_eq!(
+        repository
+            .address_record(authorization.space_id(), identity.endpoint_id)?
+            .ok_or("address publication missing after retry")?
+            .sequence(),
+        published_sequence
+    );
     let observed_status = actor.state.clone();
     let persisted = repository.relay_observations()?;
     let snapshot = actor.snapshot().await?.to_value();
@@ -183,77 +218,50 @@ async fn active_space_filters_connected_rogue_home_from_status_and_repository() 
         Some(&serde_json::json!(true))
     );
 
-    actor.control_rounds.shutdown().await;
-    let Actor {
-        endpoint,
-        store,
-        relay_observer,
-        ..
-    } = actor;
-    endpoint.shutdown().await?;
-    relay_observer.await?;
-    store.stop().await?;
+    // Both stream items are complete snapshots. A newer one replaces an older
+    // failed desire and must not later be rolled back by the periodic retry.
+    let old = IrohRelayObservation::new(
+        identity.endpoint_id,
+        observation.endpoint_data().clone(),
+        vec![IrohHomeRelayObservation::new(allowed_url.clone(), false)],
+    )?;
+    let newer = IrohRelayObservation::new(
+        identity.endpoint_id,
+        observation.endpoint_data().clone(),
+        Vec::new(),
+    )?;
+    for _ in 0..2 {
+        actor.maintenance.fail_once(
+            crate::actor::maintenance::FaultPoint::EndpointObservationPersist,
+            crate::error::RuntimeError::from(ma2a_store::StoreError::Io(
+                std::io::ErrorKind::Interrupted.into(),
+            )),
+        );
+    }
+    assert!(actor.observe_iroh_relay(old).await.is_err());
+    assert!(actor.observe_iroh_relay(newer.clone()).await.is_err());
+    assert_eq!(actor.maintenance.pending_observation, Some(newer));
+    // Close the independent Iroh watcher channel so the test controls the
+    // one-shot pending snapshot without another transport event superseding it.
+    let (_sender, observations) = mpsc::channel(1);
+    actor.relay_observations = observations;
+    let mut events = handle.subscribe();
+    let actor_task = tokio::spawn(actor.run());
+    assert!(events.recv().await?.is_ready());
+    tokio::task::yield_now().await;
+    tokio::time::advance(crate::control_actor::control_period(identity.endpoint_id)).await;
+    let mut status = handle.status().await?;
+    for _ in 0..10_000 {
+        if status.observed_home_relays().next().is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+        status = handle.status().await?;
+    }
+    assert!(status.observed_home_relays().next().is_none());
+    assert!(repository.relay_observations()?.is_empty());
+    handle.shutdown().await?;
+    actor_task.await??;
     store_task.await?;
-    Ok(())
-}
-
-fn create_space_with_relay(
-    repository: &mut Repository,
-    local_endpoint_id: ma2a_core::EndpointId,
-    relay_endpoint_id: ma2a_core::EndpointId,
-) -> Result<SpaceAuthorizationView, Box<dyn std::error::Error + Send + Sync>> {
-    let local = SpaceMemberV1::new(
-        local_endpoint_id,
-        "local".to_owned(),
-        MemberCapabilities::new(true, false),
-    )?;
-    let relay = SpaceMemberV1::new(
-        relay_endpoint_id,
-        "relay".to_owned(),
-        MemberCapabilities::new(true, true),
-    )?;
-    let created = repository.create_owned_space(&SpaceCreation::new(
-        10,
-        local.clone(),
-        SpacePolicyV1::phase_one_default(),
-    ))?;
-    let mut members = vec![local, relay];
-    members.sort_by_key(SpaceMemberV1::endpoint_id);
-    repository.advance_owned_space(&OwnedSpaceUpdate::new(
-        created.space_id(),
-        11,
-        SpaceManifestMembership::new(members, Vec::new()),
-    ))?;
-    let chain = repository
-        .load_space_chain(created.space_id())?
-        .ok_or("created Space chain is missing")?;
-    Ok(SpaceAuthorizationView::from_chain(&chain))
-}
-
-struct AdvertisementFixture<'a> {
-    authorization: &'a SpaceAuthorizationView,
-    relay: &'a SecretKey,
-    relay_url: RelayUrl,
-}
-
-fn store_advertisement(
-    repository: &mut Repository,
-    fixture: AdvertisementFixture<'_>,
-) -> TestResult {
-    let now_ms = u64::try_from(NOW_MS)?;
-    let signed = PrivateRelayAdvertisementV1::new(
-        PrivateRelayAdvertisementScope::new(
-            fixture.authorization.space_id(),
-            fixture.relay.public().into(),
-        ),
-        fixture.relay_url,
-        PrivateRelayAdvertisementValidity::new(1, now_ms, now_ms + 600_000)?,
-    )?
-    .sign(fixture.relay)?;
-    PrivateRelayAdvertisementValidator::validate_and_store(
-        repository,
-        signed.canonical_bytes(),
-        AdvertisementValidationContext::new(fixture.authorization, now_ms),
-    )?;
     Ok(())
 }

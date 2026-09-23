@@ -152,6 +152,26 @@ impl Repository {
         Ok(revision)
     }
 
+    /// Replays a background observation without advancing unchanged metadata.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the observation cannot be read or committed.
+    pub fn record_endpoint_observation_if_changed(
+        &mut self,
+        observation: &EndpointObservationUpdate,
+    ) -> Result<u64, StoreError> {
+        let current = self.runtime_metadata()?.endpoint_observation();
+        if current.is_some_and(|old| {
+            old.ready == observation.ready
+                && old.direct_address_count == observation.direct_address_count
+                && old.relay_address_count == observation.relay_address_count
+                && old.membership_count == observation.membership_count
+        }) {
+            return self.revision();
+        }
+        self.record_endpoint_observation(observation)
+    }
+
     /// Replaces desired relay configuration and advances revision atomically.
     ///
     /// # Errors
