@@ -42,10 +42,18 @@ publication with `force_advance` was not repeat-safe.
   until lookup refresh and one control trigger finish.
 - The Store backend retains a signed relay advertisement batch after sequence
   reservation. Failed per-Space writes or activity reconciliation retry those
-  same bytes/sequence. The Actor remembers the last successful configuration,
-  authorizations, issue/expiry window, and `relay_followup_pending`; a retry of
+  same bytes/sequence while the retained batch is valid. The completed Store
+  publication result reports the actual signed issue/expiry window, including
+  when the retry request arrived later. The Actor records this Store result in
+  `published_relay`; retry request time never extends signed validity. An
+  expired retained batch is discarded and a new sequence is signed for the
+  current window. A clock rollback before the retained issue time fails closed.
+  The Actor also remembers configuration, authorizations, and
+  `relay_followup_pending`; a retry of
   candidate refresh/scheduling does not publish another signed sequence.
   Normal renewal starts at five minutes or earlier for a short explicit expiry.
+  A still-valid retained batch may finish inside the renewal window; the next
+  maintenance turn renews it using its original signed timestamps.
 - `RuntimeStatus` relay candidates and Iroh observation fields represent the
   applied projection. A pending attempt keeps the previous Actor revision even
   if Store has committed an intermediate effect. On successful projection

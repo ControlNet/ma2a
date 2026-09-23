@@ -8,6 +8,8 @@ mod mutation_replay;
 mod observation;
 mod relay;
 mod snapshot;
+#[cfg(test)]
+mod test_support;
 
 use crate::{
     RuntimeClock as _,
@@ -193,7 +195,7 @@ impl StoreClient {
         local_endpoint_id: ma2a_core::EndpointId,
         issued_at_ms: u64,
         expires_at_ms: u64,
-    ) -> Result<(u64, bool), RuntimeError> {
+    ) -> Result<crate::store::RelayPublicationResult, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PublishRelayAdvertisements {
             publisher,

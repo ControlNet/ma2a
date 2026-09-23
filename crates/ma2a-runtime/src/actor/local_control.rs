@@ -135,19 +135,19 @@ impl Actor {
             // be durable. The Store retries that exact signed batch.
             self.maintenance.relay_followup_pending = true;
         }
-        let (revision, advanced) = write_result?;
-        self.state.revision = self.state.revision.max(revision);
+        let publication_result = write_result?;
+        self.state.revision = self.state.revision.max(publication_result.revision);
         self.maintenance.published_relay = Some(super::maintenance::PublishedRelay {
             config,
             authorizations,
-            issued_at_ms,
-            expires_at_ms,
+            issued_at_ms: publication_result.issued_at_ms,
+            expires_at_ms: publication_result.expires_at_ms,
         });
-        if advanced {
+        if publication_result.changed {
             self.maintenance.relay_followup_pending = true;
         }
         self.finish_relay_publication().await?;
-        Ok(revision)
+        Ok(publication_result.revision)
     }
 
     async fn finish_relay_publication(&mut self) -> Result<(), RuntimeError> {

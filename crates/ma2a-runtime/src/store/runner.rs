@@ -16,9 +16,7 @@ impl StoreBackend {
     fn dispatch(&mut self, command: StoreCommand) -> bool {
         match command {
             StoreCommand::Initialize(reply) => drop(reply.send(self.initialize())),
-            StoreCommand::Revision(reply) => {
-                drop(reply.send(self.repository.revision().map_err(Into::into)));
-            }
+            StoreCommand::Revision(reply) => self.reply_revision(reply),
             StoreCommand::SpaceDetails {
                 endpoint_id,
                 space_id,
@@ -186,6 +184,10 @@ impl StoreBackend {
                 issued_at_ms,
                 expires_at_ms,
             ))),
+            #[cfg(test)]
+            StoreCommand::RelayPublicationTest(command) => {
+                self.dispatch_relay_publication_test(command);
+            }
             StoreCommand::ReconcileRelayActivity {
                 local_endpoint_id,
                 active_spaces,
