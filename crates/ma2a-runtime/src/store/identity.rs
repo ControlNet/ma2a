@@ -35,6 +35,8 @@ impl StoreBackend {
             repository: ma2a_store::Repository::open(config)?,
             key_store: ma2a_store::KeyStore::open(config.state_dir())?,
             pending_relay_publication: None,
+            #[cfg(test)]
+            relay_publication_fail_after: None,
         })
     }
 

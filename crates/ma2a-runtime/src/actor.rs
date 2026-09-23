@@ -26,6 +26,8 @@ mod invite;
 mod local_control;
 pub(crate) mod maintenance;
 mod membership;
+#[cfg(test)]
+mod partial_relay_publication_test;
 mod relay_configuration;
 #[cfg(test)]
 mod relay_lifecycle_test;

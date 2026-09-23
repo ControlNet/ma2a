@@ -124,8 +124,10 @@ pub(crate) enum StoreCommand {
         local_endpoint_id: ma2a_core::EndpointId,
         issued_at_ms: u64,
         expires_at_ms: u64,
-        reply: oneshot::Sender<Result<(u64, bool), RuntimeError>>,
+        reply: oneshot::Sender<Result<super::RelayPublicationResult, RuntimeError>>,
     },
+    #[cfg(test)]
+    RelayPublicationTest(super::local_control::RelayPublicationTestCommand),
     ReconcileRelayActivity {
         local_endpoint_id: ma2a_core::EndpointId,
         active_spaces: Vec<ma2a_core::SpaceId>,

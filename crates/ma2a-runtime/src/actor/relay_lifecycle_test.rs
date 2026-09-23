@@ -13,7 +13,7 @@ use ma2a_store::{RelayConfiguration, RelayTransportConfiguration, Repository, St
 use crate::{Runtime, RuntimeClock, error::RuntimeError};
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-const NOW_MS: i64 = 1_700_000_000_000;
+pub(super) const NOW_MS: i64 = 1_700_000_000_000;
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]

@@ -4,6 +4,13 @@ use super::StoreBackend;
 use crate::error::RuntimeError;
 
 impl StoreBackend {
+    pub(super) fn reply_revision(
+        &self,
+        reply: tokio::sync::oneshot::Sender<Result<u64, RuntimeError>>,
+    ) {
+        let _unsent = reply.send(self.repository.revision().map_err(Into::into));
+    }
+
     pub(super) fn set_endpoint_bind_port(&mut self, port: u16) -> Result<u64, RuntimeError> {
         self.repository
             .set_endpoint_bind_port(port)

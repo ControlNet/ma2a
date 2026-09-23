@@ -1,11 +1,54 @@
-use super::StoreBackend;
+use super::{RelayPublicationResult, StoreBackend};
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
 pub(super) struct PendingRelayPublication {
     config: ma2a_net::PrivateRelayProviderConfig,
     authorizations: Vec<ma2a_core::SpaceAuthorizationView>,
     advertisements: Vec<ma2a_core::SignedPrivateRelayAdvertisementV1>,
+    issued_at_ms: u64,
     expires_at_ms: u64,
+}
+
+impl PendingRelayPublication {
+    fn effective_window(&self) -> Result<(u64, u64), RuntimeError> {
+        let window =
+            self.advertisements
+                .first()
+                .map_or((self.issued_at_ms, self.expires_at_ms), |signed| {
+                    let advertisement = signed.advertisement();
+                    (advertisement.issued_at_ms(), advertisement.expires_at_ms())
+                });
+        if self.advertisements.iter().any(|signed| {
+            (
+                signed.advertisement().issued_at_ms(),
+                signed.advertisement().expires_at_ms(),
+            ) != window
+        }) {
+            return Err(RuntimeError::new(RuntimeErrorKind::Control));
+        }
+        Ok(window)
+    }
+}
+
+#[cfg(test)]
+pub(crate) enum RelayPublicationTestCommand {
+    FailAfter(usize, tokio::sync::oneshot::Sender<()>),
+    Pending(tokio::sync::oneshot::Sender<bool>),
+}
+
+#[cfg(test)]
+impl StoreBackend {
+    pub(super) fn dispatch_relay_publication_test(&mut self, command: RelayPublicationTestCommand) {
+        match command {
+            RelayPublicationTestCommand::FailAfter(committed_spaces, reply) => {
+                self.relay_publication_fail_after = Some(committed_spaces);
+                let _unsent = reply.send(());
+            }
+            RelayPublicationTestCommand::Pending(reply) => {
+                let _unsent = reply.send(self.pending_relay_publication.is_some());
+            }
+        }
+    }
 }
 
 pub(super) fn authorize(
@@ -78,13 +121,20 @@ impl StoreBackend {
         local_endpoint_id: ma2a_core::EndpointId,
         issued_at_ms: u64,
         expires_at_ms: u64,
-    ) -> Result<(u64, bool), RuntimeError> {
+    ) -> Result<RelayPublicationResult, RuntimeError> {
         let authorizations = self
             .repository
             .control_spaces_for(local_endpoint_id)?
             .iter()
             .map(ma2a_store::ControlSpaceState::authorization)
             .collect::<Vec<_>>();
+        if self
+            .pending_relay_publication
+            .as_ref()
+            .is_some_and(|pending| issued_at_ms < pending.issued_at_ms)
+        {
+            return Err(RuntimeError::new(RuntimeErrorKind::Clock));
+        }
         let reuse = self
             .pending_relay_publication
             .as_ref()
@@ -94,6 +144,8 @@ impl StoreBackend {
                     && issued_at_ms < pending.expires_at_ms
             });
         if !reuse {
+            // An expired or changed retained batch cannot be completed as a
+            // current advertisement. A fresh sequence deliberately supersedes it.
             let advertisements = publisher
                 .advertisements(
                     &mut self.repository,
@@ -108,20 +160,31 @@ impl StoreBackend {
                 config: publisher.config().clone(),
                 authorizations: authorizations.clone(),
                 advertisements,
+                issued_at_ms,
                 expires_at_ms,
             });
         }
-        let advertisements = &self
+        let pending = self
             .pending_relay_publication
             .as_ref()
-            .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::Control))?
-            .advertisements;
+            .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let advertisements = &pending.advertisements;
+        let (effective_issued_at_ms, effective_expires_at_ms) = pending.effective_window()?;
         let active_spaces = advertisements
             .iter()
             .map(|advertisement| advertisement.advertisement().space_id())
             .collect::<Vec<_>>();
         let mut advanced = false;
-        for advertisement in advertisements {
+        for (committed_spaces, advertisement) in advertisements.iter().enumerate() {
+            #[cfg(test)]
+            if self.relay_publication_fail_after == Some(committed_spaces) {
+                self.relay_publication_fail_after = None;
+                return Err(
+                    ma2a_store::StoreError::Io(std::io::ErrorKind::Interrupted.into()).into(),
+                );
+            }
+            #[cfg(not(test))]
+            let _ = committed_spaces;
             let authorization = authorizations
                 .iter()
                 .find(|authorization| {
@@ -134,16 +197,27 @@ impl StoreBackend {
                 issued_at_ms,
             )
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-            advanced |= matches!(
-                self.repository
-                    .advance_private_relay_advertisement(&validated)?,
-                ma2a_store::RelayAdvertisementOutcome::Advanced { .. }
-            );
+            match self
+                .repository
+                .advance_private_relay_advertisement(&validated)?
+            {
+                ma2a_store::RelayAdvertisementOutcome::Advanced { .. } => advanced = true,
+                ma2a_store::RelayAdvertisementOutcome::Idempotent { .. } => {}
+                ma2a_store::RelayAdvertisementOutcome::Rollback { .. }
+                | ma2a_store::RelayAdvertisementOutcome::Fork { .. } => {
+                    return Err(RuntimeError::new(RuntimeErrorKind::Control));
+                }
+            }
         }
         let (revision, activity_changed) = self
             .repository
             .reconcile_private_relay_activity(local_endpoint_id, &active_spaces)?;
         self.pending_relay_publication = None;
-        Ok((revision, advanced || activity_changed))
+        Ok(RelayPublicationResult {
+            revision,
+            changed: advanced || activity_changed,
+            issued_at_ms: effective_issued_at_ms,
+            expires_at_ms: effective_expires_at_ms,
+        })
     }
 }
