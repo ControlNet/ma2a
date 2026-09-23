@@ -97,11 +97,16 @@ impl DaemonFixture {
         // daemon's standard error for the life of the test, and a pipe nobody
         // drains eventually blocks the process writing to it.
         let diagnostics = fs::File::create(self.state_dir.join("foreground-daemon.log"))?;
-        let mut child = self
+        let child = self
             .command(&["daemon"])
             .stdout(Stdio::piped())
             .stderr(Stdio::from(diagnostics))
             .spawn()?;
+        self.adopt_owned_child(child)
+    }
+
+    /// Waits for an already spawned foreground daemon and takes responsibility for it.
+    pub(crate) fn adopt_owned_child(&mut self, mut child: Child) -> TestValue<()> {
         match await_readiness(&mut child) {
             Ok(_record) => {
                 self.owned = Some(child);

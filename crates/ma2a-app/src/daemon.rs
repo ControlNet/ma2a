@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AppError,
-    daemon_control::{LAUNCH_NONCE_VARIABLE, endpoint_answers, open_lock},
+    daemon_control::{LAUNCH_NONCE_VARIABLE, acquire_startup_lock, endpoint_answers, open_lock},
 };
 
 /// Bounds a graceful Runtime shutdown before this process leaves regardless.
@@ -51,8 +51,17 @@ pub(crate) async fn run(
         rustix::process::setsid().map_err(io::Error::from)?;
     }
     paths.prepare()?;
+    // The parent launcher holds startup.lock for daemon-detached. A foreground
+    // daemon joins that same transition order and releases it at readiness.
+    let startup_lock = if detach_session {
+        None
+    } else {
+        let lock = open_lock(&paths.startup_lock_path())?;
+        acquire_startup_lock(&lock).await?;
+        Some(lock)
+    };
     claim_singleton(&paths)?;
-    serve(state_dir, paths).await
+    serve(state_dir, paths, startup_lock).await
 }
 
 /// Claims the state directory, or refuses to run beside an existing owner.
@@ -74,7 +83,11 @@ fn claim_singleton(paths: &IpcPaths) -> Result<(), AppError> {
     }
 }
 
-async fn serve(state_dir: PathBuf, paths: IpcPaths) -> Result<(), AppError> {
+async fn serve(
+    state_dir: PathBuf,
+    paths: IpcPaths,
+    startup_lock: Option<File>,
+) -> Result<(), AppError> {
     let launch_nonce = std::env::var(LAUNCH_NONCE_VARIABLE).ok();
     let runtime = Runtime::start(StoreConfig::new(&state_dir)).await?;
     let control = CurrentUserRuntime::open_at(
@@ -107,6 +120,7 @@ async fn serve(state_dir: PathBuf, paths: IpcPaths) -> Result<(), AppError> {
             web: web.clone(),
         },
         &mut bound,
+        startup_lock,
     )
     .await;
     web.stop().await;
@@ -127,7 +141,11 @@ struct Launch {
 }
 
 /// Serves until asked to stop, recording in `bound` whether the endpoint is ours.
-async fn begin_serving(launch: Launch, bound: &mut bool) -> Result<(), AppError> {
+async fn begin_serving(
+    launch: Launch,
+    bound: &mut bool,
+    startup_lock: Option<File>,
+) -> Result<(), AppError> {
     // The record is made current before anything can answer, because a caller
     // that reaches this daemon's endpoint and reads a dead daemon's record
     // beside it would conclude that ownership is ambiguous and refuse to act.
@@ -142,6 +160,7 @@ async fn begin_serving(launch: Launch, bound: &mut bool) -> Result<(), AppError>
     *bound = true;
     // The endpoint is bound, so a caller can connect from this point on.
     report_ready(&launch.identity)?;
+    drop(startup_lock);
     let cancellation = CancellationToken::new();
     let serving = server
         .with_web_lifecycle(launch.web)
