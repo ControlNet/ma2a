@@ -10,6 +10,24 @@ pub(super) struct PendingRelayPublication {
 }
 
 impl PendingRelayPublication {
+    fn can_reuse(
+        &self,
+        desired: (
+            &ma2a_net::PrivateRelayProviderConfig,
+            &[ma2a_core::SpaceAuthorizationView],
+        ),
+        now_ms: u64,
+    ) -> Result<bool, RuntimeError> {
+        let (config, authorizations) = desired;
+        let (issued_at_ms, expires_at_ms) = self.effective_window()?;
+        if now_ms < issued_at_ms {
+            return Err(RuntimeError::new(RuntimeErrorKind::Clock));
+        }
+        Ok(self.config == *config
+            && self.authorizations == authorizations
+            && crate::relay_publication::is_current(now_ms, issued_at_ms, expires_at_ms))
+    }
+
     fn effective_window(&self) -> Result<(u64, u64), RuntimeError> {
         let window =
             self.advertisements
@@ -128,24 +146,17 @@ impl StoreBackend {
             .iter()
             .map(ma2a_store::ControlSpaceState::authorization)
             .collect::<Vec<_>>();
-        if self
-            .pending_relay_publication
-            .as_ref()
-            .is_some_and(|pending| issued_at_ms < pending.issued_at_ms)
-        {
-            return Err(RuntimeError::new(RuntimeErrorKind::Clock));
-        }
         let reuse = self
             .pending_relay_publication
             .as_ref()
-            .is_some_and(|pending| {
-                pending.config == *publisher.config()
-                    && pending.authorizations == authorizations
-                    && issued_at_ms < pending.expires_at_ms
-            });
+            .map_or(Ok(false), |pending| {
+                pending.can_reuse((publisher.config(), &authorizations), issued_at_ms)
+            })?;
         if !reuse {
-            // An expired or changed retained batch cannot be completed as a
-            // current advertisement. A fresh sequence deliberately supersedes it.
+            // A changed or renewal-due retained batch cannot complete as a
+            // safely fresh publication. The signed replacement becomes pending
+            // before any per-Space write.
+            self.pending_relay_publication = None;
             let advertisements = publisher
                 .advertisements(
                     &mut self.repository,
