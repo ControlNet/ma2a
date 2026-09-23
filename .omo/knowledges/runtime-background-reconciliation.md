@@ -42,18 +42,23 @@ publication with `force_advance` was not repeat-safe.
   until lookup refresh and one control trigger finish.
 - The Store backend retains a signed relay advertisement batch after sequence
   reservation. Failed per-Space writes or activity reconciliation retry those
-  same bytes/sequence while the retained batch is valid. The completed Store
+  same bytes/sequence only while the retained batch is outside the shared
+  five-minute renewal window. At 299,999 ms after issue, a ten-minute batch
+  may still replay; at 300,000 ms, it is replaced. The completed Store
   publication result reports the actual signed issue/expiry window, including
   when the retry request arrived later. The Actor records this Store result in
-  `published_relay`; retry request time never extends signed validity. An
-  expired retained batch is discarded and a new sequence is signed for the
-  current window. A clock rollback before the retained issue time fails closed.
-  The Actor also remembers configuration, authorizations, and
-  `relay_followup_pending`; a retry of
+  `published_relay`; retry request time never extends signed validity. Entering
+  the renewal window deliberately replaces a partial batch with a fresh
+  sequence in the same recovery turn. This prevents a successful recovery from
+  leaving an almost-expired advertisement until the next maintenance tick.
+  A Space missing the old sequence may advance directly to the replacement
+  sequence. If replacement persistence partially fails, its exact signed batch
+  becomes the new pending batch. Expiry also forces replacement, while a clock
+  rollback before the retained issue time fails closed. The Actor also remembers
+  configuration, authorizations, and `relay_followup_pending`; a retry of
   candidate refresh/scheduling does not publish another signed sequence.
-  Normal renewal starts at five minutes or earlier for a short explicit expiry.
-  A still-valid retained batch may finish inside the renewal window; the next
-  maintenance turn renews it using its original signed timestamps.
+  Actor maintenance and Store replay use the same policy: age strictly under
+  five minutes and more than five minutes remaining before expiry.
 - `RuntimeStatus` relay candidates and Iroh observation fields represent the
   applied projection. A pending attempt keeps the previous Actor revision even
   if Store has committed an intermediate effect. On successful projection

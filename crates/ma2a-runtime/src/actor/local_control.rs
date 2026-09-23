@@ -37,9 +37,11 @@ impl Actor {
                 .is_some_and(|published| {
                     published.config == *provider
                         && published.authorizations == authorizations
-                        && issued_at_ms >= published.issued_at_ms
-                        && issued_at_ms - published.issued_at_ms < 300_000
-                        && issued_at_ms.saturating_add(300_000) < published.expires_at_ms
+                        && crate::relay_publication::is_current(
+                            issued_at_ms,
+                            published.issued_at_ms,
+                            published.expires_at_ms,
+                        )
                 });
             if current {
                 self.finish_relay_publication().await?;

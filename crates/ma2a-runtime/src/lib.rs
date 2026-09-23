@@ -25,6 +25,7 @@ mod enrollment_actor;
 mod error;
 mod lifecycle;
 mod reachability;
+mod relay_publication;
 mod services;
 mod state;
 mod store;

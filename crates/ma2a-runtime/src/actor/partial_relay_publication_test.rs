@@ -10,6 +10,8 @@ use crate::{Runtime, RuntimeClock, error::RuntimeError};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+mod freshness_test;
+
 #[derive(Debug)]
 struct PublicationClock(AtomicI64);
 
@@ -125,8 +127,9 @@ async fn partial_relay_batch_retries_identical_bytes_without_sequence_or_revisio
 -> TestResult {
     let (_state, fixture) = partial_relay_fixture("partial-batch").await?;
     let handle = &fixture.handle;
+    fixture.clock.0.store(NOW_MS + 120_000, Ordering::Relaxed);
     handle
-        .publish_relay_advertisements(fixture.provider.clone(), u64::try_from(NOW_MS + 600_000)?)
+        .publish_relay_advertisements(fixture.provider.clone(), u64::try_from(NOW_MS + 720_000)?)
         .await?;
     assert!(!handle.store.relay_publication_pending().await?);
     let repository = Repository::open(&fixture.config)?;
@@ -164,26 +167,23 @@ async fn partial_relay_batch_retries_identical_bytes_without_sequence_or_revisio
 }
 
 #[tokio::test(start_paused = true)]
-async fn delayed_partial_relay_retry_renews_from_signed_window() -> TestResult {
+async fn delayed_partial_relay_retry_replaces_due_batch_immediately() -> TestResult {
     let (_state, fixture) = partial_relay_fixture("delayed-batch").await?;
     fixture.clock.0.store(NOW_MS + 360_000, Ordering::Relaxed);
     fixture
         .handle
         .publish_relay_advertisements(fixture.provider.clone(), u64::try_from(NOW_MS + 960_000)?)
         .await?;
-    let completed = Repository::open(&fixture.config)?
-        .relay_advertisement(fixture.missing_space, fixture.endpoint_id)?
-        .ok_or("second Space missing")?;
-    assert_eq!(completed.sequence(), fixture.committed.sequence());
-    assert_eq!(completed.issued_at_ms(), NOW_MS);
-    assert_eq!(completed.expires_at_ms(), NOW_MS + 600_000);
-    maintenance_tick(&fixture.handle).await;
-    let renewed = Repository::open(&fixture.config)?
-        .relay_advertisement(fixture.missing_space, fixture.endpoint_id)?
-        .ok_or("renewed advertisement missing")?;
-    assert_eq!(renewed.sequence(), fixture.committed.sequence() + 1);
-    assert_eq!(renewed.issued_at_ms(), NOW_MS + 360_000);
-    assert_eq!(renewed.expires_at_ms(), NOW_MS + 960_000);
+    assert!(!fixture.handle.store.relay_publication_pending().await?);
+    let repository = Repository::open(&fixture.config)?;
+    for space_id in [fixture.committed_space, fixture.missing_space] {
+        let renewed = repository
+            .relay_advertisement(space_id, fixture.endpoint_id)?
+            .ok_or("renewed advertisement missing")?;
+        assert_eq!(renewed.sequence(), fixture.committed.sequence() + 1);
+        assert_eq!(renewed.issued_at_ms(), NOW_MS + 360_000);
+        assert_eq!(renewed.expires_at_ms(), NOW_MS + 960_000);
+    }
     fixture.runtime.shutdown().await?;
     Ok(())
 }
