@@ -1,9 +1,4 @@
-//! `ma2a start` racing a foreground `ma2a daemon` for the same directory.
-//!
-//! The foreground daemon does not take the startup lock, so a launcher can
-//! decide that nothing owns the directory and then find that something does.
-//! Whatever the interleaving, the directory must end with exactly one owner and
-//! that owner must still be addressable.
+//! Daemon-generation transitions racing foreground startup.
 
 use std::{fs, path::Path};
 #[cfg(debug_assertions)]
@@ -21,6 +16,10 @@ use super::{DaemonFixture, TestResult, daemon_record, is_owned, status_json};
 #[cfg(debug_assertions)]
 /// The debug-build pause point between a launcher's decision and its launch.
 const HOLD_VARIABLE: &str = "MA2A_TEST_HOLD_BEFORE_SPAWN";
+#[cfg(debug_assertions)]
+const STOP_HOLD_VARIABLE: &str = "MA2A_TEST_HOLD_BEFORE_STOP";
+#[cfg(debug_assertions)]
+const CONTENDED_VARIABLE: &str = "MA2A_TEST_SIGNAL_STARTUP_LOCK_CONTENDED";
 
 #[cfg(debug_assertions)]
 /// A private directory the held launcher and the test signal each other through.
@@ -42,12 +41,11 @@ impl Hold {
         &self.0
     }
 
-    /// Waits until the launcher is between classifying the directory and launching.
-    fn await_reached(&self) -> TestResult {
+    fn await_marker(&self, marker: &str) -> TestResult {
         let deadline = Instant::now() + Duration::from_secs(60);
-        while !self.0.join("reached").exists() {
+        while !self.0.join(marker).exists() {
             if Instant::now() >= deadline {
-                return Err("the launcher never reached its launch".into());
+                return Err(format!("the process never reported {marker}").into());
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -67,15 +65,10 @@ impl Drop for Hold {
     }
 }
 
-/// The adversarial order: the foreground daemon wins inside the launcher's window.
-///
-/// The launcher has already seen a free lock and no endpoint. Removing the
-/// endpoint on that basis, as an earlier revision did before launching, unlinks
-/// the socket of the daemon that won in the meantime and leaves it owning the
-/// directory with no address anyone can reach.
+/// A foreground daemon cannot enter after start has classified absence.
 #[cfg(debug_assertions)]
 #[test]
-fn a_launch_that_loses_to_a_foreground_daemon_leaves_the_winner_addressable() -> TestResult {
+fn a_held_start_launches_before_a_contending_foreground_daemon() -> TestResult {
     // Given: a launcher paused after deciding the directory is unowned.
     let mut fixture = DaemonFixture::idle("lifecycle-start-vs-daemon")?;
     let hold = Hold::new(&fixture)?;
@@ -83,23 +76,29 @@ fn a_launch_that_loses_to_a_foreground_daemon_leaves_the_winner_addressable() ->
         .command(&["start"])
         .env(HOLD_VARIABLE, hold.path())
         .spawn()?;
-    hold.await_reached()?;
+    hold.await_marker("reached")?;
 
-    // When: a foreground daemon claims the directory, and only then the launcher goes on.
-    fixture.start_owned()?;
-    let winner = fixture
-        .owned_pid()
-        .ok_or("the foreground daemon has no process")?;
+    // The foreground process reaches the held lock before the launcher proceeds.
+    let foreground = fixture
+        .command(&["daemon"])
+        .env(CONTENDED_VARIABLE, hold.path())
+        .spawn()?;
+    hold.await_marker("contended")?;
+    assert!(!is_owned(&fixture)?);
     hold.release()?;
     let outcome = launcher.wait_with_output()?;
+    fixture.adopt_detached();
+    let foreground_outcome = foreground.wait_with_output()?;
 
-    // Then: the launch failed, and failed because the directory was already owned.
-    let stderr = String::from_utf8_lossy(&outcome.stderr);
-    assert!(!outcome.status.success(), "the losing launch must fail");
+    assert!(
+        outcome.status.success(),
+        "{}",
+        String::from_utf8_lossy(&outcome.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&foreground_outcome.stderr);
+    assert!(!foreground_outcome.status.success());
     assert!(stderr.contains("another daemon already owns"), "{stderr}");
 
-    // And the winner is untouched: still running, still owning, still reachable.
-    assert!(fixture.owned_daemon_is_running());
     assert!(is_owned(&fixture)?);
     assert_is_socket(&fixture.runtime_dir().join("control.sock"))?;
     assert_eq!(
@@ -109,15 +108,110 @@ fn a_launch_that_loses_to_a_foreground_daemon_leaves_the_winner_addressable() ->
         Some("snapshot")
     );
     let record = daemon_record(&fixture)?;
-    assert_eq!(
-        record.get("pid").and_then(Value::as_u64),
-        Some(u64::from(winner))
-    );
-    assert_eq!(record.get("launch_nonce"), Some(&Value::Null));
+    assert!(record.get("launch_nonce").and_then(Value::as_str).is_some());
     assert!(
         fixture.run_ok(&["stop"]).is_ok(),
-        "the winner must stay stoppable"
+        "the winning launch must stay stoppable"
     );
+    assert!(!is_owned(&fixture)?);
+    fixture.shutdown()
+}
+
+/// Stop cannot reach a newly arriving daemon after its classified owner exits.
+#[cfg(debug_assertions)]
+#[test]
+fn stop_cannot_cross_from_a_departed_owner_to_a_new_foreground_daemon() -> TestResult {
+    let mut fixture = DaemonFixture::running("lifecycle-stop-generation-race")?;
+    let hold = Hold::new(&fixture)?;
+    let stopper = fixture
+        .command(&["stop"])
+        .env(STOP_HOLD_VARIABLE, hold.path())
+        .spawn()?;
+    hold.await_marker("reached")?;
+
+    // A exits independently after stop classified it. B has attempted the
+    // transition lock, yet cannot claim the now-free singleton lock.
+    fixture.stop_owned()?;
+    let foreground = fixture
+        .command(&["daemon"])
+        .env(CONTENDED_VARIABLE, hold.path())
+        .spawn()?;
+    hold.await_marker("contended")?;
+    assert!(!is_owned(&fixture)?);
+    hold.release()?;
+
+    let stop_outcome = stopper.wait_with_output()?;
+    assert!(
+        !stop_outcome.status.success(),
+        "A left before its stop request"
+    );
+    fixture.adopt_owned_child(foreground)?;
+    assert!(is_owned(&fixture)?);
+    assert_eq!(
+        status_json(&fixture)?
+            .pointer("/result/type")
+            .and_then(Value::as_str),
+        Some("snapshot")
+    );
+    fixture.shutdown()
+}
+
+/// Restart keeps the transition lock through proven release and replacement.
+#[cfg(debug_assertions)]
+#[test]
+fn restart_blocks_foreground_entry_between_old_and_new_generations() -> TestResult {
+    let mut fixture = DaemonFixture::idle("lifecycle-restart-generation-race")?;
+    assert!(fixture.start_detached()?.status.success());
+    let old_pid = daemon_record(&fixture)?.get("pid").and_then(Value::as_u64);
+    let hold = Hold::new(&fixture)?;
+    let restart = fixture
+        .command(&["restart"])
+        .env(HOLD_VARIABLE, hold.path())
+        .spawn()?;
+    hold.await_marker("reached")?;
+    assert!(
+        !is_owned(&fixture)?,
+        "old owner must have released before spawn"
+    );
+
+    let foreground = fixture
+        .command(&["daemon"])
+        .env(CONTENDED_VARIABLE, hold.path())
+        .spawn()?;
+    hold.await_marker("contended")?;
+    assert!(!is_owned(&fixture)?);
+    hold.release()?;
+
+    let restart_outcome = restart.wait_with_output()?;
+    assert!(
+        restart_outcome.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restart_outcome.stderr)
+    );
+    let foreground_outcome = foreground.wait_with_output()?;
+    assert!(!foreground_outcome.status.success());
+    assert!(
+        String::from_utf8_lossy(&foreground_outcome.stderr).contains("another daemon already owns")
+    );
+    let new_record = daemon_record(&fixture)?;
+    assert_ne!(new_record.get("pid").and_then(Value::as_u64), old_pid);
+    assert!(is_owned(&fixture)?);
+    assert_eq!(
+        status_json(&fixture)?
+            .pointer("/result/type")
+            .and_then(Value::as_str),
+        Some("snapshot")
+    );
+    fixture.shutdown()
+}
+
+#[test]
+fn failed_foreground_startup_releases_the_transition_lock() -> TestResult {
+    let fixture = DaemonFixture::running("lifecycle-foreground-failure-lock")?;
+    let failed = fixture.run(&["daemon"])?;
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("another daemon already owns"));
+    fixture.run_ok(&["stop"])?;
     assert!(!is_owned(&fixture)?);
     fixture.shutdown()
 }

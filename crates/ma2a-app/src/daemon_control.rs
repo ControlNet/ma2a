@@ -68,9 +68,9 @@ pub(crate) async fn start(state_dir: &Path, paths: &IpcPaths) -> Result<StartOut
 
 /// Stops the daemon and returns only once it has released the state directory.
 pub(crate) async fn stop(paths: &IpcPaths) -> Result<(), AppError> {
-    // Classify before creating anything. Stopping a directory no daemon has ever
-    // used must not be the thing that brings that directory into existence.
-    if matches!(classify(paths).await?, DaemonState::Absent) {
+    // A never-used directory needs no runtime files. Classifying an owner must
+    // happen under startup.lock, where a new generation cannot overtake it.
+    if !paths.runtime_dir().exists() {
         return Err(AppError::DaemonStopped);
     }
     paths.prepare()?;
@@ -117,12 +117,8 @@ async fn start_locked(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome
         DaemonState::LegacyIncompatible => legacy::stop_incompatible(paths).await?,
         refusal => return Err(refusal.into_refusal()),
     }
-    // Nothing is unlinked here. `ma2a daemon` does not take the startup lock, so
-    // between the classification above and this point a foreground daemon may
-    // have claimed ownership and bound the endpoint. Removing it from here would
-    // unlink a live daemon's socket and leave a process that still holds the lock
-    // but can no longer be addressed. Only the daemon that has actually acquired
-    // the lock reclaims an endpoint, which it does in `daemon::reclaim_endpoint`.
+    // Only a daemon that actually claims the singleton lock may reclaim a stale
+    // endpoint. The launcher never unlinks one based on a classification.
     #[cfg(debug_assertions)]
     hold::before_spawn().await;
     let _launched = spawn_daemon(state_dir, paths).await?;
@@ -130,7 +126,10 @@ async fn start_locked(state_dir: &Path, paths: &IpcPaths) -> Result<StartOutcome
 }
 
 async fn stop_locked(paths: &IpcPaths) -> Result<(), AppError> {
-    match classify(paths).await? {
+    let state = classify(paths).await?;
+    #[cfg(debug_assertions)]
+    hold::before_stop().await;
+    match state {
         DaemonState::Absent => Err(AppError::DaemonStopped),
         DaemonState::Ready(report) => stop_through_lifecycle(paths, &report).await,
         DaemonState::IncompatibleLifecycle(report) => {
@@ -157,13 +156,15 @@ async fn stop_through_lifecycle(
     wait_until_released(paths, Some(departing)).await
 }
 
-async fn acquire_startup_lock(lock: &File) -> Result<(), AppError> {
+pub(crate) async fn acquire_startup_lock(lock: &File) -> Result<(), AppError> {
     tokio::time::timeout(STARTUP_DEADLINE, async {
         let mut attempt = 0;
         loop {
             match lock.try_lock() {
                 Ok(()) => return Ok::<(), AppError>(()),
                 Err(std::fs::TryLockError::WouldBlock) => {
+                    #[cfg(debug_assertions)]
+                    hold::startup_lock_contended();
                     tokio::time::sleep(retry_delay(attempt)).await;
                     attempt = attempt.saturating_add(1);
                 }

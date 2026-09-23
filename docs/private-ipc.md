@@ -57,14 +57,18 @@ other pre-ready failure occurs, the launcher terminates the exact process it lau
 request, a bounded wait, force if still alive, then a reap. A failed `start` therefore never leaves a
 daemon behind.
 
-Concurrent start/stop/restart requests serialize through the stable startup lock with bounded
-exponential backoff; the daemon owns its separate lifetime lock.
+`startup.lock` serializes daemon-generation transitions for one state directory. Explicit
+`start`, `stop`, and `restart` hold it through classification, stop/release proof, and any replacement
+launch. Foreground `daemon` takes it before claiming `daemon.lock` and releases it once the endpoint
+is bound and readiness is reported. The internally launched `daemon-detached` does not reacquire it:
+its parent already holds it through verified readiness. Lock acquisition uses bounded exponential
+backoff. A running daemon never takes `startup.lock` during normal service or shutdown.
 
-The foreground `daemon` does not take the startup lock, so a launcher's verdict of `Absent` can be
-overtaken by a foreground daemon claiming the directory before the launched child does. The launcher
-therefore never removes an endpoint. The launched child either claims the daemon lock and only then
-reclaims a stale endpoint, or finds the lock held and fails — and the launcher reports that failure
-after reaping it — leaving the winner's endpoint untouched.
+`daemon.lock` remains the lifetime ownership authority. A foreground daemon cannot enter between
+classification of an old owner and a lifecycle command's destructive action or proven release.
+Only a daemon that has claimed `daemon.lock` may reclaim a stale endpoint; a launcher never removes
+an endpoint based on a classification. A competing launch either claims ownership or fails without
+removing the winner's endpoint.
 
 ## Proven Teardown
 
