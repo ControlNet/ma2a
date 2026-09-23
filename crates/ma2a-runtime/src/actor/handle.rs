@@ -22,6 +22,11 @@ pub struct RuntimeHandle {
     #[cfg(test)]
     control_schedule_events:
         std::sync::Arc<std::sync::Mutex<Vec<crate::control_sync::ControlRoundTrigger>>>,
+    #[cfg(test)]
+    maintenance_faults:
+        std::sync::Arc<std::sync::Mutex<Vec<(super::maintenance::FaultPoint, RuntimeError)>>>,
+    #[cfg(test)]
+    candidate_refresh_attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl RuntimeHandle {
@@ -74,6 +79,10 @@ impl RuntimeHandle {
         #[cfg(test)] control_schedule_events: std::sync::Arc<
             std::sync::Mutex<Vec<crate::control_sync::ControlRoundTrigger>>,
         >,
+        #[cfg(test)] maintenance_faults: std::sync::Arc<
+            std::sync::Mutex<Vec<(super::maintenance::FaultPoint, RuntimeError)>>,
+        >,
+        #[cfg(test)] candidate_refresh_attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) -> Self {
         Self {
             commands,
@@ -83,7 +92,29 @@ impl RuntimeHandle {
             echo_metrics,
             #[cfg(test)]
             control_schedule_events,
+            #[cfg(test)]
+            maintenance_faults,
+            #[cfg(test)]
+            candidate_refresh_attempts,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_background_once(
+        &self,
+        point: super::maintenance::FaultPoint,
+        error: RuntimeError,
+    ) {
+        self.maintenance_faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((point, error));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn candidate_refresh_attempts(&self) -> usize {
+        self.candidate_refresh_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns an authoritative state snapshot through the actor mailbox.

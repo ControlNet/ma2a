@@ -12,6 +12,19 @@ impl Repository {
         &mut self,
         observations: &[RelayObservation],
     ) -> Result<u64, StoreError> {
+        // A replay after a lost reply must not advance revision. Observation
+        // time is bookkeeping; relay identity and reachability are the state.
+        let current = self.relay_observations()?;
+        if current.len() == observations.len()
+            && current.iter().zip(observations).all(|(old, new)| {
+                old.relay_url == new.relay_url
+                    && old.reachable == new.reachable
+                    && old.latency_ms == new.latency_ms
+                    && old.observed_state == new.observed_state
+            })
+        {
+            return self.revision();
+        }
         let transaction = self.immediate()?;
         transaction.execute("DELETE FROM relay_observations", [])?;
         for observation in observations {

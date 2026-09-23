@@ -1,6 +1,13 @@
 use super::StoreBackend;
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
+pub(super) struct PendingRelayPublication {
+    config: ma2a_net::PrivateRelayProviderConfig,
+    authorizations: Vec<ma2a_core::SpaceAuthorizationView>,
+    advertisements: Vec<ma2a_core::SignedPrivateRelayAdvertisementV1>,
+    expires_at_ms: u64,
+}
+
 pub(super) fn authorize(
     repository: &ma2a_store::Repository,
     input: &crate::control_sync::ControlAuthorizationInput,
@@ -55,7 +62,7 @@ impl StoreBackend {
             };
             advanced |= publisher
                 .publish(&mut self.repository, request)
-                .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?
+                .map_err(RuntimeError::from)?
                 .is_some();
         }
         Ok((self.repository.revision()?, advanced))
@@ -78,16 +85,37 @@ impl StoreBackend {
             .iter()
             .map(ma2a_store::ControlSpaceState::authorization)
             .collect::<Vec<_>>();
-        let advertisements = publisher
-            .advertisements(
-                &mut self.repository,
-                ma2a_net::AdvertisementPublicationRequest::new(
-                    &authorizations,
-                    issued_at_ms,
-                    expires_at_ms,
-                ),
-            )
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let reuse = self
+            .pending_relay_publication
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.config == *publisher.config()
+                    && pending.authorizations == authorizations
+                    && issued_at_ms < pending.expires_at_ms
+            });
+        if !reuse {
+            let advertisements = publisher
+                .advertisements(
+                    &mut self.repository,
+                    ma2a_net::AdvertisementPublicationRequest::new(
+                        &authorizations,
+                        issued_at_ms,
+                        expires_at_ms,
+                    ),
+                )
+                .map_err(RuntimeError::from)?;
+            self.pending_relay_publication = Some(PendingRelayPublication {
+                config: publisher.config().clone(),
+                authorizations: authorizations.clone(),
+                advertisements,
+                expires_at_ms,
+            });
+        }
+        let advertisements = &self
+            .pending_relay_publication
+            .as_ref()
+            .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::Control))?
+            .advertisements;
         let active_spaces = advertisements
             .iter()
             .map(|advertisement| advertisement.advertisement().space_id())
@@ -115,6 +143,7 @@ impl StoreBackend {
         let (revision, activity_changed) = self
             .repository
             .reconcile_private_relay_activity(local_endpoint_id, &active_spaces)?;
+        self.pending_relay_publication = None;
         Ok((revision, advanced || activity_changed))
     }
 }

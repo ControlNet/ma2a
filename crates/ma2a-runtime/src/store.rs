@@ -39,4 +39,5 @@ pub(crate) struct StoreClient {
 pub(crate) struct StoreBackend {
     repository: Repository,
     key_store: KeyStore,
+    pending_relay_publication: Option<local_control::PendingRelayPublication>,
 }

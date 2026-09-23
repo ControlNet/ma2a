@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
 };
 
@@ -25,10 +25,19 @@ impl RuntimeClock for FixedClock {
     }
 }
 
-struct TempState(PathBuf);
+#[derive(Debug)]
+struct AdvancingClock(AtomicI64);
+
+impl RuntimeClock for AdvancingClock {
+    fn now_ms(&self) -> Result<i64, RuntimeError> {
+        Ok(self.0.load(Ordering::Relaxed))
+    }
+}
+
+pub(super) struct TempState(pub(super) PathBuf);
 
 impl TempState {
-    fn new(label: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    pub(super) fn new(label: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "ma2a-relay-lifecycle-{label}-{}-{serial}",
@@ -166,7 +175,9 @@ async fn periodic_actor_maintenance_refreshes_private_relay_advertisement() -> T
     // Given
     let state = TempState::new("periodic")?;
     let config = StoreConfig::new(&state.0);
-    let runtime = Runtime::start_with_clock(config.clone(), Arc::new(FixedClock)).await?;
+    let clock = Arc::new(AdvancingClock(AtomicI64::new(NOW_MS)));
+    let runtime =
+        Runtime::start_with_clock(config.clone(), Arc::<AdvancingClock>::clone(&clock)).await?;
     let handle = runtime.handle();
     let space_id = handle.create_owned_space("periodic".to_owned()).await?;
     handle
@@ -177,8 +188,45 @@ async fn periodic_actor_maintenance_refreshes_private_relay_advertisement() -> T
         .relay_advertisement(space_id, endpoint_id)?
         .ok_or("initial periodic advertisement missing")?
         .sequence();
+    let initial_revision = Repository::open(&config)?.revision()?;
+    let initial_publication_rounds = handle
+        .control_schedules()
+        .iter()
+        .filter(|trigger| {
+            matches!(
+                trigger,
+                crate::control_sync::ControlRoundTrigger::AddressAdvanced
+                    | crate::control_sync::ControlRoundTrigger::RelayAdvanced
+            )
+        })
+        .count();
 
-    // When
+    // An unchanged maintenance turn must not reserve another signed sequence.
+    tokio::time::advance(crate::control_actor::control_period(endpoint_id)).await;
+    tokio::task::yield_now().await;
+    let _status = handle.status().await?;
+    let unchanged = Repository::open(&config)?
+        .relay_advertisement(space_id, endpoint_id)?
+        .ok_or("unchanged periodic advertisement missing")?;
+    assert_eq!(unchanged.sequence(), initial_sequence);
+    assert_eq!(Repository::open(&config)?.revision()?, initial_revision);
+    assert_eq!(
+        handle
+            .control_schedules()
+            .iter()
+            .filter(|trigger| {
+                matches!(
+                    trigger,
+                    crate::control_sync::ControlRoundTrigger::AddressAdvanced
+                        | crate::control_sync::ControlRoundTrigger::RelayAdvanced
+                )
+            })
+            .count(),
+        initial_publication_rounds
+    );
+
+    // Once the authoritative clock reaches the renewal window, refresh it.
+    clock.0.store(NOW_MS + 300_000, Ordering::Relaxed);
     tokio::time::advance(crate::control_actor::control_period(endpoint_id)).await;
     tokio::task::yield_now().await;
     let _status = handle.status().await?;
@@ -192,7 +240,7 @@ async fn periodic_actor_maintenance_refreshes_private_relay_advertisement() -> T
     Ok(())
 }
 
-fn enabled_configuration(served_spaces: Vec<ma2a_core::SpaceId>) -> RelayConfiguration {
+pub(super) fn enabled_configuration(served_spaces: Vec<ma2a_core::SpaceId>) -> RelayConfiguration {
     RelayConfiguration {
         public_fallback_enabled: false,
         public_relay_urls: Vec::new(),
@@ -204,7 +252,7 @@ fn enabled_configuration(served_spaces: Vec<ma2a_core::SpaceId>) -> RelayConfigu
     }
 }
 
-fn disabled_configuration() -> RelayConfiguration {
+pub(super) fn disabled_configuration() -> RelayConfiguration {
     RelayConfiguration {
         public_fallback_enabled: false,
         public_relay_urls: Vec::new(),

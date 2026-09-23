@@ -13,6 +13,8 @@ use tokio_util::sync::CancellationToken;
 use crate::state::{RuntimeEvent, RuntimeStatus};
 use crate::{enrollment::EnrollmentError, error::RuntimeError, store::StoreClient};
 
+#[cfg(test)]
+mod background_reconciliation_test;
 mod command;
 mod construction;
 mod echo;
@@ -22,6 +24,7 @@ mod handle;
 mod handle_relay;
 mod invite;
 mod local_control;
+pub(crate) mod maintenance;
 mod membership;
 mod relay_configuration;
 #[cfg(test)]
@@ -54,6 +57,7 @@ pub(crate) struct Actor {
     relay_observations: mpsc::Receiver<IrohRelayObservation>,
     relay_observer: tokio::task::JoinHandle<()>,
     private_relay_server: Option<ma2a_net::PrivateRelayServer>,
+    pub(crate) maintenance: maintenance::Maintenance,
     pub(crate) control_rounds: JoinSet<(
         crate::control_actor::ScheduledControlRound,
         Result<Option<crate::control_sync::ControlRoundOutcome>, RuntimeError>,
@@ -68,17 +72,13 @@ pub(crate) struct Actor {
 }
 
 impl Actor {
-    /// Keeps the Runtime serving after a background maintenance step fails.
-    ///
-    /// Relay observation and the periodic refreshes are maintenance, not client
-    /// requests: they are driven by an Iroh watcher and a timer. Propagating one
-    /// transient failure out of the actor loop ends the actor, and nothing
-    /// restarts it, so a single bad refresh would silently disable an Endpoint
-    /// that is otherwise healthy. The failure is reported and the loop continues,
-    /// exactly as a failed control round already does.
-    fn absorb_background(step: &str, result: Result<(), RuntimeError>) {
-        if let Err(error) = result {
-            eprintln!("runtime background step failed, continuing: {step}: {error}");
+    fn absorb_background(step: &str, result: Result<(), RuntimeError>) -> Result<(), RuntimeError> {
+        match result {
+            Err(error) if error.is_retryable_background() => {
+                eprintln!("runtime background step will retry: {step}: {error}");
+                Ok(())
+            }
+            other => other,
         }
     }
 
@@ -234,7 +234,7 @@ impl Actor {
                 },
                 observation = self.relay_observations.recv() => if let Some(observation) = observation {
                     let observed = self.observe_iroh_relay(observation).await;
-                    Self::absorb_background("relay observation", observed);
+                    Self::absorb_background("relay observation", observed)?;
                 },
                 joined = self.control_rounds.join_next(), if !self.control_rounds.is_empty() => {
                     if let Some(result) = joined {
@@ -243,9 +243,11 @@ impl Actor {
                 },
                 _ = periodic.tick() => {
                     let refreshed = self.refresh_relay_candidates().await.map(|_changed| ());
-                    Self::absorb_background("relay candidate refresh", refreshed);
+                    Self::absorb_background("relay candidate refresh", refreshed)?;
+                    let observed = self.reconcile_pending_iroh_observation().await;
+                    Self::absorb_background("relay observation retry", observed)?;
                     let published = self.refresh_local_control_publications().await;
-                    Self::absorb_background("control publication refresh", published);
+                    Self::absorb_background("control publication refresh", published)?;
                     self.schedule_control_round(
                         crate::control_sync::ControlRoundTrigger::Periodic, None,
                     );

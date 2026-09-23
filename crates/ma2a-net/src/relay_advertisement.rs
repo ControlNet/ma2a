@@ -64,6 +64,11 @@ impl PrivateRelayAdvertisementPublisher {
         Self { secret, config }
     }
 
+    /// Returns the exact provider configuration used for signing.
+    pub const fn config(&self) -> &PrivateRelayProviderConfig {
+        &self.config
+    }
+
     /// Persists one sequence and signs advertisements only for effective served Spaces.
     ///
     /// # Errors

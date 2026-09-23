@@ -63,6 +63,25 @@ pub enum StoreError {
     },
 }
 
+impl StoreError {
+    /// Whether a background Store operation can reasonably succeed on a later tick.
+    pub fn is_retryable_maintenance(&self) -> bool {
+        match self {
+            Self::Io(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::TimedOut
+            ),
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _)) => matches!(
+                error.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ),
+            _ => false,
+        }
+    }
+}
+
 impl fmt::Display for StoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

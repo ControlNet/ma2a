@@ -94,13 +94,11 @@ impl StoreBackend {
                 last_shutdown_clean: false,
                 observed_at_ms,
             }))),
-            StoreCommand::Observe { observation, reply } => drop(
-                reply.send(
-                    self.repository
-                        .record_endpoint_observation(&observation)
-                        .map_err(Into::into),
-                ),
-            ),
+            StoreCommand::Observe {
+                observation,
+                if_changed,
+                reply,
+            } => drop(reply.send(self.record_observation(&observation, if_changed))),
             StoreCommand::CleanShutdown {
                 boot_id,
                 observed_at_ms,

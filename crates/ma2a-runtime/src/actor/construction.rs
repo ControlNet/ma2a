@@ -35,6 +35,7 @@ impl Actor {
         let (relay_observation_sender, relay_observations) = mpsc::channel(COMMAND_CAPACITY);
         let relay_observer = endpoint.spawn_relay_observer(relay_observation_sender);
         let connections = RuntimeConnections::new(&endpoint.connection_manager());
+        let maintenance = super::maintenance::Maintenance::default();
         let handle = RuntimeHandle::new(
             command_sender,
             store.clone(),
@@ -43,6 +44,10 @@ impl Actor {
             echo_metrics.clone(),
             #[cfg(test)]
             Arc::clone(&control_schedule_events),
+            #[cfg(test)]
+            Arc::clone(&maintenance.faults),
+            #[cfg(test)]
+            Arc::clone(&maintenance.candidate_refresh_attempts),
         );
         let actor = Self {
             state,
@@ -63,6 +68,7 @@ impl Actor {
             relay_observations,
             relay_observer,
             private_relay_server,
+            maintenance,
             control_rounds: tokio::task::JoinSet::new(),
             control_queue: crate::control_actor::ControlRoundQueue::default(),
             synchronized_control_peers: std::collections::BTreeSet::new(),
