@@ -2,8 +2,11 @@ use super::{
     CurrentUserRuntime, IpcPaths, LiveServer, LocalApiClient, LocalApiServer, Runtime, StoreConfig,
     SystemClock, TempState, TestResult, WebAuthConfig, api,
 };
-use ma2a_core::{MemberCapabilities, SpaceMemberV1, SpacePolicyV1};
-use ma2a_store::{Repository, SpaceCreation};
+use ma2a_core::{
+    MemberCapabilities, SpaceAuthoritySecret, SpaceChain, SpaceGenesisOwner, SpaceGenesisV1,
+    SpaceMemberV1, SpacePolicyV1,
+};
+use ma2a_store::{ControlBatch, Repository, SpaceCreation};
 use std::sync::Arc;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -19,14 +22,7 @@ async fn legal_snapshot_above_single_frame_and_collection_limits_is_addressable(
         "owner".to_owned(),
         MemberCapabilities::new(true, false),
     )?;
-    let mut expected = Vec::new();
-    for _ in 0..270 {
-        let created = repository.create_owned_space(
-            &SpaceCreation::new(10, member.clone(), SpacePolicyV1::phase_one_default())
-                .with_name("\"\\".repeat(32)),
-        )?;
-        expected.push(api::encode_hex(created.space_id().as_bytes()));
-    }
+    let mut expected = seed_snapshot_spaces(&mut repository, &member)?;
     drop(repository);
     expected.sort();
     let runtime = Runtime::start(config).await?;
@@ -80,4 +76,34 @@ async fn legal_snapshot_above_single_frame_and_collection_limits_is_addressable(
     server.cancel().await?;
     runtime.shutdown().await?;
     Ok(())
+}
+
+fn seed_snapshot_spaces(
+    repository: &mut Repository,
+    member: &SpaceMemberV1,
+) -> TestResult<Vec<String>> {
+    // Real signed fixtures: keep an owned Space and batch-import public chains.
+    // Snapshot transport does not require provisioning 270 local signing keys.
+    let owned = repository.create_owned_space(
+        &SpaceCreation::new(10, member.clone(), SpacePolicyV1::phase_one_default())
+            .with_name("\"\\".repeat(32)),
+    )?;
+    let mut expected = vec![api::encode_hex(owned.space_id().as_bytes())];
+    let mut chains = Vec::new();
+    for _ in 1..270 {
+        let authority = SpaceAuthoritySecret::random()?;
+        let genesis = SpaceGenesisV1::create(
+            10,
+            authority.public_key(),
+            SpaceGenesisOwner::new(member.clone(), SpacePolicyV1::phase_one_default()),
+        )?
+        .with_name(&"\"\\".repeat(32))?
+        .sign(&authority)?;
+        let chain = SpaceChain::from_genesis(genesis)?;
+        expected.push(api::encode_hex(chain.space_id().as_bytes()));
+        chains.push(chain);
+    }
+    repository.persist_control_batch(&ControlBatch::new(chains, Vec::new(), Vec::new()))?;
+    assert_eq!(repository.memberships_for(member.endpoint_id())?.len(), 270);
+    Ok(expected)
 }
