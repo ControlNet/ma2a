@@ -38,7 +38,7 @@ pub use connections::RuntimeConnections;
 pub use departure::{SpaceDepartureError, SpaceDepartureErrorCode};
 pub use echo_audit::EchoAuditRecord;
 pub use enrollment::{
-    EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EnrollmentErrorCode,
+    EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EnrollmentErrorCode, EnrollmentStage,
     EstablishedEnrollment,
 };
 pub use error::{RuntimeError, RuntimeErrorCode};

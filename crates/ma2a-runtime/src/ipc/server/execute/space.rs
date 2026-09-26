@@ -10,12 +10,12 @@ use super::super::ConnectionContext;
 pub(super) async fn create(
     context: &ConnectionContext,
     name: &str,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     let committed = context
         .handle
         .create_owned_space_committed(name.to_owned())
         .await
-        .map_err(|_| ProtocolError::INTERNAL)?;
+        .map_err(|error| committed_runtime_error(&error))?;
     Ok(
         CommandResult::space_created(committed_space(committed.chain())?)
             .at_revision(committed.revision()),
@@ -174,10 +174,9 @@ pub(super) async fn redeem(
     context: &ConnectionContext,
     request_id: RequestId,
     invitation: &str,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     let ticket = SignedInviteTicket::decode_string(invitation.trim())
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let space_id = ticket.space_id();
     // The joining member is labelled by its own Endpoint identity, never by the
     // Space it is joining and never by a placeholder standing in for a person.
     let local = context
@@ -186,7 +185,7 @@ pub(super) async fn redeem(
         .await
         .map_err(|_| ProtocolError::UNAVAILABLE)?
         .endpoint_id();
-    context
+    let committed = context
         .handle
         .clone()
         .redeem_enrollment(crate::EnrollmentAttempt::new(
@@ -195,20 +194,16 @@ pub(super) async fn redeem(
             default_member_label(local),
         ))
         .await
-        .map_err(|error| enrollment_protocol_error(&error))?;
-    let snapshot = context
-        .handle
-        .snapshot()
-        .await
-        .map_err(|_| ProtocolError::UNAVAILABLE)?;
-    snapshot
-        .spaces()
-        .iter()
-        .find(|space| space.id() == space_id)
-        .cloned()
-        .and_then(|space| space.to_space_view().ok())
-        .map(CommandResult::space_redeemed)
-        .ok_or(ProtocolError::INTERNAL)
+        .map_err(|error| {
+            let api = ApiError::new(enrollment_protocol_error(&error));
+            error
+                .committed_revision()
+                .map_or(api, |revision| api.after_commit(revision))
+        })?;
+    Ok(
+        CommandResult::space_redeemed(committed_space(committed.chain())?)
+            .at_revision(committed.revision()),
+    )
 }
 
 pub(super) async fn revoke(
@@ -230,7 +225,7 @@ pub(super) async fn revoke(
                 )
                 .without_effects()
             } else {
-                ApiError::new(ProtocolError::INVALID_INPUT)
+                committed_runtime_error(&error)
             }
         })?;
     Ok(
@@ -251,4 +246,11 @@ fn enrollment_protocol_error(error: &crate::EnrollmentError) -> ProtocolError {
     } else {
         ProtocolError::INTERNAL
     }
+}
+
+fn committed_runtime_error(error: &crate::RuntimeError) -> ApiError {
+    let api = ApiError::new(ProtocolError::INTERNAL);
+    error
+        .committed_revision()
+        .map_or(api, |revision| api.after_commit(revision))
 }

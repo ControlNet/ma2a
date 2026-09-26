@@ -88,3 +88,84 @@ The dispatcher adopts and returns that revision while preserving the encoded
 receipt payload. Enrollment and relay configuration adapters still need conversion
 alongside their completion/resource reconciliation changes; the legacy fallback is
 not the final contract and must be removed before this pass is complete.
+
+## Enrollment completion work in progress
+
+A deterministic Runtime test injects Interrupted after the candidate bootstrap
+transaction and before lookup refresh. Before the fix, SQLite membership existed
+but the error only said `enrollment exchange failed`. The revised error carries
+its local committed revision and a non-secret stage, allowing IPC terminal replay
+to retain a truthful committed-error response.
+
+Candidate completion retains a set of owner targets and the current completion
+stage in maintenance state. A subsequent join cannot overwrite an earlier target.
+The normal periodic tick retries lookup, relay candidates/access and idempotent
+signed publications. Targeted control is scheduled once after convergence, then
+the pending set clears. No invite is resubmitted by this retry. Process restart
+rebuilds projections from Store; pending targeted work is process-local.
+
+Enrollment persistence derives membership and the accepted chain inside the same
+control-batch transaction, before commit. Its successful receipt carries that chain
+and revision directly to the local API, without a later snapshot. Existing chain
+rollback/fork validation is unchanged. Bootstrap retry at the same state is a
+no-op transaction, without a revision increment.
+
+Owner redemption completion now retains membership-dependent work before lookup,
+access/candidate/publication refresh. Recognized temporary errors remain pending;
+invariant/integrity errors propagate from the Actor. Exact owner invite redemption
+replay remains controlled by the existing owner transaction. Transport diagnostics
+use fixed stage labels only; Iroh's connect call combines dial and ALPN negotiation.
+
+The same membership follow-up marker is used for local Space creation/removal and
+departure, keeping projection completion pending after a committed mutation fails.
+RuntimeError can carry a committed revision; public error classification is not
+broadened. General control-round completion paths still need the final audit.
+
+Intermediate enrollment stress (before the reliability diagnosis is finished):
+3 failures / 60 executions. All three are the existing replay test's owner
+revision assertion, 17 versus 16, after the expected candidate/RequestId denials.
+Cold bootstrap and private-Space injection passed all 20 executions each. Logs:
+`/tmp/ma2a-phase1-enrollment-after`. This is NOT the accepted final after-result.
+A test-only SQLite revision trigger is being used to identify the extra write;
+keep the strict revision assertion while diagnosing it. Initial trace shows
+unchanged generation 1, two address records at sequence 0, and revision 17.
+The test-only trigger contains public counts/Endpoint identifiers, never tickets.
+
+The two deterministic completion regressions passed 20 runs each (40 executions)
+in `/tmp/ma2a-phase1-completion-repeat`. Focused app enrollment suite passed 5/5;
+Store bootstrap receipt tests passed 3/3. Strict Runtime/Store/Net Clippy passed.
+
+Replay stress diagnosis was confirmed, not inferred: a SQLite test-only trace
+recorded revision 16 with one address record at sequence 0, then revision 17 with
+two records at sequence 0. Manifest generation and observation counts were
+unchanged. The newly learned record belonged to the successful candidate; the
+initial targeted sync had not finished before the owner was immediately restarted.
+The replay test now completes the real common-Space control exchange on both peers
+and asserts the candidate address exists before taking the denial baseline. Its
+exact revision-equality and generation-equality assertions are retained. Temporary
+SQL diagnostic instrumentation was removed; logs remain in
+`/tmp/ma2a-phase1-enrollment-diagnosis2/run-8.log`.
+
+## Final audit follow-ups identified (not yet fixed)
+
+- `finish_control_round` and inbound `finish_control_call` still drop typed errors
+  into `.is_ok()` / `.is_err()`, and can lose ControlChanges scheduling after a
+  committed batch. `adopt_control_memberships` reads memberships separately from
+  the outcome revision and silently ignores read failure. These need a focused
+  deterministic completion regression and retained follow-up state during the
+  final audit; do not report the entire pass complete before addressing them.
+- `StoreBackend::revoke_owned_space_member`, `advance_owned_space`, and
+  `persist_departure` still read memberships after chain commit. Move that
+  projection into the relevant transaction or otherwise return an explicit
+  committed failure with retained recovery work.
+- Private Relay configuration still uses spawn-before-stop; its fixed-listener
+  regression remains intentionally failing until workstream 4 is implemented.
+
+After the real control-convergence precondition, the same three stress scenarios
+passed 60/60 executions (20 rounds), preserving all denial/revision/generation
+assertions. Logs: `/tmp/ma2a-phase1-enrollment-after-barrier`. The intermediate
+`enrollment-converged` directory contains compilation failures from an attempted
+use of a crate-private helper, not test executions; it is excluded from statistics.
+Final code uses the existing public sync_control method and explicitly verifies
+the candidate's address is durably present. App all-target/all-feature strict
+Clippy passed. These are workstream-level checks, not final-head CI acceptance.

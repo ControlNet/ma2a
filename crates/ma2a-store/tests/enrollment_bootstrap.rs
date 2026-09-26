@@ -158,3 +158,38 @@ fn member(secret: &SecretKey, label: &str) -> Result<SpaceMemberV1, ma2a_core::P
         MemberCapabilities::new(true, false),
     )
 }
+
+#[test]
+fn bootstrap_receipt_and_noop_retry_use_the_transaction_projection() -> TestResult {
+    let state = TempState::new("enrollment-receipt")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let fixture = fixture()?;
+    let space = fixture.chain.space_id();
+    let endpoint = fixture.owner.public().into();
+    let authorization = SpaceAuthorizationView::from_chain(&fixture.chain);
+    let validated = ValidatedAddressRecord::parse(
+        fixture.owner_record.canonical_bytes(),
+        AddressRecordValidation::new(
+            AddressRecordTarget::new(space, endpoint),
+            &authorization,
+            NOW_MS,
+        ),
+    )?;
+    let batch = ControlBatch::new(vec![fixture.chain.clone()], vec![validated], vec![]);
+    let committed = repository.persist_enrollment_batch(&batch, space, endpoint)?;
+    assert_eq!(committed.revision(), repository.revision()?);
+    assert_eq!(committed.value().chain, fixture.chain);
+    assert_eq!(
+        committed.value().memberships,
+        repository.memberships_for(endpoint)?
+    );
+    let retry = repository.persist_enrollment_batch(&batch, space, endpoint)?;
+    assert_eq!(retry.revision(), committed.revision());
+    assert_eq!(retry.value().chain, committed.value().chain);
+    let mut other = Repository::open(&config)?;
+    other.advance_revision()?;
+    assert_eq!(committed.revision() + 1, other.revision()?);
+    assert_eq!(committed.value().chain, fixture.chain);
+    Ok(())
+}

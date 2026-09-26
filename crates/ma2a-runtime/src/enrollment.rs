@@ -1,11 +1,14 @@
-use std::{error::Error, fmt};
-
 use iroh_tickets::Ticket as _;
 use ma2a_core::{
     EndpointId, InviteEntropy, InviteValidity, MAX_MEMBER_LABEL_LEN, RequestId, SignedInviteTicket,
     SpaceId,
 };
 use ma2a_store::EnrollmentRedemption;
+
+pub(crate) mod completion;
+mod error;
+mod owner;
+pub use error::{EnrollmentError, EnrollmentErrorCode, EnrollmentStage};
 
 #[cfg(test)]
 #[path = "enrollment/tests.rs"]
@@ -93,82 +96,29 @@ impl EnrollmentAttempt {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EnrollmentErrorKind {
-    InvalidTicket,
-    Expired,
-    Cancelled,
-    Conflict,
-    Internal,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Stable machine-readable classification of an enrollment failure.
-pub struct EnrollmentErrorCode(EnrollmentErrorKind);
-
-impl EnrollmentErrorCode {
-    /// The invitation is unknown, malformed, or invalid for this candidate.
-    pub const INVALID_TICKET: Self = Self(EnrollmentErrorKind::InvalidTicket);
-    /// The invitation validity window has ended.
-    pub const EXPIRED: Self = Self(EnrollmentErrorKind::Expired);
-    /// The owner cancelled the invitation before redemption.
-    pub const CANCELLED: Self = Self(EnrollmentErrorKind::Cancelled);
-    /// Another candidate or request already consumed the invitation.
-    pub const CONFLICT: Self = Self(EnrollmentErrorKind::Conflict);
-}
-
-#[derive(Debug)]
-/// A typed failure returned by the enrollment API.
-pub struct EnrollmentError(EnrollmentErrorKind);
-
-impl EnrollmentError {
-    /// Returns the stable classification for this failure.
-    pub const fn code(&self) -> EnrollmentErrorCode {
-        EnrollmentErrorCode(self.0)
-    }
-    pub(crate) const fn internal() -> Self {
-        Self(EnrollmentErrorKind::Internal)
-    }
-    pub(crate) const fn from_status(status: u8) -> Self {
-        Self(match status {
-            1 => EnrollmentErrorKind::InvalidTicket,
-            2 => EnrollmentErrorKind::Expired,
-            3 => EnrollmentErrorKind::Cancelled,
-            4 => EnrollmentErrorKind::Conflict,
-            _ => EnrollmentErrorKind::Internal,
-        })
-    }
-}
-
-impl fmt::Display for EnrollmentError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self.0 {
-            EnrollmentErrorKind::InvalidTicket => "enrollment invitation is invalid",
-            EnrollmentErrorKind::Expired => "enrollment invitation expired",
-            EnrollmentErrorKind::Cancelled => "enrollment invitation was cancelled",
-            EnrollmentErrorKind::Conflict => {
-                "enrollment invitation was consumed by another candidate"
-            }
-            EnrollmentErrorKind::Internal => "enrollment exchange failed",
-        })
-    }
-}
-
-impl Error for EnrollmentError {}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Confirmation that the candidate durably established Space membership.
 pub struct EstablishedEnrollment {
-    generation: u64,
+    committed: ma2a_store::Committed<ma2a_core::SpaceChain>,
 }
 
 impl EstablishedEnrollment {
     /// Returns the latest persisted authority generation.
-    pub const fn generation(self) -> u64 {
-        self.generation
+    pub fn generation(&self) -> u64 {
+        self.committed.value().latest_generation()
     }
-    pub(crate) const fn new(generation: u64) -> Self {
-        Self { generation }
+    /// Returns the revision of the membership transaction.
+    pub const fn revision(&self) -> u64 {
+        self.committed.revision()
+    }
+    /// Returns the actual chain read inside the membership transaction.
+    pub const fn chain(&self) -> &ma2a_core::SpaceChain {
+        self.committed.value()
+    }
+    pub(crate) const fn new(revision: u64, chain: ma2a_core::SpaceChain) -> Self {
+        Self {
+            committed: ma2a_store::Committed::new(revision, chain),
+        }
     }
 }
 

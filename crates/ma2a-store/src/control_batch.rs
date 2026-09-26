@@ -45,6 +45,15 @@ impl Repository {
         if batch.chains.is_empty() && batch.addresses.is_empty() && batch.relays.is_empty() {
             return Ok(None);
         }
+        self.persist_control_batch_projected(batch, |_| Ok(()))
+            .map(|(changed, _)| changed)
+    }
+
+    pub(crate) fn persist_control_batch_projected<T>(
+        &mut self,
+        batch: &ControlBatch,
+        project: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, StoreError>,
+    ) -> Result<(Option<u64>, crate::Committed<T>), StoreError> {
         let transaction = self.immediate()?;
         let chain_writes = validate_chains(&transaction, &batch.chains)?;
         let address_writes = validate_addresses(&transaction, &batch.addresses)?;
@@ -122,11 +131,20 @@ impl Repository {
                 ),
             )?;
         }
-        if !changed {
-            return Ok(None);
-        }
-        let revision = increment_revision(&transaction)?;
+        let revision = if changed {
+            increment_revision(&transaction)?
+        } else {
+            transaction.query_row(
+                "SELECT revision FROM runtime_metadata WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )?
+        };
+        let value = project(&transaction)?;
         transaction.commit()?;
-        Ok(Some(revision))
+        Ok((
+            changed.then_some(revision),
+            crate::Committed::new(revision, value),
+        ))
     }
 }

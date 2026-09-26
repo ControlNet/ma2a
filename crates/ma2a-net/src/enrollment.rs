@@ -86,7 +86,10 @@ impl ProtocolHandler for EnrollmentHandler {
                 .await
                 .ok()
                 .and_then(Result::ok)
-                .unwrap_or((255, Vec::new()));
+                .unwrap_or_else(|| {
+                    eprintln!("enrollment failed at owner_actor_response_deadline");
+                    (255, Vec::new())
+                });
             let Ok(page_count) = validate_response(status, &pages) else {
                 connection.close(2_u8.into(), b"");
                 return Ok(());
@@ -119,6 +122,9 @@ impl ProtocolHandler for EnrollmentHandler {
             connection.close(1_u8.into(), b"");
             return Ok(());
         };
+        if result.is_err() {
+            eprintln!("enrollment failed at owner_request_or_bootstrap_transfer");
+        }
         result
     }
 }
@@ -133,7 +139,7 @@ pub(crate) async fn exchange(
         exchange_bounded(endpoint, owner, request),
     )
     .await
-    .map_err(|_| NetError::enrollment())?
+    .map_err(|_| NetError::enrollment_at("exchange_deadline"))?
 }
 
 async fn exchange_bounded(
@@ -142,29 +148,30 @@ async fn exchange_bounded(
     request: &[u8],
 ) -> Result<(u8, Vec<Vec<u8>>), NetError> {
     if request.len() > MAX_ENROLLMENT_REQUEST_BYTES {
-        return Err(NetError::enrollment());
+        return Err(NetError::enrollment_at("exchange_deadline"));
     }
     let connection = timeout(
         ENROLLMENT_IO_TIMEOUT,
         endpoint.connect(owner, ENROLLMENT_ALPN),
     )
     .await
-    .map_err(|_| NetError::enrollment())?
-    .map_err(|_| NetError::enrollment())?;
+    .map_err(|_| NetError::enrollment_at("owner_dial_and_alpn"))?
+    .map_err(|_| NetError::enrollment_at("owner_dial_and_alpn"))?;
     let (mut send, mut receive) = timeout(ENROLLMENT_IO_TIMEOUT, connection.open_bi())
         .await
-        .map_err(|_| NetError::enrollment())?
-        .map_err(|_| NetError::enrollment())?;
+        .map_err(|_| NetError::enrollment_at("request_stream"))?
+        .map_err(|_| NetError::enrollment_at("request_stream"))?;
     timeout(ENROLLMENT_IO_TIMEOUT, send.write_all(request))
         .await
-        .map_err(|_| NetError::enrollment())?
-        .map_err(|_| NetError::enrollment())?;
-    send.finish().map_err(|_| NetError::enrollment())?;
+        .map_err(|_| NetError::enrollment_at("request_transfer"))?
+        .map_err(|_| NetError::enrollment_at("request_transfer"))?;
+    send.finish()
+        .map_err(|_| NetError::enrollment_at("request_transfer"))?;
     let mut header = [0_u8; 3];
     timeout(ENROLLMENT_IO_TIMEOUT, receive.read_exact(&mut header))
         .await
-        .map_err(|_| NetError::enrollment())?
-        .map_err(|_| NetError::enrollment())?;
+        .map_err(|_| NetError::enrollment_at("bootstrap_header"))?
+        .map_err(|_| NetError::enrollment_at("bootstrap_header"))?;
     let page_count =
         validate_response_count(header[0], u16::from_be_bytes([header[1], header[2]]))?;
     let mut pages = Vec::with_capacity(page_count);
@@ -172,24 +179,24 @@ async fn exchange_bounded(
         let mut length = [0_u8; 4];
         timeout(ENROLLMENT_IO_TIMEOUT, receive.read_exact(&mut length))
             .await
-            .map_err(|_| NetError::enrollment())?
-            .map_err(|_| NetError::enrollment())?;
-        let length =
-            usize::try_from(u32::from_be_bytes(length)).map_err(|_| NetError::enrollment())?;
+            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?
+            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?;
+        let length = usize::try_from(u32::from_be_bytes(length))
+            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?;
         if length == 0 || length > MAX_ENROLLMENT_BOOTSTRAP_FRAME_BYTES {
-            return Err(NetError::enrollment());
+            return Err(NetError::enrollment_at("bootstrap_transfer"));
         }
         let mut page = vec![0_u8; length];
         timeout(ENROLLMENT_IO_TIMEOUT, receive.read_exact(&mut page))
             .await
-            .map_err(|_| NetError::enrollment())?
-            .map_err(|_| NetError::enrollment())?;
+            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?
+            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?;
         pages.push(page);
     }
     let mut trailing = [0_u8; 1];
     match timeout(ENROLLMENT_IO_TIMEOUT, receive.read_exact(&mut trailing)).await {
         Ok(Err(iroh::endpoint::ReadExactError::FinishedEarly(0))) => {}
-        Ok(Ok(()) | Err(_)) | Err(_) => return Err(NetError::enrollment()),
+        Ok(Ok(()) | Err(_)) | Err(_) => return Err(NetError::enrollment_at("bootstrap_eof")),
     }
     connection.close(0_u8.into(), b"");
     Ok((header[0], pages))

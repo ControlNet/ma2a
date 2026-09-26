@@ -63,20 +63,7 @@ impl Repository {
         &self,
         endpoint_id: EndpointId,
     ) -> Result<BTreeSet<SpaceId>, StoreError> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT space_id FROM members WHERE endpoint_id = ?1 ORDER BY space_id")?;
-        statement
-            .query_map([endpoint_id.as_bytes().as_slice()], |row| {
-                row.get::<_, Vec<u8>>(0)
-            })?
-            .map(|row| {
-                let bytes = row?;
-                SpaceId::try_from(bytes.as_slice()).map_err(|_| StoreError::SchemaMismatch {
-                    detail: "persisted membership Space identifier is invalid",
-                })
-            })
-            .collect()
+        memberships_for(&self.connection, endpoint_id)
     }
     pub(crate) fn validate_space_chains(&self) -> Result<(), StoreError> {
         let mut statement = self
@@ -244,4 +231,23 @@ fn validate_authority(
         });
     }
     Ok(())
+}
+
+pub(crate) fn memberships_for(
+    connection: &rusqlite::Connection,
+    endpoint_id: EndpointId,
+) -> Result<BTreeSet<SpaceId>, StoreError> {
+    let mut statement = connection
+        .prepare("SELECT space_id FROM members WHERE endpoint_id = ?1 ORDER BY space_id")?;
+    statement
+        .query_map([endpoint_id.as_bytes().as_slice()], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?
+        .map(|row| {
+            let bytes = row?;
+            SpaceId::try_from(bytes.as_slice()).map_err(|_| StoreError::SchemaMismatch {
+                detail: "persisted membership Space identifier is invalid",
+            })
+        })
+        .collect()
 }
