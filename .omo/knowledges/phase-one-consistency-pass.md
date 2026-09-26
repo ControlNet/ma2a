@@ -215,3 +215,24 @@ used the already built executable to isolate execution from subsequent edits.
 Strict Net/Store/Runtime Clippy passed before the LOC-only module splits; repeat
 strict checks after the splits. The project 250 pure-LOC limit required moving
 Actor loop, Echo handle methods and response revision helpers to focused modules.
+
+## Historical locally owned owner-invalid state
+
+The before-fix regression `historical_owned_owner_removal_is_rejected_on_open`
+failed because Repository::open accepted the adversarial signed owner-removal
+chain with its original authority reference (`/tmp/ma2a-phase1-historical-before.log`).
+The selected policy is repository rejection, not silent repair/quarantine metadata.
+`space_rows::load_chain` checks owner membership/revocation whenever authority
+custody exists. All authority signing paths load that chain, so both reopening
+and continuing through an already open Repository fail closed. `replace_chain`
+checks incoming chains for owned Spaces inside the transaction, covering normal
+imports and control batches too. Core signed-chain rules remain unchanged.
+
+The regression imports the adversarial chain without an authority reference,
+verifies it can reopen as an external Space, then directly restores the historical
+reference via test-only SQL. It proves new invitation issuance, redemption and
+owned updates fail without revision or protected-key changes. Repository opening
+also rejects that state. No migration, generation fabrication or key deletion is
+performed. Existing affected users require explicit operator recovery; no automatic
+recovery semantics are invented. Chain row derivation was moved unchanged into a
+small module to retain the project's 250 pure-LOC source limit.

@@ -147,47 +147,5 @@ fn authority_snapshot(
     Ok((reference, bytes))
 }
 
-#[test]
-fn generic_signed_owner_removal_remains_importable() -> TestResult {
-    let state = TempState::new("imported-owner-removal")?;
-    let config = StoreConfig::new(state.path());
-    let mut repository = Repository::open(&config)?;
-    let owner = member()?;
-    let peer = peer_member()?;
-    let created = repository.create_owned_space(&SpaceCreation::new(
-        1000,
-        owner.clone(),
-        SpacePolicyV1::phase_one_default(),
-    ))?;
-    let added = repository.advance_owned_space(&OwnedSpaceUpdate::new(
-        created.space_id(),
-        2000,
-        SpaceManifestMembership::new(vec![peer.clone(), owner.clone()], vec![]),
-    ))?;
-    // Adversarial signed-chain construction deliberately bypasses local signing.
-    // This also documents that existing invalid Phase-1 owned chains still load.
-    let (_, bytes) = authority_snapshot(&config)?;
-    let secret = ma2a_core::SpaceAuthoritySecret::try_from_bytes(&bytes)?;
-    let mut chain = added.chain().clone();
-    let manifest = ma2a_core::SpaceManifestV1::new(
-        ma2a_core::SpaceManifestLink::new(created.space_id(), 2, chain.latest_hash()),
-        3000,
-        SpaceManifestMembership::new(
-            vec![peer],
-            vec![SpaceRevocationV1::new(owner.endpoint_id())],
-        ),
-    )?
-    .sign(&secret)?;
-    chain.apply(&manifest)?;
-    assert!(repository.persist_space_chain(&chain)?.error().is_none());
-    drop(repository);
-    let reopened = Repository::open(&config)?;
-    assert_eq!(reopened.load_space_chain(created.space_id())?, Some(chain));
-    assert!(
-        !reopened
-            .memberships_for(owner.endpoint_id())?
-            .contains(&created.space_id())
-    );
-
-    Ok(())
-}
+#[path = "owner_invariant/historical.rs"]
+mod historical;
