@@ -186,6 +186,12 @@ fn signed_membership_and_relay_metadata_are_persisted() -> TestResult {
         }),
     };
     repository.set_relay_configuration(&relay_configuration)?;
+    let revision = repository.revision()?;
+    assert_eq!(
+        repository.set_relay_configuration(&relay_configuration)?,
+        revision
+    );
+    assert_eq!(repository.revision()?, revision);
     assert_eq!(repository.reserve_private_relay_sequence()?, 1);
     repository.record_relay_observation(&RelayObservation {
         relay_url: "https://relay.invalid".to_owned(),

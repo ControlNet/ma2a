@@ -75,7 +75,9 @@ pub(crate) enum Command {
     },
     SetRelayConfiguration {
         configuration: ma2a_store::RelayConfiguration,
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+        mode: super::relay_server::PrivateRelayApply,
+        reply:
+            oneshot::Sender<Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError>>,
     },
     Echo {
         request_id: RequestId,

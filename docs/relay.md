@@ -68,3 +68,20 @@ lookup and does not enable the unchanged N0 discovery preset.
 Store persists the complete desired relay configuration: every public fallback URL, provider enable
 state, listener and private HTTPS URL, exact served-Space set, transport mode, and certificate/key
 paths. PEM bytes are never stored. Net parses this Store-owned record into runtime relay types.
+
+### Configuration convergence
+
+SQLite holds the desired Private Relay configuration. The running server retains
+its applied configuration; a committed change remains pending until the listener,
+admission state, candidates and signed publications converge. Temporary listener
+bind failures retry on normal Runtime maintenance, including after restart. A
+failed mutation response after configuration commit retains its RequestId outcome;
+it does not undo the desired configuration or execute the mutation again.
+
+Reconfiguring the same listener joins the old server before binding its replacement.
+Different listeners can prepare the replacement while the old server still serves.
+Explicit private reconfiguration reloads certificate files; unchanged maintenance
+does not restart the server. Invalid TLS files are rejected before changing desired
+state. A server shutdown failure terminates the Runtime rather than reporting a
+healthy applied role. Public status reports the desired role as online only after
+its pending configuration has completed.

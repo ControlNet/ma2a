@@ -13,6 +13,16 @@ impl Actor {
         let runtime = ma2a_net::RuntimeRelayConfiguration::try_from(configuration)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         if let Some(provider) = runtime.private_provider() {
+            if self
+                .private_relay_server
+                .as_ref()
+                .map(ma2a_net::PrivateRelayServer::configuration)
+                != Some(provider)
+            {
+                // Desired provider state is not publishable until its server is applied.
+                // Server reconciliation owns this pending work and retries on maintenance.
+                return Ok(());
+            }
             let issued_at_ms = u64::try_from(self.clock.now_ms()?)
                 .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
             let expires_at_ms = issued_at_ms

@@ -116,13 +116,6 @@ impl CurrentUserRuntime {
             .map_err(CurrentUserError::Authentication)
     }
 
-    pub(crate) async fn state_revision(&self) -> Result<u64, CurrentUserError> {
-        self.auth
-            .state_revision()
-            .await
-            .map_err(CurrentUserError::Authentication)
-    }
-
     /// Returns the shared Web authentication service owned by this Runtime.
     #[must_use]
     pub const fn web_auth(&self) -> &WebAuthService {

@@ -71,14 +71,6 @@ impl WebAuthService {
             .map_err(|_| AuthFailure::Internal)
     }
 
-    pub(crate) async fn state_revision(&self) -> Result<u64, AuthFailure> {
-        let config = self.inner.store.clone();
-        tokio::task::spawn_blocking(move || Repository::open(&config)?.revision())
-            .await
-            .map_err(|_| AuthFailure::Internal)?
-            .map_err(|_| AuthFailure::Internal)
-    }
-
     /// Performs a CLI-authorized password lifecycle transition.
     ///
     /// # Errors

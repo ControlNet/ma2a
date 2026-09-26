@@ -81,25 +81,6 @@ impl Runtime {
         }
         let connections = crate::RuntimeConnections::new(&endpoint.connection_manager());
         let echo_metrics = endpoint.echo_metrics();
-        let relay_configuration = store.relay_configuration().await?;
-        let runtime_relay = ma2a_net::RuntimeRelayConfiguration::try_from(relay_configuration)
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-        let private_relay_server = match runtime_relay.private_provider() {
-            Some(provider) => {
-                let access = ma2a_net::PrivateRelayAccess::new(
-                    identity.endpoint_id,
-                    provider.served_spaces(),
-                );
-                let authorizations = store.relay_authorizations(identity.endpoint_id).await?;
-                access.replace_from_spaces(&authorizations);
-                Some(
-                    ma2a_net::PrivateRelayServer::spawn(provider, access)
-                        .await
-                        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?,
-                )
-            }
-            None => None,
-        };
         let boot_id = boot_id()?;
         let boot_revision = store.begin_boot(boot_id).await?;
         let relay_observation_revision = store.record_relay_observations(Vec::new()).await?;
@@ -128,9 +109,21 @@ impl Runtime {
             echo_metrics,
             lookup,
             clock,
-            private_relay_server,
+            None,
         );
-        actor.initialize().await?;
+        if let Err(error) = actor.initialize().await {
+            let cleanup = actor.finish(false).await;
+            drop(handle);
+            while let Some(joined) = tasks.join_next().await {
+                if let Err(join_error) = joined {
+                    eprintln!("Runtime initialization task cleanup failed: {join_error}");
+                }
+            }
+            if let Err(cleanup_error) = cleanup {
+                eprintln!("Runtime initialization cleanup failed: {cleanup_error}");
+            }
+            return Err(error);
+        }
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
         Ok(Self {
             handle,
