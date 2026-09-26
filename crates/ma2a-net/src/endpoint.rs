@@ -1,3 +1,4 @@
+mod enrollment;
 mod error;
 mod options;
 
@@ -18,7 +19,7 @@ use crate::{
     address_lookup::RuntimeAddressLookup,
     control::{CONTROL_ALPN, ControlClient, ControlHandler, ControlMetrics},
     echo_protocol::{ECHO_ALPN, EchoClient, EchoHandler, EchoMetrics},
-    enrollment::{EnrollmentCall, EnrollmentHandler, exchange},
+    enrollment::{EnrollmentCall, EnrollmentHandler},
     protocols::ENROLLMENT_ALPN,
 };
 
@@ -231,19 +232,6 @@ impl RuntimeEndpoint {
             .await
             .map(crate::RelayReconfigureOutcome::changed)
             .map_err(NetError::reconfigure)
-    }
-
-    /// Exchanges one bounded enrollment request over the reserved ALPN.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NetError`] when connection, stream, framing, or response validation fails.
-    pub async fn exchange_enrollment(
-        &self,
-        owner: EndpointAddr,
-        request: &[u8],
-    ) -> Result<(u8, Vec<Vec<u8>>), NetError> {
-        exchange(self.router.endpoint(), owner, request).await
     }
 
     /// Exchanges one bounded control request over the existing-member ALPN.
