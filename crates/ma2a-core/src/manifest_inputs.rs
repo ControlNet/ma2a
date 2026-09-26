@@ -27,6 +27,16 @@ pub struct SpaceManifestMembership {
 }
 
 impl SpaceManifestMembership {
+    /// Returns the proposed complete member set.
+    pub fn members(&self) -> &[SpaceMemberV1] {
+        &self.members
+    }
+
+    /// Returns the proposed revocation set.
+    pub fn revocations(&self) -> &[SpaceRevocationV1] {
+        &self.revocations
+    }
+
     /// Creates one complete manifest membership state.
     pub const fn new(members: Vec<SpaceMemberV1>, revocations: Vec<SpaceRevocationV1>) -> Self {
         Self {

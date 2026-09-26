@@ -43,6 +43,9 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
     fixture.start_owned()?;
     let peer_text = encode_hex(peer_id.as_bytes())?;
 
+    let before = fixture.json(&["status", "--json"])?;
+    reject_owner_removal(&fixture, (space_text, owner_text), &before)?;
+
     // When
     let revoked = fixture.run(&[
         "space", "member", "remove", space_text, &peer_text, "--json",
@@ -69,6 +72,40 @@ fn space_member_revoke_requires_and_applies_explicit_ids() -> TestResult {
             .and_then(Value::as_u64),
         Some(1)
     );
+    assert_eq!(
+        response.get("revision").and_then(Value::as_u64),
+        before
+            .get("revision")
+            .and_then(Value::as_u64)
+            .map(|revision| revision + 1)
+    );
+    fixture.stop_owned()?;
+    let repository = Repository::open(&StoreConfig::new(fixture.state_dir()))?;
+    let chain = repository
+        .load_space_chain(space_id)?
+        .ok_or("missing Space")?;
+    assert_eq!(chain.latest_generation(), 2);
+    assert_eq!(chain.members().len(), 1);
+    assert_eq!(
+        chain
+            .members()
+            .first()
+            .ok_or("missing owner")?
+            .endpoint_id(),
+        owner_id
+    );
+    assert_eq!(chain.revocations().len(), 1);
+    assert_eq!(
+        chain
+            .revocations()
+            .first()
+            .ok_or("missing revocation")?
+            .endpoint_id(),
+        peer_id
+    );
+    drop(repository);
+    fixture.start_owned()?;
+    fixture.run_ok(&["space", "show", space_text])?;
     fixture.shutdown()
 }
 
@@ -125,4 +162,41 @@ fn encode_hex(bytes: &[u8]) -> Result<String, std::fmt::Error> {
         write!(&mut encoded, "{byte:02x}")?;
     }
     Ok(encoded)
+}
+
+fn reject_owner_removal(fixture: &DaemonFixture, ids: (&str, &str), before: &Value) -> TestResult {
+    let (space_text, owner_text) = ids;
+    // Owner protection is shared by CLI, IPC, and the Web command executor.
+    let refused = fixture.run(&["space", "member", "remove", space_text, owner_text])?;
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8(refused.stderr)?.contains("Space owner cannot be removed in Phase 1")
+    );
+    let request = ma2a_runtime::api::decode_command(&serde_json::to_vec(&serde_json::json!({
+        "version": 1, "operation": "space_revoke",
+        "request_id": "aabbccddeeff00112233445566778899",
+        "space_id": space_text, "peer_endpoint_id": owner_text,
+    }))?)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let client = ma2a_runtime::ipc::LocalApiClient::new(ma2a_runtime::ipc::IpcPaths::new(
+        fixture.state_dir(),
+    )?);
+    for _ in 0..2 {
+        let response: Value = serde_json::from_slice(&runtime.block_on(client.call(&request))?)?;
+        assert_eq!(value(&response, "/error")?, "unauthorized");
+        assert_eq!(
+            value(&response, "/remediation")?,
+            "Space owner cannot be removed in Phase 1"
+        );
+    }
+    let after = fixture.json(&["status", "--json"])?;
+    assert_eq!(after.get("revision"), before.get("revision"));
+    assert_eq!(
+        after.pointer("/result/payload/spaces"),
+        before.pointer("/result/payload/spaces")
+    );
+
+    Ok(())
 }

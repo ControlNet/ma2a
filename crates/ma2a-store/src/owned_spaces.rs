@@ -175,6 +175,22 @@ impl Repository {
         let chain = self
             .load_space_chain(update.space_id)?
             .ok_or(StoreError::SpaceNotFound)?;
+        // Phase 1 has no authority transfer: local signing must preserve the
+        // genesis owner, regardless of the caller or current member ordering.
+        let owner = chain.genesis().genesis().initial_member().endpoint_id();
+        if !update
+            .membership
+            .members()
+            .iter()
+            .any(|member| member.endpoint_id() == owner)
+            || update
+                .membership
+                .revocations()
+                .iter()
+                .any(|revocation| revocation.endpoint_id() == owner)
+        {
+            return Err(StoreError::SpaceOwnerCannotBeRemoved);
+        }
         let reference = self
             .connection
             .query_row(

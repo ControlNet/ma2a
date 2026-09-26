@@ -29,6 +29,9 @@ impl StoreBackend {
             .repository
             .load_space_chain(request.space_id)?
             .ok_or(ma2a_store::StoreError::SpaceNotFound)?;
+        if request.endpoint_id == chain.genesis().genesis().initial_member().endpoint_id() {
+            return Err(ma2a_store::StoreError::SpaceOwnerCannotBeRemoved.into());
+        }
         let member_position = chain
             .members()
             .binary_search_by_key(&request.endpoint_id, ma2a_core::SpaceMemberV1::endpoint_id)
