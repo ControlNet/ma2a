@@ -72,7 +72,7 @@ impl StoreBackend {
 pub(super) fn authorize(
     repository: &ma2a_store::Repository,
     input: &crate::control_sync::ControlAuthorizationInput,
-    reply: tokio::sync::oneshot::Sender<Result<(), ma2a_net::ControlRejection>>,
+    reply: tokio::sync::oneshot::Sender<Result<(), crate::control_sync::ControlFailure>>,
 ) {
     let result = crate::control_sync::authorize(repository, input);
     let _unsent = reply.send(result);
@@ -82,7 +82,7 @@ pub(super) fn respond(
     repository: &mut ma2a_store::Repository,
     input: &crate::control_sync::ControlExchangeInput,
     reply: tokio::sync::oneshot::Sender<
-        Result<crate::control_sync::ControlRespondOutcome, ma2a_net::ControlRejection>,
+        Result<crate::control_sync::ControlRespondOutcome, crate::control_sync::ControlFailure>,
     >,
 ) {
     let result = crate::control_sync::respond(repository, input);

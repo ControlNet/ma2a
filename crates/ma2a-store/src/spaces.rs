@@ -251,3 +251,24 @@ pub(crate) fn memberships_for(
         })
         .collect()
 }
+
+impl Repository {
+    /// Reads membership and its authoritative revision in one `SQLite` snapshot.
+    ///
+    /// # Errors
+    /// Returns an error when the revision or membership rows cannot be read.
+    pub fn membership_projection(
+        &mut self,
+        endpoint: EndpointId,
+    ) -> Result<crate::Committed<BTreeSet<SpaceId>>, StoreError> {
+        let transaction = self.connection.transaction()?;
+        let revision = transaction.query_row(
+            "SELECT revision FROM runtime_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let memberships = memberships_for(&transaction, endpoint)?;
+        transaction.commit()?;
+        Ok(crate::Committed::new(revision, memberships))
+    }
+}

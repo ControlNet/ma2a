@@ -17,6 +17,8 @@ use crate::{error::RuntimeError, store::StoreClient};
 mod background_reconciliation_test;
 mod command;
 mod construction;
+#[cfg(test)]
+mod control_completion_test;
 mod echo;
 #[cfg(test)]
 mod effective_data_test;
@@ -70,7 +72,10 @@ pub(crate) struct Actor {
     pub(crate) maintenance: maintenance::Maintenance,
     pub(crate) control_rounds: JoinSet<(
         crate::control_actor::ScheduledControlRound,
-        Result<Option<crate::control_sync::ControlRoundOutcome>, RuntimeError>,
+        Result<
+            Option<crate::control_sync::ControlRoundOutcome>,
+            crate::control_sync::ControlFailure,
+        >,
     )>,
     pub(crate) control_queue: crate::control_actor::ControlRoundQueue,
     pub(crate) synchronized_control_peers: BTreeSet<ma2a_core::EndpointId>,

@@ -148,20 +148,28 @@ impl Runtime {
     /// # Errors
     /// Returns [`RuntimeError`] if any owned task or persistence step fails.
     pub async fn shutdown(mut self) -> Result<ShutdownReport, RuntimeError> {
-        let ack = self.handle.shutdown().await?;
+        let ack = self.handle.shutdown().await;
         self.cancellation.cancel();
         drop(self.handle);
         let mut joined_tasks = 0_usize;
         let mut actor_ack = None;
+        let mut failure = None;
         while let Some(joined) = self.tasks.join_next().await {
             joined_tasks = joined_tasks
                 .checked_add(1)
                 .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::Shutdown))?;
-            match joined?? {
-                TaskExit::Actor(exit) => actor_ack = Some(exit),
-                TaskExit::Store => {}
+            match joined.map_err(RuntimeError::from).and_then(|exit| exit) {
+                Ok(TaskExit::Actor(exit)) => actor_ack = Some(exit),
+                Ok(TaskExit::Store) => {}
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
             }
         }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        let ack = ack?;
         if joined_tasks != 2 || actor_ack != Some(ack) {
             return Err(RuntimeError::new(RuntimeErrorKind::Shutdown));
         }

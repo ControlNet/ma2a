@@ -2,6 +2,8 @@ use ma2a_net::IrohRelayObservation;
 
 #[derive(Default)]
 pub(crate) struct Maintenance {
+    pub(crate) fatal: Option<crate::RuntimeError>,
+    pub(crate) control_completion: Option<crate::control_actor::completion::PendingControl>,
     pub(crate) relay_configuration: Option<super::relay_server::RelayCompletion>,
     pub(crate) membership_pending: Option<crate::control_sync::ControlRoundTrigger>,
     pub(crate) enrollment: Option<crate::enrollment::completion::PendingEnrollment>,

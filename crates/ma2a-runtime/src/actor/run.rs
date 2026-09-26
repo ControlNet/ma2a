@@ -1,15 +1,42 @@
 use super::{Actor, Command, ShutdownAck, echo, relay_server};
 use crate::{enrollment::EnrollmentError, error::RuntimeError, state::RuntimeEvent};
 
+enum Stop {
+    Cancelled,
+    Graceful(tokio::sync::oneshot::Sender<ShutdownAck>),
+}
+
 impl Actor {
-    #[expect(clippy::too_many_lines, reason = "actor command ordering is explicit")]
     pub(crate) async fn run(mut self) -> Result<ShutdownAck, RuntimeError> {
+        let outcome = self.run_loop().await;
+        let stopped = self.finish(matches!(&outcome, Ok(Stop::Graceful(_)))).await;
+        match outcome {
+            Ok(Stop::Graceful(reply)) => {
+                if let Ok(ack) = &stopped {
+                    let _unsent = reply.send(*ack);
+                }
+                stopped
+            }
+            Ok(Stop::Cancelled) => stopped,
+            Err(error) => {
+                if let Err(cleanup) = stopped {
+                    eprintln!("Runtime failure cleanup failed: {cleanup}");
+                }
+                Err(error)
+            }
+        }
+    }
+    #[expect(clippy::too_many_lines, reason = "actor command ordering is explicit")]
+    async fn run_loop(&mut self) -> Result<Stop, RuntimeError> {
         let _receiver_count = self.events.send(RuntimeEvent::ready(self.state.revision));
         self.schedule_control_round(crate::control_sync::ControlRoundTrigger::Startup, None);
         let control_period = crate::control_actor::control_period(self.state.endpoint_id);
         let mut periodic =
             tokio::time::interval_at(tokio::time::Instant::now() + control_period, control_period);
         loop {
+            if let Some(error) = self.maintenance.fatal.take() {
+                return Err(error);
+            }
             if self.maintenance.relay_configuration
                 == Some(relay_server::RelayCompletion::ShutdownFailed)
             {
@@ -17,7 +44,7 @@ impl Actor {
             }
             tokio::select! {
                 biased;
-                () = self.cancellation.cancelled() => return self.finish(false).await,
+                () = self.cancellation.cancelled() => return Ok(Stop::Cancelled),
                 command = self.commands.recv() => match command {
                     Some(Command::Status(reply)) => {
                         let _unsent = reply.send(self.state.clone());
@@ -67,32 +94,7 @@ impl Actor {
                         );
                     }
                     Some(Command::AdvanceOwnedSpace { update, reply }) => {
-                        let result = match self
-                            .store
-                            .advance_owned_space(update, self.state.endpoint_id)
-                            .await
-                        {
-                            Ok((revision, memberships)) => {
-                                self.state.revision = revision;
-                                self.state.memberships = memberships;
-                                self.endpoint
-                                    .set_control_enabled(!self.state.memberships.is_empty());
-                                match self.refresh_control_lookup().await {
-                                    Ok(()) => match self.refresh_relay_candidates().await {
-                                        Ok(_) => {
-                                            self.schedule_control_round(
-                                                crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
-                                                None,
-                                            );
-                                            Ok(revision)
-                                        }
-                                        Err(error) => Err(error),
-                                    },
-                                    Err(error) => Err(error),
-                                }
-                            }
-                            Err(error) => Err(error),
-                        };
+                        let result = self.advance_owned_space(update).await;
                         let _unsent = reply.send(result);
                     }
                     Some(Command::PublishAddress(reply)) => {
@@ -118,33 +120,26 @@ impl Actor {
                             reply,
                         );
                     }
-                    Some(Command::Shutdown(reply)) => {
-                        let result = self.finish(true).await;
-                        if let Ok(ack) = result {
-                            let _unsent = reply.send(ack);
-                            return Ok(ack);
-                        }
-                        return result;
-                    }
-                    None => return self.finish(false).await,
+                    Some(Command::Shutdown(reply)) => return Ok(Stop::Graceful(reply)),
+                    None => return Ok(Stop::Cancelled),
                 },
                 call = self.enrollment_calls.recv() => if let Some(call) = call {
                     self.handle_enrollment_call(call).await?;
                 },
                 call = self.control_calls.recv() => if let Some(call) = call {
-                    self.handle_control_call(call).await;
+                    self.handle_control_call(call).await?;
                 },
                 joined = self.control_tasks.join_next(), if !self.control_tasks.is_empty() => {
-                    if let Some(Ok(completion)) = joined {
-                        self.finish_control_call(completion).await;
+                    if let Some(completion) = joined {
+                        self.finish_control_call(completion.map_err(RuntimeError::from)?).await?;
                     }
                 },
                 call = self.echo_calls.recv() => if let Some(call) = call {
                     self.handle_echo_call(call).await;
                 },
                 joined = self.echo_tasks.join_next(), if !self.echo_tasks.is_empty() => {
-                    if let Some(Ok(completion)) = joined {
-                        self.finish_echo(completion).await;
+                    if let Some(completion) = joined {
+                        self.finish_echo(completion.map_err(RuntimeError::from)?).await;
                     }
                 },
                 observation = self.relay_observations.recv() => if let Some(observation) = observation {
@@ -153,7 +148,7 @@ impl Actor {
                 },
                 joined = self.control_rounds.join_next(), if !self.control_rounds.is_empty() => {
                     if let Some(result) = joined {
-                        self.finish_control_round(result).await;
+                        self.finish_control_round(result).await?;
                     }
                 },
                 _ = periodic.tick() => {

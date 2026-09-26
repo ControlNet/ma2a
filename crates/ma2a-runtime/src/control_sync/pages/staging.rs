@@ -10,6 +10,7 @@ use ma2a_net::{
 use ma2a_store::{ControlBatch, Repository, ValidatedAddressRecord, ValidatedRelayAdvertisement};
 
 use super::PageApplication;
+use crate::control_sync::ControlFailure;
 
 #[cfg(test)]
 mod tests;
@@ -45,7 +46,7 @@ impl ControlChanges {
 pub(crate) fn apply_pages(
     repository: &mut Repository,
     application: PageApplication<'_>,
-) -> Result<ControlChanges, ControlRejection> {
+) -> Result<ControlChanges, ControlFailure> {
     let mut chains = Vec::new();
     let mut addresses = BTreeMap::new();
     let mut relays = BTreeMap::new();
@@ -77,7 +78,7 @@ pub(crate) fn apply_pages(
                     .get(index)
                     .ok_or(ControlRejection::Invalid)?;
                 if accepted.canonical_bytes() != manifest.canonical_bytes() {
-                    return Err(ControlRejection::Invalid);
+                    return Err(ControlRejection::Invalid.into());
                 }
                 continue;
             }
@@ -113,7 +114,7 @@ pub(crate) fn apply_pages(
                     .map_err(|_| ControlRejection::Invalid)?;
                     stage_relay(repository, &mut relays, validated)?;
                 }
-                _ => return Err(ControlRejection::Invalid),
+                _ => return Err(ControlRejection::Invalid.into()),
             }
         }
     }
@@ -128,7 +129,7 @@ pub(crate) fn apply_pages(
             addresses.into_values().collect(),
             relays.into_values().collect(),
         ))
-        .map_err(|_| ControlRejection::Unavailable)?;
+        .map_err(ControlFailure::from)?;
     Ok(changes)
 }
 
@@ -136,7 +137,7 @@ fn stage_address(
     repository: &Repository,
     staged: &mut BTreeMap<(ma2a_core::SpaceId, ma2a_core::EndpointId), ValidatedAddressRecord>,
     advance: ValidatedAddressRecord,
-) -> Result<(), ControlRejection> {
+) -> Result<(), ControlFailure> {
     let key = (
         advance.record().record().space_id(),
         advance.record().record().endpoint_id(),
@@ -145,7 +146,7 @@ fn stage_address(
         || {
             repository
                 .address_record(key.0, key.1)
-                .map_err(|_| ControlRejection::Unavailable)
+                .map_err(ControlFailure::from)
                 .map(|record| {
                     record.map(|record| {
                         (
@@ -166,12 +167,12 @@ fn stage_address(
     )?;
     if let Some((sequence, hash, signed)) = current {
         match advance.record().record().sequence().cmp(&sequence) {
-            std::cmp::Ordering::Less => return Err(ControlRejection::Invalid),
+            std::cmp::Ordering::Less => return Err(ControlRejection::Invalid.into()),
             std::cmp::Ordering::Equal
                 if hash != advance.record().record_hash()
                     || signed != advance.record().canonical_bytes() =>
             {
-                return Err(ControlRejection::Invalid);
+                return Err(ControlRejection::Invalid.into());
             }
             std::cmp::Ordering::Equal => return Ok(()),
             std::cmp::Ordering::Greater => {}
@@ -185,7 +186,7 @@ fn stage_relay(
     repository: &Repository,
     staged: &mut BTreeMap<(ma2a_core::SpaceId, ma2a_core::EndpointId), ValidatedRelayAdvertisement>,
     advance: ValidatedRelayAdvertisement,
-) -> Result<(), ControlRejection> {
+) -> Result<(), ControlFailure> {
     let advertisement = advance.signed().advertisement();
     let key = (
         advertisement.space_id(),
@@ -195,7 +196,7 @@ fn stage_relay(
         || {
             repository
                 .relay_advertisement(key.0, key.1)
-                .map_err(|_| ControlRejection::Unavailable)
+                .map_err(ControlFailure::from)
                 .map(|record| {
                     record.map(|record| {
                         (
@@ -216,12 +217,12 @@ fn stage_relay(
     )?;
     if let Some((sequence, hash, signed)) = current {
         match advertisement.sequence().cmp(&sequence) {
-            std::cmp::Ordering::Less => return Err(ControlRejection::Invalid),
+            std::cmp::Ordering::Less => return Err(ControlRejection::Invalid.into()),
             std::cmp::Ordering::Equal
                 if hash != advance.signed().advertisement_hash()
                     || signed != advance.signed().canonical_bytes() =>
             {
-                return Err(ControlRejection::Invalid);
+                return Err(ControlRejection::Invalid.into());
             }
             std::cmp::Ordering::Equal => return Ok(()),
             std::cmp::Ordering::Greater => {}

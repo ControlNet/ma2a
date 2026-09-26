@@ -36,7 +36,7 @@ impl SpaceDepartureErrorCode {
     pub const NOT_A_MEMBER: Self = Self(DepartureErrorKind::NotAMember);
     /// The local Endpoint owns the Space authority and cannot remove itself.
     pub const OWNER_CANNOT_LEAVE: Self = Self(DepartureErrorKind::OwnerCannotLeave);
-    /// The Space authority could not be reached, so nothing was removed.
+    /// The exchange failed; the remote authority outcome may be unknown.
     pub const UNREACHABLE: Self = Self(DepartureErrorKind::Unreachable);
     /// The authority refused the request or returned an unusable chain.
     pub const REJECTED: Self = Self(DepartureErrorKind::Rejected);
@@ -46,37 +46,53 @@ impl SpaceDepartureErrorCode {
 
 /// A typed failure returned by the Space departure API.
 #[derive(Debug)]
-pub struct SpaceDepartureError(DepartureErrorKind);
+pub struct SpaceDepartureError(DepartureErrorKind, Option<u64>);
 
 impl SpaceDepartureError {
+    pub(crate) const fn after_commit(mut self, revision: u64) -> Self {
+        self.1 = Some(revision);
+        self
+    }
+
+    /// Returns the local durable revision when departure committed before completion failed.
+    pub const fn committed_revision(&self) -> Option<u64> {
+        self.1
+    }
+
     /// Returns the stable classification for this failure.
     pub const fn code(&self) -> SpaceDepartureErrorCode {
         SpaceDepartureErrorCode(self.0)
     }
     pub(crate) const fn not_a_member() -> Self {
-        Self(DepartureErrorKind::NotAMember)
+        Self(DepartureErrorKind::NotAMember, None)
     }
     pub(crate) const fn owner_cannot_leave() -> Self {
-        Self(DepartureErrorKind::OwnerCannotLeave)
+        Self(DepartureErrorKind::OwnerCannotLeave, None)
     }
     pub(crate) const fn unreachable() -> Self {
-        Self(DepartureErrorKind::Unreachable)
+        Self(DepartureErrorKind::Unreachable, None)
     }
     pub(crate) const fn rejected() -> Self {
-        Self(DepartureErrorKind::Rejected)
+        Self(DepartureErrorKind::Rejected, None)
     }
     pub(crate) const fn internal() -> Self {
-        Self(DepartureErrorKind::Internal)
+        Self(DepartureErrorKind::Internal, None)
     }
 }
 
 impl fmt::Display for SpaceDepartureError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(revision) = self.1 {
+            return write!(
+                formatter,
+                "Space departure committed at revision {revision}; completion remains pending"
+            );
+        }
         formatter.write_str(match self.0 {
             DepartureErrorKind::NotAMember => "this Endpoint is not a member of that Space",
             DepartureErrorKind::OwnerCannotLeave => "Space owner cannot leave its own Space",
             DepartureErrorKind::Unreachable => {
-                "the Space authority could not be reached; membership is unchanged"
+                "departure exchange did not complete; authority outcome is unknown"
             }
             DepartureErrorKind::Rejected => "the Space authority rejected the departure request",
             DepartureErrorKind::Internal => "Space departure failed",

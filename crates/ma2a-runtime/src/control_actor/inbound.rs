@@ -3,7 +3,7 @@ use ma2a_net::{ControlAuthorizedCall, ControlCall, ControlRejection, ControlResp
 
 use crate::{
     actor::Actor,
-    control_sync::{ControlExchangeInput, ControlRespondOutcome, install_lookup},
+    control_sync::{ControlChanges, ControlExchangeInput, ControlFailure, ControlRespondOutcome},
 };
 
 pub(crate) enum InboundControlCompletion {
@@ -11,7 +11,7 @@ pub(crate) enum InboundControlCompletion {
     Response {
         remote_endpoint_id: EndpointId,
         responder: ControlResponder,
-        result: Result<ControlRespondOutcome, ControlRejection>,
+        result: Result<ControlRespondOutcome, ControlFailure>,
     },
 }
 
@@ -24,19 +24,26 @@ struct InboundControlInput {
 }
 
 impl Actor {
-    pub(crate) async fn handle_control_call(&mut self, call: ControlCall) {
+    pub(crate) async fn handle_control_call(
+        &mut self,
+        call: ControlCall,
+    ) -> Result<(), crate::RuntimeError> {
         let peer = call.remote_endpoint_id();
-        if let Err(rejection) = self
+        if let Err(error) = self
             .store
             .authorize_control(self.state.endpoint_id, peer)
             .await
         {
-            call.reject(rejection);
-            return;
+            call.reject(error.rejection());
+            return Self::control_failure(error);
         }
         let Some(call) = call.authorize() else {
-            return;
+            return Ok(());
         };
+        self.retain_control_completion(
+            ControlChanges::default(),
+            std::collections::BTreeSet::new(),
+        );
         self.control_tasks.spawn(run_inbound(InboundControlInput {
             store: self.store.clone(),
             call,
@@ -44,34 +51,46 @@ impl Actor {
             local_endpoint_id: self.state.endpoint_id,
             remote_endpoint_id: peer,
         }));
+        Ok(())
     }
 
-    pub(crate) async fn finish_control_call(&mut self, completion: InboundControlCompletion) {
+    pub(crate) async fn finish_control_call(
+        &mut self,
+        completion: InboundControlCompletion,
+    ) -> Result<(), crate::RuntimeError> {
+        self.retain_control_completion(
+            ControlChanges::default(),
+            std::collections::BTreeSet::new(),
+        );
         let InboundControlCompletion::Response {
             remote_endpoint_id,
             responder,
             result,
         } = completion
         else {
-            return;
+            return Ok(());
         };
-        let Ok(outcome) = result else {
-            responder.respond(result.map(|outcome| outcome.response));
-            return;
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.retain_control_completion(
+                    ControlChanges::default(),
+                    std::collections::BTreeSet::new(),
+                );
+                responder.respond(Err(error.rejection()));
+                return Self::control_failure(error);
+            }
         };
-        let response = outcome.response;
-        if install_lookup(&self.lookup, outcome.lookup).is_err() {
-            responder.respond(Err(ControlRejection::Unavailable));
-            return;
+        self.state.revision = self.state.revision.max(outcome.revision);
+        self.retain_control_completion(outcome.changes, [remote_endpoint_id].into());
+        match self.reconcile_control_completion().await {
+            Ok(()) => responder.respond(Ok(outcome.response)),
+            Err(error) => {
+                responder.respond(Err(ControlRejection::Unavailable));
+                Self::absorb_background("inbound control projection", Err(error))?;
+            }
         }
-        let _changed = self.adopt_control_memberships(outcome.revision).await;
-        self.synchronized_control_peers.insert(remote_endpoint_id);
-        if self.refresh_relay_candidates().await.is_err() {
-            responder.respond(Err(ControlRejection::Unavailable));
-            return;
-        }
-        self.schedule_control_changes(outcome.changes);
-        responder.respond(Ok(response));
+        Ok(())
     }
 }
 
@@ -79,17 +98,18 @@ async fn run_inbound(input: InboundControlInput) -> InboundControlCompletion {
     let Ok((request, responder)) = input.call.request().await else {
         return InboundControlCompletion::NoResponse;
     };
-    let now_ms = input
-        .clock
-        .now_ms()
-        .ok()
-        .and_then(|value| u64::try_from(value).ok());
-    let Some(now_ms) = now_ms else {
-        return InboundControlCompletion::Response {
-            remote_endpoint_id: input.remote_endpoint_id,
-            responder,
-            result: Err(ControlRejection::Unavailable),
-        };
+    let now_ms = match input.clock.now_ms().and_then(|value| {
+        u64::try_from(value)
+            .map_err(|_| crate::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))
+    }) {
+        Ok(now_ms) => now_ms,
+        Err(error) => {
+            return InboundControlCompletion::Response {
+                remote_endpoint_id: input.remote_endpoint_id,
+                responder,
+                result: Err(error.into()),
+            };
+        }
     };
     let result = input
         .store

@@ -101,18 +101,25 @@ impl Actor {
             .store
             .persist_departure(advanced, local)
             .await
-            .map_err(|_| SpaceDepartureError::internal())?;
+            .map_err(|error| {
+                let error = self.retain_membership_error(error);
+                error
+                    .committed_revision()
+                    .map_or_else(SpaceDepartureError::internal, |revision| {
+                        SpaceDepartureError::internal().after_commit(revision)
+                    })
+            })?;
         self.state.revision = revision;
         self.state.memberships = memberships;
         self.synchronized_control_peers.clear();
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
-        self.refresh_after_membership_change()
-            .await
-            .map_err(|_| SpaceDepartureError::internal())?;
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
+        self.refresh_after_membership_change()
+            .await
+            .map_err(|_| SpaceDepartureError::internal().after_commit(revision))?;
         Ok(revision)
     }
 
@@ -120,11 +127,14 @@ impl Actor {
     ///
     /// The transport authenticates the remote Endpoint, so a request can only
     /// ever remove its own sender.
-    pub(crate) async fn handle_departure_call(&mut self, call: EnrollmentCall) {
+    pub(crate) async fn handle_departure_call(
+        &mut self,
+        call: EnrollmentCall,
+    ) -> Result<(), crate::RuntimeError> {
         let departing = call.remote_endpoint_id();
         let Some((space_id, _request_id)) = decode_departure(call.request()) else {
             call.respond(DEPARTURE_STATUS_REJECTED, Vec::new());
-            return;
+            return Ok(());
         };
         match self.remove_departing_member(space_id, departing).await {
             Ok(Some(chain)) => match departure_pages(&chain) {
@@ -132,8 +142,12 @@ impl Actor {
                 Err(()) => call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new()),
             },
             Ok(None) => call.respond(DEPARTURE_STATUS_REJECTED, Vec::new()),
-            Err(()) => call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new()),
+            Err(error) => {
+                call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new());
+                Self::absorb_background("owner departure completion", Err(error))?;
+            }
         }
+        Ok(())
     }
 }
 
@@ -151,13 +165,13 @@ fn departure_pages(chain: &SpaceChain) -> Result<Vec<Vec<u8>>, ()> {
 
 impl Actor {
     /// Returns the advanced chain, `Ok(None)` when the request is not authorized,
-    /// and `Err(())` for local failures the requester must not distinguish.
+    /// and a typed local failure kept separate from remote denial.
     async fn remove_departing_member(
         &mut self,
         space_id: SpaceId,
         departing: EndpointId,
-    ) -> Result<Option<SpaceChain>, ()> {
-        let Ok(Some(chain)) = self.store.load_space_chain(space_id).await else {
+    ) -> Result<Option<SpaceChain>, crate::RuntimeError> {
+        let Some(chain) = self.store.load_space_chain(space_id).await? else {
             return Ok(None);
         };
         if chain.genesis().genesis().initial_member().endpoint_id() == departing {
@@ -175,12 +189,8 @@ impl Actor {
                 .any(|revocation| revocation.endpoint_id() == departing)
                 .then_some(chain));
         }
-        let Ok(issued_at_ms) = self.clock.now_ms().map(u64::try_from) else {
-            return Err(());
-        };
-        let Ok(issued_at_ms) = issued_at_ms else {
-            return Err(());
-        };
+        let issued_at_ms = u64::try_from(self.clock.now_ms()?)
+            .map_err(|_| crate::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;
         let removed = self
             .store
             .revoke_owned_space_member(crate::store::OwnedMemberRevocation {
@@ -190,16 +200,16 @@ impl Actor {
                 local_endpoint_id: self.state.endpoint_id,
             })
             .await
-            .map_err(|_| ())?;
-        self.state.revision = removed.revision;
+            .map_err(|error| self.retain_membership_error(error))?;
+        self.state.revision = removed.projection_revision;
         self.state.memberships = removed.memberships;
         self.synchronized_control_peers.clear();
-        self.refresh_after_membership_change()
-            .await
-            .map_err(|_| ())?;
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(removed.revision));
+        self.refresh_after_membership_change()
+            .await
+            .map_err(|error| error.after_commit(removed.revision))?;
         Ok(Some(removed.chain))
     }
 }

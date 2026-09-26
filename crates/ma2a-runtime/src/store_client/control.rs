@@ -1,12 +1,11 @@
+use crate::control_sync::ControlFailure;
 use ma2a_core::EndpointId;
-use ma2a_net::ControlRejection;
 use tokio::sync::oneshot;
 
 use crate::{
     control_sync::{
         ControlApplyOutcome, ControlAuthorizationInput, ControlExchangeInput, ControlRespondOutcome,
     },
-    error::RuntimeError,
     store::{StoreClient, StoreCommand},
     store_client::channel_error,
 };
@@ -16,7 +15,7 @@ impl StoreClient {
         &self,
         local_endpoint_id: EndpointId,
         peer_endpoint_id: EndpointId,
-    ) -> Result<(), ControlRejection> {
+    ) -> Result<(), ControlFailure> {
         let (reply, response) = oneshot::channel();
         self.sender
             .send(StoreCommand::AuthorizeControl {
@@ -27,26 +26,26 @@ impl StoreClient {
                 reply,
             })
             .await
-            .map_err(|_| ControlRejection::Unavailable)?;
-        response.await.map_err(|_| ControlRejection::Unavailable)?
+            .map_err(channel_error)?;
+        response.await.map_err(channel_error)?
     }
 
     pub(crate) async fn respond_control(
         &self,
         input: ControlExchangeInput,
-    ) -> Result<ControlRespondOutcome, ControlRejection> {
+    ) -> Result<ControlRespondOutcome, ControlFailure> {
         let (reply, response) = oneshot::channel();
         self.sender
             .send(StoreCommand::RespondControl { input, reply })
             .await
-            .map_err(|_| ControlRejection::Unavailable)?;
-        response.await.map_err(|_| ControlRejection::Unavailable)?
+            .map_err(channel_error)?;
+        response.await.map_err(channel_error)?
     }
 
     pub(crate) async fn apply_control_response(
         &self,
         input: ControlExchangeInput,
-    ) -> Result<ControlApplyOutcome, RuntimeError> {
+    ) -> Result<ControlApplyOutcome, ControlFailure> {
         let (reply, response) = oneshot::channel();
         self.sender
             .send(StoreCommand::ApplyControlResponse { input, reply })

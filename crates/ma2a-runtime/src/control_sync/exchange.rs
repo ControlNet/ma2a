@@ -6,18 +6,16 @@ use ma2a_net::ControlRejection;
 use ma2a_store::{ControlSpaceState, Repository};
 
 use super::{
-    ControlApplyOutcome, ControlAuthorizationInput, ControlExchangeInput, ControlRespondOutcome,
-    load_lookup, pages,
+    ControlApplyOutcome, ControlAuthorizationInput, ControlExchangeInput, ControlFailure,
+    ControlRespondOutcome, pages,
 };
-use crate::error::{RuntimeError, RuntimeErrorKind};
 
 pub(crate) fn respond(
     repository: &mut Repository,
     input: &ControlExchangeInput,
-) -> Result<ControlRespondOutcome, ControlRejection> {
-    let mut shared = repository
-        .control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)
-        .map_err(|_| ControlRejection::Unavailable)?;
+) -> Result<ControlRespondOutcome, ControlFailure> {
+    let mut shared =
+        repository.control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)?;
     authorize_shared(&shared, input.local_endpoint_id, input.remote_endpoint_id)?;
     let request =
         ControlRequestV1::decode(&input.payload).map_err(|_| ControlRejection::Invalid)?;
@@ -46,9 +44,8 @@ pub(crate) fn respond(
         repository,
         pages::PageApplication::new(&shared, request.push_pages(), input.now_ms),
     )?;
-    shared = repository
-        .control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)
-        .map_err(|_| ControlRejection::Unavailable)?;
+    shared =
+        repository.control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)?;
     pages::validate_cursor_spaces(&shared, request.cursors())?;
     let artifact_budget = pages::response_artifact_budget(request.cursors().len())?;
     let pages = request
@@ -73,14 +70,9 @@ pub(crate) fn respond(
     let response = ControlResponseV1::new(pages)
         .and_then(|response| response.encode())
         .map_err(|_| ControlRejection::Invalid)?;
-    let lookup = load_lookup(repository, input.local_endpoint_id, input.now_ms)
-        .map_err(|_| ControlRejection::Unavailable)?;
     Ok(ControlRespondOutcome {
         response,
-        revision: repository
-            .revision()
-            .map_err(|_| ControlRejection::Unavailable)?,
-        lookup,
+        revision: repository.revision()?,
         changes,
     })
 }
@@ -88,11 +80,10 @@ pub(crate) fn respond(
 pub(crate) fn authorize(
     repository: &Repository,
     input: &ControlAuthorizationInput,
-) -> Result<(), ControlRejection> {
-    let shared = repository
-        .control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)
-        .map_err(|_| ControlRejection::Unavailable)?;
-    authorize_shared(&shared, input.local_endpoint_id, input.remote_endpoint_id)
+) -> Result<(), ControlFailure> {
+    let shared =
+        repository.control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)?;
+    authorize_shared(&shared, input.local_endpoint_id, input.remote_endpoint_id).map_err(Into::into)
 }
 
 fn authorize_shared(
@@ -122,25 +113,22 @@ fn authorize_shared(
 pub(crate) fn apply_response(
     repository: &mut Repository,
     input: &ControlExchangeInput,
-) -> Result<ControlApplyOutcome, RuntimeError> {
+) -> Result<ControlApplyOutcome, ControlFailure> {
     let shared =
         repository.control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)?;
     if shared.is_empty() {
-        return Err(RuntimeError::new(RuntimeErrorKind::Control));
+        return Err(ControlRejection::Unauthorized.into());
     }
-    let response = ControlResponseV1::decode(&input.payload)
-        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+    let response =
+        ControlResponseV1::decode(&input.payload).map_err(|_| ControlRejection::Invalid)?;
     pages::validate_page_spaces(&shared, response.pages())
-        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        .map_err(|_| ControlRejection::Invalid)?;
     let changes = pages::apply_pages(
         repository,
         pages::PageApplication::new(&shared, response.pages(), input.now_ms),
-    )
-    .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-    let lookup = load_lookup(repository, input.local_endpoint_id, input.now_ms)?;
+    )?;
     Ok(ControlApplyOutcome {
         revision: repository.revision()?,
-        lookup,
         changes,
     })
 }

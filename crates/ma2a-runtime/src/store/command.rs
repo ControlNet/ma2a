@@ -49,8 +49,12 @@ pub(crate) enum StoreCommand {
     },
     Memberships {
         local_endpoint_id: ma2a_core::EndpointId,
-        reply:
-            oneshot::Sender<Result<std::collections::BTreeSet<ma2a_core::SpaceId>, RuntimeError>>,
+        reply: oneshot::Sender<
+            Result<
+                ma2a_store::Committed<std::collections::BTreeSet<ma2a_core::SpaceId>>,
+                RuntimeError,
+            >,
+        >,
     },
     LoadSpaceChain {
         space_id: ma2a_core::SpaceId,
@@ -164,15 +168,15 @@ pub(crate) enum StoreCommand {
     },
     RespondControl {
         input: ControlExchangeInput,
-        reply: oneshot::Sender<Result<ControlRespondOutcome, ma2a_net::ControlRejection>>,
+        reply: oneshot::Sender<Result<ControlRespondOutcome, crate::control_sync::ControlFailure>>,
     },
     AuthorizeControl {
         input: ControlAuthorizationInput,
-        reply: oneshot::Sender<Result<(), ma2a_net::ControlRejection>>,
+        reply: oneshot::Sender<Result<(), crate::control_sync::ControlFailure>>,
     },
     ApplyControlResponse {
         input: ControlExchangeInput,
-        reply: oneshot::Sender<Result<ControlApplyOutcome, RuntimeError>>,
+        reply: oneshot::Sender<Result<ControlApplyOutcome, crate::control_sync::ControlFailure>>,
     },
     AuthorizeEcho {
         local_endpoint_id: ma2a_core::EndpointId,

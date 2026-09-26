@@ -29,7 +29,8 @@ impl StoreClient {
     pub(crate) async fn memberships(
         &self,
         local_endpoint_id: ma2a_core::EndpointId,
-    ) -> Result<std::collections::BTreeSet<ma2a_core::SpaceId>, RuntimeError> {
+    ) -> Result<ma2a_store::Committed<std::collections::BTreeSet<ma2a_core::SpaceId>>, RuntimeError>
+    {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::Memberships {
             local_endpoint_id,
