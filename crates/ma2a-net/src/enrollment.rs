@@ -148,7 +148,7 @@ async fn exchange_bounded(
     request: &[u8],
 ) -> Result<(u8, Vec<Vec<u8>>), NetError> {
     if request.len() > MAX_ENROLLMENT_REQUEST_BYTES {
-        return Err(NetError::enrollment_at("exchange_deadline"));
+        return Err(NetError::enrollment_at("request_size"));
     }
     let connection = timeout(
         ENROLLMENT_IO_TIMEOUT,
@@ -157,6 +157,16 @@ async fn exchange_bounded(
     .await
     .map_err(|_| NetError::enrollment_at("owner_dial_and_alpn"))?
     .map_err(|_| NetError::enrollment_at("owner_dial_and_alpn"))?;
+    let result = exchange_connected(&connection, request).await;
+    // A failed stream must not leave its connection alive into the exact retry.
+    connection.close(0_u8.into(), b"");
+    result
+}
+
+async fn exchange_connected(
+    connection: &Connection,
+    request: &[u8],
+) -> Result<(u8, Vec<Vec<u8>>), NetError> {
     let (mut send, mut receive) = timeout(ENROLLMENT_IO_TIMEOUT, connection.open_bi())
         .await
         .map_err(|_| NetError::enrollment_at("request_stream"))?
@@ -170,8 +180,8 @@ async fn exchange_bounded(
     let mut header = [0_u8; 3];
     timeout(ENROLLMENT_IO_TIMEOUT, receive.read_exact(&mut header))
         .await
-        .map_err(|_| NetError::enrollment_at("bootstrap_header"))?
-        .map_err(|_| NetError::enrollment_at("bootstrap_header"))?;
+        .map_err(|_| NetError::enrollment_response_lost("bootstrap_header"))?
+        .map_err(|_| NetError::enrollment_response_lost("bootstrap_header"))?;
     let page_count =
         validate_response_count(header[0], u16::from_be_bytes([header[1], header[2]]))?;
     let mut pages = Vec::with_capacity(page_count);
@@ -179,8 +189,8 @@ async fn exchange_bounded(
         let mut length = [0_u8; 4];
         timeout(ENROLLMENT_IO_TIMEOUT, receive.read_exact(&mut length))
             .await
-            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?
-            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?;
+            .map_err(|_| NetError::enrollment_response_lost("bootstrap_transfer"))?
+            .map_err(|_| NetError::enrollment_response_lost("bootstrap_transfer"))?;
         let length = usize::try_from(u32::from_be_bytes(length))
             .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?;
         if length == 0 || length > MAX_ENROLLMENT_BOOTSTRAP_FRAME_BYTES {
@@ -189,8 +199,8 @@ async fn exchange_bounded(
         let mut page = vec![0_u8; length];
         timeout(ENROLLMENT_IO_TIMEOUT, receive.read_exact(&mut page))
             .await
-            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?
-            .map_err(|_| NetError::enrollment_at("bootstrap_transfer"))?;
+            .map_err(|_| NetError::enrollment_response_lost("bootstrap_transfer"))?
+            .map_err(|_| NetError::enrollment_response_lost("bootstrap_transfer"))?;
         pages.push(page);
     }
     let mut trailing = [0_u8; 1];
@@ -198,7 +208,6 @@ async fn exchange_bounded(
         Ok(Err(iroh::endpoint::ReadExactError::FinishedEarly(0))) => {}
         Ok(Ok(()) | Err(_)) | Err(_) => return Err(NetError::enrollment_at("bootstrap_eof")),
     }
-    connection.close(0_u8.into(), b"");
     Ok((header[0], pages))
 }
 
@@ -222,4 +231,25 @@ fn validate_response_count(status: u8, page_count: u16) -> Result<usize, NetErro
         return Err(NetError::enrollment());
     }
     Ok(page_count)
+}
+
+#[cfg(test)]
+mod retry_test;
+
+pub(crate) async fn exchange_replayable(
+    endpoint: &iroh::Endpoint,
+    owner: EndpointAddr,
+    request: &[u8],
+) -> Result<(u8, Vec<Vec<u8>>), NetError> {
+    timeout(ENROLLMENT_EXCHANGE_TIMEOUT, async {
+        match exchange_bounded(endpoint, owner.clone(), request).await {
+            Err(error) if error.is_lost_enrollment_response() => {
+                eprintln!("retrying exact enrollment redemption after {error}");
+                exchange_bounded(endpoint, owner, request).await
+            }
+            outcome => outcome,
+        }
+    })
+    .await
+    .map_err(|_| NetError::enrollment_at("exchange_deadline"))?
 }

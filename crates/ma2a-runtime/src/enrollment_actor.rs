@@ -89,7 +89,7 @@ impl Actor {
         let request = encode_attempt(&attempt)?;
         let (status, response_pages) = self
             .endpoint
-            .exchange_enrollment(owner_addr, &request)
+            .exchange_redemption(owner_addr, &request)
             .await
             .map_err(|error| {
                 eprintln!("enrollment transport: {error}");
