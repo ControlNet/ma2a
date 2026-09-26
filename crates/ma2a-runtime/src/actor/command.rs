@@ -1,4 +1,4 @@
-use ma2a_core::{EchoError, EchoResponse, EndpointId, RequestId, SignedInviteTicket, SpaceId};
+use ma2a_core::{EchoError, EchoResponse, EndpointId, RequestId, SpaceId};
 use tokio::sync::oneshot;
 
 use super::ShutdownAck;
@@ -35,7 +35,7 @@ pub(crate) enum Command {
     },
     CreateEnrollmentInvite {
         creation: EnrollmentCreation,
-        reply: oneshot::Sender<Result<SignedInviteTicket, EnrollmentError>>,
+        reply: oneshot::Sender<Result<ma2a_store::CreatedEnrollmentInvite, EnrollmentError>>,
     },
     RedeemEnrollment {
         attempt: Box<EnrollmentAttempt>,

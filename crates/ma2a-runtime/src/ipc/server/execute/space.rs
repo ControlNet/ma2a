@@ -24,12 +24,12 @@ pub(super) async fn create(
 pub(super) async fn invite(
     context: &ConnectionContext,
     command: &crate::api::Command,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     let (space_id, ttl_ms, output_path) =
         command.space_invite().ok_or(ProtocolError::INVALID_INPUT)?;
-    let ticket = context
+    let created = context
         .handle
-        .create_enrollment_invite(
+        .create_enrollment_invite_committed(
             crate::EnrollmentCreation::new(
                 space_id,
                 ttl_ms,
@@ -39,12 +39,12 @@ pub(super) async fn invite(
         )
         .await
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    write_owner_only(output_path, ticket.encode_string().as_bytes())?;
-    let snapshot = context
-        .handle
-        .snapshot()
-        .await
-        .map_err(|_| ProtocolError::UNAVAILABLE)?;
+    write_owner_only(output_path, created.ticket().encode_string().as_bytes())
+        .map_err(|error| ApiError::new(error).after_commit(created.revision()))?;
+    let snapshot =
+        context.handle.snapshot().await.map_err(|_| {
+            ApiError::new(ProtocolError::UNAVAILABLE).after_commit(created.revision())
+        })?;
     snapshot
         .spaces()
         .iter()
@@ -52,7 +52,7 @@ pub(super) async fn invite(
         .cloned()
         .and_then(|space| space.to_space_view().ok())
         .map(CommandResult::space_invitation_created)
-        .ok_or(ProtocolError::INTERNAL)
+        .ok_or_else(|| ApiError::new(ProtocolError::INTERNAL).after_commit(created.revision()))
 }
 
 #[cfg(unix)]
@@ -152,6 +152,7 @@ fn departure_api_error(code: SpaceDepartureErrorCode) -> ApiError {
             ProtocolError::UNAUTHORIZED,
             "Space owner cannot leave its own Space",
         )
+        .without_effects()
     } else if code == SpaceDepartureErrorCode::NOT_A_MEMBER {
         ApiError::new(ProtocolError::NOT_FOUND)
     } else if code == SpaceDepartureErrorCode::UNREACHABLE {
@@ -233,6 +234,7 @@ pub(super) async fn revoke(
                     ProtocolError::UNAUTHORIZED,
                     "Space owner cannot be removed in Phase 1",
                 )
+                .without_effects()
             } else {
                 ApiError::new(ProtocolError::INVALID_INPUT)
             }

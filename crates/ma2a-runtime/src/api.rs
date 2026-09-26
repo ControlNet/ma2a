@@ -97,11 +97,29 @@ pub trait RuntimeApiBoundary {
 /// A deterministic local API failure with optional version remediation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApiError {
+    pub(crate) effect: MutationEffect,
     code: ProtocolError,
     remediation: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MutationEffect {
+    NotStarted,
+    Committed(u64),
+    Indeterminate,
+}
+
 impl ApiError {
+    pub(crate) const fn after_commit(mut self, revision: u64) -> Self {
+        self.effect = MutationEffect::Committed(revision);
+        self
+    }
+
+    pub(crate) const fn without_effects(mut self) -> Self {
+        self.effect = MutationEffect::NotStarted;
+        self
+    }
+
     pub(crate) const fn invalid_input() -> Self {
         Self::new(ProtocolError::INVALID_INPUT)
     }
@@ -109,6 +127,7 @@ impl ApiError {
     pub(crate) const fn new(code: ProtocolError) -> Self {
         Self {
             code,
+            effect: MutationEffect::Indeterminate,
             remediation: None,
         }
     }
@@ -117,12 +136,14 @@ impl ApiError {
     pub(crate) const fn with_remediation(code: ProtocolError, remediation: &'static str) -> Self {
         Self {
             code,
+            effect: MutationEffect::Indeterminate,
             remediation: Some(remediation),
         }
     }
 
     pub(crate) const fn version_mismatch() -> Self {
         Self {
+            effect: MutationEffect::NotStarted,
             code: ProtocolError::VERSION_MISMATCH,
             remediation: Some(
                 "use a client and Runtime that both implement local API version 1; negotiation is unsupported",

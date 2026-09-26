@@ -16,6 +16,7 @@ use super::{
 
 mod dispatch;
 mod execute;
+mod mutation_outcome;
 
 use dispatch::handle_connection;
 

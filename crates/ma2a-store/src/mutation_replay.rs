@@ -3,14 +3,14 @@ use rusqlite::OptionalExtension as _;
 
 use crate::{Repository, StoreError};
 
-/// Maximum successful local mutation decisions retained across restarts.
+/// Maximum terminal local mutation decisions retained across restarts.
 pub const LOCAL_MUTATION_REPLAY_MAX_ENTRIES: usize = 1_024;
 /// Maximum aggregate encoded response bytes retained across restarts.
 pub const LOCAL_MUTATION_REPLAY_MAX_BYTES: usize = 8 * 1_024 * 1_024;
-/// Maximum encoded response bytes retained for one successful mutation.
+/// Maximum encoded response bytes retained for one terminal mutation.
 pub const LOCAL_MUTATION_REPLAY_MAX_RESULT_BYTES: usize = 65_536;
 
-/// One bounded successful local mutation decision stored without command payloads.
+/// One bounded terminal local mutation decision stored without command payloads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MutationReplayRecord {
     request_id: RequestId,
@@ -30,9 +30,9 @@ pub struct MutationReplayRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MutationReplayState {
-    /// The request was durably admitted but no successful response was committed.
+    /// The request was durably admitted but no retained terminal response is available.
     Pending([u8; 32]),
-    /// The request completed and its exact successful response is retained.
+    /// The request completed and its exact terminal response is retained.
     Completed(MutationReplayRecord),
 }
 
@@ -57,7 +57,7 @@ impl MutationReplayRequest {
 }
 
 impl MutationReplayRecord {
-    /// Creates one validated replay record from an already bounded successful response.
+    /// Creates one validated replay record from an already bounded terminal response.
     ///
     /// # Errors
     /// Returns [`StoreError`] when the response is empty or exceeds the per-entry bound.
@@ -94,7 +94,7 @@ impl MutationReplayRecord {
         self.revision
     }
 
-    /// Returns the exact encoded successful response.
+    /// Returns the exact encoded terminal response.
     pub fn response(&self) -> &[u8] {
         &self.response
     }
@@ -113,7 +113,12 @@ impl Repository {
             .connection
             .query_row(
                 "SELECT fingerprint, revision, response FROM local_mutation_replay
-                 WHERE request_id = ?1",
+                 WHERE request_id = ?1
+                 UNION ALL
+                 SELECT fingerprint, NULL, NULL FROM local_mutation_fences
+                 WHERE request_id = ?1 AND NOT EXISTS (
+                    SELECT 1 FROM local_mutation_replay WHERE request_id = ?1
+                 )",
                 [request_id.as_bytes().as_slice()],
                 |row| {
                     Ok((
@@ -177,16 +182,24 @@ impl Repository {
         Ok(())
     }
 
-    /// Removes a reservation after execution fails without a successful side effect.
+    /// Removes a reservation after execution fails without a terminal side effect.
     ///
     /// # Errors
     /// Returns [`StoreError`] when `SQLite` rejects the deletion.
     pub fn abort_mutation_replay(&mut self, request_id: RequestId) -> Result<(), StoreError> {
-        self.connection.execute(
+        let transaction = self.immediate()?;
+        transaction.execute(
+            "DELETE FROM local_mutation_fences WHERE request_id = ?1 AND EXISTS (
+                SELECT 1 FROM local_mutation_replay WHERE request_id = ?1 AND response IS NULL
+            )",
+            [request_id.as_bytes().as_slice()],
+        )?;
+        transaction.execute(
             "DELETE FROM local_mutation_replay
              WHERE request_id = ?1 AND response IS NULL",
             [request_id.as_bytes().as_slice()],
         )?;
+        transaction.commit()?;
         Ok(())
     }
 

@@ -235,7 +235,7 @@ fn version_four_relay_rows_migrate_as_active_high_water() -> TestResult {
     );
     assert_eq!(
         connection.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))?,
-        5
+        SCHEMA_VERSION
     );
     assert_eq!(
         connection.query_row(

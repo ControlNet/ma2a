@@ -21,6 +21,17 @@ impl RuntimeHandle {
         &self,
         creation: EnrollmentCreation,
     ) -> Result<ma2a_core::SignedInviteTicket, EnrollmentError> {
+        Ok(self
+            .create_enrollment_invite_committed(creation)
+            .await?
+            .ticket()
+            .clone())
+    }
+
+    pub(crate) async fn create_enrollment_invite_committed(
+        &self,
+        creation: EnrollmentCreation,
+    ) -> Result<ma2a_store::CreatedEnrollmentInvite, EnrollmentError> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(Command::CreateEnrollmentInvite { creation, reply })
