@@ -13,6 +13,7 @@ use super::{
 static NEXT_CORRELATION: AtomicU64 = AtomicU64::new(1);
 
 mod lifecycle;
+mod snapshot;
 
 #[cfg(all(test, unix))]
 #[path = "client_deadline_tests.rs"]
@@ -82,6 +83,19 @@ impl LocalApiClient {
         let response = read_reply(&mut stream, api::MAX_LOCAL_RESPONSE_BYTES).await?;
         if response.correlation != correlation {
             return Err(IpcError::CorrelationMismatch);
+        }
+        let value: Value =
+            serde_json::from_slice(&response.payload).map_err(|_| IpcError::InvalidFrame)?;
+        if value.get("type").and_then(Value::as_str) == Some("snapshot_fragment") {
+            let request: Value =
+                serde_json::from_slice(payload).map_err(|_| IpcError::InvalidFrame)?;
+            let expected = match request.get("operation").and_then(Value::as_str) {
+                Some("snapshot_fetch") => "snapshot",
+                Some("space_list") => "spaces",
+                _ => return Err(IpcError::InvalidFrame),
+            };
+            return snapshot::assemble(&mut stream, (correlation, expected), response.payload)
+                .await;
         }
         Ok(response.payload)
     }

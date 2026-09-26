@@ -30,15 +30,45 @@ pub(super) async fn handle_connection(
     platform::authorize(&stream, &context.paths)?;
     let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
     let (encoded, requests_shutdown) = answer(&frame.payload, &context, lifecycle_only).await?;
-    write_frame(
-        &mut stream,
-        FrameRef {
-            correlation: frame.correlation,
-            payload: &encoded,
-            maximum: api::MAX_LOCAL_RESPONSE_BYTES,
-        },
-    )
-    .await?;
+    if encoded.len() > api::MAX_LOCAL_RESPONSE_BYTES {
+        let value: Value = serde_json::from_slice(&encoded).map_err(|_| IpcError::InvalidFrame)?;
+        if !matches!(
+            value.pointer("/result/type").and_then(Value::as_str),
+            Some("snapshot" | "spaces")
+        ) {
+            return Err(IpcError::InvalidFrame);
+        }
+        let revision = value
+            .get("revision")
+            .and_then(Value::as_u64)
+            .ok_or(IpcError::InvalidFrame)?;
+        let boot = value
+            .get("runtime_boot_id")
+            .and_then(Value::as_str)
+            .ok_or(IpcError::InvalidFrame)?
+            .to_owned();
+        for fragment in api::fragments::SnapshotFragments::new(encoded, revision, boot) {
+            write_frame(
+                &mut stream,
+                FrameRef {
+                    correlation: frame.correlation,
+                    payload: &fragment?,
+                    maximum: api::MAX_LOCAL_RESPONSE_BYTES,
+                },
+            )
+            .await?;
+        }
+    } else {
+        write_frame(
+            &mut stream,
+            FrameRef {
+                correlation: frame.correlation,
+                payload: &encoded,
+                maximum: api::MAX_LOCAL_RESPONSE_BYTES,
+            },
+        )
+        .await?;
+    }
     if requests_shutdown {
         // The receiver holds one slot and one request is enough, so a full
         // channel means shutdown is already under way. Never wait here: this is
@@ -159,7 +189,7 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
         },
     };
     let response = api::ApiResponse::new(command.request_id(), response_revision, result);
-    let encoded = if command.operation() == "snapshot_fetch" {
+    let encoded = if matches!(command.operation(), "snapshot_fetch" | "space_list") {
         encode_stamped_snapshot_response(&response, status.boot_id())?
     } else {
         api::encode_response(&response)?
@@ -187,9 +217,5 @@ fn encode_stamped_snapshot_response(
         Value::String(api::encode_hex(&boot_id)),
     );
     let encoded = serde_json::to_vec(&value).map_err(|_| IpcError::InvalidFrame)?;
-    if encoded.len() > api::MAX_LOCAL_RESPONSE_BYTES {
-        Err(IpcError::InvalidFrame)
-    } else {
-        Ok(encoded)
-    }
+    Ok(encoded)
 }

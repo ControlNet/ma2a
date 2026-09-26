@@ -236,3 +236,41 @@ also rejects that state. No migration, generation fabrication or key deletion is
 performed. Existing affected users require explicit operator recovery; no automatic
 recovery semantics are invented. Chain row derivation was moved unchanged into a
 small module to retain the project's 250 pure-LOC source limit.
+
+## Complete snapshot transfer without aggregate overflow
+
+Confirmed before fix: `complete_large_snapshot_can_be_encoded_for_bounded_streaming`
+with 256 valid escaped-name Space summaries returned INTERNAL, despite every field
+and collection meeting its own bound. Separately, 300 legal Spaces could not even
+construct `space_list` (INVALID_INPUT). Logs are
+`/tmp/ma2a-phase1-snapshot-before.log` and `...space-list-before.log`.
+
+The logical projection remains complete. Snapshot fetch and snapshot-derived Space
+list can stream one frozen response through ordered `snapshot_fragment` frames.
+Each carries at most 16,384 bytes as canonical lowercase hex, plus revision, boot,
+index and final marker. The largest possible frame is below 33,000 bytes, so the
+65,536-byte frame budget is preserved without smaller fabricated Space limits.
+Normal responses and request/event bounds are unchanged. Aggregate snapshot arrays
+and coverage are no longer capped at 256; per-entity limits and bounded observation
+history are preserved. A 270-Space real IPC test passed after restart (84 seconds),
+including exact Space identity inventory and revision/boot consistency.
+
+IPC assembles only contiguous, same-revision/same-boot frames on one correlation.
+HTTP sends large payloads as NDJSON with the same fragment shape. The browser
+validates every fragment and the reconstructed revision before publishing any
+snapshot; incomplete, reordered, mixed or duplicated streams fail. A new request
+starts from a new frozen snapshot. No persistent cursor cache is introduced.
+Memory for assembly remains proportional to complete state; this is bounded-frame
+lossless transport, not a claim of constant-memory traversal of arbitrary state.
+
+Both machine schema copies/hash, TypeScript models/codec/type checker, HTTP client
+and protocol docs are updated together. Existing fabricated 64-Space UI capacity
+meter was removed; it was not an enforced Phase-1 capacity. No business schema or
+SQLite migration is added by this transfer change.
+
+Snapshot workstream checks: seven API/fragment unit tests, one HTTP framing test,
+13 contract/schema tests, and 124 Web tests passed. Four deterministic fragment
+tests passed 20 repeats (80 executions). Strict Runtime all-target/all-feature
+Clippy and pure-LOC checks passed. These do not replace final whole-workspace/E2E
+validation. The extended real IPC test also covers the large Space list; retain
+its final log separately as `/tmp/ma2a-phase1-snapshot-ipc2.log`.

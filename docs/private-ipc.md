@@ -110,7 +110,11 @@ The default state directory is `$XDG_STATE_HOME/ma2a` on Unix when `XDG_STATE_HO
 
 The transport carries the existing bounded local API v1 JSON unchanged. Each message uses a
 12-byte header containing a four-byte big-endian payload length and an eight-byte big-endian
-correlation identifier. Requests are limited to 16,384 bytes and responses to 65,536 bytes. The
+correlation identifier. Requests are limited to 16,384 bytes and response frames to 65,536 bytes.
+Only a large `snapshot_fetch` or `space_list` response spans ordered `snapshot_fragment` frames,
+all with the original correlation, one frozen revision/boot, and a final marker.
+Other commands still use one response frame. Clients discard incomplete or mixed
+streams; see `docs/protocol/local-api-v1.md` for the exact fragment contract. The
 server allows 32 in-flight business connections, plus a reserve of four that answer lifecycle calls
 only, so it accepts at most 36 connections in total.
 

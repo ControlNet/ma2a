@@ -7,7 +7,7 @@
 
 use ma2a_core::{EndpointId, SpaceId};
 
-use crate::api::{ApiError, MAX_COLLECTION_ITEMS};
+use crate::api::ApiError;
 
 /// One MA2A Private Relay candidate and the Spaces its advertisements cover.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,10 +36,7 @@ impl PrivateRelayCandidateView {
         covered_space_ids: Vec<SpaceId>,
         home_compatible: bool,
     ) -> Result<Self, ApiError> {
-        if relay_url.is_empty()
-            || relay_url.len() > 2_048
-            || covered_space_ids.len() > MAX_COLLECTION_ITEMS
-        {
+        if relay_url.is_empty() || relay_url.len() > 2_048 {
             Err(ApiError::invalid_input())
         } else {
             Ok(Self {

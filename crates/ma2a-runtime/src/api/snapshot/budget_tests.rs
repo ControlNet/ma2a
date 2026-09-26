@@ -81,3 +81,68 @@ fn sixty_four_full_space_summaries_and_one_complete_detail_fit_separate_frames()
     );
     Ok(())
 }
+
+#[test]
+fn complete_large_snapshot_can_be_encoded_for_bounded_streaming() -> TestResult {
+    let local = iroh::SecretKey::generate().public().into();
+    let spaces = (0_u16..300)
+        .map(|index| {
+            SnapshotSpaceView::new(
+                ma2a_core::SpaceId::derive(&index.to_be_bytes()),
+                &"\"\\".repeat(32),
+                SpaceChainHead::new(u64::MAX, [0xff; 32], 64),
+                64,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let snapshot = RuntimeSnapshot::new(
+        SnapshotHeader::new(u64::MAX, EndpointView::new(local, "ma2a-runtime", true)?),
+        SnapshotCollections::new(
+            spaces,
+            ControlSyncView::new(Vec::new())?,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )?,
+        SnapshotState::new(
+            NetworkSnapshotState::new(
+                ObservedRelayStateView::new(false, false),
+                ReachabilityView::new("AwaitingIrohHome", false, false)?,
+            ),
+            ClientSnapshotState::new(EchoSummaryView::new(0, 0), UiAuthView::new(true, false, 0)),
+        ),
+    )?;
+    let encoded = encode_response(&ApiResponse::new(
+        None,
+        u64::MAX,
+        CommandResult::snapshot(snapshot),
+    ))?;
+    assert!(encoded.len() > MAX_LOCAL_RESPONSE_BYTES);
+    let value: serde_json::Value = serde_json::from_slice(&encoded)?;
+    assert_eq!(
+        value
+            .pointer("/result/payload/spaces")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(300)
+    );
+    Ok(())
+}
+
+#[test]
+fn space_list_can_represent_all_legal_spaces() -> TestResult {
+    let spaces = (0_u16..300)
+        .map(|index| {
+            crate::api::SpaceView::new(
+                ma2a_core::SpaceId::derive(&index.to_be_bytes()),
+                &"\"\\".repeat(32),
+                64,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let result = CommandResult::spaces(spaces)?;
+    let encoded = encode_response(&ApiResponse::new(None, 7, result))?;
+    assert!(encoded.len() > MAX_LOCAL_RESPONSE_BYTES);
+    Ok(())
+}

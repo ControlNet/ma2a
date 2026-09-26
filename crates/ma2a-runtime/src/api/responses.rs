@@ -136,12 +136,8 @@ impl CommandResult {
     ///
     /// # Errors
     /// Returns invalid input when more than 256 Spaces are supplied.
-    pub fn spaces(value: Vec<SpaceView>) -> Result<Self, ApiError> {
-        if value.len() > super::MAX_COLLECTION_ITEMS {
-            Err(ApiError::invalid_input())
-        } else {
-            Ok(Self(ResultKind::Spaces(value), None))
-        }
+    pub const fn spaces(value: Vec<SpaceView>) -> Result<Self, ApiError> {
+        Ok(Self(ResultKind::Spaces(value), None))
     }
     /// Creates a Space detail result.
     pub const fn space(value: SpaceView) -> Self {
@@ -287,7 +283,7 @@ impl ApiResponse {
     }
 }
 
-/// Serializes one successful response and enforces the response bound.
+/// Serializes one successful response. Snapshots are framed by the transport.
 ///
 /// # Errors
 /// Returns an internal error when serialization fails or exceeds the response bound.
@@ -298,7 +294,14 @@ pub fn encode_response(response: &ApiResponse) -> Result<Vec<u8>, ApiError> {
         "revision": response.revision,
         "result": super::response_value::result_value(&response.result),
     });
-    bounded_json(&value)
+    if matches!(
+        response.result.0,
+        ResultKind::Snapshot(_) | ResultKind::Spaces(_)
+    ) {
+        serde_json::to_vec(&value).map_err(|_| ApiError::new(ProtocolError::INTERNAL))
+    } else {
+        bounded_json(&value)
+    }
 }
 
 /// Serializes one typed error without reading Runtime state.

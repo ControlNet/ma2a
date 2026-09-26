@@ -207,3 +207,13 @@ export type CommandResult =
   | { readonly type: "snapshot_stamp"; readonly payload: SnapshotStampView }
   | { readonly type: "snapshot"; readonly payload: RuntimeSnapshot }
   | { readonly type: "shutting_down"; readonly payload: Record<string, never> }
+
+/** Ordered transport frame for one frozen logical snapshot. */
+export type SnapshotFragment = {
+  readonly type: "snapshot_fragment"
+  readonly revision: number
+  readonly runtime_boot_id: string
+  readonly index: number
+  readonly last: boolean
+  readonly data_hex: string
+}

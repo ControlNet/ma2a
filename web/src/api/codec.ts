@@ -49,7 +49,7 @@ export function parseSpaceDetails(value: unknown): SpaceDetails {
 }
 
 const ControlSyncViewSchema = z.strictObject({
-  peer_endpoint_ids: z.array(EndpointIdSchema).max(256).readonly(),
+  peer_endpoint_ids: z.array(EndpointIdSchema).readonly(),
 })
 const ConnectionObservationViewSchema = z.strictObject({
   observed_at_ms: z.number().int().nonnegative(),
@@ -76,7 +76,7 @@ const ConnectionViewSchema = z.strictObject({
 const PrivateRelayCandidateViewSchema = z.strictObject({
   provider_endpoint_id: EndpointIdSchema,
   relay_url: z.string().min(1).max(2048),
-  covered_space_ids: z.array(SpaceIdSchema).max(256).readonly(),
+  covered_space_ids: z.array(SpaceIdSchema).readonly(),
   home_compatible: z.boolean(),
 })
 const PublicRelayFallbackViewSchema = z.strictObject({
@@ -93,11 +93,11 @@ const RuntimeSnapshotSchema = z
   .strictObject({
     revision: RevisionSchema,
     endpoint: EndpointViewSchema,
-    spaces: z.array(SpaceViewSchema).max(256).readonly(),
+    spaces: z.array(SpaceViewSchema).readonly(),
     control_sync: ControlSyncViewSchema,
-    connections: z.array(ConnectionViewSchema).max(256).readonly(),
-    private_relay_candidates: z.array(PrivateRelayCandidateViewSchema).max(256).readonly(),
-    public_relay_fallbacks: z.array(PublicRelayFallbackViewSchema).max(256).readonly(),
+    connections: z.array(ConnectionViewSchema).readonly(),
+    private_relay_candidates: z.array(PrivateRelayCandidateViewSchema).readonly(),
+    public_relay_fallbacks: z.array(PublicRelayFallbackViewSchema).readonly(),
     control_rounds: z.array(ControlRoundViewSchema).max(16).readonly(),
     observed_relay_state: z.strictObject({
       private_relay_provider_running: z.boolean(),

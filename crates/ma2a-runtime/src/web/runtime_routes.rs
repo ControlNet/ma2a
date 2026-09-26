@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use super::{WebState, cookie};
 
 mod events;
+mod snapshot_stream;
 pub(super) use events::events;
 
 #[cfg(test)]
@@ -31,7 +32,7 @@ pub(super) async fn snapshot(State(state): State<WebState>, headers: HeaderMap) 
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match fetch_snapshot(&state).await {
-        Ok((_, payload)) => Json(payload).into_response(),
+        Ok((stamp, payload)) => snapshot_stream::response(stamp, payload),
         Err(status) => status.into_response(),
     }
 }
