@@ -18,12 +18,18 @@ use crate::{
 pub struct CreatedEnrollmentInvite {
     revision: u64,
     ticket: SignedInviteTicket,
+    chain: ma2a_core::SpaceChain,
 }
 
 impl CreatedEnrollmentInvite {
     /// Returns the committed repository revision.
     pub const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Returns the Space chain observed inside the invitation transaction.
+    pub const fn chain(&self) -> &ma2a_core::SpaceChain {
+        &self.chain
     }
 
     /// Returns the signed single-use invitation.
@@ -71,20 +77,27 @@ impl Repository {
         }
         let ticket =
             SignedInviteTicket::sign(space_id, creator, owner_addr, validity, entropy, &secret)?;
-        let revision = self.create_invitation(&crate::InvitationRecord::new(
-            ticket.invitation_id(),
-            space_id,
-            ticket.secret_digest(),
-            ticket.creator(),
-            i64::try_from(ticket.created_at_ms()).map_err(|_| StoreError::SchemaMismatch {
-                detail: "invitation creation exceeds SQLite range",
-            })?,
-            i64::try_from(ticket.expires_at_ms()).map_err(|_| StoreError::SchemaMismatch {
-                detail: "invitation expiry exceeds SQLite range",
-            })?,
-            ticket.encoded_owner_addr().to_vec(),
-        ))?;
-        Ok(CreatedEnrollmentInvite { revision, ticket })
+        let committed = self.create_invitation_projected(
+            &crate::InvitationRecord::new(
+                ticket.invitation_id(),
+                space_id,
+                ticket.secret_digest(),
+                ticket.creator(),
+                i64::try_from(ticket.created_at_ms()).map_err(|_| StoreError::SchemaMismatch {
+                    detail: "invitation creation exceeds SQLite range",
+                })?,
+                i64::try_from(ticket.expires_at_ms()).map_err(|_| StoreError::SchemaMismatch {
+                    detail: "invitation expiry exceeds SQLite range",
+                })?,
+                ticket.encoded_owner_addr().to_vec(),
+            ),
+            |transaction| load_chain(transaction, space_id)?.ok_or(StoreError::SpaceNotFound),
+        )?;
+        Ok(CreatedEnrollmentInvite {
+            revision: committed.revision(),
+            ticket,
+            chain: committed.into_value(),
+        })
     }
 
     /// Atomically consumes an invitation and commits the candidate's authority generation.

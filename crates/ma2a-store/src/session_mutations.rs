@@ -204,15 +204,37 @@ impl Repository {
     /// # Errors
     /// Returns [`StoreError`] when revocation cannot be committed.
     pub fn revoke_all_sessions(&mut self, now_ms: i64) -> Result<(), StoreError> {
+        self.revoke_all_sessions_committed(now_ms).map(|_| ())
+    }
+
+    /// Revokes sessions and returns password presence at the same transaction revision.
+    ///
+    /// # Errors
+    /// Returns an error when session or credential state cannot be persisted or read.
+    pub fn revoke_all_sessions_committed(
+        &mut self,
+        now_ms: i64,
+    ) -> Result<crate::Committed<bool>, StoreError> {
         let transaction = self.immediate()?;
         let changed = transaction.execute(
             "UPDATE sessions SET revoked_at_ms = ?1 WHERE revoked_at_ms IS NULL",
             [now_ms],
         )?;
-        if changed > 0 {
-            increment_revision(&transaction)?;
-            transaction.commit()?;
-        }
-        Ok(())
+        let revision = if changed > 0 {
+            increment_revision(&transaction)?
+        } else {
+            transaction.query_row(
+                "SELECT revision FROM runtime_metadata WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )?
+        };
+        let password_set = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM ui_credentials WHERE singleton = 1)",
+            [],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        Ok(crate::Committed::new(revision, password_set))
     }
 }

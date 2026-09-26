@@ -17,6 +17,8 @@ use super::{
 mod dispatch;
 mod execute;
 mod mutation_outcome;
+#[cfg(test)]
+mod mutation_test_hooks;
 
 use dispatch::handle_connection;
 
@@ -46,6 +48,8 @@ pub struct LocalApiServer {
     replay: Arc<Mutex<()>>,
     web: Option<crate::web::WebLifecycle>,
     identity: Arc<DaemonIdentity>,
+    #[cfg(test)]
+    mutation_hooks: mutation_test_hooks::MutationTestHooks,
     permits: Arc<Semaphore>,
     reserve: Arc<Semaphore>,
 }
@@ -77,6 +81,8 @@ impl LocalApiServer {
             replay: Arc::new(Mutex::new(())),
             web: None,
             identity: Arc::new(identity),
+            #[cfg(test)]
+            mutation_hooks: mutation_test_hooks::MutationTestHooks::default(),
             permits: Arc::new(Semaphore::new(BUSINESS_CONNECTION_LIMIT)),
             reserve: Arc::new(Semaphore::new(LIFECYCLE_RESERVE)),
         })
@@ -153,6 +159,8 @@ impl LocalApiServer {
                         shutdown_sender: shutdown_sender.clone(),
                         web: self.web.clone(),
                         identity: Arc::clone(&self.identity),
+                        #[cfg(test)]
+                        mutation_hooks: self.mutation_hooks.clone(),
                     };
                     tasks.spawn(async move {
                         let lifecycle_only = admission.lifecycle_only;
@@ -216,6 +224,8 @@ struct ConnectionContext {
     shutdown_sender: mpsc::Sender<()>,
     web: Option<crate::web::WebLifecycle>,
     identity: Arc<DaemonIdentity>,
+    #[cfg(test)]
+    mutation_hooks: mutation_test_hooks::MutationTestHooks,
 }
 
 #[cfg(test)]

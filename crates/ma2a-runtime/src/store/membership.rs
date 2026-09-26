@@ -6,6 +6,7 @@ use crate::{error::RuntimeError, store::StoreBackend};
 
 /// Outcome of one owner-signed member removal, including the signed chain the
 /// removed member needs in order to converge.
+#[derive(Debug)]
 pub(crate) struct RemovedMember {
     pub(crate) revision: u64,
     pub(crate) memberships: BTreeSet<SpaceId>,

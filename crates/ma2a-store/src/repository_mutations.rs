@@ -32,6 +32,16 @@ impl Repository {
     ///
     /// Returns [`StoreError`] when the transaction cannot be committed.
     pub fn create_invitation(&mut self, invitation: &InvitationRecord) -> Result<u64, StoreError> {
+        Ok(self
+            .create_invitation_projected(invitation, |_| Ok(()))?
+            .revision())
+    }
+
+    pub(crate) fn create_invitation_projected<T>(
+        &mut self,
+        invitation: &InvitationRecord,
+        project: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, StoreError>,
+    ) -> Result<crate::Committed<T>, StoreError> {
         let transaction = self.immediate()?;
         transaction.execute(
             "INSERT INTO invitations(
@@ -49,8 +59,9 @@ impl Repository {
             ),
         )?;
         let revision = increment_revision(&transaction)?;
+        let value = project(&transaction)?;
         transaction.commit()?;
-        Ok(revision)
+        Ok(crate::Committed::new(revision, value))
     }
 
     /// Consumes one pending invitation exactly once under an immediate transaction.

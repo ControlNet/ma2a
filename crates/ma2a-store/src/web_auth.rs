@@ -145,6 +145,20 @@ impl Repository {
         transition: PasswordTransition,
         reset: &PasswordReset,
     ) -> Result<Option<CredentialRecord>, StoreError> {
+        Ok(self
+            .change_password_committed(transition, reset)?
+            .map(crate::Committed::into_value))
+    }
+
+    /// Changes credentials and returns the exact transaction revision with the result.
+    ///
+    /// # Errors
+    /// Returns an error when credential validation or persistence fails.
+    pub fn change_password_committed(
+        &mut self,
+        transition: PasswordTransition,
+        reset: &PasswordReset,
+    ) -> Result<Option<crate::Committed<CredentialRecord>>, StoreError> {
         validate_password_verifier(&reset.verifier, reset.verifier_version)?;
         let transaction = self.immediate()?;
         let configured = transaction.query_row(
@@ -184,13 +198,16 @@ impl Repository {
             [],
             |row| row.get(0),
         )?;
-        increment_revision(&transaction)?;
+        let revision = increment_revision(&transaction)?;
         transaction.commit()?;
-        Ok(Some(CredentialRecord {
-            verifier: reset.verifier.clone(),
-            verifier_version: reset.verifier_version,
-            auth_epoch,
-        }))
+        Ok(Some(crate::Committed::new(
+            revision,
+            CredentialRecord {
+                verifier: reset.verifier.clone(),
+                verifier_version: reset.verifier_version,
+                auth_epoch,
+            },
+        )))
     }
 }
 

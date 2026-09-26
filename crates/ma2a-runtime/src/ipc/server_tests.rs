@@ -12,6 +12,8 @@ use ma2a_store::{MutationReplayRecord, MutationReplayRequest, StoreConfig};
 
 use super::LocalApiServer;
 
+#[path = "server_tests/committed_response.rs"]
+mod committed_response;
 #[path = "server_tests/failed_replay.rs"]
 mod failed_replay;
 #[path = "server_tests/lifecycle.rs"]

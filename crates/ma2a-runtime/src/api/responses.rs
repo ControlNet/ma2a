@@ -47,7 +47,7 @@ pub(super) enum ResultKind {
 
 /// One member of the exact local API v1 result set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandResult(pub(super) ResultKind);
+pub struct CommandResult(pub(super) ResultKind, Option<u64>);
 
 /// Typed UI credential result returned through current-user local control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +64,15 @@ pub enum UiControlResult<'a> {
 }
 
 impl CommandResult {
+    pub(crate) const fn at_revision(mut self, revision: u64) -> Self {
+        self.1 = Some(revision);
+        self
+    }
+
+    pub(crate) const fn committed_revision(&self) -> Option<u64> {
+        self.1
+    }
+
     /// Returns the typed UI credential result, when this result belongs to that command family.
     #[must_use]
     pub const fn ui_control_result(&self) -> Option<UiControlResult<'_>> {
@@ -99,38 +108,38 @@ impl CommandResult {
 
     /// Creates the graceful-shutdown acknowledgement.
     pub const fn shutting_down() -> Self {
-        Self(ResultKind::ShuttingDown)
+        Self(ResultKind::ShuttingDown, None)
     }
 
     /// Creates the pre-authorization handshake result.
     pub const fn handshake(value: HandshakeView) -> Self {
-        Self(ResultKind::Handshake(value))
+        Self(ResultKind::Handshake(value), None)
     }
 
     /// Creates a complete Space detail result.
     pub const fn space_details(value: super::SpaceDetailsView) -> Self {
-        Self(ResultKind::SpaceDetails(value))
+        Self(ResultKind::SpaceDetails(value), None)
     }
     /// Creates a lightweight revision stamp result.
     pub const fn snapshot_stamp(value: super::SnapshotStampView) -> Self {
-        Self(ResultKind::SnapshotStamp(value))
+        Self(ResultKind::SnapshotStamp(value), None)
     }
     /// Creates the authoritative snapshot result.
     pub const fn snapshot(value: RuntimeSnapshot) -> Self {
-        Self(ResultKind::Snapshot(value))
+        Self(ResultKind::Snapshot(value), None)
     }
 
     /// Creates a Runtime status result.
     pub const fn status(value: RuntimeStatusView) -> Self {
-        Self(ResultKind::Status(value))
+        Self(ResultKind::Status(value), None)
     }
     /// Creates an Endpoint information result.
     pub const fn endpoint_info(value: EndpointView) -> Self {
-        Self(ResultKind::EndpointInfo(value))
+        Self(ResultKind::EndpointInfo(value), None)
     }
     /// Creates a Space creation result.
     pub const fn space_created(value: SpaceView) -> Self {
-        Self(ResultKind::SpaceCreated(value))
+        Self(ResultKind::SpaceCreated(value), None)
     }
     /// Creates a bounded Space list result.
     ///
@@ -140,80 +149,80 @@ impl CommandResult {
         if value.len() > super::MAX_COLLECTION_ITEMS {
             Err(ApiError::invalid_input())
         } else {
-            Ok(Self(ResultKind::Spaces(value)))
+            Ok(Self(ResultKind::Spaces(value), None))
         }
     }
     /// Creates a Space detail result.
     pub const fn space(value: SpaceView) -> Self {
-        Self(ResultKind::Space(value))
+        Self(ResultKind::Space(value), None)
     }
     /// Creates a Space invitation receipt without invite secret material.
     pub const fn space_invitation_created(value: SpaceView) -> Self {
-        Self(ResultKind::SpaceInvitationCreated(value))
+        Self(ResultKind::SpaceInvitationCreated(value), None)
     }
     /// Creates a Space redemption result.
     pub const fn space_redeemed(value: SpaceView) -> Self {
-        Self(ResultKind::SpaceRedeemed(value))
+        Self(ResultKind::SpaceRedeemed(value), None)
     }
     /// Creates a Space revocation result.
     pub const fn space_revoked(value: SpaceView) -> Self {
-        Self(ResultKind::SpaceRevoked(value))
+        Self(ResultKind::SpaceRevoked(value), None)
     }
     /// Creates a Space departure result for the leaving member.
     ///
     /// It carries only stable identity, because after departure this Endpoint no
     /// longer holds authoritative membership state for that Space.
     pub const fn space_left(value: SpaceIdentityView) -> Self {
-        Self(ResultKind::SpaceLeft(value))
+        Self(ResultKind::SpaceLeft(value), None)
     }
     /// Creates a control-sync status result.
     pub const fn control_sync_status(value: ControlSyncView) -> Self {
-        Self(ResultKind::ControlSyncStatus(value))
+        Self(ResultKind::ControlSyncStatus(value), None)
     }
     /// Creates a control-sync trigger result.
     pub const fn control_sync_triggered(value: ControlSyncView) -> Self {
-        Self(ResultKind::ControlSyncTriggered(value))
+        Self(ResultKind::ControlSyncTriggered(value), None)
     }
     /// Creates a Private Relay configuration result.
     pub const fn private_relay_configured(value: PrivateRelayView) -> Self {
-        Self(ResultKind::PrivateRelayConfigured(value))
+        Self(ResultKind::PrivateRelayConfigured(value), None)
     }
     /// Creates a Private Relay status result.
     pub const fn private_relay_status(value: PrivateRelayView) -> Self {
-        Self(ResultKind::PrivateRelayStatus(value))
+        Self(ResultKind::PrivateRelayStatus(value), None)
     }
     /// Creates a Public Relay configuration result.
     pub const fn public_relay_configured(value: PublicRelayView) -> Self {
-        Self(ResultKind::PublicRelayConfigured(value))
+        Self(ResultKind::PublicRelayConfigured(value), None)
     }
     /// Creates a Public Relay status result.
     pub const fn public_relay_status(value: PublicRelayView) -> Self {
-        Self(ResultKind::PublicRelayStatus(value))
+        Self(ResultKind::PublicRelayStatus(value), None)
     }
     /// Creates an Echo result.
     pub const fn echo(value: EchoReplyView) -> Self {
-        Self(ResultKind::Echo(value))
+        Self(ResultKind::Echo(value), None)
     }
     /// Reports successful password initialization or reset.
     pub const fn ui_initialized(value: UiAuthView) -> Self {
-        Self(ResultKind::UiInitialized(value))
+        Self(ResultKind::UiInitialized(value), None)
     }
 
     /// Reports successful initial password setup.
     pub const fn ui_password_set(value: UiAuthView) -> Self {
-        Self(ResultKind::UiPasswordSet(value))
+        Self(ResultKind::UiPasswordSet(value), None)
     }
     /// Creates a UI password-reset result.
     pub const fn ui_password_reset(value: UiAuthView) -> Self {
-        Self(ResultKind::UiPasswordReset(value))
+        Self(ResultKind::UiPasswordReset(value), None)
     }
     /// Creates a session revoke-all result.
     pub const fn sessions_revoked(value: UiAuthView) -> Self {
-        Self(ResultKind::SessionsRevoked(value))
+        Self(ResultKind::SessionsRevoked(value), None)
     }
     /// Creates a daemon-owned Web UI lifecycle status result.
     pub const fn ui_status(value: UiStatusView) -> Self {
-        Self(ResultKind::UiStatus(value))
+        Self(ResultKind::UiStatus(value), None)
     }
 
     /// Returns the exact result discriminant.

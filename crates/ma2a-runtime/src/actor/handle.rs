@@ -165,7 +165,15 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_owned_space(&self, name: String) -> Result<SpaceId, RuntimeError> {
+        Ok(self.create_owned_space_committed(name).await?.space_id())
+    }
+
+    pub(crate) async fn create_owned_space_committed(
+        &self,
+        name: String,
+    ) -> Result<ma2a_store::CreatedSpace, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(Command::CreateOwnedSpace { name, reply })
@@ -180,7 +188,7 @@ impl RuntimeHandle {
         &self,
         space_id: SpaceId,
         endpoint_id: EndpointId,
-    ) -> Result<u64, RuntimeError> {
+    ) -> Result<crate::store::RemovedMember, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(Command::RevokeOwnedSpaceMember {
@@ -281,6 +289,22 @@ impl RuntimeHandle {
         target: EndpointId,
         payload: &[u8],
     ) -> Result<ma2a_core::EchoResponse<'static>, ma2a_core::EchoError> {
+        Ok(self
+            .echo_committed(request_id, target, payload)
+            .await?
+            .into_value())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Echo requires correlation, target and payload"
+    )]
+    pub(crate) async fn echo_committed(
+        &self,
+        request_id: ma2a_core::RequestId,
+        target: EndpointId,
+        payload: &[u8],
+    ) -> Result<ma2a_store::Committed<ma2a_core::EchoResponse<'static>>, ma2a_core::EchoError> {
         if payload.len() > ma2a_core::MAX_ECHO_PAYLOAD_LEN {
             return Err(ma2a_core::EchoError::InvalidInput);
         }

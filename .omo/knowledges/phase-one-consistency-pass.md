@@ -67,3 +67,24 @@ not send a new shutdown signal to a later process.
 The three enrollment baseline scenarios ran 20 times each, 0 failures / 60
 executions. This does not disprove the previously observed intermittent failures;
 stage diagnostics and deterministic completion regressions are still required.
+
+## Authoritative response receipts
+
+The deterministic revoke interleaving pauses a request before its mutation, adds
+another member through the Actor, then resumes removal. Baseline returned one
+member while the committed chain contained two. Responses now use the chain and
+revision from the removal receipt, without a pre-read counter adjustment.
+
+Created Spaces likewise return CreatedSpace. Invitation receipts carry the Space
+chain read inside the invitation transaction, never a later snapshot. Credential
+changes and session revocation return Committed<T> with the transaction revision;
+no-op session revocation returns the revision and password presence from its read
+transaction without advancing revision. Echo completion carries its audit revision.
+Targeted control synchronization already requires that exact peer in the completed
+round, so its response uses that completion instead of a second status query.
+
+CommandResult carries internal revision metadata (not a wire-schema field change).
+The dispatcher adopts and returns that revision while preserving the encoded
+receipt payload. Enrollment and relay configuration adapters still need conversion
+alongside their completion/resource reconciliation changes; the legacy fallback is
+not the final contract and must be removed before this pass is complete.

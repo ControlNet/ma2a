@@ -90,6 +90,7 @@ impl From<ma2a_store::StoreError> for AuthFailure {
 /// Current browser credential state after a CLI mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CredentialState {
+    pub(crate) revision: u64,
     pub(super) auth_epoch: u64,
 }
 

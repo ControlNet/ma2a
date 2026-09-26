@@ -62,47 +62,48 @@ impl CurrentUserRuntime {
             .map_err(|_| CurrentUserError::InvalidCommand)?
         {
             UiControlCommand::PasswordInit(password) => {
-                self.auth
+                let committed = self
+                    .auth
                     .change_password(PasswordAction::Init, password)
                     .await
                     .map_err(CurrentUserError::Authentication)?;
-                Ok(CommandResult::ui_initialized(UiAuthView::new(
-                    true, true, 0,
-                )))
+                Ok(
+                    CommandResult::ui_initialized(UiAuthView::new(true, true, 0))
+                        .at_revision(committed.revision),
+                )
             }
             UiControlCommand::PasswordSet(password) => {
-                self.auth
+                let committed = self
+                    .auth
                     .change_password(PasswordAction::Set, password)
                     .await
                     .map_err(CurrentUserError::Authentication)?;
-                Ok(CommandResult::ui_password_set(UiAuthView::new(
-                    true, true, 0,
-                )))
+                Ok(
+                    CommandResult::ui_password_set(UiAuthView::new(true, true, 0))
+                        .at_revision(committed.revision),
+                )
             }
             UiControlCommand::PasswordReset(password) => {
-                self.auth
+                let committed = self
+                    .auth
                     .change_password(PasswordAction::Reset, password)
                     .await
                     .map_err(CurrentUserError::Authentication)?;
-                Ok(CommandResult::ui_password_reset(UiAuthView::new(
-                    true, true, 0,
-                )))
+                Ok(
+                    CommandResult::ui_password_reset(UiAuthView::new(true, true, 0))
+                        .at_revision(committed.revision),
+                )
             }
             UiControlCommand::SessionsRevokeAll => {
-                self.auth
-                    .revoke_all_sessions()
-                    .await
-                    .map_err(CurrentUserError::Authentication)?;
-                let password_set = !self
+                let committed = self
                     .auth
-                    .setup_required()
+                    .revoke_all_sessions_committed()
                     .await
                     .map_err(CurrentUserError::Authentication)?;
-                Ok(CommandResult::sessions_revoked(UiAuthView::new(
-                    true,
-                    password_set,
-                    0,
-                )))
+                Ok(
+                    CommandResult::sessions_revoked(UiAuthView::new(true, *committed.value(), 0))
+                        .at_revision(committed.revision()),
+                )
             }
         }
     }
