@@ -354,3 +354,11 @@ startup round; the new control completion reconciliation then correctly consumed
 the injected fault and the periodic tick already recovered the map before the
 assertion. The expected intermediate and final projections remain unchanged.
 The synchronized test passed 20/20 repeats (`/tmp/ma2a-transient-repeat`).
+
+The CLI creation integration's old assertion equated a later snapshot revision
+with the earlier creation transaction. Address publication legitimately advances
+Store after creation under the new receipt contract (observed 6 versus 5). The
+updated test verifies the exact persisted replay response and its revision, the
+same Space identity in the snapshot, and monotonic snapshot revision, while
+retaining label/membership/restart assertions. It does not overwrite creation's
+receipt with a later status revision to satisfy the old assertion.

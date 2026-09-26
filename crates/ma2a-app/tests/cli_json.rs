@@ -81,9 +81,13 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
     );
     let status = fixture.run(&["status", "--json"])?;
     let snapshot: Value = serde_json::from_slice(&status.stdout)?;
-    assert_eq!(
-        snapshot.get("revision").and_then(Value::as_u64),
-        Some(created_revision)
+    assert_creation_receipt(&fixture, &response, &snapshot)?;
+    assert!(
+        snapshot
+            .get("revision")
+            .and_then(Value::as_u64)
+            .ok_or("missing snapshot revision")?
+            >= created_revision
     );
     assert_eq!(
         snapshot
@@ -111,4 +115,34 @@ fn space_create_commits_membership_through_the_runtime() -> TestResult {
         Some("Personal")
     );
     fixture.shutdown()
+}
+
+// Address publication can advance Store after the creation transaction. The
+// creation reply must remain the exact durable receipt, not that later revision.
+fn assert_creation_receipt(
+    fixture: &DaemonFixture,
+    response: &Value,
+    snapshot: &Value,
+) -> TestResult {
+    let config = ma2a_store::StoreConfig::new(fixture.state_dir());
+    let sql = rusqlite::Connection::open(config.database_path())?;
+    let request_id = response
+        .get("request_id")
+        .and_then(Value::as_str)
+        .ok_or("missing creation request ID")?;
+    let (revision, encoded): (u64, Vec<u8>) = sql.query_row(
+        "SELECT revision, response FROM local_mutation_replay WHERE lower(hex(request_id)) = ?1",
+        [request_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(
+        response.get("revision").and_then(Value::as_u64),
+        Some(revision)
+    );
+    assert_eq!(&serde_json::from_slice::<Value>(&encoded)?, response);
+    assert_eq!(
+        snapshot.pointer("/result/payload/spaces/0/space_id"),
+        response.pointer("/result/payload/space_id")
+    );
+    Ok(())
 }

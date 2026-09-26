@@ -33,6 +33,10 @@ async fn temporary_background_store_failure_keeps_runtime_alive_for_next_tick() 
     let config = StoreConfig::new(&state.0);
     let runtime = Runtime::start(config.clone()).await?;
     let handle = runtime.handle();
+    // Drain startup control before advancing the paused clock. Otherwise the
+    // clock jump can expire that round and legitimately reconcile the desired
+    // map through control completion before the periodic retry under test.
+    handle.sync_control().await?;
     let mut desired = disabled_configuration();
     desired.public_fallback_enabled = true;
     desired.public_relay_urls = vec!["https://retry.example.invalid".to_owned()];
