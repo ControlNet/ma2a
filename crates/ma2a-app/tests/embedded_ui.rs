@@ -42,6 +42,7 @@ impl Fixture {
             )
             .as_bytes(),
         )
+        .map_err(|error| format!("embedded GET {path}: {error}").into())
     }
 
     fn post(&self, path: &str, request: (&str, &str)) -> TestValue<http::HttpResponse> {
@@ -56,6 +57,7 @@ impl Fixture {
             )
             .as_bytes(),
         )
+        .map_err(|error| format!("embedded POST {path}: {error}").into())
     }
 }
 

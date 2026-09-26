@@ -90,12 +90,15 @@ impl EventProducer {
             if !wait_for_poll(&self.sender, &mut interval).await {
                 return;
             }
-            if self.state.auth.validate(&self.bearer).await.is_err() {
-                return;
-            }
-            let Ok(current) = fetch_stamp(&self.state).await else {
-                let _result = self.sender.try_send(Ok(resync_event(self.cursor.revision)));
-                return;
+            let current =
+                authenticated_stamp(&self.state.auth, &self.bearer, fetch_stamp(&self.state)).await;
+            let current = match current {
+                Ok(current) => current,
+                Err(StatusCode::UNAUTHORIZED) => return,
+                Err(_) => {
+                    let _result = self.sender.try_send(Ok(resync_event(self.cursor.revision)));
+                    return;
+                }
             };
             if !self.cursor.emit(&self.sender, &current) {
                 return;
@@ -192,3 +195,25 @@ async fn fetch_stamp(state: &WebState) -> Result<SnapshotStamp, StatusCode> {
             .to_owned(),
     })
 }
+
+// Keep session validation and the awaited projection read in one polling step.
+async fn authenticated_stamp(
+    auth: &crate::web::WebAuthService,
+    bearer: &str,
+    fetch: impl std::future::Future<Output = Result<SnapshotStamp, StatusCode>>,
+) -> Result<SnapshotStamp, StatusCode> {
+    auth.validate(bearer)
+        .await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let current = fetch.await?;
+    // The awaited IPC read may include a session revocation committed after the
+    // initial check. Do not publish that projection under the stale admission.
+    auth.validate(bearer)
+        .await
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    Ok(current)
+}
+
+#[cfg(test)]
+#[path = "events_test.rs"]
+mod tests;
