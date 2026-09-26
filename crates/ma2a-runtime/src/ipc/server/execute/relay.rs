@@ -3,14 +3,14 @@ use std::net::SocketAddr;
 use ma2a_core::ProtocolError;
 use ma2a_store::{RelayConfiguration, RelayTransportConfiguration};
 
-use crate::api::{CommandResult, PrivateRelayView, PublicRelayView, RelayAddress};
+use crate::api::{ApiError, CommandResult, PrivateRelayView, PublicRelayView, RelayAddress};
 
 use super::super::ConnectionContext;
 
 pub(super) async fn private_configure(
     context: &ConnectionContext,
     command: &crate::api::Command,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     let requested = command
         .private_relay_configuration()
         .ok_or(ProtocolError::INVALID_INPUT)?;
@@ -42,28 +42,25 @@ pub(super) async fn private_configure(
         },
         crate::api::PrivateRelayMode::ExternalTermination => {
             if requested.certificate_path.is_some() || requested.private_key_path.is_some() {
-                return Err(ProtocolError::INVALID_INPUT);
+                return Err(ProtocolError::INVALID_INPUT.into());
             }
             RelayTransportConfiguration::ExternalTlsTermination
         }
     });
-    context
+    let committed = context
         .handle
-        .set_relay_configuration(configuration.clone())
+        .reconfigure_private_relay(configuration.clone())
         .await
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    Ok(CommandResult::private_relay_configured(private_view(
-        &context
-            .handle
-            .relay_status()
-            .await
-            .map_err(|_| ProtocolError::INTERNAL)?,
-    )?))
+        .map_err(|error| relay_error(&error))?;
+    Ok(
+        CommandResult::private_relay_configured(private_view(committed.value())?)
+            .at_revision(committed.revision()),
+    )
 }
 
 pub(super) async fn private_disable(
     context: &ConnectionContext,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     let mut configuration = context
         .handle
         .relay_configuration()
@@ -74,18 +71,15 @@ pub(super) async fn private_disable(
     configuration.private_relay_url = None;
     configuration.served_spaces.clear();
     configuration.transport = None;
-    context
+    let committed = context
         .handle
-        .set_relay_configuration(configuration.clone())
+        .set_relay_configuration_committed(configuration.clone())
         .await
-        .map_err(|_| ProtocolError::INTERNAL)?;
-    Ok(CommandResult::private_relay_status(private_view(
-        &context
-            .handle
-            .relay_status()
-            .await
-            .map_err(|_| ProtocolError::INTERNAL)?,
-    )?))
+        .map_err(|error| relay_error(&error))?;
+    Ok(
+        CommandResult::private_relay_status(private_view(committed.value())?)
+            .at_revision(committed.revision()),
+    )
 }
 
 pub(super) async fn private_status(
@@ -102,7 +96,7 @@ pub(super) async fn private_status(
 pub(super) async fn public_configure(
     context: &ConnectionContext,
     url: &str,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     let mut configuration = context
         .handle
         .relay_configuration()
@@ -110,25 +104,18 @@ pub(super) async fn public_configure(
         .map_err(|_| ProtocolError::INTERNAL)?;
     configuration.public_fallback_enabled = true;
     configuration.public_relay_urls = vec![url.to_owned()];
-    context
+    let committed = context
         .handle
-        .set_relay_configuration(configuration)
+        .set_relay_configuration_committed(configuration)
         .await
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let status = context
-        .handle
-        .relay_status()
-        .await
-        .map_err(|_| ProtocolError::INTERNAL)?;
-    Ok(CommandResult::public_relay_configured(
-        PublicRelayView::new(true, Some(url.to_owned()), status.public_relay_online)
-            .map_err(|_| ProtocolError::INVALID_INPUT)?,
-    ))
+        .map_err(|error| relay_error(&error))?;
+    Ok(
+        CommandResult::public_relay_configured(public_view(committed.value())?)
+            .at_revision(committed.revision()),
+    )
 }
 
-pub(super) async fn public_disable(
-    context: &ConnectionContext,
-) -> Result<CommandResult, ProtocolError> {
+pub(super) async fn public_disable(context: &ConnectionContext) -> Result<CommandResult, ApiError> {
     let mut configuration = context
         .handle
         .relay_configuration()
@@ -136,14 +123,15 @@ pub(super) async fn public_disable(
         .map_err(|_| ProtocolError::INTERNAL)?;
     configuration.public_fallback_enabled = false;
     configuration.public_relay_urls.clear();
-    context
+    let committed = context
         .handle
-        .set_relay_configuration(configuration)
+        .set_relay_configuration_committed(configuration)
         .await
-        .map_err(|_| ProtocolError::INTERNAL)?;
-    Ok(CommandResult::public_relay_status(
-        PublicRelayView::new(false, None, false).map_err(|_| ProtocolError::INTERNAL)?,
-    ))
+        .map_err(|error| relay_error(&error))?;
+    Ok(
+        CommandResult::public_relay_status(public_view(committed.value())?)
+            .at_revision(committed.revision()),
+    )
 }
 
 pub(super) async fn public_status(
@@ -168,8 +156,10 @@ fn private_view(
 ) -> Result<PrivateRelayView, ProtocolError> {
     let configuration: &RelayConfiguration = &status.configuration;
     let configured = configuration.private_provider_enabled;
-    let address: SocketAddr = status
+    let applied_address = status
         .private_listen_addr
+        .filter(|_| !status.convergence_pending);
+    let address: SocketAddr = applied_address
         .map_or_else(
             || {
                 configuration
@@ -189,6 +179,24 @@ fn private_view(
         configured,
         RelayAddress::new(mode, &address.ip().to_string(), address.port())
             .map_err(|_| ProtocolError::INTERNAL)?,
-        status.private_listen_addr.is_some(),
+        status.applied_private.is_some() && !status.convergence_pending,
     ))
+}
+
+fn relay_error(error: &crate::RuntimeError) -> ApiError {
+    let api = ApiError::new(ProtocolError::INTERNAL);
+    error
+        .committed_revision()
+        .map_or(api, |revision| api.after_commit(revision))
+}
+
+fn public_view(
+    status: &crate::actor::RelayRuntimeStatus,
+) -> Result<PublicRelayView, ProtocolError> {
+    PublicRelayView::new(
+        status.configuration.public_fallback_enabled,
+        status.configuration.public_relay_urls.first().cloned(),
+        status.public_relay_online,
+    )
+    .map_err(|_| ProtocolError::INTERNAL)
 }

@@ -47,7 +47,7 @@ pub(super) enum ResultKind {
 
 /// One member of the exact local API v1 result set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandResult(pub(super) ResultKind, Option<u64>);
+pub struct CommandResult(pub(super) ResultKind, pub(super) Option<u64>);
 
 /// Typed UI credential result returned through current-user local control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,15 +64,6 @@ pub enum UiControlResult<'a> {
 }
 
 impl CommandResult {
-    pub(crate) const fn at_revision(mut self, revision: u64) -> Self {
-        self.1 = Some(revision);
-        self
-    }
-
-    pub(crate) const fn committed_revision(&self) -> Option<u64> {
-        self.1
-    }
-
     /// Returns the typed UI credential result, when this result belongs to that command family.
     #[must_use]
     pub const fn ui_control_result(&self) -> Option<UiControlResult<'_>> {

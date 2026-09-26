@@ -181,7 +181,20 @@ impl Repository {
         &mut self,
         configuration: &RelayConfiguration,
     ) -> Result<u64, StoreError> {
+        let mut normalized = configuration.clone();
+        normalized.served_spaces.sort_unstable();
+        let configuration = &normalized;
         let transaction = self.immediate()?;
+        if crate::relay_settings::load_configuration(&transaction)? == *configuration {
+            return transaction
+                .query_row(
+                    "SELECT revision FROM runtime_metadata WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into);
+        }
+
         let (tls_mode, certificate_path, private_key_path) = match &configuration.transport {
             Some(RelayTransportConfiguration::NativeTls {
                 certificate_path,

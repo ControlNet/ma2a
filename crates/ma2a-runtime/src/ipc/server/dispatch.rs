@@ -144,13 +144,15 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                     return Ok((encoded, false));
                 }
             };
-            let revision =
-                authoritative_revision(&command, (&result, status.revision()), context).await?;
+            let revision = authoritative_revision(&result, context).await?;
             (result, revision)
         }
         None => match execute(&command, &status, context).await {
             Ok(result) => {
-                let revision = api::snapshot_revision(&result).unwrap_or_else(|| status.revision());
+                let revision = result
+                    .committed_revision()
+                    .or_else(|| api::snapshot_revision(&result))
+                    .unwrap_or_else(|| status.revision());
                 (result, revision)
             }
             Err(error) => return Ok((api::encode_error(error)?, false)),

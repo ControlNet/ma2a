@@ -10,6 +10,7 @@ use crate::{PrivateRelayAccess, PrivateRelayProviderConfig, PrivateRelayTranspor
 /// Running private Iroh relay hosted by the Runtime process.
 #[derive(Debug)]
 pub struct PrivateRelayServer {
+    configuration: PrivateRelayProviderConfig,
     server: Server,
     access: PrivateRelayAccess,
     clients: Clients,
@@ -61,12 +62,18 @@ impl PrivateRelayServer {
         }
         .ok_or(PrivateRelayServerError::MissingListener)?;
         Ok(Self {
+            configuration: config.clone(),
             server,
             access,
             clients,
             listen_addr,
             native_tls,
         })
+    }
+
+    /// Returns the provider configuration applied to this running instance.
+    pub const fn configuration(&self) -> &PrivateRelayProviderConfig {
+        &self.configuration
     }
 
     /// Returns the actual relay listener address.
@@ -140,5 +147,26 @@ impl Error for PrivateRelayServerError {
             Self::Supervisor(error) => Some(error),
             Self::MissingListener | Self::MissingRelayService => None,
         }
+    }
+}
+
+impl PrivateRelayServerError {
+    /// Reports only recognized temporary listener failures that can heal on reconciliation.
+    pub fn is_retryable_configuration(&self) -> bool {
+        let Self::Spawn(error) = self else {
+            return false;
+        };
+        let kind = match error {
+            iroh_relay::server::SpawnError::BindTcpListener { source, .. }
+            | iroh_relay::server::SpawnError::BindTlsListener { source, .. } => source.kind(),
+            _ => return false,
+        };
+        matches!(
+            kind,
+            std::io::ErrorKind::AddrInUse
+                | std::io::ErrorKind::AddrNotAvailable
+                | std::io::ErrorKind::Interrupted
+                | std::io::ErrorKind::WouldBlock
+        )
     }
 }

@@ -16,53 +16,14 @@ mod relay;
 mod space;
 
 pub(super) async fn authoritative_revision(
-    command: &Command,
-    outcome: (&CommandResult, u64),
+    result: &CommandResult,
     context: &ConnectionContext,
 ) -> Result<u64, IpcError> {
-    let (result, current_revision) = outcome;
-    if let Some(revision) = result.committed_revision() {
-        context.handle.adopt_revision(revision).await?;
-        return Ok(revision);
-    }
-    match command.operation() {
-        "ui_init" | "ui_password_set" | "ui_password_reset" | "session_revoke_all" => {
-            let persisted = context
-                .control
-                .state_revision()
-                .await
-                .map_err(|_| IpcError::InvalidFrame)?;
-            context
-                .handle
-                .adopt_revision(persisted)
-                .await
-                .map_err(IpcError::from)
-        }
-        operation if uses_post_execution_actor_revision(operation) => context
-            .handle
-            .status()
-            .await
-            .map(|status| status.revision())
-            .map_err(IpcError::from),
-        _ => Ok(current_revision),
-    }
-}
-
-fn uses_post_execution_actor_revision(operation: &str) -> bool {
-    matches!(
-        operation,
-        "space_create"
-            | "space_invite"
-            | "space_redeem"
-            | "space_revoke"
-            | "space_leave"
-            | "private_relay_configure"
-            | "private_relay_disable"
-            | "public_relay_configure"
-            | "public_relay_disable"
-            | "control_sync_trigger"
-            | "echo_call"
-    )
+    // Every mutation adapter must return its own receipt. Missing metadata fails
+    // closed with the replay reservation intact instead of guessing a later revision.
+    let revision = result.committed_revision().ok_or(IpcError::InvalidFrame)?;
+    context.handle.adopt_revision(revision).await?;
+    Ok(revision)
 }
 
 const fn capabilities() -> CapabilityFlags {
@@ -208,7 +169,7 @@ pub(super) async fn execute(
             Some(web) => web.status().await,
             None => crate::api::UiStatusView::new(None),
         }),
-        "graceful_shutdown" => CommandResult::shutting_down(),
+        "graceful_shutdown" => CommandResult::shutting_down().at_revision(status.revision()),
         "ui_init" | "ui_password_set" | "ui_password_reset" | "session_revoke_all" => context
             .control
             .send(command.clone())
@@ -220,10 +181,19 @@ pub(super) async fn execute(
 
 #[cfg(test)]
 mod tests {
-    use super::uses_post_execution_actor_revision;
-
     #[test]
-    fn echo_response_uses_post_execution_actor_revision() {
-        assert!(uses_post_execution_actor_revision("echo_call"));
+    fn echo_receipt_keeps_its_audit_revision_when_encoded() {
+        let endpoint = iroh::SecretKey::generate().public().into();
+        let result = crate::api::CommandResult::echo(
+            crate::api::EchoReplyView::new(endpoint, "committed reply", 1).unwrap(),
+        )
+        .at_revision(41);
+        let revision = result
+            .committed_revision()
+            .expect("Echo must carry its audit receipt");
+        let response = crate::api::ApiResponse::new(None, revision, result);
+        let encoded = crate::api::encode_response(&response).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(value.get("revision"), Some(&serde_json::json!(41)));
     }
 }

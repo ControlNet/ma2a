@@ -169,3 +169,49 @@ use of a crate-private helper, not test executions; it is excluded from statisti
 Final code uses the existing public sync_control method and explicitly verifies
 the candidate's address is durably present. App all-target/all-feature strict
 Clippy passed. These are workstream-level checks, not final-head CI acceptance.
+
+## Private Relay desired/applied resources
+
+The fixed-listener regression failed before workstream 4: replacement tried to
+bind before releasing its own server. Store relay configuration is now desired
+truth; each server retains the provider configuration it actually applied.
+An explicit pending configuration stage survives post-commit failures. Same
+listener reload stops/joins the old server first; a different listener prepares
+the new server before stopping the old one. Identical maintenance is a no-op;
+explicit private reconfigure reloads TLS files even when paths are unchanged.
+Invalid TLS input is rejected before commit or listener disruption. A failed
+Store commit leaves the existing desired/applied configuration intact.
+
+Recognized temporary listener bind errors retain pending work for normal periodic
+maintenance. Startup uses this same reconciliation, so an occupied optional role
+listener does not discard the persistent Endpoint. Fatal shutdown failures stop
+the Runtime rather than claim a server is applied. Once installed, a server is
+not restarted merely because subsequent candidate/publication work fails.
+Advertisement signing is gated on matching desired/applied provider state; the
+existing retained signed-batch renewal/retry implementation is unchanged.
+
+Relay mutation replies now carry the configuration commit receipt. Every live
+RequestId mutation must supply its own revision; the dispatcher no longer falls
+back to a later revision read. Missing receipt leaves its reservation fail-closed.
+
+Full Runtime testing also exposed the existing failed-initialization cleanup
+race: immediate restart could encounter its previous Iroh bind port. Failed
+Actor initialization now joins resources and Store before returning its original
+error. Shutdown cleanup attempts every owned resource even if one close fails.
+The existing startup-publication regression passes after that correction.
+
+Workstream checks are not final acceptance: a full Runtime run passed its unit
+suite but failed `full_spaces_keep_snapshot_details_and_events_within_the_frame_budget`
+with `event stream closed`. Its snapshot/detail sizes were within bounds. Preserve
+and diagnose this failure during the final reliability audit; do not dismiss it
+based on a subsequent green run.
+
+Private server fault scenarios: 9/9 passed, then 20 repeated runs of the built
+Runtime unit-test executable passed 180/180 executions without reduced concurrency
+(`/tmp/ma2a-phase1-private-repeat-final`). An earlier cargo repeat batch passed
+15 rounds before a concurrently edited Store helper caused a compilation error;
+that was zero test executions in round 16, not a runtime race. The final repeat
+used the already built executable to isolate execution from subsequent edits.
+Strict Net/Store/Runtime Clippy passed before the LOC-only module splits; repeat
+strict checks after the splits. The project 250 pure-LOC limit required moving
+Actor loop, Echo handle methods and response revision helpers to focused modules.

@@ -44,6 +44,7 @@ pub struct RuntimeError(RuntimeErrorKind, Option<u64>);
 pub(crate) enum RuntimeErrorKind {
     Store(StoreError),
     Network(NetError),
+    PrivateRelay(ma2a_net::PrivateRelayServerError),
     InvalidEndpointKey(InvalidEndpointSecret),
     IdentityMismatch,
     KeyReferenceMismatch,
@@ -77,6 +78,7 @@ impl RuntimeError {
         match &self.0 {
             RuntimeErrorKind::Store(error) => error.is_retryable_maintenance(),
             RuntimeErrorKind::AddressObservationUnavailable => true,
+            RuntimeErrorKind::PrivateRelay(error) => error.is_retryable_configuration(),
             _ => false,
         }
     }
@@ -88,7 +90,9 @@ impl RuntimeError {
                 ErrorCodeKind::SpaceOwnerCannotBeRemoved
             }
             RuntimeErrorKind::Store(_) => ErrorCodeKind::Store,
-            RuntimeErrorKind::Network(_) => ErrorCodeKind::Network,
+            RuntimeErrorKind::Network(_) | RuntimeErrorKind::PrivateRelay(_) => {
+                ErrorCodeKind::Network
+            }
             RuntimeErrorKind::InvalidEndpointKey(_) => ErrorCodeKind::InvalidEndpointKey,
             RuntimeErrorKind::IdentityMismatch | RuntimeErrorKind::KeyReferenceMismatch => {
                 ErrorCodeKind::IdentityMismatch
@@ -117,6 +121,7 @@ impl fmt::Display for RuntimeError {
         }
         match &self.0 {
             RuntimeErrorKind::Store(error) => write!(formatter, "Runtime storage failed: {error}"),
+            RuntimeErrorKind::PrivateRelay(error) => error.fmt(formatter),
             RuntimeErrorKind::Network(error) => {
                 write!(formatter, "Runtime network failed: {error}")
             }
@@ -155,6 +160,7 @@ impl Error for RuntimeError {
         match &self.0 {
             RuntimeErrorKind::Store(error) => Some(error),
             RuntimeErrorKind::Network(error) => Some(error),
+            RuntimeErrorKind::PrivateRelay(error) => Some(error),
             RuntimeErrorKind::InvalidEndpointKey(error) => Some(error),
             RuntimeErrorKind::Task(error) => Some(error),
             RuntimeErrorKind::IdentityMismatch
