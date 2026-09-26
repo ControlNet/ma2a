@@ -1,5 +1,13 @@
 # Single-Owner Space Version 1
 
+Phase 1 has no authority transfer. The genesis `initial_member` is the owner Endpoint.
+For a locally owned Space, `Repository::advance_owned_space()` rejects any proposal
+that omits that Endpoint from members or includes it in revocations, before signing
+or persistence. Owner-side member removal returns an owner-specific unauthorized
+response; the owner also cannot leave. Generic signed-chain validation is unchanged:
+this local signing restriction does not redefine the validity of imported chains.
+
+
 Phase 1 Spaces have one Ed25519 authority. The creating Repository generates a fresh authority seed
 and genesis nonce, publishes the seed through the protected `KeyStore`, and stores only an opaque
 reference in SQLite. Endpoint keys are never reused as Space authority keys. Imported Spaces contain

@@ -5,6 +5,7 @@ use ma2a_store::StoreError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ErrorCodeKind {
+    SpaceOwnerCannotBeRemoved,
     Store,
     Network,
     InvalidEndpointKey,
@@ -23,6 +24,8 @@ enum ErrorCodeKind {
 pub struct RuntimeErrorCode(ErrorCodeKind);
 
 impl RuntimeErrorCode {
+    /// Phase 1 forbids removing the genesis owner from a locally owned Space.
+    pub const SPACE_OWNER_CANNOT_BE_REMOVED: Self = Self(ErrorCodeKind::SpaceOwnerCannotBeRemoved);
     /// Persistent storage or protected-filesystem failure.
     pub const STORE: Self = Self(ErrorCodeKind::Store);
     /// Iroh Endpoint lifecycle failure.
@@ -71,6 +74,9 @@ impl RuntimeError {
     /// Returns a stable non-secret error classification.
     pub const fn code(&self) -> RuntimeErrorCode {
         let kind = match &self.0 {
+            RuntimeErrorKind::Store(StoreError::SpaceOwnerCannotBeRemoved) => {
+                ErrorCodeKind::SpaceOwnerCannotBeRemoved
+            }
             RuntimeErrorKind::Store(_) => ErrorCodeKind::Store,
             RuntimeErrorKind::Network(_) => ErrorCodeKind::Network,
             RuntimeErrorKind::InvalidEndpointKey(_) => ErrorCodeKind::InvalidEndpointKey,

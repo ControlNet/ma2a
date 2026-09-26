@@ -211,7 +211,7 @@ pub(super) async fn revoke(
     context: &ConnectionContext,
     space_id: SpaceId,
     endpoint_id: EndpointId,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     let snapshot = context
         .handle
         .snapshot()
@@ -227,7 +227,16 @@ pub(super) async fn revoke(
         .handle
         .revoke_owned_space_member(space_id, endpoint_id)
         .await
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
+        .map_err(|error| {
+            if error.code() == crate::error::RuntimeErrorCode::SPACE_OWNER_CANNOT_BE_REMOVED {
+                ApiError::with_remediation(
+                    ProtocolError::UNAUTHORIZED,
+                    "Space owner cannot be removed in Phase 1",
+                )
+            } else {
+                ApiError::new(ProtocolError::INVALID_INPUT)
+            }
+        })?;
     space.member_count -= 1;
     Ok(CommandResult::space_revoked(
         space.to_space_view().map_err(|_| ProtocolError::INTERNAL)?,

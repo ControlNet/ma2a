@@ -27,6 +27,8 @@ mod local_control;
 pub(crate) mod maintenance;
 mod membership;
 #[cfg(test)]
+mod owner_invariant_test;
+#[cfg(test)]
 mod partial_relay_publication_test;
 mod relay_configuration;
 #[cfg(test)]
