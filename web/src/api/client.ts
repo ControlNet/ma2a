@@ -1,15 +1,14 @@
 import ky from "ky"
 import { z } from "zod"
-
 import {
   parseRuntimeEvent,
-  parseRuntimeSnapshot,
   parseSpaceDetails,
   RuntimeApiPayloadError,
   type RuntimeEvent,
   type RuntimeSnapshot,
   type SpaceDetails,
 } from "./codec"
+import { readSnapshot } from "./snapshot-stream"
 
 export {
   parseRuntimeEvent,
@@ -91,8 +90,7 @@ export function createRuntimeApiClient(
       return parseSpaceDetails(await http.get(`/api/v1/spaces/${spaceId}`).json())
     },
     fetchSnapshot: async () => {
-      const payload: unknown = await http.get(snapshotPath).json()
-      return parseRuntimeSnapshot(payload)
+      return readSnapshot(await http.get(snapshotPath))
     },
     subscribe: (revision, callbacks) => {
       const source = createEventSource(`${eventsPath}?since=${revision}`, { withCredentials: true })

@@ -5,6 +5,7 @@ mod codec_fields;
 mod codec_relay;
 mod commands;
 mod events;
+pub(crate) mod fragments;
 mod response_decode;
 mod response_revision;
 mod response_value;
@@ -46,13 +47,13 @@ pub use snapshot_state::{ClientSnapshotState, NetworkSnapshotState, SnapshotStat
 pub const LOCAL_API_VERSION: u16 = 1;
 /// Maximum encoded request size before parsing.
 pub const MAX_LOCAL_REQUEST_BYTES: usize = 16_384;
-/// Maximum encoded response size.
+/// Maximum encoded response frame size; complete snapshots may span ordered frames.
 pub const MAX_LOCAL_RESPONSE_BYTES: usize = 65_536;
 /// Maximum encoded SSE event data size.
 pub const MAX_LOCAL_EVENT_BYTES: usize = 16_384;
 /// Maximum UTF-8 text field size unless a narrower field bound applies.
 pub const MAX_TEXT_BYTES: usize = 4_096;
-/// Maximum number of entities in any one response collection.
+/// Maximum ordinary command/event collection size; full snapshot collections stream.
 pub const MAX_COLLECTION_ITEMS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -58,3 +58,12 @@ Existing baseline checks requiring separate cleanup:
 - Full frontend `bun run test` has six failures: five from `import.meta.dir` in schema tests under Vitest, and one credentials expectation (`include` versus actual `same-origin`). Both failing files reproduced the same six failures in an isolated checkout of unmodified HEAD. The schema suite passes under Bun.
 - Ordinary Clippy is blocked by the existing `ma2a-net/src/relay_map.rs` `filter_map_bool_then` error. `--no-deps` exposes five existing `too_many_arguments` errors in snapshot constructors. `cargo clippy -p ma2a-runtime -p ma2a-store --all-targets --no-deps -- -A clippy::too_many_arguments` completes, with the existing `match_same_arms` warning in connection error projection. No lint suppression was added to production code.
 - The first full-Space integration attempt used `space_create` merely to trigger an SSE update and encountered the existing two-second IPC deadline on that mutation. The final test uses session creation to advance durable revision, directly proving that stamp polling sees Store commits independent of actor-local status. It does not establish mutation performance under large Space sets.
+
+## Aggregate transfer follow-up
+
+The later Phase-1 consistency pass replaces aggregate rejection with a frozen
+snapshot stream. See `phase-one-consistency-pass.md` and the current local API v1
+contract: large snapshots and Space lists use ordered revision/boot-bound fragments,
+with no truncation and no arbitrary cap on the number of Spaces. Per-frame size
+remains 65,536 bytes; fragment worst-case encoded size is below 33,000 bytes.
+The previous paragraph describing unresolved aggregate capacity is historical.

@@ -16,6 +16,8 @@ use super::LocalApiServer;
 mod committed_response;
 #[path = "server_tests/failed_replay.rs"]
 mod failed_replay;
+#[path = "server_tests/large_snapshot.rs"]
+mod large_snapshot;
 #[path = "server_tests/lifecycle.rs"]
 mod lifecycle;
 #[path = "server_tests/pending_replay.rs"]

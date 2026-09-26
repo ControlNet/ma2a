@@ -37,6 +37,12 @@ export function assertGeneratedTypesMatchSchema(schemaJson: string, generatedPat
     checker.getExportsOfModule(moduleSymbol).map((symbol) => [symbol.getName(), symbol]),
   )
   const context = { checker, exports, schema }
+  assertNode(
+    context,
+    exportedType(checker, exports, "SnapshotFragment"),
+    requiredNode(schema.types, "snapshot_fragment"),
+    "types.snapshot_fragment",
+  )
   const successResponse = exportedType(checker, exports, "LocalApiSuccessResponse")
   const errorResponse = exportedType(checker, exports, "LocalApiErrorResponse")
   assertVariants(context, exportedType(checker, exports, "LocalApiCommand"), "operation", {

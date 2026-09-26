@@ -12,7 +12,6 @@ export const LIMITS = {
   members: 64,
   echoPayload: 4096,
   echoStreamsPerPeer: 16,
-  spaces: 64,
 } as const
 
 export function shortId(value: string): string {
@@ -127,12 +126,6 @@ export function boundMeters(runtime: RuntimeViewData): Meter[] {
       label: "Owned connections",
       fraction: runtime.peerConnections.length / LIMITS.connections,
       value: `${runtime.peerConnections.length} / ${LIMITS.connections}`,
-      tone: "accent",
-    },
-    {
-      label: "Spaces",
-      fraction: runtime.spaces.length / LIMITS.spaces,
-      value: `${runtime.spaces.length} / ${LIMITS.spaces}`,
       tone: "accent",
     },
     {

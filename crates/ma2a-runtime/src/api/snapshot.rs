@@ -1,6 +1,6 @@
 //! Authoritative client snapshot without secret or authorization diagnostics.
 
-use super::{ApiError, MAX_COLLECTION_ITEMS, snapshot_state::SnapshotState};
+use super::{ApiError, snapshot_state::SnapshotState};
 use ma2a_core::EndpointId;
 
 #[cfg(test)]
@@ -57,13 +57,9 @@ impl ControlSyncView {
     /// Creates bounded control-sync state.
     ///
     /// # Errors
-    /// Returns invalid input when more than 256 peers are supplied.
-    pub fn new(peers: Vec<EndpointId>) -> Result<Self, ApiError> {
-        if peers.len() > MAX_COLLECTION_ITEMS {
-            Err(ApiError::invalid_input())
-        } else {
-            Ok(Self { peers })
-        }
+    /// The complete peer set is carried in the frozen snapshot stream.
+    pub const fn new(peers: Vec<EndpointId>) -> Result<Self, ApiError> {
+        Ok(Self { peers })
     }
 }
 
@@ -173,22 +169,15 @@ pub struct RuntimeSnapshot {
 }
 
 impl RuntimeSnapshot {
-    /// Creates a snapshot after enforcing all collection bounds.
+    /// Creates a complete logical snapshot; transport fragments bound its frames.
     ///
     /// # Errors
-    /// Returns invalid input when any collection exceeds 256 entities.
+    /// Returns invalid input for an invalid snapshot projection.
     pub fn new(
         header: SnapshotHeader,
         collections: SnapshotCollections,
         state: SnapshotState,
     ) -> Result<Self, ApiError> {
-        if collections.spaces.len() > MAX_COLLECTION_ITEMS
-            || collections.private_relay_candidates.len() > MAX_COLLECTION_ITEMS
-            || collections.control_sync.peers.len() > MAX_COLLECTION_ITEMS
-            || collections.connections.len() > MAX_COLLECTION_ITEMS
-        {
-            return Err(ApiError::invalid_input());
-        }
         Ok(Self {
             revision: header.revision,
             endpoint: header.endpoint,
@@ -230,7 +219,7 @@ impl SnapshotHeader {
     }
 }
 
-/// Bounded collections grouped for snapshot construction.
+/// Complete collections grouped for snapshot construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotCollections {
     pub(crate) spaces: Vec<SnapshotSpaceView>,
@@ -245,7 +234,7 @@ impl SnapshotCollections {
     /// Groups the bounded snapshot collections.
     ///
     /// # Errors
-    /// Returns invalid input when a collection exceeds 256 entities.
+    /// Returns invalid input when retained control history exceeds its semantic bound.
     #[expect(
         clippy::too_many_arguments,
         reason = "the snapshot groups five independently bounded wire collections"
@@ -258,12 +247,7 @@ impl SnapshotCollections {
         public_relay_fallbacks: Vec<PublicRelayFallbackView>,
         control_rounds: Vec<ControlRoundView>,
     ) -> Result<Self, ApiError> {
-        if spaces.len() > MAX_COLLECTION_ITEMS
-            || connections.len() > MAX_COLLECTION_ITEMS
-            || private_relay_candidates.len() > MAX_COLLECTION_ITEMS
-            || public_relay_fallbacks.len() > MAX_COLLECTION_ITEMS
-            || control_rounds.len() > MAX_RETAINED_CONTROL_ROUNDS
-        {
+        if control_rounds.len() > MAX_RETAINED_CONTROL_ROUNDS {
             Err(ApiError::invalid_input())
         } else {
             Ok(Self {

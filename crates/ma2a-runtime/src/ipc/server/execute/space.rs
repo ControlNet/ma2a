@@ -98,6 +98,7 @@ pub(super) async fn list(context: &ConnectionContext) -> Result<CommandResult, P
             .map(|space| space.to_space_view().map_err(|_| ProtocolError::INTERNAL))
             .collect::<Result<Vec<_>, _>>()?,
     )
+    .map(|result| result.at_revision(snapshot.revision()))
     .map_err(|_| ProtocolError::INTERNAL)
 }
 
