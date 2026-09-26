@@ -103,7 +103,12 @@ fn invalid_later_artifact_leaves_manifest_and_revision_unchanged() -> TestResult
     let result = apply_pages(&mut repository, PageApplication::new(&shared, &[page], 50));
 
     // Then
-    assert_eq!(result, Err(ma2a_net::ControlRejection::Invalid));
+    assert!(matches!(
+        result,
+        Err(crate::control_sync::ControlFailure::Rejected(
+            ma2a_net::ControlRejection::Invalid
+        ))
+    ));
     assert_eq!(repository.revision()?, revision);
     assert_eq!(
         repository

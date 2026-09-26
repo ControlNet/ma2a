@@ -274,3 +274,36 @@ tests passed 20 repeats (80 executions). Strict Runtime all-target/all-feature
 Clippy and pure-LOC checks passed. These do not replace final whole-workspace/E2E
 validation. The extended real IPC test also covers the large Space list; retain
 its final log separately as `/tmp/ma2a-phase1-snapshot-ipc2.log`.
+
+## Final audit: control completion and failure cleanup
+
+The audit reproduced two further lost-completion paths: a control round committed
+membership but lost ManifestAdvanced scheduling after a candidate refresh error;
+and a fatal Actor maintenance failure returned without persisting not-ready or
+joining its Endpoint. Logs: `/tmp/ma2a-phase1-control-completion-before2.log` and
+`/tmp/ma2a-phase1-fatal-cleanup-before.log`. An explicit membership observation
+also bypassed candidate/access reconciliation (`/tmp/ma2a-observation-completion-before.log`).
+
+Control exchanges now distinguish remote rejection from local Runtime/Store
+failure. On a completed or ambiguous exchange the Actor retains completion work,
+reloads membership and revision in one Store read transaction, refreshes current
+lookup/candidates/access/publications, and clears completion only after success.
+A task's old lookup is never installed over a newer local membership. Known
+artifact changes retain their control triggers; ambiguous failures still refresh
+projections, while normal periodic control performs eventual propagation. Empty
+rounds with no peers produce no reconciliation work. The existing narrow
+transient/fatal policy is reused; integrity, clock and task failures propagate.
+
+Explicit owned updates and membership observations use the same retained
+membership follow-up. Post-commit membership-query failures carry the committed
+revision and retain Store-derived recovery work. Durable membership events occur
+at commit even if completion fails. Departure errors expose a committed revision
+when known; a failed transport exchange no longer asserts unchanged remote
+membership. Owner enrollment/departure retains local integrity errors rather than
+collapsing them into a remote denial.
+
+Actor exit always attempts resource shutdown, observation persistence and Store
+join. Runtime shutdown joins tasks even if the Actor's acknowledgement failed.
+The periodic scheduling regression now waits for the actual scheduling event:
+a status mailbox reply is not a maintenance barrier because commands have higher
+select priority. Existing partial signed-batch tests remain unchanged.

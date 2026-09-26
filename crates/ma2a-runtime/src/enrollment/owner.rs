@@ -12,17 +12,19 @@ impl Actor {
             .request()
             .starts_with(&crate::departure::DEPARTURE_MAGIC)
         {
-            self.handle_departure_call(call).await;
-            return Ok(());
+            return self.handle_departure_call(call).await;
         }
         let Ok((ticket, redemption)) = decode_attempt(call.request(), call.remote_endpoint_id())
         else {
             call.respond(1, Vec::new());
             return Ok(());
         };
-        let Ok(now_ms) = self.clock.now_ms() else {
-            call.respond(255, Vec::new());
-            return Ok(());
+        let now_ms = match self.clock.now_ms() {
+            Ok(now_ms) => now_ms,
+            Err(error) => {
+                call.respond(255, Vec::new());
+                return Err(error);
+            }
         };
         let authorized =
             ma2a_store::AuthorizedEnrollmentRedemption::new(ticket, redemption, now_ms);
@@ -36,7 +38,7 @@ impl Actor {
                     call.respond(255, Vec::new());
                     return Self::absorb_background("owner enrollment completion", Err(error));
                 }
-                self.respond_with_bootstrap(call, &chain).await;
+                self.respond_with_bootstrap(call, &chain).await?;
             }
             Ok(EnrollmentOutcome::Retry { chain }) => {
                 if let Err(error) = self.refresh_local_control_publications().await {
@@ -44,7 +46,7 @@ impl Actor {
                     call.respond(255, Vec::new());
                     return Self::absorb_background("owner enrollment retry", Err(error));
                 }
-                self.respond_with_bootstrap(call, &chain).await;
+                self.respond_with_bootstrap(call, &chain).await?;
             }
             Ok(EnrollmentOutcome::Expired) => call.respond(2, Vec::new()),
             Ok(EnrollmentOutcome::Cancelled) => call.respond(3, Vec::new()),
@@ -59,27 +61,38 @@ impl Actor {
         Ok(())
     }
 
-    async fn respond_with_bootstrap(&self, call: EnrollmentCall, bytes: &[u8]) {
+    async fn respond_with_bootstrap(
+        &self,
+        call: EnrollmentCall,
+        bytes: &[u8],
+    ) -> Result<(), crate::RuntimeError> {
         let bootstrap = async {
             let chain = ma2a_core::SpaceChain::import_public(bytes)
-                .map_err(|_| ma2a_core::ProtocolError::INVALID_INPUT)?;
+                .map_err(ma2a_store::StoreError::from)?;
             let persisted = self
                 .store
                 .address_record(chain.space_id(), self.state.endpoint_id)
-                .await
-                .map_err(|_| ma2a_core::ProtocolError::INTERNAL)?
-                .ok_or(ma2a_core::ProtocolError::INTERNAL)?;
+                .await?
+                .ok_or(ma2a_store::StoreError::SchemaMismatch {
+                    detail: "enrollment bootstrap owner address missing after publication",
+                })?;
             let owner_address = ma2a_core::SignedSpaceAddressRecordV1::parse_canonical_bytes(
                 persisted.signed_record(),
-            )?;
-            ma2a_core::EnrollmentBootstrap::new(chain, owner_address)?.encode_frames()
+            )
+            .map_err(ma2a_store::StoreError::from)?;
+            ma2a_core::EnrollmentBootstrap::new(chain, owner_address)
+                .and_then(|bootstrap| bootstrap.encode_frames())
+                .map_err(|error| crate::RuntimeError::from(ma2a_store::StoreError::from(error)))
         }
         .await;
-        if let Ok(frames) = bootstrap {
-            call.respond(0, frames);
-        } else {
-            eprintln!("enrollment failed at owner_bootstrap_construction");
-            call.respond(255, Vec::new());
+        match bootstrap {
+            Ok(frames) => call.respond(0, frames),
+            Err(error) => {
+                eprintln!("enrollment failed at owner_bootstrap_construction: {error}");
+                call.respond(255, Vec::new());
+                Self::absorb_background("owner bootstrap construction", Err(error))?;
+            }
         }
+        Ok(())
     }
 }

@@ -163,3 +163,32 @@ async fn committed_relay_publication_retry_keeps_its_sequence() -> TestResult {
     runtime.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn fatal_actor_failure_joins_resources_and_persists_not_ready() -> TestResult {
+    let state = TempState::new("fatal-resource-cleanup")?;
+    let config = StoreConfig::new(&state.0);
+    let runtime = Runtime::start(config.clone()).await?;
+    let handle = runtime.handle();
+    let endpoint = handle.status().await?.endpoint_id();
+    handle.fail_background_once(
+        FaultPoint::RelayCandidateLoad,
+        RuntimeError::from(StoreError::SchemaMismatch {
+            detail: "injected fatal projection",
+        }),
+    );
+    tokio::time::advance(crate::control_actor::control_period(endpoint)).await;
+    handle.stopped().await;
+    assert!(runtime.shutdown().await.is_err());
+    let metadata = Repository::open(&config)?.runtime_metadata()?;
+    assert!(
+        !metadata
+            .endpoint_observation()
+            .ok_or("missing observation")?
+            .ready
+    );
+    let restarted = Runtime::start(config).await?;
+    assert_eq!(restarted.handle().status().await?.endpoint_id(), endpoint);
+    restarted.shutdown().await?;
+    Ok(())
+}

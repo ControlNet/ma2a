@@ -246,8 +246,17 @@ async fn periodic_timer_schedules_a_control_round() -> TestResult {
     let endpoint_id = handle.status().await?.endpoint_id();
     // When
     tokio::time::advance(control_period(endpoint_id)).await;
-    tokio::task::yield_now().await;
-    handle.status().await?;
+    // A status command is prioritized ahead of a ready maintenance tick. Wait
+    // for the observable scheduling event, not for an unrelated mailbox reply.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !handle
+            .control_schedules()
+            .contains(&ControlRoundTrigger::Periodic)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
     let schedules = handle.control_schedules();
     fixture.runtime.shutdown().await?;
 

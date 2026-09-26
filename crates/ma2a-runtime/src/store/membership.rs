@@ -10,6 +10,7 @@ use crate::{error::RuntimeError, store::StoreBackend};
 pub(crate) struct RemovedMember {
     pub(crate) revision: u64,
     pub(crate) memberships: BTreeSet<SpaceId>,
+    pub(crate) projection_revision: u64,
     pub(crate) chain: SpaceChain,
 }
 
@@ -49,9 +50,14 @@ impl StoreBackend {
                 request.issued_at_ms,
                 SpaceManifestMembership::new(members, revocations),
             ))?;
+        let projection = self
+            .repository
+            .membership_projection(request.local_endpoint_id)
+            .map_err(|error| RuntimeError::from(error).after_commit(advanced.revision()))?;
         Ok(RemovedMember {
             revision: advanced.revision(),
-            memberships: self.repository.memberships_for(request.local_endpoint_id)?,
+            projection_revision: projection.revision(),
+            memberships: projection.into_value(),
             chain: advanced.chain().clone(),
         })
     }
@@ -62,19 +68,20 @@ impl StoreBackend {
         local_endpoint_id: EndpointId,
     ) -> Result<(u64, BTreeSet<SpaceId>), RuntimeError> {
         let advanced = self.repository.advance_owned_space(update)?;
-        Ok((
-            advanced.revision(),
-            self.repository.memberships_for(local_endpoint_id)?,
-        ))
+        let projection = self
+            .repository
+            .membership_projection(local_endpoint_id)
+            .map_err(|error| RuntimeError::from(error).after_commit(advanced.revision()))?;
+        Ok((projection.revision(), projection.into_value()))
     }
 
     /// Reads the Space memberships the Store currently holds for this Endpoint.
     pub(super) fn memberships(
-        &self,
+        &mut self,
         local_endpoint_id: EndpointId,
-    ) -> Result<BTreeSet<SpaceId>, RuntimeError> {
+    ) -> Result<ma2a_store::Committed<BTreeSet<SpaceId>>, RuntimeError> {
         self.repository
-            .memberships_for(local_endpoint_id)
+            .membership_projection(local_endpoint_id)
             .map_err(Into::into)
     }
 
@@ -100,9 +107,10 @@ impl StoreBackend {
         let revision = persisted
             .revision()
             .map_or_else(|| self.repository.revision(), Ok)?;
-        Ok((
-            revision,
-            self.repository.memberships_for(local_endpoint_id)?,
-        ))
+        let projection = self
+            .repository
+            .membership_projection(local_endpoint_id)
+            .map_err(|error| RuntimeError::from(error).after_commit(revision))?;
+        Ok((projection.revision(), projection.into_value()))
     }
 }

@@ -4,16 +4,15 @@ use std::{
 };
 
 use ma2a_net::{
-    CONTROL_DIAL_CONCURRENCY, CONTROL_ROUND_DEADLINE, ControlClient, SpaceAddressLookup,
-    exchange_control_with_retry,
+    CONTROL_DIAL_CONCURRENCY, CONTROL_ROUND_DEADLINE, ControlClient, exchange_control_with_retry,
 };
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::{
     control_sync::{
-        ControlApplyOutcome, ControlExchangeInput, ControlRoundOutcome, ControlRoundRequest,
-        PreparedControlPeer, install_lookup,
+        ControlApplyOutcome, ControlExchangeInput, ControlFailure, ControlRoundOutcome,
+        ControlRoundRequest, PreparedControlPeer,
     },
     error::RuntimeError,
     store::StoreClient,
@@ -22,33 +21,24 @@ use crate::{
 pub(crate) struct ControlRoundRunner {
     store: StoreClient,
     client: ControlClient,
-    lookup: SpaceAddressLookup,
 }
 
 impl ControlRoundRunner {
-    pub(crate) const fn new(
-        store: StoreClient,
-        client: ControlClient,
-        lookup: SpaceAddressLookup,
-    ) -> Self {
-        Self {
-            store,
-            client,
-            lookup,
-        }
+    pub(crate) const fn new(store: StoreClient, client: ControlClient) -> Self {
+        Self { store, client }
     }
 
     pub(crate) async fn run(
         self,
         request: ControlRoundRequest,
-    ) -> Result<Option<ControlRoundOutcome>, RuntimeError> {
+    ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
         with_control_deadline(self.run_within_deadline(request)).await?
     }
 
     async fn run_within_deadline(
         self,
         request: ControlRoundRequest,
-    ) -> Result<Option<ControlRoundOutcome>, RuntimeError> {
+    ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
         let local_endpoint_id = request.local_endpoint_id;
         let now_ms = request.now_ms;
         let mut pending = self
@@ -73,12 +63,11 @@ impl ControlRoundRunner {
             let Some(joined) = dials.join_next().await else {
                 break;
             };
-            let Ok(Ok((peer, response))) = joined else {
+            let Ok((peer, response)) = joined.map_err(RuntimeError::from)? else {
                 continue;
             };
             let ControlApplyOutcome {
                 revision,
-                lookup: lookup_state,
                 changes: applied,
             } = self
                 .store
@@ -89,13 +78,12 @@ impl ControlRoundRunner {
                     now_ms,
                 })
                 .await?;
-            install_lookup(&self.lookup, lookup_state)?;
             synchronized_peers.insert(peer);
             changes.merge(applied);
             latest = Some(revision);
         }
         if had_peers && latest.is_none() {
-            return Err(RuntimeError::new(crate::error::RuntimeErrorKind::Control));
+            return Err(ma2a_net::ControlRejection::Unavailable.into());
         }
         Ok(latest.map(|revision| ControlRoundOutcome {
             revision,
@@ -107,10 +95,10 @@ impl ControlRoundRunner {
 
 async fn with_control_deadline<Output>(
     operation: impl Future<Output = Output>,
-) -> Result<Output, RuntimeError> {
+) -> Result<Output, ControlFailure> {
     timeout(CONTROL_ROUND_DEADLINE, operation)
         .await
-        .map_err(|_| RuntimeError::new(crate::error::RuntimeErrorKind::Control))
+        .map_err(|_| ma2a_net::ControlRejection::Unavailable.into())
 }
 
 fn spawn_control_dials<Dial, DialFuture, DialError>(

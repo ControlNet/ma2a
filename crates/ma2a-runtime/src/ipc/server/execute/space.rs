@@ -117,7 +117,7 @@ pub(super) async fn show(
         .find(|space| space.id() == space_id)
         .cloned()
         .and_then(|space| space.to_space_view().ok())
-        .map(CommandResult::space)
+        .map(|space| CommandResult::space(space).at_revision(snapshot.revision()))
         .ok_or(ProtocolError::NOT_FOUND)
 }
 
@@ -146,7 +146,12 @@ pub(super) async fn leave(
         .handle
         .leave_space(space_id, request_id)
         .await
-        .map_err(|error| departure_api_error(error.code()))?;
+        .map_err(|error| {
+            let result = departure_api_error(error.code());
+            error
+                .committed_revision()
+                .map_or(result, |revision| result.after_commit(revision))
+        })?;
     Ok(CommandResult::space_left(identity).at_revision(revision))
 }
 
@@ -162,7 +167,7 @@ fn departure_api_error(code: SpaceDepartureErrorCode) -> ApiError {
     } else if code == SpaceDepartureErrorCode::UNREACHABLE {
         ApiError::with_remediation(
             ProtocolError::UNAVAILABLE,
-            "the Space authority could not be reached; membership is unchanged",
+            "departure exchange did not complete; authority outcome is unknown",
         )
     } else if code == SpaceDepartureErrorCode::REJECTED {
         ApiError::new(ProtocolError::CONFLICT)

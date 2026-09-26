@@ -5,12 +5,13 @@ use ma2a_core::EndpointId;
 use crate::{
     actor::Actor,
     control_sync::{
-        ControlChanges, ControlRoundOutcome, ControlRoundRequest, ControlRoundRunner,
-        ControlRoundTrigger, install_lookup,
+        ControlChanges, ControlFailure, ControlRoundOutcome, ControlRoundRequest,
+        ControlRoundRunner, ControlRoundTrigger, install_lookup,
     },
     error::{RuntimeError, RuntimeErrorKind},
 };
 
+pub(crate) mod completion;
 pub(crate) mod inbound;
 mod queue;
 pub(crate) use queue::{ControlRoundQueue, ScheduledControlRound};
@@ -51,19 +52,22 @@ impl Actor {
     }
 
     fn spawn_control_round(&mut self, scheduled: ScheduledControlRound) {
-        let Ok(now_ms) = self.clock.now_ms().and_then(|value| {
+        let now_ms = match self.clock.now_ms().and_then(|value| {
             u64::try_from(value).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
-        }) else {
-            self.complete_control_waiters(scheduled.id(), false, &BTreeSet::new());
-            return;
+        }) {
+            Ok(now) => now,
+            Err(error) => {
+                self.maintenance.fatal = Some(error);
+                self.complete_control_waiters(scheduled.id(), false, &BTreeSet::new());
+                return;
+            }
         };
         let store = self.store.clone();
         let client = self.endpoint.control_client();
-        let lookup = self.lookup.clone();
         let endpoint_id = self.state.endpoint_id;
         let task = scheduled;
         self.control_rounds.spawn(async move {
-            let result = ControlRoundRunner::new(store, client, lookup)
+            let result = ControlRoundRunner::new(store, client)
                 .run(ControlRoundRequest {
                     local_endpoint_id: endpoint_id,
                     rotation: task.rotation(),
@@ -80,50 +84,49 @@ impl Actor {
         result: Result<
             (
                 ScheduledControlRound,
-                Result<Option<ControlRoundOutcome>, RuntimeError>,
+                Result<Option<ControlRoundOutcome>, ControlFailure>,
             ),
             tokio::task::JoinError,
         >,
-    ) {
-        let Ok((scheduled, outcome)) = result else {
-            let Some(round_id) = self.control_queue.active_id() else {
-                return;
-            };
-            self.complete_control_waiters(round_id, false, &BTreeSet::new());
-            return;
-        };
+    ) -> Result<(), RuntimeError> {
+        let (scheduled, outcome) = result.map_err(RuntimeError::from)?;
         let round_id = scheduled.id();
-        let (succeeded, synchronized_peers) = match outcome {
+        let mut failure = None;
+        let peers = match outcome {
             Ok(Some(outcome)) => {
-                let changes = outcome.changes;
-                let synchronized_peers = outcome.synchronized_peers;
-                if self.adopt_control_memberships(outcome.revision).await {
-                    self.synchronized_control_peers.clear();
-                }
-                self.synchronized_control_peers
-                    .extend(synchronized_peers.iter().copied());
-                let succeeded = self.refresh_relay_candidates().await.is_ok();
-                if succeeded {
-                    self.schedule_control_changes(changes);
-                }
-                (succeeded, synchronized_peers)
+                self.state.revision = self.state.revision.max(outcome.revision);
+                self.retain_control_completion(outcome.changes, outcome.synchronized_peers.clone());
+                outcome.synchronized_peers
             }
-            Ok(None) => (true, BTreeSet::new()),
-            Err(_) => (false, BTreeSet::new()),
+            Ok(None) => BTreeSet::new(),
+            Err(error) => {
+                self.retain_control_completion(ControlChanges::default(), BTreeSet::new());
+                failure = Some(error);
+                BTreeSet::new()
+            }
         };
-        self.record_control_round(succeeded, &synchronized_peers);
-        self.complete_control_waiters(round_id, succeeded, &synchronized_peers);
+        let reconciled = self.reconcile_control_completion().await;
+        let succeeded = failure.is_none() && reconciled.is_ok();
+        self.record_control_round(succeeded, &peers);
+        self.complete_control_waiters(round_id, succeeded, &peers);
+        Self::absorb_background("control projection", reconciled)?;
+        if let Some(error) = failure {
+            Self::control_failure(error)?;
+        }
+        Ok(())
     }
 
     /// Retains a bounded in-memory round history. It is a diagnostic, never a log:
     /// it is not persisted and does not survive a restart.
     fn record_control_round(&mut self, succeeded: bool, synchronized_peers: &BTreeSet<EndpointId>) {
-        let Ok(at_ms) = self
-            .clock
-            .now_ms()
-            .map(|now| u64::try_from(now).unwrap_or(0))
-        else {
-            return;
+        let at_ms = match self.clock.now_ms().and_then(|now| {
+            u64::try_from(now).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
+        }) {
+            Ok(now) => now,
+            Err(error) => {
+                self.maintenance.fatal = Some(error);
+                return;
+            }
         };
         let outcome = if !succeeded {
             "failed"
@@ -173,25 +176,6 @@ impl Actor {
         for trigger in changes.triggers() {
             self.schedule_control_round(trigger, None);
         }
-    }
-
-    /// Re-reads durable membership after a control exchange and reports a change.
-    ///
-    /// A control round computes its membership snapshot when it runs and may
-    /// complete after a newer local change, such as a departure, has already
-    /// committed. Adopting that snapshot would resurrect membership the Store has
-    /// already removed, so the authoritative set is read back instead of trusting
-    /// the round's copy.
-    async fn adopt_control_memberships(&mut self, revision: u64) -> bool {
-        self.state.revision = self.state.revision.max(revision);
-        let Ok(memberships) = self.store.memberships(self.state.endpoint_id).await else {
-            return false;
-        };
-        let changed = self.state.memberships != memberships;
-        self.state.memberships = memberships;
-        self.endpoint
-            .set_control_enabled(!self.state.memberships.is_empty());
-        changed
     }
 
     pub(crate) async fn refresh_control_lookup(&self) -> Result<(), RuntimeError> {

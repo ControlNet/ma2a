@@ -1,4 +1,6 @@
 mod exchange;
+mod failure;
+pub(crate) use failure::ControlFailure;
 mod pages;
 mod scheduler;
 mod scope;
@@ -43,7 +45,6 @@ pub(crate) struct ControlAuthorizationInput {
 #[derive(Debug)]
 pub(crate) struct ControlApplyOutcome {
     pub(crate) revision: u64,
-    pub(crate) lookup: ControlLookupState,
     pub(crate) changes: ControlChanges,
 }
 
@@ -51,7 +52,6 @@ pub(crate) struct ControlApplyOutcome {
 pub(crate) struct ControlRespondOutcome {
     pub(crate) response: Vec<u8>,
     pub(crate) revision: u64,
-    pub(crate) lookup: ControlLookupState,
     pub(crate) changes: ControlChanges,
 }
 

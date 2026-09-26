@@ -36,12 +36,12 @@ impl Actor {
         self.state.memberships.insert(space_id);
         self.synchronized_control_peers.clear();
         self.endpoint.set_control_enabled(true);
-        self.refresh_after_membership_change()
-            .await
-            .map_err(|error| error.after_commit(created.revision()))?;
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(created.revision()));
+        self.refresh_after_membership_change()
+            .await
+            .map_err(|error| error.after_commit(created.revision()))?;
         Ok(created)
     }
 
@@ -57,15 +57,12 @@ impl Actor {
         self.synchronized_control_peers.clear();
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
-        self.refresh_control_lookup().await?;
-        self.refresh_local_control_publications().await?;
-        self.schedule_control_round(
-            crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
-            None,
-        );
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
+        self.refresh_after_membership_change()
+            .await
+            .map_err(|error| error.after_commit(revision))?;
         Ok(revision)
     }
 
@@ -84,20 +81,62 @@ impl Actor {
                 issued_at_ms,
                 local_endpoint_id: self.state.endpoint_id,
             })
-            .await?;
+            .await
+            .map_err(|error| self.retain_membership_error(error))?;
         let revision = removed.revision;
-        self.state.revision = revision;
+        self.state.revision = removed.projection_revision;
         self.state.memberships.clone_from(&removed.memberships);
         self.synchronized_control_peers.clear();
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
-        self.refresh_after_membership_change()
-            .await
-            .map_err(|error| error.after_commit(revision))?;
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
+        self.refresh_after_membership_change()
+            .await
+            .map_err(|error| error.after_commit(revision))?;
         Ok(removed)
+    }
+
+    pub(crate) fn retain_membership_error(&mut self, error: RuntimeError) -> RuntimeError {
+        if let Some(revision) = error.committed_revision() {
+            self.state.revision = self.state.revision.max(revision);
+            self.retain_control_completion(
+                crate::control_sync::ControlChanges {
+                    manifest: true,
+                    address: false,
+                    relay: false,
+                },
+                BTreeSet::new(),
+            );
+            let _receivers = self
+                .events
+                .send(RuntimeEvent::memberships_changed(revision));
+        }
+        error
+    }
+
+    pub(super) async fn advance_owned_space(
+        &mut self,
+        update: ma2a_store::OwnedSpaceUpdate,
+    ) -> Result<u64, RuntimeError> {
+        let (revision, memberships) = self
+            .store
+            .advance_owned_space(update, self.state.endpoint_id)
+            .await
+            .map_err(|error| self.retain_membership_error(error))?;
+        self.state.revision = revision;
+        self.state.memberships = memberships;
+        self.synchronized_control_peers.clear();
+        self.endpoint
+            .set_control_enabled(!self.state.memberships.is_empty());
+        let _receivers = self
+            .events
+            .send(RuntimeEvent::memberships_changed(revision));
+        self.refresh_after_membership_change()
+            .await
+            .map_err(|error| error.after_commit(revision))?;
+        Ok(revision)
     }
 
     /// Re-derives every projection that depends on the signed membership set.
@@ -116,6 +155,7 @@ impl Actor {
     }
 
     pub(crate) async fn reconcile_membership_completion(&mut self) -> Result<(), RuntimeError> {
+        self.reconcile_control_completion().await?;
         if self.maintenance.membership_pending.is_some() {
             self.refresh_after_membership_change().await?;
         }
