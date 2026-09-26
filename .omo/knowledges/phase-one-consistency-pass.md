@@ -1,5 +1,11 @@
 # Phase One consistency pass (baseline 2b6ee097)
 
+This is a chronological implementation and validation record. Earlier work-in-progress
+notes are retained as evidence; the later audit and final verification sections
+record their resolution. The six requested workstreams keep SQLite authoritative,
+retain explicit projection completion, and preserve the accepted relay publication
+and genesis-owner signing models.
+
 ## Source and completion contract audit
 
 SQLite owns desired durable state. Actor state and owned resources are applied
@@ -362,3 +368,100 @@ updated test verifies the exact persisted replay response and its revision, the
 same Space identity in the snapshot, and monotonic snapshot revision, while
 retaining label/membership/restart assertions. It does not overwrite creation's
 receipt with a later status revision to satisfy the old assertion.
+
+The first post-writer-lock SSE stress cohort had 5 passes and then received a
+legal heartbeat comment before its state notification. The test incorrectly
+asserted that the first body chunk was a revisioned event. A deterministic
+heartbeat-then-state stream fails that old reader
+(`/tmp/ma2a-sse-heartbeat-before.log`). The integration reader now skips SSE
+comments; it still requires a real invalidation/resync event within the original
+five-second deadline and still fails on a closed stream or malformed UTF-8.
+Production SSE and authentication behavior is unchanged. The first attempted
+final stress directory (`/tmp/ma2a-sse-final`) is excluded: a build failure left
+a stale binary available to that shell loop. Verified stress gates execution on
+a successful build and uses `/tmp/ma2a-sse-verified`.
+
+## Enrollment response-loss recovery
+
+Unrestricted `cargo test -p ma2a-app` exposed a real bootstrap-header loss in
+`generation_57_invite_establishes_only_after_contiguous_generation_58` (71/72 E2E
+cases passed in that run; `/tmp/ma2a-final-head/ma2a-app.log`). This is distinct
+from the earlier revision-baseline race. A real-QUIC deterministic handler drops
+the first response after receiving the request; the old exchange fails at
+bootstrap_header (`/tmp/ma2a-enrollment-response-before.log`).
+
+Invitation redemption now opts into one exact-byte transport retry for a lost
+bootstrap header/body, inside the existing total 30-second exchange deadline.
+Every attempt closes its connection on failure or completion. Owner transaction
+idempotency still binds ticket, candidate Endpoint and RequestId; no request is
+reminted and no replay reservation is released. Explicit denial and malformed
+framing are never retried. Ordinary enrollment-ALPN exchanges, including Space
+departure, retain single-attempt behavior: they do not inherit this opt-in rule.
+The background transient/fatal policy is unchanged. Repeated transport loss is
+still a bounded, ambiguous terminal failure, not a false success.
+
+Five Net regressions use real QUIC plus explicitly test-only framing payloads:
+first-response loss with exact-byte retry, repeated loss stopping after two
+attempts, malformed framing, explicit denial, and non-opted-in ambiguous exchange.
+They test transport recovery; existing Core/Store enrollment and E2E replay tests
+continue to verify signed bootstrap validity and single generation advancement.
+
+## Validation follow-ups: SSE framing and control deadline
+
+The first build-gated SSE cohort passed 12 repeats before the separate revoked
+stream check failed on its first body item (`/tmp/ma2a-sse-verified/run-13.log`).
+That assertion did not record the item's contents, so its cause is not asserted
+from that log. The revoked-stream scenario alone then passed 30/30 diagnostic
+repeats. A deterministic heartbeat-then-EOF fixture demonstrates that treating
+any body item as a state event is incorrect (`/tmp/ma2a-sse-eof-before.log`).
+The shared reader now skips only comments/blank frames for both state and EOF
+checks. Revocation/expiry still reject every state-bearing frame and retain the
+original two-second close deadline. State invalidation still requires a real
+state event within five seconds. No production Web behavior changed. Verified
+stress copies the successfully built binary before starting its 20 repeats;
+logs are `/tmp/ma2a-sse-protocol-verified`.
+
+The first complete package pass succeeded: Core 91, Store 58, Net 96, Runtime 167,
+App 191 (603 including two doc tests). The subsequent xtask run failed the control
+identity-restart scenario's explicit 15-second sync deadline: 434/435 executed
+passed, with 185 not executed after fail-fast (`/tmp/ma2a-verified-head/xtask.log`).
+This overlapped additional independent SSE stress work. That overlap is recorded,
+not treated as proof of the failure's cause. Neither control deadlines nor normal
+nextest concurrency are weakened; the final quality run and dedicated control
+repeats must establish the accepted result separately.
+
+## Consolidated implemented contract
+
+1. Mutation admission precedes possible effects. Only proven no-effect errors may
+   release it; committed/ambiguous errors are terminal or remain Pending if their
+   response cannot be retained. Permanent fences outlive bounded response caching.
+2. Mutation payloads and revisions travel in Store/Actor commit receipts. Read
+   adapters likewise carry their own coherent snapshot/configuration revision.
+3. Committed membership and enrollment effects retain follow-up work. Periodic
+   reconciliation re-derives projections; exact invitation response-loss recovery
+   is bounded to one retry and never re-mints an invitation or RequestId.
+4. Relay configuration is durable desired truth; the live listener retains applied
+   configuration. Same-listener replacement joins the old resource first; transient
+   application failure stays pending, and shutdown failure is fatal.
+5. Historical chains contradicting a retained local authority reference fail closed
+   on load/replacement. Generic externally owned Core chain validation is unchanged.
+6. Complete frozen snapshots and Space lists use bounded fragments when needed.
+   Logical data is not dropped to satisfy the transport budget.
+
+The final SSE reader passed 20 repeats of all four tests (80/80), after a successful
+four-test build/run, in `/tmp/ma2a-sse-protocol-verified`. Each repeat used the same
+copied binary. Net response-loss tests passed 100/100 across 20 repeats in
+`/tmp/ma2a-enrollment-response-repeat`. Strict all-target/all-feature Clippy and
+pure-code LOC checks passed after these changes (`/tmp/ma2a-verified-head/clippy.log`
+and `loc.log`). The final three-round E2E evidence, dedicated enrollment/control
+stress, and complete quality gate are recorded separately in the task report and
+final-head GitHub runs; intermediate failed cohorts above are not relabeled green.
+
+Remaining design limits are deliberate: Pending and evicted responses may be
+unrecoverable and remain fail-closed; fences grow with distinct RequestIds; old
+pre-migration evictions cannot be reconstructed. Pending observation/publication
+batches remain process-local. Snapshot assembly is proportional to total state,
+with no cross-restart streaming cursor. Historical owner-invalid repositories
+require operator recovery; this pass does not repair signed chains or delete keys.
+A permanent network outage or expired invitation can still leave an enrollment
+exchange ambiguous, with its RequestId fenced against duplicate execution.
