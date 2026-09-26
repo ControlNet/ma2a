@@ -20,6 +20,8 @@ mod construction;
 mod echo;
 #[cfg(test)]
 mod effective_data_test;
+#[cfg(test)]
+mod enrollment_completion_test;
 mod handle;
 mod handle_relay;
 mod invite;
@@ -76,7 +78,10 @@ pub(crate) struct Actor {
 }
 
 impl Actor {
-    fn absorb_background(step: &str, result: Result<(), RuntimeError>) -> Result<(), RuntimeError> {
+    pub(crate) fn absorb_background(
+        step: &str,
+        result: Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
         match result {
             Err(error) if error.is_retryable_background() => {
                 eprintln!("runtime background step will retry: {step}: {error}");
@@ -218,7 +223,7 @@ impl Actor {
                     None => return self.finish(false).await,
                 },
                 call = self.enrollment_calls.recv() => if let Some(call) = call {
-                    self.handle_enrollment_call(call).await;
+                    self.handle_enrollment_call(call).await?;
                 },
                 call = self.control_calls.recv() => if let Some(call) = call {
                     self.handle_control_call(call).await;
@@ -246,6 +251,10 @@ impl Actor {
                     }
                 },
                 _ = periodic.tick() => {
+                    let membership = self.reconcile_membership_completion().await;
+                    Self::absorb_background("membership completion", membership)?;
+                    let enrolled = self.reconcile_enrollment().await;
+                    Self::absorb_background("enrollment completion", enrolled)?;
                     let refreshed = self.refresh_relay_candidates().await.map(|_changed| ());
                     Self::absorb_background("relay candidate refresh", refreshed)?;
                     let observed = self.reconcile_pending_iroh_observation().await;

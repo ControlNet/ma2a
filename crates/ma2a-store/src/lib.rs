@@ -15,6 +15,8 @@ mod config;
 mod control_batch;
 mod control_state;
 mod enrollment;
+mod enrollment_projection;
+pub use enrollment_projection::EnrollmentProjection;
 mod enrollment_models;
 mod error;
 mod key_store;

@@ -36,14 +36,9 @@ impl Actor {
         self.state.memberships.insert(space_id);
         self.synchronized_control_peers.clear();
         self.endpoint.set_control_enabled(true);
-        self.refresh_control_lookup().await?;
-        self.refresh_relay_candidates().await?;
-        self.refresh_private_relay_access().await?;
-        self.refresh_local_control_publications().await?;
-        self.schedule_control_round(
-            crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
-            None,
-        );
+        self.refresh_after_membership_change()
+            .await
+            .map_err(|error| error.after_commit(created.revision()))?;
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(created.revision()));
@@ -96,7 +91,9 @@ impl Actor {
         self.synchronized_control_peers.clear();
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
-        self.refresh_after_membership_change().await?;
+        self.refresh_after_membership_change()
+            .await
+            .map_err(|error| error.after_commit(revision))?;
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
@@ -105,14 +102,23 @@ impl Actor {
 
     /// Re-derives every projection that depends on the signed membership set.
     pub(crate) async fn refresh_after_membership_change(&mut self) -> Result<(), RuntimeError> {
+        self.maintenance
+            .membership_pending
+            .get_or_insert(crate::control_sync::ControlRoundTrigger::ManifestAdvanced);
         self.refresh_control_lookup().await?;
         self.refresh_relay_candidates().await?;
         self.refresh_private_relay_access().await?;
         self.refresh_local_control_publications().await?;
-        self.schedule_control_round(
-            crate::control_sync::ControlRoundTrigger::ManifestAdvanced,
-            None,
-        );
+        if let Some(trigger) = self.maintenance.membership_pending.take() {
+            self.schedule_control_round(trigger, None);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn reconcile_membership_completion(&mut self) -> Result<(), RuntimeError> {
+        if self.maintenance.membership_pending.is_some() {
+            self.refresh_after_membership_change().await?;
+        }
         Ok(())
     }
 }

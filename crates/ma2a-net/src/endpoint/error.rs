@@ -40,7 +40,7 @@ enum NetErrorKind {
     Bind(iroh::endpoint::BindError),
     Observation(AddressObservationWaitError),
     Shutdown,
-    Enrollment,
+    Enrollment(&'static str),
     Control(ControlFailure),
     Reconfigure(crate::RelayReconfigureError),
 }
@@ -59,7 +59,9 @@ impl fmt::Display for NetError {
                 write!(formatter, "Iroh Endpoint observation failed: {error}")
             }
             NetErrorKind::Shutdown => formatter.write_str("Iroh Endpoint shutdown task failed"),
-            NetErrorKind::Enrollment => formatter.write_str("Iroh enrollment exchange failed"),
+            NetErrorKind::Enrollment(stage) => {
+                write!(formatter, "Iroh enrollment exchange failed at {stage}")
+            }
             NetErrorKind::Control(_) => formatter.write_str("Iroh control exchange failed"),
             NetErrorKind::Reconfigure(error) => error.fmt(formatter),
         }
@@ -80,7 +82,11 @@ impl NetError {
     }
 
     pub(crate) const fn enrollment() -> Self {
-        Self(NetErrorKind::Enrollment)
+        Self(NetErrorKind::Enrollment("framing"))
+    }
+
+    pub(crate) const fn enrollment_at(stage: &'static str) -> Self {
+        Self(NetErrorKind::Enrollment(stage))
     }
 
     pub(crate) const fn control_transient() -> Self {
@@ -119,7 +125,7 @@ impl Error for NetError {
             NetErrorKind::Bind(error) => Some(error),
             NetErrorKind::Observation(error) => Some(error),
             NetErrorKind::Reconfigure(error) => Some(error),
-            NetErrorKind::Shutdown | NetErrorKind::Enrollment | NetErrorKind::Control(_) => None,
+            NetErrorKind::Shutdown | NetErrorKind::Enrollment(_) | NetErrorKind::Control(_) => None,
         }
     }
 }

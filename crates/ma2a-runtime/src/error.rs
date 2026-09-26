@@ -38,7 +38,7 @@ impl RuntimeErrorCode {
 
 /// Runtime lifecycle failure with redacted secret handling.
 #[derive(Debug)]
-pub struct RuntimeError(RuntimeErrorKind);
+pub struct RuntimeError(RuntimeErrorKind, Option<u64>);
 
 #[derive(Debug)]
 pub(crate) enum RuntimeErrorKind {
@@ -59,7 +59,17 @@ pub(crate) enum RuntimeErrorKind {
 
 impl RuntimeError {
     pub(crate) const fn new(kind: RuntimeErrorKind) -> Self {
-        Self(kind)
+        Self(kind, None)
+    }
+
+    pub(crate) const fn after_commit(mut self, revision: u64) -> Self {
+        self.1 = Some(revision);
+        self
+    }
+
+    /// Returns the durable revision when the mutation committed before completion failed.
+    pub const fn committed_revision(&self) -> Option<u64> {
+        self.1
     }
 
     /// Background maintenance retries only recognized temporary operational failures.
@@ -99,6 +109,12 @@ impl RuntimeError {
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(revision) = self.1 {
+            write!(
+                formatter,
+                "mutation committed at revision {revision}; completion failed: "
+            )?;
+        }
         match &self.0 {
             RuntimeErrorKind::Store(error) => write!(formatter, "Runtime storage failed: {error}"),
             RuntimeErrorKind::Network(error) => {
@@ -156,7 +172,7 @@ impl Error for RuntimeError {
 
 impl From<StoreError> for RuntimeError {
     fn from(error: StoreError) -> Self {
-        Self(RuntimeErrorKind::Store(error))
+        Self::new(RuntimeErrorKind::Store(error))
     }
 }
 
@@ -186,19 +202,19 @@ impl From<ma2a_net::PrivateRelayAdvertisementPublishError> for RuntimeError {
 
 impl From<NetError> for RuntimeError {
     fn from(error: NetError) -> Self {
-        Self(RuntimeErrorKind::Network(error))
+        Self::new(RuntimeErrorKind::Network(error))
     }
 }
 
 impl From<InvalidEndpointSecret> for RuntimeError {
     fn from(error: InvalidEndpointSecret) -> Self {
-        Self(RuntimeErrorKind::InvalidEndpointKey(error))
+        Self::new(RuntimeErrorKind::InvalidEndpointKey(error))
     }
 }
 
 impl From<tokio::task::JoinError> for RuntimeError {
     fn from(error: tokio::task::JoinError) -> Self {
-        Self(RuntimeErrorKind::Task(error))
+        Self::new(RuntimeErrorKind::Task(error))
     }
 }
 

@@ -1,13 +1,10 @@
-use ma2a_net::EnrollmentCall;
-use ma2a_store::{
-    AddressRecordTarget, AddressRecordValidation, EnrollmentOutcome, ValidatedAddressRecord,
-};
+use ma2a_store::{AddressRecordTarget, AddressRecordValidation, ValidatedAddressRecord};
 use tokio::sync::oneshot;
 
 use crate::{
     EnrollmentAttempt, EnrollmentCreation, EnrollmentError, EstablishedEnrollment,
     actor::{Actor, Command, RuntimeHandle},
-    enrollment::{decode_attempt, encode_attempt},
+    enrollment::encode_attempt,
     state::RuntimeEvent,
 };
 
@@ -94,12 +91,19 @@ impl Actor {
             .endpoint
             .exchange_enrollment(owner_addr, &request)
             .await
-            .map_err(|_| EnrollmentError::internal())?;
+            .map_err(|error| {
+                eprintln!("enrollment transport: {error}");
+                EnrollmentError::internal().at_stage(crate::EnrollmentStage::Exchange)
+            })?;
         if status != 0 {
-            return Err(EnrollmentError::from_status(status));
+            return Err(EnrollmentError::from_status(status)
+                .at_stage(crate::EnrollmentStage::OwnerRedemption));
         }
-        let bootstrap = ma2a_core::EnrollmentBootstrap::decode_frames(&response_pages)
-            .map_err(|_| EnrollmentError::from_status(1))?;
+        let bootstrap =
+            ma2a_core::EnrollmentBootstrap::decode_frames(&response_pages).map_err(|_| {
+                EnrollmentError::from_status(1)
+                    .at_stage(crate::EnrollmentStage::BootstrapValidation)
+            })?;
         let (chain, owner_address) = bootstrap.into_parts();
         if chain.space_id() != expected_space
             || chain
@@ -110,7 +114,8 @@ impl Actor {
                 )
                 .is_err()
         {
-            return Err(EnrollmentError::from_status(1));
+            return Err(EnrollmentError::from_status(1)
+                .at_stage(crate::EnrollmentStage::BootstrapValidation));
         }
         let now_ms = u64::try_from(
             self.clock
@@ -127,7 +132,9 @@ impl Actor {
                 now_ms,
             ),
         )
-        .map_err(|_| EnrollmentError::from_status(1))?;
+        .map_err(|_| {
+            EnrollmentError::from_status(1).at_stage(crate::EnrollmentStage::BootstrapValidation)
+        })?;
         let persisted = self
             .store
             .persist_enrollment(crate::store::EnrollmentPersistence {
@@ -136,101 +143,44 @@ impl Actor {
                 local_endpoint_id: self.state.endpoint_id,
             })
             .await
-            .map_err(|_| EnrollmentError::internal())?;
+            .map_err(|_| {
+                EnrollmentError::internal().at_stage(crate::EnrollmentStage::CandidatePersistence)
+            })?;
         let chain = persisted.chain;
         // Membership comes from what the Store committed, never from the response.
         // A replayed or otherwise refused chain must not look like a fresh join.
         if !persisted.memberships.contains(&expected_space) {
-            return Err(EnrollmentError::from_status(1));
+            return Err(EnrollmentError::from_status(1)
+                .at_stage(crate::EnrollmentStage::BootstrapValidation));
         }
         let revision = persisted.revision;
         self.state.memberships = persisted.memberships;
         self.state.revision = revision;
         self.endpoint.set_control_enabled(true);
-        self.refresh_control_lookup()
-            .await
-            .map_err(|_| EnrollmentError::internal())?;
-        self.refresh_relay_candidates()
-            .await
-            .map_err(|_| EnrollmentError::internal())?;
-        self.refresh_local_control_publications()
-            .await
-            .map_err(|_| EnrollmentError::internal())?;
-        self.schedule_control_round(
-            crate::control_sync::ControlRoundTrigger::Explicit(
-                crate::control_sync::ControlRoundScope::peer(owner_endpoint_id),
-            ),
-            None,
-        );
+        self.maintenance
+            .enrollment
+            .get_or_insert_with(|| crate::enrollment::completion::PendingEnrollment {
+                owners: std::collections::BTreeSet::new(),
+                stage: crate::EnrollmentStage::ControlLookup,
+            })
+            .owners
+            .insert(owner_endpoint_id);
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
-        Ok(EstablishedEnrollment::new(chain.latest_generation()))
-    }
-
-    pub(crate) async fn handle_enrollment_call(&mut self, call: EnrollmentCall) {
-        // Departure shares the bootstrap ALPN and is distinguished by its magic prefix.
-        if call
-            .request()
-            .starts_with(&crate::departure::DEPARTURE_MAGIC)
-        {
-            self.handle_departure_call(call).await;
-            return;
+        if let Err(error) = self.reconcile_enrollment().await {
+            let stage = self
+                .maintenance
+                .enrollment
+                .as_ref()
+                .map_or(crate::EnrollmentStage::Publications, |pending| {
+                    pending.stage
+                });
+            eprintln!("enrollment completion failed at {stage:?}: {error}");
+            return Err(EnrollmentError::internal()
+                .after_commit(revision)
+                .at_stage(stage));
         }
-        let Ok((ticket, redemption)) = decode_attempt(call.request(), call.remote_endpoint_id())
-        else {
-            call.respond(1, Vec::new());
-            return;
-        };
-        let Ok(now_ms) = self.clock.now_ms() else {
-            call.respond(255, Vec::new());
-            return;
-        };
-        let authorized =
-            ma2a_store::AuthorizedEnrollmentRedemption::new(ticket, redemption, now_ms);
-        match self.store.redeem_enrollment(authorized).await {
-            Ok(EnrollmentOutcome::Redeemed { revision, chain }) => {
-                self.state.revision = revision;
-                if self.refresh_control_lookup().await.is_ok()
-                    && self.refresh_relay_candidates().await.is_ok()
-                {
-                    self.schedule_control_round(
-                        crate::control_sync::ControlRoundTrigger::EnrollmentCompleted,
-                        None,
-                    );
-                }
-                self.respond_with_bootstrap(call, &chain).await;
-            }
-            Ok(EnrollmentOutcome::Retry { chain }) => {
-                self.respond_with_bootstrap(call, &chain).await;
-            }
-            Ok(EnrollmentOutcome::Expired) => call.respond(2, Vec::new()),
-            Ok(EnrollmentOutcome::Cancelled) => call.respond(3, Vec::new()),
-            Ok(EnrollmentOutcome::Conflict) => call.respond(4, Vec::new()),
-            Ok(EnrollmentOutcome::NotFound) => call.respond(1, Vec::new()),
-            Err(_) => call.respond(255, Vec::new()),
-        }
-    }
-
-    async fn respond_with_bootstrap(&self, call: EnrollmentCall, bytes: &[u8]) {
-        let bootstrap = async {
-            let chain = ma2a_core::SpaceChain::import_public(bytes)
-                .map_err(|_| ma2a_core::ProtocolError::INVALID_INPUT)?;
-            let persisted = self
-                .store
-                .address_record(chain.space_id(), self.state.endpoint_id)
-                .await
-                .map_err(|_| ma2a_core::ProtocolError::INTERNAL)?
-                .ok_or(ma2a_core::ProtocolError::INTERNAL)?;
-            let owner_address = ma2a_core::SignedSpaceAddressRecordV1::parse_canonical_bytes(
-                persisted.signed_record(),
-            )?;
-            ma2a_core::EnrollmentBootstrap::new(chain, owner_address)?.encode_frames()
-        }
-        .await;
-        match bootstrap {
-            Ok(frames) => call.respond(0, frames),
-            Err(_) => call.respond(255, Vec::new()),
-        }
+        Ok(EstablishedEnrollment::new(revision, chain))
     }
 }

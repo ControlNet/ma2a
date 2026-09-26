@@ -104,6 +104,16 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
     };
     owner.shutdown().await?;
     let owner = runtime_at_test_time(owner_config.clone()).await?;
+    // The initial join schedules address propagation asynchronously. Complete it
+    // through the real exchange before measuring replay-only effects;
+    // otherwise a first candidate address insertion legitimately advances revision.
+    winner.sync_control().await?;
+    owner.handle().sync_control().await?;
+    assert!(
+        Repository::open(&owner_config)?
+            .address_record(created.space_id(), winner.status().await?.endpoint_id(),)?
+            .is_some()
+    );
     let before_denials = owner.handle().status().await?;
     let before_generation = Repository::open(&owner_config)?
         .load_space_chain(created.space_id())?

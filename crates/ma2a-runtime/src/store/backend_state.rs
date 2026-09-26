@@ -35,18 +35,21 @@ impl StoreBackend {
         &mut self,
         request: super::EnrollmentPersistence,
     ) -> Result<super::PersistedEnrollment, RuntimeError> {
-        let revision = self
-            .repository
-            .persist_control_batch(&ma2a_store::ControlBatch::new(
+        let committed = self.repository.persist_enrollment_batch(
+            &ma2a_store::ControlBatch::new(
                 vec![request.chain.clone()],
                 vec![*request.owner_address],
                 Vec::new(),
-            ))?
-            .map_or_else(|| self.repository.revision(), Ok)?;
+            ),
+            request.chain.space_id(),
+            request.local_endpoint_id,
+        )?;
+        let revision = committed.revision();
+        let projection = committed.into_value();
         Ok(super::PersistedEnrollment {
             revision,
-            chain: request.chain,
-            memberships: self.repository.memberships_for(request.local_endpoint_id)?,
+            chain: projection.chain,
+            memberships: projection.memberships,
         })
     }
 }
