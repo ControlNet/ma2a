@@ -44,7 +44,10 @@ fn replay_entries_survive_reopen_and_evict_oldest_by_count() -> TestResult {
     let repository = Repository::open(&config)?;
 
     // Then
-    assert!(repository.mutation_replay(request_id(0)?)?.is_none());
+    assert_eq!(
+        repository.mutation_replay(request_id(0)?)?,
+        Some(ma2a_store::MutationReplayState::Pending([0; 32]))
+    );
     let retained = repository
         .mutation_replay(request_id(1)?)?
         .ok_or("oldest retained replay missing")?;
@@ -76,7 +79,10 @@ fn replay_entries_evict_oldest_until_byte_budget_is_met() -> TestResult {
     let repository = Repository::open(&config)?;
 
     // Then
-    assert!(repository.mutation_replay(request_id(0)?)?.is_none());
+    assert_eq!(
+        repository.mutation_replay(request_id(0)?)?,
+        Some(ma2a_store::MutationReplayState::Pending([0; 32]))
+    );
     assert!(repository.mutation_replay(request_id(1)?)?.is_some());
     assert!(replay_bytes(&config)? <= LOCAL_MUTATION_REPLAY_MAX_BYTES);
     Ok(())
@@ -162,4 +168,46 @@ fn replay_bytes(config: &StoreConfig) -> Result<usize, rusqlite::Error> {
         [],
         |row| row.get(0),
     )
+}
+
+#[test]
+fn schema_five_replay_rows_gain_permanent_fences() -> TestResult {
+    let state = TempState::new("replay-migration")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let completed = record(7, b"terminal".to_vec())?;
+    repository.reserve_mutation_replay(completed.request_id(), completed.fingerprint())?;
+    repository.record_mutation_replay(&completed)?;
+    repository.reserve_mutation_replay(request_id(8)?, [8; 32])?;
+    drop(repository);
+    // Reconstruct the real schema-5 replay layout, retaining both row states.
+    let connection = Connection::open(config.database_path())?;
+    connection.execute_batch("DROP TRIGGER reserve_mutation_fence; DROP TABLE local_mutation_fences; DELETE FROM schema_migrations WHERE version = 6; PRAGMA user_version = 5;")?;
+    drop(connection);
+    let mut reopened = Repository::open(&config)?;
+    assert!(matches!(
+        reopened.mutation_replay(request_id(7)?)?,
+        Some(ma2a_store::MutationReplayState::Completed(_))
+    ));
+    assert!(matches!(
+        reopened.mutation_replay(request_id(8)?)?,
+        Some(ma2a_store::MutationReplayState::Pending(_))
+    ));
+    // Simulate response eviction: the migrated identity still fences admission.
+    Connection::open(config.database_path())?.execute(
+        "DELETE FROM local_mutation_replay WHERE request_id = ?1",
+        [completed.request_id().as_bytes().as_slice()],
+    )?;
+    assert_eq!(
+        reopened.mutation_replay(completed.request_id())?,
+        Some(ma2a_store::MutationReplayState::Pending(
+            completed.fingerprint()
+        ))
+    );
+    assert!(
+        reopened
+            .reserve_mutation_replay(completed.request_id(), completed.fingerprint())
+            .is_err()
+    );
+    Ok(())
 }

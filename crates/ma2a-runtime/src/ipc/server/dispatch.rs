@@ -99,7 +99,7 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                     if entry.fingerprint() == fingerprint =>
                 {
                     let response = entry.response().to_vec();
-                    return Ok((response.clone(), response_requests_shutdown(&response)?));
+                    return Ok((response, false));
                 }
                 ma2a_store::MutationReplayState::Pending(_)
                 | ma2a_store::MutationReplayState::Completed(_) => {
@@ -127,8 +127,21 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
             let result = match execute(&command, &status, context).await {
                 Ok(result) => result,
                 Err(error) => {
-                    context.handle.abort_mutation_replay(request_id).await?;
-                    return Ok((api::encode_error(error)?, false));
+                    let encoded = super::mutation_outcome::record_failure(
+                        context,
+                        (
+                            ma2a_store::MutationReplayRequest::new(
+                                request_id,
+                                fingerprint
+                                    .map(|(_, value)| value)
+                                    .ok_or(IpcError::InvalidFrame)?,
+                            ),
+                            status.revision(),
+                        ),
+                        error,
+                    )
+                    .await?;
+                    return Ok((encoded, false));
                 }
             };
             let revision = authoritative_revision(&command, status.revision(), context).await?;
@@ -158,11 +171,6 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
         context.handle.record_mutation_replay(record).await?;
     }
     Ok((encoded, response.result_type() == "shutting_down"))
-}
-
-fn response_requests_shutdown(response: &[u8]) -> Result<bool, IpcError> {
-    let value: Value = serde_json::from_slice(response).map_err(|_| IpcError::InvalidFrame)?;
-    Ok(value.pointer("/result/type").and_then(Value::as_str) == Some("shutting_down"))
 }
 
 fn encode_stamped_snapshot_response(

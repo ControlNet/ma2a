@@ -6,7 +6,7 @@ impl Actor {
     pub(super) async fn create_enrollment_invite(
         &mut self,
         creation: EnrollmentCreation,
-    ) -> Result<ma2a_core::SignedInviteTicket, EnrollmentError> {
+    ) -> Result<ma2a_store::CreatedEnrollmentInvite, EnrollmentError> {
         let issued = self
             .clock
             .now_ms()
@@ -29,6 +29,6 @@ impl Actor {
             .send(crate::state::RuntimeEvent::memberships_changed(
                 created.revision(),
             ));
-        Ok(created.ticket().clone())
+        Ok(created)
     }
 }
