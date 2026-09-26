@@ -1,5 +1,7 @@
 //! Authenticated Web projection integration coverage.
 
+#[path = "support/sse.rs"]
+mod sse;
 #[path = "support/web.rs"]
 #[allow(
     dead_code,
@@ -395,10 +397,11 @@ async fn full_spaces_keep_snapshot_details_and_events_within_the_frame_budget() 
     let mut events = response.into_body().into_data_stream();
     // Session creation advances durable revision without loading or changing any Space.
     let _another_session = auth.web_auth().login(support::password()).await?;
-    let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
-        .await?
-        .ok_or("event stream closed")??;
-    let event = std::str::from_utf8(&event)?;
+    let event = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sse::next_state_event(&mut events),
+    )
+    .await??;
     assert!(event.contains("snapshot_invalidated") || event.contains("resync-required"));
     drop(events);
     cancellation.cancel();
