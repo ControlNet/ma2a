@@ -30,9 +30,13 @@ pub(super) fn request(port: u16, request: &[u8]) -> TestValue<HttpResponse> {
     let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
-    stream.write_all(request)?;
+    stream
+        .write_all(request)
+        .map_err(|error| format!("HTTP write: {error}"))?;
     let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes)?;
+    stream
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("HTTP read after {} bytes: {error}", bytes.len()))?;
     parse(&bytes)
 }
 

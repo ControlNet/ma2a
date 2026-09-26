@@ -495,3 +495,23 @@ Final RequestId failure/restart/completion repeats passed 80/80 across 20 rounds
 of a measured nonzero baseline failure rate or proof that network timeouts cannot
 occur. Deterministic injected partial-commit/response-loss regressions establish
 the corrected failure behavior independently of those observed stress rates.
+
+## Final-head SSE polling interleaving
+
+At `ecff4a1`, Phase One E2E passed, but CI captured a real revisioned SSE frame
+(revision 7) in the revoked-stream assertion, rather than a heartbeat. The
+producer validated its session before awaiting the Runtime stamp; revocation
+could commit during that await. A deterministic regression uses real SQLite
+session validation and revokes the session inside a test-only projection future.
+Before the fix it returned the stamp instead of `Unauthorized`
+(`/tmp/ma2a-sse-poll-before.log`). Each polling step now validates again after
+reading the stamp, before enqueueing the notification. This preserves polling,
+queue limits, cookie/authentication policy, and all existing close assertions.
+Already transmitted pre-revocation bytes cannot be recalled; this change prevents
+publishing a projection read across a completed revocation under stale admission.
+
+The local full gate also encountered an unlocalized `WouldBlock` in the embedded
+console process test (588 passes, one failure, 32 unexecuted). Added diagnostic
+context records only HTTP method/path, operation and byte count, never request
+contents, credentials or cookies. All 20 isolated repetitions passed; the original
+failure's cause remains unproven and is not represented as a diagnosed HTTP fix.
