@@ -17,7 +17,16 @@ pub(crate) fn current_version(connection: &Connection) -> Result<u32, StoreError
 }
 
 pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Current-schema validation only reads. Taking a writer reservation here
+    // makes harmless repository opens (including session validation) compete
+    // with actual mutations and fail with SQLITE_BUSY under ordinary overlap.
+    // A real migration still serializes on IMMEDIATE and rechecks the version.
+    let behavior = if current_version(connection)? == SCHEMA_VERSION {
+        TransactionBehavior::Deferred
+    } else {
+        TransactionBehavior::Immediate
+    };
+    let transaction = connection.transaction_with_behavior(behavior)?;
     let version = current_version(&transaction)?;
     if version > SCHEMA_VERSION {
         return Err(StoreError::FutureSchema {

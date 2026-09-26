@@ -327,3 +327,30 @@ threshold or test concurrency was changed.
 
 Control completion/fatal cleanup/explicit observation/periodic scheduling focused
 repeat: 20 rounds, 100/100 executions passed (`/tmp/ma2a-audit-repeat`).
+
+## Final reliability audit: unnecessary Store writer reservation
+
+The previously unresolved SSE closure was reproduced with temporary, secret-free
+stage diagnostics: 16 successful executions followed by failure 17, specifically
+`Repository::open -> SQLite DatabaseBusy` (`/tmp/ma2a-sse-repeat/17.log`). The
+session validator closes its stream on that internal error; credentials were not
+rejected. Every current-schema open unnecessarily began an IMMEDIATE migration
+transaction, even though all migration steps were already applied.
+
+`current_schema_open_reads_committed_truth_while_another_writer_is_active` holds
+an independent SQLite write transaction until Repository::open returns. Baseline
+fails deterministically after the existing five-second busy timeout
+(`/tmp/ma2a-open-lock-before.log`). Current-schema validation now uses a DEFERRED
+read transaction; actual migrations retain IMMEDIATE and recheck the schema
+inside that transaction. All migration evidence, quick_check, key-reference and
+owned-chain validation remains enabled. No authentication policy, cookie, TLS,
+transport security, timeout or migration version changes. The companion test
+rejects missing migration evidence on the read path. Diagnostic Web code was
+removed after locating the failure.
+
+The background transient-map test now drains startup control before injecting
+its periodic fault. Advancing its paused clock could otherwise expire an in-flight
+startup round; the new control completion reconciliation then correctly consumed
+the injected fault and the periodic tick already recovered the map before the
+assertion. The expected intermediate and final projections remain unchanged.
+The synchronized test passed 20/20 repeats (`/tmp/ma2a-transient-repeat`).
