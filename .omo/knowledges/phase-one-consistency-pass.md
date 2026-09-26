@@ -465,3 +465,33 @@ with no cross-restart streaming cursor. Historical owner-invalid repositories
 require operator recovery; this pass does not repair signed chains or delete keys.
 A permanent network outage or expired invitation can still leave an enrollment
 exchange ambiguous, with its RequestId fenced against duplicate execution.
+
+## Snapshot fixture I/O budget
+
+The isolated control-restart cohort passed 20/20 without changing its 15-second
+sync deadline. The next local full quality run passed that scenario but timed out
+the 270-Space snapshot test at nextest's unchanged 120-second limit (456 passes,
+one timeout, 164 not run; `/tmp/ma2a-verified-head/xtask-final.log`).
+Stage instrumentation reproduced a 125.37-second standalone run: initial shutdown
+0.84s, 270 owned Spaces persisted 44.32s, restart 88.82s, credential service opened
+94.67s, snapshot fetched 106.37s. The final Space-list query and shutdown then
+completed. Instrumentation was removed after locating the cost.
+
+The snapshot fixture now retains one locally owned Space and batch-imports 269
+real independently signed public genesis chains. Every Space still contains the
+same local Endpoint, escaped names are unchanged, and the test retains all 270
+Space identities, real SQLite persistence, Runtime restart, complete IPC snapshot
+and Space-list assertions, revision/boot checks and the greater-than-one-frame
+assertion. It additionally verifies all 270 durable memberships before restart.
+This removes unrelated repeated private signing-key provisioning and independent
+setup commits; production durability, signatures, validation, timeouts, test count
+and nextest concurrency are unchanged. The standalone test passed in 83.23s
+(`/tmp/ma2a-large-snapshot-batched.log`).
+
+Final dedicated enrollment stress passed 80/80: the three original scenarios
+60/60, plus long-chain enrollment 20/20 (`/tmp/ma2a-enrollment-final-stress`).
+Final RequestId failure/restart/completion repeats passed 80/80 across 20 rounds
+(`/tmp/ma2a-replay-final-stress`). Baseline enrollment was 60/60; this is not a claim
+of a measured nonzero baseline failure rate or proof that network timeouts cannot
+occur. Deterministic injected partial-commit/response-loss regressions establish
+the corrected failure behavior independently of those observed stress rates.
