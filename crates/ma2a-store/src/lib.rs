@@ -10,6 +10,7 @@
 mod address_record_queries;
 mod address_records;
 mod backup;
+mod committed;
 mod config;
 mod control_batch;
 mod control_state;
@@ -43,6 +44,7 @@ pub use address_records::{
     AddressRecordBoundaryError, AddressRecordOutcome, AddressRecordTarget, AddressRecordValidation,
     ValidatedAddressRecord,
 };
+pub use committed::Committed;
 pub use config::StoreConfig;
 pub use control_batch::ControlBatch;
 pub use control_state::ControlSpaceState;

@@ -9,7 +9,7 @@ impl Actor {
     pub(super) async fn create_owned_space(
         &mut self,
         name: String,
-    ) -> Result<SpaceId, RuntimeError> {
+    ) -> Result<ma2a_store::CreatedSpace, RuntimeError> {
         let created_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;
         // The Space name names the Space; the creator's member label names the
@@ -47,7 +47,7 @@ impl Actor {
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(created.revision()));
-        Ok(space_id)
+        Ok(created)
     }
 
     pub(super) async fn observe_memberships(
@@ -78,7 +78,7 @@ impl Actor {
         &mut self,
         space_id: SpaceId,
         endpoint_id: ma2a_core::EndpointId,
-    ) -> Result<u64, RuntimeError> {
+    ) -> Result<crate::store::RemovedMember, RuntimeError> {
         let issued_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;
         let removed = self
@@ -92,7 +92,7 @@ impl Actor {
             .await?;
         let revision = removed.revision;
         self.state.revision = revision;
-        self.state.memberships = removed.memberships;
+        self.state.memberships.clone_from(&removed.memberships);
         self.synchronized_control_peers.clear();
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
@@ -100,7 +100,7 @@ impl Actor {
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(revision));
-        Ok(revision)
+        Ok(removed)
     }
 
     /// Re-derives every projection that depends on the signed membership set.

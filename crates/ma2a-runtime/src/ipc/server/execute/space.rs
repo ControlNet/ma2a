@@ -11,14 +11,25 @@ pub(super) async fn create(
     context: &ConnectionContext,
     name: &str,
 ) -> Result<CommandResult, ProtocolError> {
-    let space_id = context
+    let committed = context
         .handle
-        .create_owned_space(name.to_owned())
+        .create_owned_space_committed(name.to_owned())
         .await
         .map_err(|_| ProtocolError::INTERNAL)?;
-    Ok(CommandResult::space_created(
-        crate::api::SpaceView::new(space_id, name, 1).map_err(|_| ProtocolError::INTERNAL)?,
-    ))
+    Ok(
+        CommandResult::space_created(committed_space(committed.chain())?)
+            .at_revision(committed.revision()),
+    )
+}
+
+fn committed_space(chain: &ma2a_core::SpaceChain) -> Result<crate::api::SpaceView, ProtocolError> {
+    let fallback = crate::api::encode_hex(chain.space_id().as_bytes());
+    crate::api::SpaceView::new(
+        chain.space_id(),
+        chain.genesis().genesis().name().unwrap_or(&fallback),
+        u32::try_from(chain.members().len()).map_err(|_| ProtocolError::INTERNAL)?,
+    )
+    .map_err(|_| ProtocolError::INTERNAL)
 }
 
 pub(super) async fn invite(
@@ -41,18 +52,10 @@ pub(super) async fn invite(
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
     write_owner_only(output_path, created.ticket().encode_string().as_bytes())
         .map_err(|error| ApiError::new(error).after_commit(created.revision()))?;
-    let snapshot =
-        context.handle.snapshot().await.map_err(|_| {
-            ApiError::new(ProtocolError::UNAVAILABLE).after_commit(created.revision())
-        })?;
-    snapshot
-        .spaces()
-        .iter()
-        .find(|space| space.id() == space_id)
-        .cloned()
-        .and_then(|space| space.to_space_view().ok())
-        .map(CommandResult::space_invitation_created)
-        .ok_or_else(|| ApiError::new(ProtocolError::INTERNAL).after_commit(created.revision()))
+    Ok(
+        CommandResult::space_invitation_created(committed_space(created.chain())?)
+            .at_revision(created.revision()),
+    )
 }
 
 #[cfg(unix)]
@@ -138,12 +141,12 @@ pub(super) async fn leave(
         .ok_or(ProtocolError::NOT_FOUND)?;
     let identity = crate::api::SpaceIdentityView::new(space.space_id(), space.name())
         .map_err(|_| ProtocolError::INTERNAL)?;
-    context
+    let revision = context
         .handle
         .leave_space(space_id, request_id)
         .await
         .map_err(|error| departure_api_error(error.code()))?;
-    Ok(CommandResult::space_left(identity))
+    Ok(CommandResult::space_left(identity).at_revision(revision))
 }
 
 fn departure_api_error(code: SpaceDepartureErrorCode) -> ApiError {
@@ -213,18 +216,9 @@ pub(super) async fn revoke(
     space_id: SpaceId,
     endpoint_id: EndpointId,
 ) -> Result<CommandResult, ApiError> {
-    let snapshot = context
-        .handle
-        .snapshot()
-        .await
-        .map_err(|_| ProtocolError::UNAVAILABLE)?;
-    let mut space = snapshot
-        .spaces()
-        .iter()
-        .find(|space| space.id() == space_id)
-        .cloned()
-        .ok_or(ProtocolError::INVALID_INPUT)?;
-    context
+    #[cfg(test)]
+    context.mutation_hooks.pause_revoke().await;
+    let removed = context
         .handle
         .revoke_owned_space_member(space_id, endpoint_id)
         .await
@@ -239,10 +233,10 @@ pub(super) async fn revoke(
                 ApiError::new(ProtocolError::INVALID_INPUT)
             }
         })?;
-    space.member_count -= 1;
-    Ok(CommandResult::space_revoked(
-        space.to_space_view().map_err(|_| ProtocolError::INTERNAL)?,
-    ))
+    Ok(
+        CommandResult::space_revoked(committed_space(&removed.chain)?)
+            .at_revision(removed.revision),
+    )
 }
 
 fn enrollment_protocol_error(error: &crate::EnrollmentError) -> ProtocolError {

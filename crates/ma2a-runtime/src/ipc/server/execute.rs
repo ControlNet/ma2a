@@ -17,9 +17,14 @@ mod space;
 
 pub(super) async fn authoritative_revision(
     command: &Command,
-    current_revision: u64,
+    outcome: (&CommandResult, u64),
     context: &ConnectionContext,
 ) -> Result<u64, IpcError> {
+    let (result, current_revision) = outcome;
+    if let Some(revision) = result.committed_revision() {
+        context.handle.adopt_revision(revision).await?;
+        return Ok(revision);
+    }
     match command.operation() {
         "ui_init" | "ui_password_set" | "ui_password_reset" | "session_revoke_all" => {
             let persisted = context

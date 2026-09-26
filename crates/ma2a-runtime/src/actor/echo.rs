@@ -33,7 +33,7 @@ impl Actor {
     pub(super) fn spawn_outbound_echo(
         &mut self,
         request: OutboundEchoRequest,
-        reply: oneshot::Sender<Result<EchoResponse<'static>, EchoError>>,
+        reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
     ) {
         let OutboundEchoRequest {
             request_id,
@@ -83,7 +83,9 @@ impl Actor {
                 finish(revision.map_or(Err(EchoError::Unavailable), |_| response));
             }
             EchoTaskResponse::Outbound(result, reply) => {
-                let result = revision.map_or(Err(EchoError::Unavailable), |_| result);
+                let result = revision.map_or(Err(EchoError::Unavailable), |revision| {
+                    result.map(|value| ma2a_store::Committed::new(revision, value))
+                });
                 let _unsent = reply.send(result);
             }
         }
@@ -155,7 +157,7 @@ pub(super) enum EchoTaskCompletion {
     Outbound {
         audit: Option<EchoAuditRecord>,
         result: Result<EchoResponse<'static>, EchoError>,
-        reply: oneshot::Sender<Result<EchoResponse<'static>, EchoError>>,
+        reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
     },
 }
 
@@ -166,7 +168,7 @@ enum EchoTaskResponse {
     ),
     Outbound(
         Result<EchoResponse<'static>, EchoError>,
-        oneshot::Sender<Result<EchoResponse<'static>, EchoError>>,
+        oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
     ),
 }
 
@@ -180,7 +182,7 @@ pub(super) struct OutboundEchoRequest {
 
 async fn run_outbound(
     input: OutboundEchoInput,
-    reply: oneshot::Sender<Result<EchoResponse<'static>, EchoError>>,
+    reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
 ) -> EchoTaskCompletion {
     let started = Instant::now();
     let result = async {

@@ -21,12 +21,12 @@ pub(crate) enum Command {
     },
     CreateOwnedSpace {
         name: String,
-        reply: oneshot::Sender<Result<SpaceId, RuntimeError>>,
+        reply: oneshot::Sender<Result<ma2a_store::CreatedSpace, RuntimeError>>,
     },
     RevokeOwnedSpaceMember {
         space_id: SpaceId,
         endpoint_id: EndpointId,
-        reply: oneshot::Sender<Result<u64, RuntimeError>>,
+        reply: oneshot::Sender<Result<crate::store::RemovedMember, RuntimeError>>,
     },
     LeaveSpace {
         space_id: SpaceId,
@@ -81,7 +81,7 @@ pub(crate) enum Command {
         request_id: RequestId,
         target: EndpointId,
         payload: Vec<u8>,
-        reply: oneshot::Sender<Result<EchoResponse<'static>, EchoError>>,
+        reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
     },
     Shutdown(oneshot::Sender<ShutdownAck>),
 }

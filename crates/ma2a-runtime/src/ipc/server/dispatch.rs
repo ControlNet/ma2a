@@ -144,7 +144,8 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                     return Ok((encoded, false));
                 }
             };
-            let revision = authoritative_revision(&command, status.revision(), context).await?;
+            let revision =
+                authoritative_revision(&command, (&result, status.revision()), context).await?;
             (result, revision)
         }
         None => match execute(&command, &status, context).await {

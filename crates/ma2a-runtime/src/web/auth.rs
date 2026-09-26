@@ -94,7 +94,7 @@ impl WebAuthService {
         tokio::task::spawn_blocking(move || {
             let verifier = derive_password_verifier(password.as_bytes())?;
             Repository::open(&config)?
-                .change_password(
+                .change_password_committed(
                     match action {
                         PasswordAction::Init => PasswordTransition::Init,
                         PasswordAction::Set => PasswordTransition::Set,
@@ -108,7 +108,8 @@ impl WebAuthService {
                 )
                 .map(|credential| {
                     credential.map(|credential| CredentialState {
-                        auth_epoch: credential.auth_epoch(),
+                        auth_epoch: credential.value().auth_epoch(),
+                        revision: credential.revision(),
                     })
                 })
         })
@@ -248,12 +249,20 @@ impl WebAuthService {
     /// # Errors
     /// Returns a closed internal failure when revocation cannot be persisted.
     pub async fn revoke_all_sessions(&self) -> Result<(), AuthFailure> {
+        self.revoke_all_sessions_committed().await.map(|_| ())
+    }
+
+    pub(crate) async fn revoke_all_sessions_committed(
+        &self,
+    ) -> Result<ma2a_store::Committed<bool>, AuthFailure> {
         let config = self.inner.store.clone();
         let now_ms = self.inner.clock.now_ms();
-        tokio::task::spawn_blocking(move || Repository::open(&config)?.revoke_all_sessions(now_ms))
-            .await
-            .map_err(|_| AuthFailure::Internal)?
-            .map_err(|_| AuthFailure::Internal)
+        tokio::task::spawn_blocking(move || {
+            Repository::open(&config)?.revoke_all_sessions_committed(now_ms)
+        })
+        .await
+        .map_err(|_| AuthFailure::Internal)?
+        .map_err(|_| AuthFailure::Internal)
     }
 }
 
