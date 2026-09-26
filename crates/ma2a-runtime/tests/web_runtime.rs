@@ -27,7 +27,6 @@ use ma2a_runtime::{
 };
 use ma2a_store::StoreConfig;
 use support::{TempState, clock};
-use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt as _;
 use zeroize::Zeroizing;
@@ -179,10 +178,14 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
     control.send(Command::session_revoke_all()?).await?;
     let revoked = streams.pop().ok_or("active event stream missing")?;
     let mut revoked_body = revoked.into_body().into_data_stream();
+    let revoked_frame = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        sse::next_state_event(&mut revoked_body),
+    )
+    .await??;
     assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(2), revoked_body.next())
-            .await?
-            .is_none()
+        revoked_frame.is_none(),
+        "revoked SSE frame: {revoked_frame:?}"
     );
     drop(streams);
 
@@ -221,9 +224,12 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
 
     auth_clock.set(1_000 + WebAuthConfig::ABSOLUTE_TIMEOUT_MS);
     assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(2), expiring_body.next())
-            .await?
-            .is_none()
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sse::next_state_event(&mut expiring_body),
+        )
+        .await??
+        .is_none()
     );
 
     cancellation.cancel();
@@ -401,7 +407,8 @@ async fn full_spaces_keep_snapshot_details_and_events_within_the_frame_budget() 
         std::time::Duration::from_secs(5),
         sse::next_state_event(&mut events),
     )
-    .await??;
+    .await??
+    .ok_or("event stream closed")?;
     assert!(event.contains("snapshot_invalidated") || event.contains("resync-required"));
     drop(events);
     cancellation.cancel();
