@@ -51,7 +51,7 @@ pub(crate) enum Command {
     },
     ControlSyncStatus {
         peer: ma2a_core::EndpointId,
-        reply: oneshot::Sender<bool>,
+        reply: oneshot::Sender<ma2a_store::Committed<bool>>,
     },
     SyncControl {
         peer: Option<ma2a_core::EndpointId>,

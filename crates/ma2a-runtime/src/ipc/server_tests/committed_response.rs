@@ -82,3 +82,49 @@ async fn revoke_response_and_revision_share_the_committed_membership() -> TestRe
     runtime.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn read_receipts_ignore_an_older_dispatch_status() -> TestResult {
+    let state = TempState::new()?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let handle = runtime.handle();
+    let older = handle.status().await?;
+    let space = handle.create_owned_space("read-receipt".to_owned()).await?;
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let server =
+        LocalApiServer::bind_for_launch(IpcPaths::new(&state.0)?, handle.clone(), control, None)
+            .await?;
+    let (shutdown_sender, _receiver) = tokio::sync::mpsc::channel(1);
+    let context = super::super::ConnectionContext {
+        paths: server.paths.clone(),
+        handle: handle.clone(),
+        control: server.control.clone(),
+        replay: Arc::clone(&server.replay),
+        shutdown_sender,
+        web: None,
+        identity: Arc::clone(&server.identity),
+        mutation_hooks: server.mutation_hooks.clone(),
+    };
+    let operations = [
+        serde_json::json!({"version":1,"operation":"handshake"}),
+        serde_json::json!({"version":1,"operation":"private_relay_status"}),
+        serde_json::json!({"version":1,"operation":"public_relay_status"}),
+        serde_json::json!({"version":1,"operation":"space_show", "space_id":api::encode_hex(space.as_bytes())}),
+        serde_json::json!({"version":1,"operation":"control_sync_status", "peer_endpoint_id": PEER_ENDPOINT_ID}),
+    ];
+    for operation in operations {
+        let command = api::decode_command(&serde_json::to_vec(&operation)?)?;
+        let result = super::super::execute::execute(&command, &older, &context).await?;
+        let revision = result.committed_revision().ok_or("read receipt missing")?;
+        assert!(revision > older.revision());
+        assert_eq!(revision, handle.snapshot().await?.revision());
+    }
+    drop(server);
+    runtime.shutdown().await?;
+    Ok(())
+}

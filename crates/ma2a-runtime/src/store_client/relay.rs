@@ -9,6 +9,12 @@ impl StoreClient {
     pub(crate) async fn relay_configuration(
         &self,
     ) -> Result<ma2a_store::RelayConfiguration, RuntimeError> {
+        Ok(self.relay_configuration_committed().await?.into_value())
+    }
+
+    pub(crate) async fn relay_configuration_committed(
+        &self,
+    ) -> Result<ma2a_store::Committed<ma2a_store::RelayConfiguration>, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::RelayConfiguration { reply })
             .await?;

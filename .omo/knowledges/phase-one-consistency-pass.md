@@ -307,3 +307,23 @@ join. Runtime shutdown joins tasks even if the Actor's acknowledgement failed.
 The periodic scheduling regression now waits for the actual scheduling event:
 a status mailbox reply is not a maintenance barrier because commands have higher
 select priority. Existing partial signed-batch tests remain unchanged.
+
+## Final audit: read response receipts
+
+A deterministic adapter test supplies a deliberately older dispatch status after
+Space creation. The old handshake produced no authoritative receipt
+(`/tmp/ma2a-read-receipt-before.log`). Handshake now reads credential state and
+revision from the same frozen Store snapshot; Space show uses its snapshot
+revision; control-peer status returns an Actor receipt; public/private relay
+status uses a configuration/revision read transaction. Relay settings' component
+rows are read in that same transaction. No wire fields change in this follow-up.
+
+The boot-commit SQL failure regression confirms immediate restart with the same
+Endpoint identity. This already passed before this audit's extra read changes;
+it is coverage, not a claimed newly reproduced boot failure. Initialization's
+future is boxed at its public boundary because the retained completion state
+pushed existing E2E fixture futures over strict Clippy's size bound. No lint
+threshold or test concurrency was changed.
+
+Control completion/fatal cleanup/explicit observation/periodic scheduling focused
+repeat: 20 rounds, 100/100 executions passed (`/tmp/ma2a-audit-repeat`).

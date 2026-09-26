@@ -32,7 +32,10 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
     }
 
-    pub(crate) async fn control_sync_status(&self, peer: EndpointId) -> Result<bool, RuntimeError> {
+    pub(crate) async fn control_sync_status(
+        &self,
+        peer: EndpointId,
+    ) -> Result<ma2a_store::Committed<bool>, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(Command::ControlSyncStatus { peer, reply })

@@ -90,7 +90,7 @@ pub(super) async fn private_status(
         .relay_status()
         .await
         .map_err(|_| ProtocolError::INTERNAL)?;
-    Ok(CommandResult::private_relay_status(private_view(&status)?))
+    Ok(CommandResult::private_relay_status(private_view(&status)?).at_revision(status.revision))
 }
 
 pub(super) async fn public_configure(
@@ -147,7 +147,7 @@ pub(super) async fn public_status(
         status.configuration.public_relay_urls.first().cloned(),
         status.public_relay_online,
     )
-    .map(CommandResult::public_relay_status)
+    .map(|view| CommandResult::public_relay_status(view).at_revision(status.revision))
     .map_err(|_| ProtocolError::INTERNAL)
 }
 

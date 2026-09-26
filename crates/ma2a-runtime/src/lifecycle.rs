@@ -44,6 +44,15 @@ impl Runtime {
         config: StoreConfig,
         clock: Arc<dyn crate::RuntimeClock>,
     ) -> Result<Self, RuntimeError> {
+        // Initialization owns sizeable Runtime projections across I/O awaits.
+        // Keep callers' future size independent of those internal projections.
+        Box::pin(Self::initialize(config, clock)).await
+    }
+
+    async fn initialize(
+        config: StoreConfig,
+        clock: Arc<dyn crate::RuntimeClock>,
+    ) -> Result<Self, RuntimeError> {
         let backend = tokio::task::spawn_blocking(move || StoreBackend::open(&config)).await??;
         let (store_sender, store_receiver) = mpsc::channel(STORE_CAPACITY);
         let store = StoreClient::new(store_sender);
@@ -188,89 +197,4 @@ fn boot_id() -> Result<[u8; 16], RuntimeError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        error::Error,
-        fs,
-        path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    use ma2a_store::{Repository, StoreConfig};
-
-    use super::{Runtime, TaskExit};
-
-    static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
-
-    struct TempState(PathBuf);
-
-    impl TempState {
-        fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
-            let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "ma2a-runtime-cancel-{}-{serial}",
-                std::process::id()
-            ));
-            fs::create_dir(&path)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-            }
-            Ok(Self(path))
-        }
-    }
-
-    impl Drop for TempState {
-        fn drop(&mut self) {
-            let _cleanup_result = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancellation_reports_the_persisted_observation_revision()
-    -> Result<(), Box<dyn Error + Send + Sync>> {
-        // Given
-        let state = TempState::new()?;
-        let config = StoreConfig::new(&state.0);
-        let Runtime {
-            handle,
-            cancellation,
-            mut tasks,
-            connections: _,
-        } = Runtime::start(config.clone()).await?;
-
-        // When
-        cancellation.cancel();
-        drop(handle);
-        let mut actor_revision = None;
-        while let Some(joined) = tasks.join_next().await {
-            if let TaskExit::Actor(ack) = joined?? {
-                actor_revision = Some(ack.revision);
-            }
-        }
-        let persisted_revision = Repository::open(&config)?.runtime_metadata()?.revision();
-
-        // Then
-        assert_eq!(actor_revision, Some(persisted_revision));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn ready_event_is_observable_immediately_after_start()
-    -> Result<(), Box<dyn Error + Send + Sync>> {
-        // Given
-        let state = TempState::new()?;
-        let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
-        let mut events = runtime.handle().subscribe();
-
-        // When
-        tokio::task::yield_now().await;
-        let event = events.try_recv()?;
-
-        // Then
-        assert!(event.is_ready());
-        runtime.shutdown().await?;
-        Ok(())
-    }
-}
+mod tests;

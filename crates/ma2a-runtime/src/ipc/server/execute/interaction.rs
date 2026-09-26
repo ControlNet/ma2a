@@ -17,9 +17,14 @@ pub(super) async fn control_sync_status(
         .await
         .map_err(|_| ProtocolError::UNAVAILABLE)?;
     Ok(CommandResult::control_sync_status(
-        ControlSyncView::new(if synchronized { vec![peer] } else { Vec::new() })
-            .map_err(|_| ProtocolError::INTERNAL)?,
-    ))
+        ControlSyncView::new(if *synchronized.value() {
+            vec![peer]
+        } else {
+            Vec::new()
+        })
+        .map_err(|_| ProtocolError::INTERNAL)?,
+    )
+    .at_revision(synchronized.revision()))
 }
 
 pub(super) async fn control_sync_trigger(

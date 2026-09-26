@@ -9,7 +9,25 @@ impl Repository {
     /// # Errors
     /// Returns [`StoreError`] when relay configuration is malformed or cannot be read.
     pub fn relay_configuration(&self) -> Result<RelayConfiguration, StoreError> {
-        load_configuration(&self.connection)
+        Ok(self.relay_configuration_committed()?.into_value())
+    }
+
+    /// Loads desired relay settings and revision from one read transaction.
+    ///
+    /// # Errors
+    /// Returns an error when the coherent configuration cannot be read.
+    pub fn relay_configuration_committed(
+        &self,
+    ) -> Result<crate::Committed<RelayConfiguration>, StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let revision = transaction.query_row(
+            "SELECT revision FROM runtime_metadata WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let configuration = load_configuration(&transaction)?;
+        transaction.commit()?;
+        Ok(crate::Committed::new(revision, configuration))
     }
 
     /// Reserves and persists the next provider-owned advertisement sequence.

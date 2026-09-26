@@ -6,6 +6,7 @@ use super::{Command, RuntimeHandle};
 
 #[derive(Clone, Debug)]
 pub(crate) struct RelayRuntimeStatus {
+    pub(crate) revision: u64,
     pub(crate) applied_private: Option<ma2a_net::PrivateRelayProviderConfig>,
     pub(crate) convergence_pending: bool,
     pub(crate) configuration: ma2a_store::RelayConfiguration,

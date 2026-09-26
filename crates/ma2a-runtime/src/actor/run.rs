@@ -81,7 +81,7 @@ impl Actor {
                         let _unsent = reply.send(self.state.revision);
                     }
                     Some(Command::ControlSyncStatus { peer, reply }) => {
-                        let _unsent = reply.send(self.synchronized_control_peers.contains(&peer));
+                        let _unsent = reply.send(ma2a_store::Committed::new(self.state.revision, self.synchronized_control_peers.contains(&peer)));
                     }
                     Some(Command::SyncControl { peer, reply }) => {
                         let scope = peer.map_or_else(
