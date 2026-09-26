@@ -5,9 +5,15 @@ use tokio::sync::oneshot;
 impl StoreBackend {
     pub(super) fn reply_relay_configuration(
         &self,
-        reply: oneshot::Sender<Result<ma2a_store::RelayConfiguration, RuntimeError>>,
+        reply: oneshot::Sender<
+            Result<ma2a_store::Committed<ma2a_store::RelayConfiguration>, RuntimeError>,
+        >,
     ) {
-        let _unsent = reply.send(self.repository.relay_configuration().map_err(Into::into));
+        let _unsent = reply.send(
+            self.repository
+                .relay_configuration_committed()
+                .map_err(Into::into),
+        );
     }
 
     pub(super) fn reply_set_relay_configuration(

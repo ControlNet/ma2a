@@ -152,7 +152,9 @@ pub(crate) enum StoreCommand {
         reply: oneshot::Sender<Result<u64, RuntimeError>>,
     },
     RelayConfiguration {
-        reply: oneshot::Sender<Result<ma2a_store::RelayConfiguration, RuntimeError>>,
+        reply: oneshot::Sender<
+            Result<ma2a_store::Committed<ma2a_store::RelayConfiguration>, RuntimeError>,
+        >,
     },
     SetRelayConfiguration {
         configuration: ma2a_store::RelayConfiguration,

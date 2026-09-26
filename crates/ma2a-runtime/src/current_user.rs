@@ -108,14 +108,6 @@ impl CurrentUserRuntime {
         }
     }
 
-    pub(crate) async fn password_is_set(&self) -> Result<bool, CurrentUserError> {
-        self.auth
-            .setup_required()
-            .await
-            .map(|required| !required)
-            .map_err(CurrentUserError::Authentication)
-    }
-
     /// Returns the shared Web authentication service owned by this Runtime.
     #[must_use]
     pub const fn web_auth(&self) -> &WebAuthService {

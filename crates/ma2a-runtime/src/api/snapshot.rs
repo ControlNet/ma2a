@@ -194,6 +194,10 @@ impl RuntimeSnapshot {
         })
     }
 
+    pub(crate) const fn password_set(&self) -> bool {
+        self.ui_auth.password_set
+    }
+
     /// Returns the authoritative state revision.
     pub const fn revision(&self) -> u64 {
         self.revision

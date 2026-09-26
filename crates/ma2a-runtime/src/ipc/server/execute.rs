@@ -44,25 +44,26 @@ pub(super) async fn execute(
     context: &ConnectionContext,
 ) -> Result<CommandResult, ApiError> {
     Ok(match command.operation() {
-        "handshake" => CommandResult::handshake(
-            HandshakeView::new(
-                env!("CARGO_PKG_VERSION"),
-                status.endpoint_id(),
-                HandshakeState::new(
-                    status.revision(),
-                    HandshakeAuth::new(
-                        true,
-                        context
-                            .control
-                            .password_is_set()
-                            .await
-                            .map_err(|_| ProtocolError::INTERNAL)?,
+        "handshake" => {
+            let snapshot = context
+                .handle
+                .snapshot()
+                .await
+                .map_err(|_| ProtocolError::UNAVAILABLE)?;
+            CommandResult::handshake(
+                HandshakeView::new(
+                    env!("CARGO_PKG_VERSION"),
+                    status.endpoint_id(),
+                    HandshakeState::new(
+                        snapshot.revision(),
+                        HandshakeAuth::new(true, snapshot.password_set()),
+                        capabilities(),
                     ),
-                    capabilities(),
-                ),
+                )
+                .map_err(|_| ProtocolError::INTERNAL)?,
             )
-            .map_err(|_| ProtocolError::INTERNAL)?,
-        ),
+            .at_revision(snapshot.revision())
+        }
         "status" => CommandResult::status(RuntimeStatusView::new(status.revision(), true, false)),
         "endpoint_info" => CommandResult::endpoint_info(
             EndpointView::new(

@@ -10,12 +10,15 @@ impl Actor {
     pub(super) async fn relay_runtime_status(
         &self,
     ) -> Result<super::RelayRuntimeStatus, RuntimeError> {
-        self.relay_status_for(self.store.relay_configuration().await?)
+        let desired = self.store.relay_configuration_committed().await?;
+        let revision = desired.revision();
+        self.relay_status_for(desired.into_value(), revision)
     }
 
     fn relay_status_for(
         &self,
         configuration: ma2a_store::RelayConfiguration,
+        revision: u64,
     ) -> Result<super::RelayRuntimeStatus, RuntimeError> {
         let desired = RuntimeRelayConfiguration::try_from(configuration.clone())
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
@@ -26,6 +29,7 @@ impl Actor {
         let convergence_pending =
             self.maintenance.relay_configuration.is_some() || applied != desired.private_provider();
         Ok(super::RelayRuntimeStatus {
+            revision,
             configuration,
             applied_private: self
                 .private_relay_server
@@ -65,7 +69,7 @@ impl Actor {
             .map_err(|error| error.after_commit(revision))?;
         Ok(ma2a_store::Committed::new(
             revision,
-            self.relay_status_for(configuration)
+            self.relay_status_for(configuration, revision)
                 .map_err(|error| error.after_commit(revision))?,
         ))
     }
