@@ -162,3 +162,29 @@ async fn idle_streams_time_out_and_cancel_ends_the_relay() -> TestResult {
     holder.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn a_cancel_after_end_stops_a_relay_to_a_silent_destination() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let holder = tokio::spawn(async move {
+        let held = listener.accept().await?.0;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok::<_, std::io::Error>(held)
+    });
+    let ((mut reader, mut writer), server) = start(loopback(port, 60_000)?);
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    writer.data(Channel::Input, b"request").await?;
+    writer.end(Channel::Input).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    writer.frame(FrameKind::Cancel, &[]).await?;
+    let frames = tokio::time::timeout(Duration::from_secs(5), drain(&mut reader)).await??;
+    let result = outcome(&frames)?.map_err(|error| format!("{error:?}"))?;
+    assert_eq!(result.reason, EndReason::Cancelled);
+    assert_eq!(
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::Cancelled)
+    );
+    holder.abort();
+    Ok(())
+}

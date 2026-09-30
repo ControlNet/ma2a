@@ -14,6 +14,7 @@ use tokio::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
+    sync::Notify,
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
@@ -42,6 +43,8 @@ struct Counters {
     from_target: AtomicU64,
     last_activity: AtomicU64,
     started: Instant,
+    /// Signalled when the destination side has delivered everything to the caller.
+    delivered: Notify,
 }
 
 impl Counters {
@@ -65,6 +68,7 @@ where
         from_target: AtomicU64::new(0),
         last_activity: AtomicU64::new(0),
         started: Instant::now(),
+        delivered: Notify::new(),
     };
     let (target_read, target_write) = stream.into_split();
     let lifetime = counters.started + Duration::from_millis(MAX_OPERATION_LIFETIME_MS);
@@ -112,10 +116,10 @@ async fn upstream<R: AsyncRead + Unpin>(
     mut target: OwnedWriteHalf,
     counters: &Counters,
 ) -> Result<(), Stop> {
-    loop {
+    let ended = loop {
         let frame = match reader.next().await {
             Ok(Some(frame)) => frame,
-            Ok(None) => break,
+            Ok(None) => break false,
             Err(error) => return Err(Stop::Caller(error)),
         };
         match frame.kind() {
@@ -129,12 +133,30 @@ async fn upstream<R: AsyncRead + Unpin>(
                     .fetch_add(len64(bytes.len()), Ordering::Relaxed);
                 counters.touch();
             }
-            FrameKind::End if frame.end() == Ok(Channel::Input) => break,
+            FrameKind::End if frame.end() == Ok(Channel::Input) => break true,
             FrameKind::Cancel => return Err(Stop::Caller(ServiceError::Cancelled)),
             _ => return Err(Stop::Caller(ServiceError::InvalidInput)),
         }
+    };
+    target.shutdown().await.map_err(|_| Stop::Target)?;
+    if ended {
+        // The caller still holds its stream open: a later cancel or reset must end the relay
+        // at once rather than when a silent destination finally reaches the idle limit.
+        let frame = tokio::select! {
+            () = counters.delivered.notified() => return Ok(()),
+            frame = reader.next() => frame,
+        };
+        return match frame {
+            Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => {
+                Err(Stop::Caller(ServiceError::Cancelled))
+            }
+            Ok(Some(_)) => Err(Stop::Caller(ServiceError::InvalidInput)),
+            // A later clean half-close changes nothing; the destination side decides the end.
+            Ok(None) => Ok(()),
+            Err(error) => Err(Stop::Caller(error)),
+        };
     }
-    target.shutdown().await.map_err(|_| Stop::Target)
+    Ok(())
 }
 
 /// Destination → caller; destination EOF becomes `end`.
@@ -148,6 +170,7 @@ async fn downstream<W: AsyncWrite + Unpin>(
         let read = target.read(&mut buffer).await.map_err(|_| Stop::Target)?;
         if read == 0 {
             writer.end(Channel::Input).await.map_err(Stop::Caller)?;
+            counters.delivered.notify_one();
             return Ok(());
         }
         let bytes = buffer.get(..read).unwrap_or_default();
