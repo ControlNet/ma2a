@@ -2058,6 +2058,7 @@ dependencies = [
  "ma2a-core",
  "ma2a-net",
  "ma2a-runtime",
+ "ma2a-services",
  "ma2a-store",
  "n0-future",
  "rcgen",

@@ -14,7 +14,7 @@ use crate::AppError;
 /// matched exactly against the shared Space names this Runtime can see. Space
 /// names are not unique, so an ambiguous reference fails and lists the
 /// candidates rather than picking one.
-pub(super) async fn resolve_space(
+pub(crate) async fn resolve_space(
     state_dir: &Path,
     paths: &IpcPaths,
     reference: &str,

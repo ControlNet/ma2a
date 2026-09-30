@@ -13,7 +13,7 @@ mod relay;
 mod space;
 
 pub(crate) use relay::run as run_relay;
-pub(crate) use space::run as run_space;
+pub(crate) use space::{resolve_space, run as run_space};
 
 pub(crate) async fn run_echo(
     state_dir: &Path,
@@ -52,7 +52,7 @@ pub(crate) fn unit_command(operation: &str) -> Result<api::Command, AppError> {
     command(operation, Map::new())
 }
 
-pub(super) fn command(
+pub(crate) fn command(
     operation: &str,
     mut fields: Map<String, Value>,
 ) -> Result<api::Command, AppError> {
@@ -64,7 +64,7 @@ pub(super) fn command(
         .map_err(Into::into)
 }
 
-pub(super) fn request_fields() -> Result<Map<String, Value>, AppError> {
+pub(crate) fn request_fields() -> Result<Map<String, Value>, AppError> {
     let request_id = RequestId::random()
         .map_err(|_| io::Error::other("operating-system random source failed"))?;
     let mut encoded = String::with_capacity(32);

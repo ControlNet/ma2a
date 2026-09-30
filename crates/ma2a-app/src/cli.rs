@@ -3,6 +3,7 @@ use std::{ffi::OsString, path::PathBuf};
 use clap::{Args, Parser, Subcommand};
 
 mod secret_argv;
+pub(crate) mod services;
 
 use secret_argv::reject_secret_argv;
 
@@ -43,6 +44,27 @@ pub(crate) enum Command {
         command: RelayCommand,
     },
     Echo(EchoArgs),
+    /// Consent to serve services to a Space, and inspect what is served.
+    Service {
+        #[command(subcommand)]
+        command: services::ServiceCommand,
+    },
+    /// Show active and recent remote service operations.
+    Ops {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remote Files and verified transfers on another Endpoint.
+    File(services::FileArgs),
+    /// Run one program on another Endpoint with typed argv.
+    Exec(services::ExecArgs),
+    /// Open an interactive terminal on another Endpoint.
+    Shell(services::ShellArgs),
+    /// Reach TCP destinations from another Endpoint.
+    Proxy {
+        #[command(subcommand)]
+        command: services::ProxyCommand,
+    },
     Ui {
         #[command(subcommand)]
         command: UiCommand,
@@ -99,6 +121,8 @@ pub(crate) enum SpaceCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Set the service grants of one member of a Space this Endpoint owns.
+    Grant(services::GrantArgs),
     /// Administer the membership of a Space this Endpoint owns.
     Member {
         #[command(subcommand)]

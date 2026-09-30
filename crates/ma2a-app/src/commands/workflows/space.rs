@@ -11,7 +11,7 @@ mod space_invite;
 mod space_reference;
 
 use space_invite::{InviteRequest, accept, invite};
-use space_reference::resolve_space;
+pub(crate) use space_reference::resolve_space;
 
 #[cfg(windows)]
 #[path = "space_windows.rs"]
@@ -74,6 +74,9 @@ pub(crate) async fn run(
             .await
         }
         cli::SpaceCommand::Accept => accept(state_dir, paths).await,
+        cli::SpaceCommand::Grant(arguments) => {
+            crate::commands::services::grant(state_dir, paths, arguments).await
+        }
         cli::SpaceCommand::Leave { space, json } => {
             let space_id = resolve_space(state_dir, &paths, &space).await?;
             let mut fields = super::request_fields()?;

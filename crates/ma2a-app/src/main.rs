@@ -184,6 +184,14 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
         cli::Command::Echo(arguments) => {
             commands::workflows::run_echo(&state_dir, paths, arguments).await
         }
+        cli::Command::Service { command } => {
+            commands::services::run(&state_dir, paths, command).await
+        }
+        cli::Command::Ops { json } => commands::services::operations(&state_dir, paths, json).await,
+        cli::Command::File(arguments) => commands::remote::files::run(paths, arguments).await,
+        cli::Command::Exec(arguments) => commands::remote::process::exec(paths, arguments).await,
+        cli::Command::Shell(arguments) => commands::remote::process::shell(paths, arguments).await,
+        cli::Command::Proxy { command } => commands::remote::proxy::run(paths, command).await,
         cli::Command::Ui { command } => commands::workflows::run_ui(&state_dir, command).await,
     }
 }
