@@ -7,6 +7,7 @@
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 #![cfg_attr(windows, deny(unsafe_code))]
 
+pub mod client;
 pub mod exec;
 pub mod files;
 pub mod frame_io;

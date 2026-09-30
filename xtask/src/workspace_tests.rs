@@ -9,7 +9,14 @@ const EXPECTED_MEMBERS: [&str; 7] = [
     "ma2a-store",
     "xtask",
 ];
-const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 7] = [
+const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 8] = [
+    (
+        "crates/ma2a-services/src/client/terminal_windows.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows console-mode FFI boundary\")"
+        ),
+    ),
     (
         "crates/ma2a-services/src/files/rename_windows.rs",
         concat!(
