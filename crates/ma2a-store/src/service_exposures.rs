@@ -173,11 +173,7 @@ impl Repository {
             ],
         )? > 0;
         let revision = if removed {
-            transaction.execute(
-                "DELETE FROM file_roots WHERE name NOT IN
-                 (SELECT root_name FROM service_exposures WHERE root_name IS NOT NULL)",
-                [],
-            )?;
+            forget_unbound_roots(&transaction)?;
             increment_revision(&transaction)?
         } else {
             current_revision(&transaction)?
@@ -268,6 +264,37 @@ fn bind_root(
             Ok(())
         }
     }
+}
+
+/// Withdraws every exposure of a Space whose stored chain no longer lists this Endpoint, and
+/// forgets file roots no exposure binds any more.
+///
+/// Consent to serve a Space lasts only while this Endpoint belongs to it; a later rejoin
+/// needs fresh consent. Nothing is withdrawn before this Runtime has an identity.
+pub(crate) fn withdraw_departed(
+    transaction: &rusqlite::Transaction<'_>,
+    space_id: SpaceId,
+) -> Result<(), StoreError> {
+    let withdrawn = transaction.execute(
+        "DELETE FROM service_exposures WHERE space_id = ?1
+         AND EXISTS (SELECT 1 FROM endpoints)
+         AND NOT EXISTS (SELECT 1 FROM members JOIN endpoints
+             ON members.endpoint_id = endpoints.endpoint_id WHERE members.space_id = ?1)",
+        [space_id.as_bytes().as_slice()],
+    )?;
+    if withdrawn > 0 {
+        forget_unbound_roots(transaction)?;
+    }
+    Ok(())
+}
+
+fn forget_unbound_roots(transaction: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+    transaction.execute(
+        "DELETE FROM file_roots WHERE name NOT IN
+         (SELECT root_name FROM service_exposures WHERE root_name IS NOT NULL)",
+        [],
+    )?;
+    Ok(())
 }
 
 const fn access_code(access: RootAccess) -> u8 {

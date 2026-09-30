@@ -149,7 +149,8 @@ pub(super) fn replace_chain(
         [chain.space_id().as_bytes().as_slice()],
     )?;
     insert_manifest_rows(transaction, chain)?;
-    insert_derived_state(transaction, chain)
+    insert_derived_state(transaction, chain)?;
+    crate::service_exposures::withdraw_departed(transaction, chain.space_id())
 }
 
 fn insert_manifest_rows(
