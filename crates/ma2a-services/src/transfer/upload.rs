@@ -57,8 +57,12 @@ where
         mode,
         request_id,
     } = target;
-    let resolved = blocking(move || files::destination(&root, &path)).await;
-    let (destination, parent, existing) = match resolved {
+    let resolved = blocking(move || {
+        files::destination(&root, &path)
+            .map(|(parent, name, existing)| (parent, name.to_owned(), existing))
+    })
+    .await;
+    let (parent, destination, existing) = match resolved {
         Ok(resolved) => resolved,
         Err(error) => return reply::reject(writer, error).await,
     };
@@ -66,13 +70,13 @@ where
         return reply::reject(writer, ServiceError::AlreadyExists).await;
     }
     let name = staging_name(&request_id);
-    let Some(staging) = parent.join(&name).to_str().map(str::to_owned) else {
+    let Some(staging) = parent.path().join(&name).to_str().map(str::to_owned) else {
         return reply::reject(writer, ServiceError::InvalidPath).await;
     };
     if let Err(error) = journal.record(&staging).await {
         return reply::reject(writer, error).await;
     }
-    let created = blocking(move || TempFile::create(&parent, &name)).await;
+    let created = blocking(move || TempFile::create(parent, &name)).await;
     let temporary = match created {
         Ok(temporary) => temporary,
         Err(error) => {
@@ -94,7 +98,7 @@ struct Upload {
 }
 
 async fn receive<R, W>(
-    (temporary, destination, mode, size): (TempFile, PathBuf, WriteMode, u64),
+    (temporary, destination, mode, size): (TempFile, String, WriteMode, u64),
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
 ) -> OperationReport
 where

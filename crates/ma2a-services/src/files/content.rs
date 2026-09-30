@@ -1,7 +1,6 @@
 //! Small bounded reads and atomic small writes.
 
 use std::{
-    fs::OpenOptions,
     io::{Read as _, Seek as _, SeekFrom},
     path::Path,
 };
@@ -16,18 +15,7 @@ pub(crate) fn open_regular(
     root: &Path,
     path: &RemotePath,
 ) -> Result<(std::fs::File, std::fs::Metadata), ServiceError> {
-    let (target, metadata) = resolve::regular_file(root, path)?;
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let no_follow = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits())
-            .map_err(|_| ServiceError::Internal)?;
-        options.custom_flags(no_follow);
-    }
-    let file = fs_error::map(options.open(target))?;
-    Ok((file, metadata))
+    resolve::regular_file(root, path)
 }
 
 /// Reads at most `length` bytes from `offset`, returning the bytes, file size, and offset.
@@ -48,21 +36,21 @@ pub(crate) fn prepare_write(
     root: &Path,
     path: &RemotePath,
     mode: WriteMode,
-) -> Result<(std::path::PathBuf, TempFile), ServiceError> {
-    let (target, parent, existing) = resolve::destination(root, path)?;
+) -> Result<(String, TempFile), ServiceError> {
+    let (parent, name, existing) = resolve::destination(root, path)?;
     if mode == WriteMode::CreateNew && existing.is_some() {
         return Err(ServiceError::AlreadyExists);
     }
-    Ok((target, TempFile::unique(&parent)?))
+    Ok((name.to_owned(), TempFile::unique(parent)?))
 }
 
 /// Writes content into the prepared temporary file and publishes it atomically.
 pub(crate) fn commit_write(
-    (target, mut temporary): (std::path::PathBuf, TempFile),
+    (name, mut temporary): (String, TempFile),
     content: &[u8],
     mode: WriteMode,
 ) -> Result<u64, ServiceError> {
     temporary.write(content)?;
-    temporary.finalize(&target, mode)?;
+    temporary.finalize(&name, mode)?;
     Ok(crate::report::len64(content.len()))
 }

@@ -1,14 +1,22 @@
 use std::{collections::BTreeSet, error::Error, fs, path::Path, process::Command};
 
-const EXPECTED_MEMBERS: [&str; 6] = [
+const EXPECTED_MEMBERS: [&str; 7] = [
     "ma2a-app",
     "ma2a-core",
     "ma2a-net",
     "ma2a-runtime",
+    "ma2a-services",
     "ma2a-store",
     "xtask",
 ];
-const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 6] = [
+const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 7] = [
+    (
+        "crates/ma2a-services/src/files/rename_windows.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows no-clobber rename FFI boundary\")"
+        ),
+    ),
     (
         "crates/ma2a-app/src/commands/workflows/space_windows.rs",
         concat!(

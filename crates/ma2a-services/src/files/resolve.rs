@@ -1,17 +1,16 @@
-//! Root-relative path resolution that never follows a symbolic link.
+//! Root-relative path resolution through held directory handles.
 //!
-//! Every intermediate component is checked with `lstat`; concurrent modification by other
-//! same-user local processes is outside the threat model.
+//! Every component below the root is opened from its parent's handle without following a link
+//! (see `dir_unix.rs` and `dir_windows.rs`), and the final step runs relative to the held
+//! parent. A concurrent rename, including one a remote caller issues itself, therefore cannot
+//! redirect an operation outside its exported root.
 
-use std::{
-    fs::{self, Metadata},
-    io::ErrorKind,
-    path::{Path, PathBuf},
-    time::UNIX_EPOCH,
-};
+use std::{fs::File, path::Path};
 
-use ma2a_core::service::{FileKind, FileMetadata, RemotePath, ServiceError};
+use ma2a_core::service::{FileKind, RemotePath, ServiceError};
 
+use super::entry::Entry;
+pub(crate) use super::platform::Directory;
 use crate::fs_error;
 
 /// Returns whether a component cannot name a regular entry on Windows hosts.
@@ -33,126 +32,107 @@ pub(crate) fn is_windows_reserved(component: &str) -> bool {
     matches!(bytes, [b'C', b'O', b'M', digit] | [b'L', b'P', b'T', digit] if (b'1'..=b'9').contains(digit))
 }
 
-/// Joins the root-relative components after rejecting host-invalid names.
-pub(crate) fn join(root: &Path, path: &RemotePath) -> Result<PathBuf, ServiceError> {
-    let mut joined = root.to_path_buf();
-    for component in path.components() {
-        if cfg!(windows) && is_windows_reserved(component) {
-            return Err(ServiceError::InvalidPath);
-        }
-        joined.push(component);
+/// Rejects every component this host cannot name.
+pub(crate) fn check(path: &RemotePath) -> Result<(), ServiceError> {
+    if cfg!(windows)
+        && path
+            .components()
+            .iter()
+            .any(|name| is_windows_reserved(name))
+    {
+        return Err(ServiceError::InvalidPath);
     }
-    Ok(joined)
+    Ok(())
 }
 
-/// Resolves `path` and verifies that every ancestor below the root is a real directory.
-pub(crate) fn resolve(root: &Path, path: &RemotePath) -> Result<PathBuf, ServiceError> {
-    let target = join(root, path)?;
-    let mut current = root.to_path_buf();
-    let Some((_last, ancestors)) = path.components().split_last() else {
-        return Ok(target);
+/// Opens `root` and then each of `components` as a directory.
+pub(crate) fn walk(root: &Path, components: &[String]) -> Result<Directory, ServiceError> {
+    let mut current = Directory::open_root(root)?;
+    for component in components {
+        current = current.child(component)?;
+    }
+    Ok(current)
+}
+
+/// Opens the parent of a non-root path, returning it with the final component.
+pub(crate) fn parent<'path>(
+    root: &Path,
+    path: &'path RemotePath,
+) -> Result<Option<(Directory, &'path str)>, ServiceError> {
+    check(path)?;
+    let Some((last, ancestors)) = path.components().split_last() else {
+        return Ok(None);
     };
-    for component in ancestors {
-        current.push(component);
-        let metadata = fs_error::map(fs::symlink_metadata(&current))?;
-        if metadata.file_type().is_symlink() {
-            return Err(ServiceError::SymlinkRefused);
-        }
-        if !metadata.is_dir() {
-            return Err(ServiceError::NotADirectory);
-        }
-    }
-    Ok(target)
+    Ok(Some((walk(root, ancestors)?, last.as_str())))
 }
 
-/// Returns final-component metadata without following it, or `None` when absent.
-pub(crate) fn lstat(path: &Path) -> Result<Option<Metadata>, ServiceError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(Some(metadata)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(fs_error::service_error(&error)),
-    }
+/// Opens an existing directory, refusing any symbolic link on the way.
+pub(crate) fn directory(root: &Path, path: &RemotePath) -> Result<Directory, ServiceError> {
+    check(path)?;
+    walk(root, path.components())
 }
 
-/// Resolves an existing directory, refusing a final symbolic link.
-pub(crate) fn directory(root: &Path, path: &RemotePath) -> Result<PathBuf, ServiceError> {
-    let target = resolve(root, path)?;
-    let metadata = lstat(&target)?.ok_or(ServiceError::NotFound)?;
-    kind_is(&metadata, FileKind::Directory)?;
-    Ok(target)
-}
-
-/// Resolves an existing regular file, refusing a final symbolic link.
+/// Opens an existing regular file for reading, refusing a final link or special file.
 pub(crate) fn regular_file(
     root: &Path,
     path: &RemotePath,
-) -> Result<(PathBuf, Metadata), ServiceError> {
-    let target = resolve(root, path)?;
-    let metadata = lstat(&target)?.ok_or(ServiceError::NotFound)?;
-    kind_is(&metadata, FileKind::File)?;
-    Ok((target, metadata))
+) -> Result<(File, std::fs::Metadata), ServiceError> {
+    let (parent, name) = parent(root, path)?.ok_or(ServiceError::IsADirectory)?;
+    parent
+        .entry(name)?
+        .ok_or(ServiceError::NotFound)?
+        .require(FileKind::File)?;
+    let file = fs_error::map(parent.open_file(name))?;
+    let metadata = fs_error::map(file.metadata())?;
+    // The entry may have been replaced between the check and the open.
+    Entry::from_metadata(&metadata).require(FileKind::File)?;
+    Ok((file, metadata))
 }
 
-/// Resolves the parent directory of a destination that may not exist yet.
-pub(crate) fn destination(
+/// Opens the parent of a destination that may not exist yet; an existing one must be a file.
+pub(crate) fn destination<'path>(
     root: &Path,
-    path: &RemotePath,
-) -> Result<(PathBuf, PathBuf, Option<Metadata>), ServiceError> {
-    if path.is_root() {
-        return Err(ServiceError::InvalidPath);
+    path: &'path RemotePath,
+) -> Result<(Directory, &'path str, Option<Entry>), ServiceError> {
+    let (parent, name) = parent(root, path)?.ok_or(ServiceError::InvalidPath)?;
+    let existing = parent.entry(name)?;
+    if let Some(entry) = &existing {
+        entry.require(FileKind::File)?;
     }
-    let target = resolve(root, path)?;
-    let parent = target
-        .parent()
-        .ok_or(ServiceError::InvalidPath)?
-        .to_path_buf();
-    let existing = lstat(&target)?;
-    if let Some(metadata) = &existing {
-        kind_is(metadata, FileKind::File)?;
-    }
-    Ok((target, parent, existing))
-}
-
-/// Requires one kind; devices, sockets, and FIFOs are never opened.
-fn kind_is(metadata: &Metadata, wanted: FileKind) -> Result<(), ServiceError> {
-    match (file_kind(metadata), wanted) {
-        (FileKind::Symlink, _) => Err(ServiceError::SymlinkRefused),
-        (kind, wanted) if kind == wanted => Ok(()),
-        (FileKind::Directory, _) => Err(ServiceError::IsADirectory),
-        (FileKind::File, _) => Err(ServiceError::NotADirectory),
-        (FileKind::Other, _) => Err(ServiceError::InvalidPath),
-    }
-}
-
-/// Classifies metadata obtained without following a final link.
-pub(crate) fn file_kind(metadata: &Metadata) -> FileKind {
-    let file_type = metadata.file_type();
-    if file_type.is_symlink() {
-        FileKind::Symlink
-    } else if file_type.is_dir() {
-        FileKind::Directory
-    } else if file_type.is_file() {
-        FileKind::File
-    } else {
-        FileKind::Other
-    }
-}
-
-/// Converts metadata into the bounded wire view.
-pub(crate) fn wire_metadata(metadata: &Metadata) -> FileMetadata {
-    let modified_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok());
-    FileMetadata::new(file_kind(metadata), metadata.len())
-        .with_modified_ms(modified_ms)
-        .with_read_only(metadata.permissions().readonly())
+    Ok((parent, name, existing))
 }
 
 #[cfg(test)]
 mod tests {
     use super::is_windows_reserved;
+
+    /// A caller may rename entries while another of its operations runs. Once an ancestor was
+    /// opened, swapping its name for a link to outside the root must not redirect the rest.
+    #[cfg(unix)]
+    #[test]
+    fn a_swapped_ancestor_never_redirects_a_held_operation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = std::env::temp_dir().join(format!("ma2a-swap-{}", std::process::id()));
+        let (root, outside) = (scratch.join("root"), scratch.join("outside"));
+        std::fs::create_dir_all(root.join("docs"))?;
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(outside.join("secret"), b"outside")?;
+        let held = super::walk(&root, &["docs".to_owned()])?;
+
+        std::fs::rename(root.join("docs"), root.join("moved"))?;
+        std::os::unix::fs::symlink(&outside, root.join("docs"))?;
+
+        assert_eq!(held.entry("secret")?, None);
+        held.create_new("created")?;
+        assert!(root.join("moved/created").exists());
+        assert!(!outside.join("created").exists());
+        assert_eq!(
+            super::walk(&root, &["docs".to_owned()]).err(),
+            Some(ma2a_core::service::ServiceError::SymlinkRefused)
+        );
+        std::fs::remove_dir_all(&scratch)?;
+        Ok(())
+    }
 
     #[test]
     fn windows_device_names_and_trailing_dots_are_reserved() {

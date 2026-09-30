@@ -5,8 +5,16 @@
 
 mod commit;
 mod content;
+mod entry;
 mod ops;
-mod rename;
+#[cfg(unix)]
+#[path = "files/dir_unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "files/dir_windows.rs"]
+mod platform;
+#[cfg(windows)]
+mod rename_windows;
 mod resolve;
 
 use std::path::PathBuf;
@@ -63,12 +71,25 @@ fn content_free(root: &std::path::Path, request: &FilesRequest) -> Result<FilesR
     }
 }
 
+/// Most blocking Files jobs at once across the Runtime.
+///
+/// A job keeps its permit even when its stream is reset at the deadline, so a caller cannot
+/// pile up detached work such as a huge recursive removal or listing.
+const MAX_BLOCKING_JOBS: usize = 16;
+static BLOCKING_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_BLOCKING_JOBS);
+
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, Failure> + Send + 'static,
 ) -> Result<T, Failure> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .unwrap_or_else(|_| Err(ServiceError::Internal.into()))
+    let Ok(permit) = BLOCKING_JOBS.acquire().await else {
+        return Err(ServiceError::Internal.into());
+    };
+    tokio::task::spawn_blocking(move || {
+        let _held = permit;
+        work()
+    })
+    .await
+    .unwrap_or_else(|_| Err(ServiceError::Internal.into()))
 }
 
 async fn content_free_reply<W: AsyncWrite + Unpin>(

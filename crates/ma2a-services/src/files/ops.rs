@@ -1,15 +1,12 @@
 //! Content-free Files operations, run on a blocking thread.
 
-use std::{collections::BinaryHeap, fs, io::ErrorKind, path::Path};
+use std::{collections::BinaryHeap, io::ErrorKind, path::Path};
 
 use ma2a_core::service::{
     DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, RemotePath, ServiceError,
 };
 
-use super::{
-    rename,
-    resolve::{self, lstat, wire_metadata},
-};
+use super::resolve::{self, Directory};
 use crate::fs_error;
 
 /// A failed operation and whether some of its effect may already have happened.
@@ -37,9 +34,11 @@ const fn partial(error: ServiceError) -> Failure {
 
 /// Returns metadata of one object without following a final link.
 pub(crate) fn stat(root: &Path, path: &RemotePath) -> Result<FilesResult, ServiceError> {
-    let target = resolve::resolve(root, path)?;
-    let metadata = lstat(&target)?.ok_or(ServiceError::NotFound)?;
-    Ok(FilesResult::Metadata(wire_metadata(&metadata)))
+    let entry = match resolve::parent(root, path)? {
+        Some((parent, name)) => parent.entry(name)?.ok_or(ServiceError::NotFound)?,
+        None => resolve::walk(root, &[])?.itself()?,
+    };
+    Ok(FilesResult::Metadata(entry.wire()))
 }
 
 /// Returns the byte-order-first page of names after `cursor`.
@@ -53,27 +52,25 @@ pub(crate) fn list(
 ) -> Result<FilesResult, ServiceError> {
     let directory = resolve::directory(root, path)?;
     let mut smallest = BinaryHeap::with_capacity(MAX_LIST_PAGE + 1);
-    for entry in fs_error::map(fs::read_dir(&directory))? {
-        let Ok(name) = fs_error::map(entry)?.file_name().into_string() else {
-            continue;
-        };
-        if cursor.is_some_and(|cursor| name.as_str() <= cursor) {
-            continue;
+    fs_error::map(directory.for_each_name(|name| {
+        let Some(name) = name else { return };
+        if cursor.is_some_and(|cursor| name <= cursor) {
+            return;
         }
-        smallest.push(name);
+        smallest.push(name.to_owned());
         if smallest.len() > MAX_LIST_PAGE + 1 {
             smallest.pop();
         }
-    }
+    }))?;
     let mut names = smallest.into_sorted_vec();
     let more = names.len() > MAX_LIST_PAGE;
     names.truncate(MAX_LIST_PAGE);
     let mut entries = Vec::with_capacity(names.len());
     for name in names {
-        let Some(metadata) = lstat(&directory.join(&name))? else {
+        let Some(entry) = directory.entry(&name)? else {
             continue;
         };
-        entries.push(DirEntry::new(name, wire_metadata(&metadata)));
+        entries.push(DirEntry::new(name, entry.wire()));
     }
     let next = if more {
         entries.last().map(|entry| entry.name.clone())
@@ -85,45 +82,38 @@ pub(crate) fn list(
 
 /// Creates one directory, or every missing ancestor with `parents`.
 pub(crate) fn mkdir(root: &Path, path: &RemotePath, parents: bool) -> Result<FilesResult, Failure> {
-    if path.is_root() {
-        return if parents {
-            Ok(FilesResult::Done)
-        } else {
-            Err(ServiceError::AlreadyExists.into())
-        };
-    }
     if !parents {
-        let target = resolve::resolve(root, path)?;
-        fs_error::map(fs::create_dir(target))?;
+        let (parent, name) = resolve::parent(root, path)?.ok_or(ServiceError::AlreadyExists)?;
+        fs_error::map(parent.mkdir(name))?;
         return Ok(FilesResult::Done);
     }
-    resolve::join(root, path)?;
-    let mut current = root.to_path_buf();
+    // Validates every component before anything is created.
+    resolve::check(path)?;
+    let mut current = resolve::walk(root, &[])?;
     let mut created = false;
     let fail = |error: ServiceError, created: bool| Failure {
         error,
         partial: created,
     };
     for component in path.components() {
-        current.push(component);
-        match fs::create_dir(&current) {
+        match current.mkdir(component) {
             Ok(()) => created = true,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                let metadata = lstat(&current)
-                    .map_err(|error| fail(error, created))?
-                    .ok_or_else(|| fail(ServiceError::Io, created))?;
-                match resolve::file_kind(&metadata) {
-                    FileKind::Directory => {}
-                    FileKind::Symlink => return Err(fail(ServiceError::SymlinkRefused, created)),
-                    FileKind::File | FileKind::Other => {
-                        return Err(fail(ServiceError::NotADirectory, created));
-                    }
-                }
-            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
             Err(error) => return Err(fail(fs_error::service_error(&error), created)),
         }
+        current = current
+            .child(component)
+            .map_err(|error| fail(error, created))?;
     }
     Ok(FilesResult::Done)
+}
+
+/// Opens the parent of a path that must not be the root itself.
+fn entry_parent<'path>(
+    root: &Path,
+    path: &'path RemotePath,
+) -> Result<(Directory, &'path str), ServiceError> {
+    resolve::parent(root, path)?.ok_or(ServiceError::InvalidPath)
 }
 
 /// Renames one object, including a symbolic link itself, within one root.
@@ -132,16 +122,14 @@ pub(crate) fn rename(
     (from, to): (&RemotePath, &RemotePath),
     replace: bool,
 ) -> Result<FilesResult, ServiceError> {
-    if from.is_root() || to.is_root() {
-        return Err(ServiceError::InvalidPath);
-    }
-    let source = resolve::resolve(root, from)?;
-    lstat(&source)?.ok_or(ServiceError::NotFound)?;
-    let destination = resolve::resolve(root, to)?;
+    let (source, source_name) = entry_parent(root, from)?;
+    let (destination, destination_name) = entry_parent(root, to)?;
+    source.entry(source_name)?.ok_or(ServiceError::NotFound)?;
+    let to = (&destination, destination_name);
     if replace {
-        fs_error::map(fs::rename(&source, &destination))?;
+        fs_error::map(source.rename(source_name, to))?;
     } else {
-        rename::no_clobber(&source, &destination)?;
+        source.rename_no_clobber(source_name, to)?;
     }
     Ok(FilesResult::Done)
 }
@@ -152,30 +140,14 @@ pub(crate) fn remove(
     path: &RemotePath,
     recursive: bool,
 ) -> Result<FilesResult, Failure> {
-    if path.is_root() {
-        return Err(ServiceError::InvalidPath.into());
-    }
-    let target = resolve::resolve(root, path)?;
-    let metadata = lstat(&target)?.ok_or(ServiceError::NotFound)?;
-    match resolve::file_kind(&metadata) {
-        FileKind::Directory if recursive => {
-            fs::remove_dir_all(&target)
-                .map_err(|error| partial(fs_error::service_error(&error)))?;
-        }
-        FileKind::Directory => fs_error::map(fs::remove_dir(&target))?,
+    let (parent, name) = entry_parent(root, path)?;
+    let entry = parent.entry(name)?.ok_or(ServiceError::NotFound)?;
+    match entry.kind {
+        FileKind::Directory if recursive => parent.remove_tree(name).map_err(partial)?,
+        FileKind::Directory => fs_error::map(parent.remove_dir(name))?,
         FileKind::File | FileKind::Symlink | FileKind::Other => {
-            fs_error::map(remove_entry(&target))?;
+            fs_error::map(parent.remove_entry(name))?;
         }
     }
     Ok(FilesResult::Done)
-}
-
-/// Removes a non-directory entry; a Windows directory symlink is removed as a directory.
-fn remove_entry(target: &Path) -> std::io::Result<()> {
-    match fs::remove_file(target) {
-        Err(error) if cfg!(windows) && error.kind() == ErrorKind::PermissionDenied => {
-            fs::remove_dir(target)
-        }
-        result => result,
-    }
 }
