@@ -17,6 +17,10 @@ use ma2a_core::service::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub(crate) use commit::TempFile;
+pub(crate) use content::open_regular;
+pub(crate) use resolve::destination;
+
 use crate::{
     FrameReader, FrameWriter,
     report::{OperationReport, Termination, len64},

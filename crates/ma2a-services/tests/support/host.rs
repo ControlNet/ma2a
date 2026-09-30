@@ -20,8 +20,14 @@ pub(crate) type ClientIo = (
 );
 
 /// Returns connected client and server frame halves.
+#[allow(dead_code, reason = "shared by only some host test binaries")]
 pub(crate) fn pipe() -> (ClientIo, ServerIo) {
-    let (client, server) = tokio::io::duplex(1 << 20);
+    pipe_with(1 << 20)
+}
+
+/// Returns connected halves whose in-flight bytes are bounded by `capacity`.
+pub(crate) fn pipe_with(capacity: usize) -> (ClientIo, ServerIo) {
+    let (client, server) = tokio::io::duplex(capacity);
     let (client_read, client_write) = tokio::io::split(client);
     let (server_read, server_write) = tokio::io::split(server);
     (
@@ -70,4 +76,18 @@ impl Drop for TempRoot {
     fn drop(&mut self) {
         let _removed = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// Deterministic pseudo-random content of `length` bytes.
+#[allow(dead_code, reason = "shared by only some host test binaries")]
+pub(crate) fn content(length: usize) -> Vec<u8> {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    (0..length)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect()
 }
