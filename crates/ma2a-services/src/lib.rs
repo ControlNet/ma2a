@@ -14,10 +14,12 @@ mod fs_error;
 mod process;
 mod reply;
 pub mod report;
+pub mod shell;
 pub mod transfer;
 
 pub use exec::serve_exec;
 pub use files::serve_files;
 pub use frame_io::{Frame, FrameReader, FrameWriter};
 pub use report::{OperationEnd, OperationReport};
+pub use shell::serve_shell;
 pub use transfer::{StagingJournal, serve_transfer};
