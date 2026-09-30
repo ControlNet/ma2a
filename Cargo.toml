@@ -4,6 +4,7 @@ members = [
     "crates/ma2a-core",
     "crates/ma2a-net",
     "crates/ma2a-runtime",
+    "crates/ma2a-services",
     "crates/ma2a-store",
     "xtask",
 ]
@@ -12,6 +13,7 @@ default-members = [
     "crates/ma2a-core",
     "crates/ma2a-net",
     "crates/ma2a-runtime",
+    "crates/ma2a-services",
     "crates/ma2a-store",
 ]
 resolver = "3"
@@ -41,6 +43,7 @@ iroh-tickets = "=1.0.0"
 ma2a-core = { path = "crates/ma2a-core", version = "=0.1.0" }
 ma2a-net = { path = "crates/ma2a-net", version = "=0.1.0" }
 ma2a-runtime = { path = "crates/ma2a-runtime", version = "=0.1.0" }
+ma2a-services = { path = "crates/ma2a-services", version = "=0.1.0" }
 ma2a-store = { path = "crates/ma2a-store", version = "=0.1.0" }
 n0-future = "=0.3.2"
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }

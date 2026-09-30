@@ -2107,6 +2107,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ma2a-services"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "ma2a-core",
+ "rustix",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ma2a-store"
 version = "0.1.0"
 dependencies = [
