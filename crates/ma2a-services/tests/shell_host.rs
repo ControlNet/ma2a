@@ -151,3 +151,53 @@ async fn an_unstartable_program_is_rejected() -> TestResult {
     );
     Ok(())
 }
+
+/// Returns whether `pid` still names a live (not yet reaped, not zombie) process.
+#[cfg(target_os = "linux")]
+fn alive(pid: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .is_some_and(|state| state != "Z")
+    })
+}
+
+/// Job control moves `&` jobs into their own process groups, beyond a group kill.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn background_jobs_never_outlive_their_session() -> TestResult {
+    for (script, cancel) in [
+        ("set -m; sleep 300 & echo job=$!; exit 0", false),
+        ("set -m; sleep 300 & echo job=$!; wait", true),
+    ] {
+        let ((mut reader, mut writer), server) = start(
+            session("sh", &["-c", script], 60_000)?,
+            &CancellationToken::new(),
+        );
+        let mut frames = Vec::new();
+        let pid = loop {
+            let frame = within(reader.expect()).await??;
+            frames.push(frame);
+            let shown = output(&frames)?;
+            if let Some(pid) = shown
+                .split("job=")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .filter(|_| shown.contains('\n'))
+            {
+                break pid.to_owned();
+            }
+        };
+        if cancel {
+            writer.frame(FrameKind::Cancel, &[]).await?;
+        }
+        within(drain(&mut reader)).await??;
+        within(server).await??;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while alive(&pid) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!alive(&pid), "job {pid} outlived its session ({script})");
+    }
+    Ok(())
+}

@@ -5,10 +5,14 @@
 
 mod io;
 mod pty;
+#[cfg(unix)]
+mod reap;
 
 use std::time::Duration;
 
-use ma2a_core::service::{EMPTY_ACCEPT, FrameKind, ProcessResult, ShellRequest};
+use ma2a_core::service::{
+    EMPTY_ACCEPT, EndReason, FrameKind, ProcessResult, ShellRequest, Termination,
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::oneshot,
@@ -34,7 +38,7 @@ where
         Err(error) => return reply::reject(writer, error).await,
     };
     if let Err(error) = writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await {
-        session.kill();
+        session.close(true).await;
         return reply::lost(error, (0, 0));
     }
     let (cancel, cancelled) = oneshot::channel();
@@ -58,8 +62,9 @@ where
         io::inbound(reader, (input.clone(), master), (cancel, finished)),
         io::outbound(outbound, writer),
     );
-    session.kill();
-    drop(session);
+    let leader_running =
+        ended.reason != EndReason::Completed || ended.termination == Termination::Unknown;
+    session.close(leader_running).await;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let bytes = (input_bytes, ended.output_bytes);
     if let Some(error) = ended.stream_error {

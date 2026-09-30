@@ -111,19 +111,28 @@ pub(super) fn spawn(request: &ShellRequest) -> Result<Session, ServiceError> {
 }
 
 impl Session {
-    /// Kills the session program and, on Unix, its process group.
+    /// Ends the session program and every job it started, then releases the terminal.
     ///
-    /// Jobs a shell moved into other process groups receive SIGHUP when the terminal closes.
-    pub(super) fn kill(&mut self) {
-        #[cfg(unix)]
-        if let Some(group) = self
+    /// `leader_running` is false once the program has exited by itself.
+    #[cfg(unix)]
+    pub(super) async fn close(mut self, leader_running: bool) {
+        if let Some(leader) = self
             .group
             .and_then(|id| i32::try_from(id).ok())
             .and_then(rustix::process::Pid::from_raw)
         {
-            let _signalled =
-                rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            super::reap::end_session(leader, leader_running).await;
         }
+        let _killed = self.killer.kill();
+    }
+
+    /// Ends the session program; closing the pseudoconsole ends its attached clients.
+    #[cfg(windows)]
+    #[expect(
+        clippy::unused_async,
+        reason = "the Unix counterpart waits for jobs to hang up"
+    )]
+    pub(super) async fn close(mut self, _leader_running: bool) {
         let _killed = self.killer.kill();
     }
 }
