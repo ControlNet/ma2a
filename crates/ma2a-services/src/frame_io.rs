@@ -74,15 +74,27 @@ const fn channel_from(code: u8) -> Result<Channel, ServiceError> {
 }
 
 /// Reads frames from one stream half, never buffering more than one bounded frame.
+///
+/// Reading is cancel-safe: a partially received frame is kept here, so a `next` dropped in
+/// a `select!` resumes exactly where it stopped and no byte is ever lost.
 #[derive(Debug)]
 pub struct FrameReader<R> {
     inner: R,
+    header: [u8; FRAME_HEADER_LEN],
+    header_filled: usize,
+    /// The frame whose header is complete, and how much of its payload has arrived.
+    partial: Option<(FrameKind, Vec<u8>, usize)>,
 }
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
     /// Wraps one readable half.
     pub const fn new(inner: R) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            header: [0; FRAME_HEADER_LEN],
+            header_filled: 0,
+            partial: None,
+        }
     }
 
     /// Reads the next frame, or `None` at a clean end of stream between frames.
@@ -91,30 +103,47 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     /// Returns [`ServiceError::InvalidInput`] for an unknown type or out-of-bound length, and
     /// [`ServiceError::Cancelled`] when the stream ends or resets inside a frame.
     pub async fn next(&mut self) -> Result<Option<Frame>, ServiceError> {
-        let mut header = [0_u8; FRAME_HEADER_LEN];
-        let first = self
-            .inner
-            .read(&mut header)
-            .await
-            .map_err(|_| ServiceError::Cancelled)?;
-        if first == 0 {
-            return Ok(None);
+        while self.partial.is_none() {
+            let rest = self
+                .header
+                .get_mut(self.header_filled..)
+                .ok_or(ServiceError::InvalidInput)?;
+            let read = self
+                .inner
+                .read(rest)
+                .await
+                .map_err(|_| ServiceError::Cancelled)?;
+            match (read, self.header_filled) {
+                (0, 0) => return Ok(None),
+                (0, _) => return Err(ServiceError::Cancelled),
+                _ => self.header_filled += read,
+            }
+            if self.header_filled == FRAME_HEADER_LEN {
+                self.header_filled = 0;
+                let header =
+                    FrameHeader::parse(self.header).map_err(|_| ServiceError::InvalidInput)?;
+                self.partial = Some((header.kind(), vec![0_u8; header.length()], 0));
+            }
         }
-        let rest = header.get_mut(first..).ok_or(ServiceError::InvalidInput)?;
-        self.inner
-            .read_exact(rest)
-            .await
-            .map_err(|_| ServiceError::Cancelled)?;
-        let header = FrameHeader::parse(header).map_err(|_| ServiceError::InvalidInput)?;
-        let mut payload = vec![0_u8; header.length()];
-        self.inner
-            .read_exact(&mut payload)
-            .await
-            .map_err(|_| ServiceError::Cancelled)?;
-        Ok(Some(Frame {
-            kind: header.kind(),
-            payload,
-        }))
+        let Some((kind, payload, filled)) = self.partial.as_mut() else {
+            return Err(ServiceError::Internal);
+        };
+        while *filled < payload.len() {
+            let rest = payload.get_mut(*filled..).ok_or(ServiceError::Internal)?;
+            let read = self
+                .inner
+                .read(rest)
+                .await
+                .map_err(|_| ServiceError::Cancelled)?;
+            if read == 0 {
+                return Err(ServiceError::Cancelled);
+            }
+            *filled += read;
+        }
+        let kind = *kind;
+        let payload = std::mem::take(payload);
+        self.partial = None;
+        Ok(Some(Frame { kind, payload }))
     }
 
     /// Reads the next frame and requires it to exist.
@@ -209,6 +238,11 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
         self.inner
     }
 
+    /// Lends the wrapped half, for example to reset a stream abandoned mid-frame.
+    pub const fn get_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+
     async fn header(&mut self, kind: FrameKind, length: usize) -> Result<(), ServiceError> {
         let header = FrameHeader::new(kind, length)
             .and_then(FrameHeader::encode)
@@ -225,68 +259,5 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
 }
 
 #[cfg(test)]
-mod tests {
-    use ma2a_core::service::{Channel, FrameKind, MAX_DATA_CHUNK_LEN, ServiceError};
-
-    use super::{FrameReader, FrameWriter};
-
-    #[tokio::test]
-    async fn frames_roundtrip_and_a_clean_end_is_distinguished_from_truncation() {
-        let (client, server) = tokio::io::duplex(1 << 20);
-        let mut writer = FrameWriter::new(client);
-        writer.data(Channel::Output, b"hello").await.expect("data");
-        writer.end(Channel::Input).await.expect("end");
-        writer.reject(ServiceError::NotFound).await.expect("reject");
-        writer.frame(FrameKind::Cancel, &[]).await.expect("cancel");
-        writer.shutdown().await.expect("shutdown");
-        let mut reader = FrameReader::new(server);
-        let data = reader.expect().await.expect("data frame");
-        assert_eq!(
-            data.data().expect("payload"),
-            (Channel::Output, &b"hello"[..])
-        );
-        assert_eq!(
-            reader.expect().await.expect("end").end(),
-            Ok(Channel::Input)
-        );
-        assert_eq!(
-            reader.expect().await.expect("reject").rejection(),
-            Ok(ServiceError::NotFound)
-        );
-        assert_eq!(
-            reader.expect().await.expect("cancel").kind(),
-            FrameKind::Cancel
-        );
-        assert_eq!(reader.next().await, Ok(None));
-    }
-
-    #[tokio::test]
-    async fn oversized_and_truncated_frames_are_refused_before_buffering() {
-        let (mut client, server) = tokio::io::duplex(64);
-        tokio::io::AsyncWriteExt::write_all(&mut client, &[4, 0, 0x10, 0, 2])
-            .await
-            .expect("header");
-        drop(client);
-        assert_eq!(
-            FrameReader::new(server).next().await,
-            Err(ServiceError::InvalidInput)
-        );
-        let (mut client, server) = tokio::io::duplex(64);
-        tokio::io::AsyncWriteExt::write_all(&mut client, &[5, 0, 0, 0, 1])
-            .await
-            .expect("header");
-        drop(client);
-        assert_eq!(
-            FrameReader::new(server).next().await,
-            Err(ServiceError::Cancelled)
-        );
-        let (client, _server) = tokio::io::duplex(64);
-        let oversized = vec![1_u8; MAX_DATA_CHUNK_LEN + 1];
-        assert_eq!(
-            FrameWriter::new(client)
-                .data(Channel::Input, &oversized)
-                .await,
-            Err(ServiceError::InvalidInput)
-        );
-    }
-}
+#[path = "frame_io_tests.rs"]
+mod tests;
