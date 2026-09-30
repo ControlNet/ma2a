@@ -25,10 +25,19 @@ use crate::ipc::{
 pub(super) async fn handle_connection(
     mut stream: platform::PlatformStream,
     context: ConnectionContext,
-    lifecycle_only: bool,
+    admission: super::Admission,
 ) -> Result<(), IpcError> {
+    let lifecycle_only = admission.lifecycle_only;
     platform::authorize(&stream, &context.paths)?;
     let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
+    if !lifecycle_only
+        && let Ok(command) = api::decode_command(&frame.payload)
+        && command.stream_open().is_some()
+    {
+        let upgrade = ((frame.correlation, &command), admission.permit);
+        return super::stream::open(stream, &context, upgrade).await;
+    }
+    let _permit = admission.permit;
     let (encoded, requests_shutdown) = answer(&frame.payload, &context, lifecycle_only).await?;
     if encoded.len() > api::MAX_LOCAL_RESPONSE_BYTES {
         let value: Value = serde_json::from_slice(&encoded).map_err(|_| IpcError::InvalidFrame)?;

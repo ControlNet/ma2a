@@ -244,6 +244,7 @@ impl StoreBackend {
             StoreCommand::AdvanceRevision(reply) => {
                 drop(reply.send(self.repository.advance_revision().map_err(Into::into)));
             }
+            StoreCommand::Services(command) => self.dispatch_services(command),
             StoreCommand::Stop(reply) => {
                 let _unsent = reply.send(());
                 return true;

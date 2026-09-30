@@ -28,6 +28,14 @@ pub(crate) enum Command {
         endpoint_id: EndpointId,
         reply: oneshot::Sender<Result<crate::store::RemovedMember, RuntimeError>>,
     },
+    /// Lends the outbound service client for one operation; the handle never keeps it,
+    /// so a stopped Runtime's Endpoint is never held open by a surviving handle.
+    ServiceClient(oneshot::Sender<ma2a_net::ServiceClient>),
+    GrantOwnedSpaceMember {
+        member: (SpaceId, EndpointId),
+        services: [bool; 5],
+        reply: oneshot::Sender<crate::store::GrantResult>,
+    },
     LeaveSpace {
         space_id: SpaceId,
         request_id: RequestId,

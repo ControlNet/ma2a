@@ -106,6 +106,11 @@ impl OpenHeader {
         &self.body
     }
 
+    /// Consumes the header into its body.
+    pub fn into_body(self) -> OpenBody {
+        self.body
+    }
+
     /// Encodes exact canonical bytes: `{0: [1, 0], 1: id, 2: target, 3: service, 4: body}`.
     ///
     /// # Errors

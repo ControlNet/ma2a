@@ -18,7 +18,7 @@ Unknown fields, duplicate JSON object members, and unknown operations are reject
 
 ## Commands And Results
 
-The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `b83ecc5f0475b3f972e5c869151ecf3dc261afc508108fa4ebc80400e7bc962b`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 26 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
+The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `3b443bc5ad80408284dc2835dc2cb1611d537ac475c4b9cc6bd04724bdba0ca4`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 32 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
 
 Successful responses contain required `version`, nullable `request_id`, `revision`, and discriminated `result` fields. Error responses contain required `version`, `error`, and nullable `remediation` fields. TypeScript exposes `LocalApiSuccessResponse`, `LocalApiErrorResponse`, and their `LocalApiResponse` union.
 
@@ -34,6 +34,72 @@ Space and reporting the pre-departure count would present stale state as current
 `ui_init` atomically establishes or replaces the Web password and revokes existing sessions. The public CLI uses this operation for both first setup and recovery. Lower-level `ui_password_set` and `ui_password_reset` operations retain their explicit preconditions for local API callers.
 
 `ui_start` carries `host` (an IP address or hostname) and `port` (0–65535; zero selects a free port). `ui_stop` and `ui_status` carry no fields. All three return `ui_status` with `running` and nullable `url`. These are private IPC lifecycle instructions, have no `request_id`, execute on every call, and never participate in durable replay. Each successful `ui_start` restarts an existing service. A new daemon always starts with WebUI stopped. HTTP routes do not expose UI initialization or lifecycle control.
+
+### Service grants, exposure, and operation status (Phase 2)
+
+`space_member` carries the signed service grants `files_read`, `files_write`, `exec`, `shell`, and
+`proxy` beside `echo` and `relay_provider`. These are what a member may ask other members for. They
+never make any Runtime serve anything by themselves.
+
+- **`space_grant`** carries a request ID, `space_id`, `peer_endpoint_id`, and all five grant
+  booleans. It replaces exactly those five bits of the member and returns `space_granted` with the
+  signed `space_member`. Only the Space owner can sign it; any other Runtime gets `unauthorized`,
+  and an unknown Space or member gets `not_found`. Neither refusal has any effect. An unchanged
+  grant succeeds without signing a new generation. Grant changes reach peers through ordinary
+  control sync.
+- **`service_expose`** carries a request ID, `space_id`, and one exposure in flat nullable form:
+  - `kind` is `files_root`, `exec`, `shell`, or `proxy`;
+  - `root`, `path`, and `access` (`read_only` or `read_write`) are required exactly for
+    `files_root`;
+  - `host` (`*` or a canonical host) and the inclusive `port_start`–`port_end` range are required
+    exactly for `proxy`;
+  - every inapplicable field is `null`.
+
+  The result is `service_exposed`. A root path must be an existing absolute directory; it is stored
+  canonicalized. A root name is bound Runtime-wide to one directory, so re-binding it elsewhere
+  returns `conflict`. Exposing the same selector again updates it in place. A Runtime holds at most
+  256 exposures.
+- **`service_unexpose`** names an exposure by the same selector without `path` and `access`. It
+  returns `service_unexposed` with the removed exposure, or `not_found` without effect.
+- **`service_exposure_list`** returns `service_exposures`, an array of `service_exposure`.
+- **`operations_status`** returns `operations`: `active_count` and at most 64 `active` operations
+  with `elapsed_ms`, plus `recent_count` and at most 64 of the most recent completed operations,
+  newest first, with `result`, nullable `error`, byte counts, and `duration_ms`. Operations carry a
+  request ID, the peer, the service, a content-free operation name, and a direction. They never
+  carry paths, argv, environment, or content. This state is in memory only.
+
+These commands are local IPC operations and are not routed over HTTP. Grants and consent
+(`space_grant`, `service_expose`, `service_unexpose`) are never routed over HTTP, so a browser
+session cannot make this Runtime serve anything.
+
+`stream_open` carries a request ID, `target_endpoint_id`, and `service` (`files`, `transfer`,
+`exec`, `shell`, or `proxy`). It upgrades one IPC connection to the stream plane:
+
+1. After the `stream_opened` response, the connection carries Services v1 frames
+   (`docs/protocol/services-v1.md`) verbatim in both directions and no further local API frames.
+2. The client sends exactly one `open` frame. Its request ID, target, and service must equal the
+   upgrade's; otherwise it receives `reject(invalid_input)`.
+3. The Runtime dials the target on the family ALPN and relays frames with one-frame buffers.
+
+The client keeps its side open until it receives a terminal frame. Closing the connection earlier
+cancels the operation.
+
+Admission and replay:
+
+- **Admission.** Stream connections use their own pool of 64. They never hold a business connection
+  slot or the mutation lock while streaming. A self-targeted upgrade is `invalid_input`.
+- **Replay scope.** Side-effecting operations (Files mkdir, write, rename, and remove; upload;
+  Exec; Shell; Proxy) reserve their request ID in the same durable replay table as local API
+  mutations. The fingerprint covers the service, the target, and the exact `open` payload. Reads
+  never reserve.
+- **Not started.** A target `reject` or a failed dial releases the reservation.
+- **Completed.** A target `outcome` is recorded. The same request later receives that exact
+  frame again without contacting the target.
+- **Indeterminate.** A stream lost after `open` was written is recorded as a failed
+  `outcome(outcome_unknown)`, which is also the answer for a reservation left by a previous
+  Runtime process.
+- **Duplicates.** A request ID reused with a different `open` receives `reject(conflict)`. One
+  still running receives `reject(unavailable)`.
 
 ## Mutation Replay
 

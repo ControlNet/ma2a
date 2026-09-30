@@ -88,7 +88,7 @@ async fn twenty_clients_share_one_runtime_endpoint_and_teardown_cleanly() -> Tes
 
     // Then
     assert_eq!(observed_id, endpoint_id);
-    assert_eq!(report.joined_tasks(), 2);
+    assert_eq!(report.joined_tasks(), 3);
     Ok(())
 }
 

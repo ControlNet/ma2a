@@ -11,7 +11,7 @@ mod accessors;
 mod methods;
 
 /// Exact ordered operation inventory carried by the schema and TypeScript contract.
-pub const COMMAND_NAMES: [&str; 30] = [
+pub const COMMAND_NAMES: [&str; 36] = [
     "handshake",
     "status",
     "endpoint_info",
@@ -42,6 +42,12 @@ pub const COMMAND_NAMES: [&str; 30] = [
     "space_details_fetch",
     "snapshot_stamp",
     "graceful_shutdown",
+    "space_grant",
+    "service_expose",
+    "service_unexpose",
+    "service_exposure_list",
+    "operations_status",
+    "stream_open",
 ];
 
 #[derive(Clone, PartialEq, Eq)]
@@ -134,6 +140,12 @@ pub(crate) enum CommandKind {
     SpaceDetailsFetch(SpaceId),
     SnapshotStamp,
     GracefulShutdown(RequestId),
+    SpaceGrant(RequestId, SpaceId, EndpointId, [bool; 5]),
+    ServiceExpose(RequestId, SpaceId, super::codec_services::ExposureSpec),
+    ServiceUnexpose(RequestId, SpaceId, super::codec_services::ExposureSpec),
+    ServiceExposureList,
+    OperationsStatus,
+    StreamOpen(RequestId, EndpointId, ma2a_core::ServiceKind),
 }
 
 /// One parsed member of the exact local API v1 command set.

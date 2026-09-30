@@ -19,6 +19,7 @@ mod execute;
 mod mutation_outcome;
 #[cfg(test)]
 mod mutation_test_hooks;
+mod stream;
 
 use dispatch::handle_connection;
 
@@ -52,6 +53,8 @@ pub struct LocalApiServer {
     mutation_hooks: mutation_test_hooks::MutationTestHooks,
     permits: Arc<Semaphore>,
     reserve: Arc<Semaphore>,
+    streams: Arc<Semaphore>,
+    in_flight: crate::stream_plane::InFlight,
 }
 
 impl LocalApiServer {
@@ -85,6 +88,8 @@ impl LocalApiServer {
             mutation_hooks: mutation_test_hooks::MutationTestHooks::default(),
             permits: Arc::new(Semaphore::new(BUSINESS_CONNECTION_LIMIT)),
             reserve: Arc::new(Semaphore::new(LIFECYCLE_RESERVE)),
+            streams: Arc::new(Semaphore::new(crate::stream_plane::STREAM_CONNECTION_LIMIT)),
+            in_flight: crate::stream_plane::InFlight::default(),
         })
     }
 
@@ -159,14 +164,12 @@ impl LocalApiServer {
                         shutdown_sender: shutdown_sender.clone(),
                         web: self.web.clone(),
                         identity: Arc::clone(&self.identity),
+                        streams: Arc::clone(&self.streams),
+                        in_flight: self.in_flight.clone(),
                         #[cfg(test)]
                         mutation_hooks: self.mutation_hooks.clone(),
                     };
-                    tasks.spawn(async move {
-                        let lifecycle_only = admission.lifecycle_only;
-                        let _permit = admission.permit;
-                        handle_connection(stream, context, lifecycle_only).await
-                    });
+                    tasks.spawn(handle_connection(stream, context, admission));
                 }
                 joined = tasks.join_next(), if !tasks.is_empty() => {
                     if let Some(result) = joined { let _connection_result = result?; }
@@ -224,6 +227,8 @@ struct ConnectionContext {
     shutdown_sender: mpsc::Sender<()>,
     web: Option<crate::web::WebLifecycle>,
     identity: Arc<DaemonIdentity>,
+    streams: Arc<Semaphore>,
+    in_flight: crate::stream_plane::InFlight,
     #[cfg(test)]
     mutation_hooks: mutation_test_hooks::MutationTestHooks,
 }

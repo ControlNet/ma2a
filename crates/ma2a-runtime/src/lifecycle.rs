@@ -16,7 +16,12 @@ use crate::{
 enum TaskExit {
     Actor(ShutdownAck),
     Store,
+    Services,
 }
+
+/// Admitted inbound service streams queued for the stream host; beyond this, callers are
+/// told the service is unavailable rather than buffered.
+const SERVICE_QUEUE: usize = 64;
 
 /// One running Runtime actor and all tasks it owns.
 #[derive(Debug)]
@@ -62,9 +67,11 @@ impl Runtime {
             Ok(TaskExit::Store)
         });
         let identity = store.initialize().await?;
+        let _swept = store.sweep_staging().await?;
         let (enrollment_sender, enrollment_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
         let (control_sender, control_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
         let (echo_sender, echo_calls) = mpsc::channel(crate::actor::COMMAND_CAPACITY);
+        let (service_sender, service_calls) = mpsc::channel(SERVICE_QUEUE);
         let lookup = SpaceAddressLookup::with_clock(Arc::new(RuntimeAddressLookupClock::new(
             Arc::clone(&clock),
         )));
@@ -78,6 +85,7 @@ impl Runtime {
         let options = EndpointBindOptions::new(enrollment_sender, identity.bind_port)
             .with_control(control_sender, !identity.memberships.is_empty())
             .with_echo(echo_sender)
+            .with_services(service_sender)
             .with_relay_map(relay_map.clone());
         let endpoint =
             RuntimeEndpoint::bind_with_lookup(identity.secret, lookup.clone(), options).await?;
@@ -111,7 +119,7 @@ impl Runtime {
         let (mut actor, handle, cancellation) = Actor::new(
             state,
             endpoint,
-            store,
+            store.clone(),
             enrollment_calls,
             control_calls,
             echo_calls,
@@ -134,6 +142,14 @@ impl Runtime {
             return Err(error);
         }
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
+        let host = crate::stream_host::HostContext {
+            local: identity.endpoint_id,
+            store,
+            shutdown: cancellation.child_token(),
+            operations: handle.operations().clone(),
+            authorizations: crate::stream_host::Authorizations::default(),
+        };
+        spawn_service_host(&mut tasks, service_calls, host);
         Ok(Self {
             handle,
             connections,
@@ -169,7 +185,7 @@ impl Runtime {
                 .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::Shutdown))?;
             match joined.map_err(RuntimeError::from).and_then(|exit| exit) {
                 Ok(TaskExit::Actor(exit)) => actor_ack = Some(exit),
-                Ok(TaskExit::Store) => {}
+                Ok(TaskExit::Store | TaskExit::Services) => {}
                 Err(error) => {
                     failure.get_or_insert(error);
                 }
@@ -179,7 +195,7 @@ impl Runtime {
             return Err(error);
         }
         let ack = ack?;
-        if joined_tasks != 2 || actor_ack != Some(ack) {
+        if joined_tasks != 3 || actor_ack != Some(ack) {
             return Err(RuntimeError::new(RuntimeErrorKind::Shutdown));
         }
         Ok(ShutdownReport {
@@ -188,6 +204,19 @@ impl Runtime {
             revision: ack.revision,
         })
     }
+}
+
+/// Serves admitted inbound service streams until the Runtime's cancellation, which the
+/// host's own token descends from, so shutdown reaches every streaming operation.
+fn spawn_service_host(
+    tasks: &mut JoinSet<Result<TaskExit, RuntimeError>>,
+    calls: mpsc::Receiver<ma2a_net::ServiceCall>,
+    host: crate::stream_host::HostContext,
+) {
+    tasks.spawn(async move {
+        crate::stream_host::run(calls, host).await;
+        Ok(TaskExit::Services)
+    });
 }
 
 fn boot_id() -> Result<[u8; 16], RuntimeError> {

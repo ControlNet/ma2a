@@ -186,5 +186,6 @@ pub(crate) enum StoreCommand {
         reply: oneshot::Sender<Result<(), ma2a_core::EchoError>>,
     },
     AdvanceRevision(oneshot::Sender<Result<u64, RuntimeError>>),
+    Services(super::ServiceStoreCommand),
     Stop(oneshot::Sender<()>),
 }

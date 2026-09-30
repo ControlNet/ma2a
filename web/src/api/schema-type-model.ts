@@ -1,4 +1,4 @@
-import type ts from "typescript"
+import ts from "typescript"
 
 export type SchemaNode = {
   readonly fields?: Readonly<Record<string, SchemaNode>>
@@ -66,9 +66,16 @@ export function assertEnum(
   expected: readonly string[],
   path: string,
 ): void {
-  const values = (actual.isUnion() ? actual.types : [actual])
-    .map((member) => literalValue(checker, member))
-    .sort()
+  assertEnumMembers(checker, actual.isUnion() ? actual.types : [actual], expected, path)
+}
+
+function assertEnumMembers(
+  checker: ts.TypeChecker,
+  members: readonly ts.Type[],
+  expected: readonly string[],
+  path: string,
+): void {
+  const values = members.map((member) => literalValue(checker, member)).sort()
   const expectedValues = [...expected].sort()
   if (
     values.length !== expectedValues.length ||
@@ -76,6 +83,29 @@ export function assertEnum(
   ) {
     throw new SchemaTypeMismatch(`${path}: enum mismatch`)
   }
+}
+
+/**
+ * Returns the non-null member of a nullable type for recursive checking, or `undefined`
+ * once a nullable enum, which flattens into one union of its literals and null, is checked.
+ */
+export function nullableValue(
+  checker: ts.TypeChecker,
+  actual: ts.Type,
+  expected: SchemaNode,
+  path: string,
+): ts.Type | undefined {
+  const members = actual.isUnion() ? actual.types : [actual]
+  const valueMembers = members.filter((member) => (member.flags & ts.TypeFlags.Null) === 0)
+  if (expected.type === "enum" && members.length === valueMembers.length + 1) {
+    assertEnumMembers(checker, valueMembers, expected.values ?? [], path)
+    return undefined
+  }
+  const value = valueMembers[0]
+  if (members.length !== 2 || valueMembers.length !== 1 || value === undefined) {
+    throw new SchemaTypeMismatch(`${path}: expected nullable type`)
+  }
+  return value
 }
 
 export function assertFlag(actual: ts.Type, flag: ts.TypeFlags, path: string, name: string): void {

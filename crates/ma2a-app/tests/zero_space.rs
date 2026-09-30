@@ -83,7 +83,7 @@ async fn zero_space_runtime_is_ready_rejects_normal_alpns_and_joins_shutdown() -
     assert!(status.is_ready());
     assert_eq!(status.membership_count(), 0);
     assert!(status.connectivity().is_direct_only());
-    assert_eq!(shutdown.joined_tasks(), 2);
+    assert_eq!(shutdown.joined_tasks(), 3);
     assert!(shutdown.endpoint_closed());
     let metadata = Repository::open(&config)?.runtime_metadata()?;
     assert_eq!(metadata.last_shutdown_clean(), Some(true));

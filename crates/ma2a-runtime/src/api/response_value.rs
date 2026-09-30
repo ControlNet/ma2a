@@ -42,7 +42,16 @@ pub(super) fn result_value(result: &CommandResult) -> Value {
         ResultKind::SpaceDetails(value) => value.to_value(),
         ResultKind::SnapshotStamp(value) => value.to_value(),
         ResultKind::Snapshot(value) => value.to_value(),
-        ResultKind::ShuttingDown => json!({}),
+        ResultKind::ShuttingDown | ResultKind::StreamOpened => json!({}),
+        ResultKind::SpaceGranted(value) => super::snapshot::member_value(value),
+        ResultKind::ServiceExposed(value) | ResultKind::ServiceUnexposed(value) => value.to_value(),
+        ResultKind::ServiceExposures(values) => Value::Array(
+            values
+                .iter()
+                .map(super::ServiceExposureView::to_value)
+                .collect(),
+        ),
+        ResultKind::Operations(value) => value.to_value(),
     };
     json!({"type": result.result_type(), "payload": payload})
 }

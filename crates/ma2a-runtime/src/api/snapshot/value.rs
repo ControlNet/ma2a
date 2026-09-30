@@ -45,12 +45,18 @@ fn observation_value(observation: &ConnectionObservationView) -> Value {
     })
 }
 
-fn member_value(member: &SpaceMemberView) -> Value {
+pub(crate) fn member_value(member: &SpaceMemberView) -> Value {
+    let [files_read, files_write, exec, shell, proxy] = member.services;
     json!({
         "endpoint_id": encode_hex(member.endpoint_id.as_bytes()),
         "label": member.label,
         "echo": member.echo,
         "relay_provider": member.relay_provider,
+        "files_read": files_read,
+        "files_write": files_write,
+        "exec": exec,
+        "shell": shell,
+        "proxy": proxy,
     })
 }
 

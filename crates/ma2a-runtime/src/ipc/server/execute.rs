@@ -13,6 +13,7 @@ use super::{ConnectionContext, IpcError};
 
 mod interaction;
 mod relay;
+mod services;
 mod space;
 
 pub(super) async fn authoritative_revision(
@@ -176,6 +177,11 @@ pub(super) async fn execute(
             .send(command.clone())
             .await
             .map_err(|_| ProtocolError::INTERNAL)?,
+        "space_grant" => services::grant(context, command).await?,
+        "service_expose" => services::expose(context, command).await?,
+        "service_unexpose" => services::unexpose(context, command).await?,
+        "service_exposure_list" => services::list(context).await?,
+        "operations_status" => services::operations(context),
         _ => return Err(ProtocolError::UNAVAILABLE.into()),
     })
 }

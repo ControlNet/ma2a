@@ -118,6 +118,20 @@ fn round_trips_every_command_variant_through_the_transport_neutral_codec() {
         format!(r#"{{"version":1,"operation":"space_details_fetch","space_id":"{SPACE_ID}"}}"#),
         r#"{"version":1,"operation":"snapshot_stamp"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
+        format!(
+            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_expose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"files_root","root":"docs","path":"/srv/docs","access":"read_only","host":null,"port_start":null,"port_end":null}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_unexpose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"proxy","root":null,"host":"*","port_start":8000,"port_end":8080}}"#
+        ),
+        r#"{"version":1,"operation":"service_exposure_list"}"#.to_owned(),
+        r#"{"version":1,"operation":"operations_status"}"#.to_owned(),
+        format!(
+            r#"{{"version":1,"operation":"stream_open","request_id":"{REQUEST_ID}","target_endpoint_id":"{ENDPOINT_ID}","service":"transfer"}}"#
+        ),
     ];
 
     let operations = requests
@@ -232,8 +246,8 @@ fn rejects_oversize_input_before_parsing_or_callbacks() {
 #[test]
 fn freezes_version_variants_gap_policy_and_schema_hash() {
     assert_eq!(LOCAL_API_VERSION, 1);
-    assert_eq!(COMMAND_NAMES.len(), 30);
-    assert_eq!(RESULT_NAMES.len(), 26);
+    assert_eq!(COMMAND_NAMES.len(), 36);
+    assert_eq!(RESULT_NAMES.len(), 32);
     assert_eq!(ERROR_NAMES.len(), 9);
     assert_eq!(
         ERROR_NAMES,

@@ -24,6 +24,7 @@ pub struct SnapshotMember {
     label: String,
     echo: bool,
     relay_provider: bool,
+    services: [bool; 5],
 }
 
 impl SnapshotMember {
@@ -45,6 +46,11 @@ impl SnapshotMember {
     /// Returns whether this member may provide private relay service.
     pub const fn relay_provider(&self) -> bool {
         self.relay_provider
+    }
+
+    /// Returns the signed service grants: files read, files write, exec, shell, proxy.
+    pub const fn services(&self) -> [bool; 5] {
+        self.services
     }
 }
 
@@ -256,6 +262,14 @@ impl Repository {
                 relay_provider: member
                     .capabilities()
                     .allows(Capability::PRIVATE_RELAY_PROVIDER),
+                services: [
+                    Capability::FILES_READ,
+                    Capability::FILES_WRITE,
+                    Capability::EXEC,
+                    Capability::SHELL,
+                    Capability::PROXY,
+                ]
+                .map(|capability| member.capabilities().allows(capability)),
             })
             .collect();
 

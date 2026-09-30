@@ -7,6 +7,7 @@ mod membership;
 mod mutation_replay;
 mod observation;
 mod relay;
+mod services;
 mod snapshot;
 #[cfg(test)]
 mod test_support;

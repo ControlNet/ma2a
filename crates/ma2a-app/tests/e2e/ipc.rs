@@ -59,6 +59,6 @@ async fn concurrent_private_ipc_clients_share_one_runtime_and_teardown() -> Test
     assert_eq!(runtime.handle().status().await?.endpoint_id(), endpoint_id);
     cancellation.cancel();
     task.await??;
-    assert_eq!(runtime.shutdown().await?.joined_tasks(), 2);
+    assert_eq!(runtime.shutdown().await?.joined_tasks(), 3);
     Ok(())
 }

@@ -30,6 +30,8 @@ mod services;
 mod state;
 mod store;
 mod store_client;
+mod stream_host;
+mod stream_plane;
 
 pub use actor::RuntimeHandle;
 pub use authz::authorize_remote;

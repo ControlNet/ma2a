@@ -1,4 +1,5 @@
 import type { EndpointId, SpaceId } from "./generated"
+import type { OperationsView, ServiceExposureView } from "./generated-services"
 
 export type EndpointView = {
   readonly endpoint_id: EndpointId
@@ -26,6 +27,11 @@ export type SpaceMemberView = {
   readonly label: string
   readonly echo: boolean
   readonly relay_provider: boolean
+  readonly files_read: boolean
+  readonly files_write: boolean
+  readonly exec: boolean
+  readonly shell: boolean
+  readonly proxy: boolean
 }
 
 export type SnapshotSpaceView = {
@@ -207,6 +213,12 @@ export type CommandResult =
   | { readonly type: "snapshot_stamp"; readonly payload: SnapshotStampView }
   | { readonly type: "snapshot"; readonly payload: RuntimeSnapshot }
   | { readonly type: "shutting_down"; readonly payload: Record<string, never> }
+  | { readonly type: "space_granted"; readonly payload: SpaceMemberView }
+  | { readonly type: "service_exposed"; readonly payload: ServiceExposureView }
+  | { readonly type: "service_unexposed"; readonly payload: ServiceExposureView }
+  | { readonly type: "service_exposures"; readonly payload: readonly ServiceExposureView[] }
+  | { readonly type: "operations"; readonly payload: OperationsView }
+  | { readonly type: "stream_opened"; readonly payload: Record<string, never> }
 
 /** Ordered transport frame for one frozen logical snapshot. */
 export type SnapshotFragment = {

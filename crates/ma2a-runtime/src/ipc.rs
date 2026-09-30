@@ -16,7 +16,7 @@ mod windows;
 #[cfg(any(windows, test))]
 mod windows_security;
 
-pub use client::LocalApiClient;
+pub use client::{LocalApiClient, LocalStream, StreamUpgrade};
 pub use lifecycle::{
     DaemonIdentity, DaemonReport, LifecycleRequest, ProcessIncarnation, RuntimeBoot,
     random_launch_nonce,

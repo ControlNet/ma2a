@@ -62,6 +62,8 @@ service_errors! {
     Cancelled = 6, "cancelled", "service operation was cancelled";
     Unavailable = 7, "unavailable", "service is unavailable";
     Internal = 8, "internal", "internal service failure";
+    Conflict = 9, "conflict", "request id was already used for a different request";
+    OutcomeUnknown = 10, "outcome_unknown", "a previous attempt with this request id may have taken effect; inspect target state";
     NotFound = 16, "not_found", "path does not exist";
     AlreadyExists = 17, "already_exists", "path already exists";
     NotADirectory = 18, "not_a_directory", "path is not a directory";
@@ -95,6 +97,8 @@ impl ServiceError {
             Self::Internal
         } else if error == ProtocolError::NOT_FOUND {
             Self::NotFound
+        } else if error == ProtocolError::CONFLICT {
+            Self::Conflict
         } else {
             Self::InvalidInput
         }
@@ -116,7 +120,7 @@ mod tests {
                 assert!(seen.insert(error.name()));
             }
         }
-        assert_eq!(seen.len(), 26);
+        assert_eq!(seen.len(), 28);
         assert_eq!(ServiceError::from_code(0), None);
     }
 }

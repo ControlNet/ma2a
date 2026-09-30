@@ -2125,6 +2125,7 @@ dependencies = [
  "iroh-tickets",
  "ma2a-core",
  "ma2a-net",
+ "ma2a-services",
  "ma2a-store",
  "rusqlite",
  "rustix",

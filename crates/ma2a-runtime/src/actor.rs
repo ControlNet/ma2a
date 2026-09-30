@@ -41,6 +41,7 @@ mod relay_configuration;
 mod relay_lifecycle_test;
 pub(crate) mod relay_server;
 mod run;
+mod services;
 mod shutdown;
 mod snapshot;
 pub(crate) use command::Command;

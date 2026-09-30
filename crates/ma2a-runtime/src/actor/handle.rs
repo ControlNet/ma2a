@@ -11,6 +11,7 @@ use super::{Command, ShutdownAck};
 mod control;
 mod echo;
 mod mutation_replay;
+mod services;
 
 /// Bounded command and event handle for the single-owner Runtime actor.
 #[derive(Clone, Debug)]
@@ -20,6 +21,7 @@ pub struct RuntimeHandle {
     events: broadcast::Sender<RuntimeEvent>,
     echo_audit: crate::echo_audit::EchoAuditLog,
     echo_metrics: ma2a_net::EchoMetrics,
+    operations: crate::stream_host::OperationsRegistry,
     #[cfg(test)]
     control_schedule_events:
         std::sync::Arc<std::sync::Mutex<Vec<crate::control_sync::ControlRoundTrigger>>>,
@@ -71,7 +73,7 @@ impl RuntimeHandle {
         clippy::too_many_arguments,
         reason = "the handle owns independently constructed command, event, and observability channels"
     )]
-    pub(crate) const fn new(
+    pub(crate) fn new(
         commands: mpsc::Sender<Command>,
         store: crate::store::StoreClient,
         events: broadcast::Sender<RuntimeEvent>,
@@ -91,6 +93,7 @@ impl RuntimeHandle {
             events,
             echo_audit,
             echo_metrics,
+            operations: crate::stream_host::OperationsRegistry::new(),
             #[cfg(test)]
             control_schedule_events,
             #[cfg(test)]

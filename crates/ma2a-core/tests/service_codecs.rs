@@ -204,3 +204,27 @@ proptest! {
         prop_assert_eq!(RemotePath::parse(&parsed.to_string()).expect("display"), parsed);
     }
 }
+
+#[test]
+fn a_failed_outcome_is_readable_by_every_family_and_by_status_alone() -> TestResult {
+    let encoded = ma2a_core::service::failed_outcome(ServiceError::OutcomeUnknown)?;
+    assert_eq!(
+        ma2a_core::service::outcome_status(&encoded)?,
+        Some(ServiceError::OutcomeUnknown)
+    );
+    assert_eq!(
+        FilesResult::decode_outcome(&encoded)?,
+        Err(ServiceError::OutcomeUnknown)
+    );
+    assert_eq!(
+        ProcessResult::decode_outcome(&encoded)?,
+        Err(ServiceError::OutcomeUnknown)
+    );
+    let succeeded = FilesResult::encode_outcome(&Ok(FilesResult::Done))?;
+    assert_eq!(ma2a_core::service::outcome_status(&succeeded)?, None);
+    assert_eq!(
+        ma2a_core::service::outcome_status(&[0xa0]),
+        Err(ProtocolError::INVALID_INPUT)
+    );
+    Ok(())
+}

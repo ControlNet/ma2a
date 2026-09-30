@@ -108,6 +108,8 @@ async fn read_receipts_ignore_an_older_dispatch_status() -> TestResult {
         shutdown_sender,
         web: None,
         identity: Arc::clone(&server.identity),
+        streams: Arc::clone(&server.streams),
+        in_flight: server.in_flight.clone(),
         mutation_hooks: server.mutation_hooks.clone(),
     };
     let operations = [

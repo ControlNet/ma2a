@@ -22,6 +22,10 @@ mod large_snapshot;
 mod lifecycle;
 #[path = "server_tests/pending_replay.rs"]
 mod pending_replay;
+#[path = "server_tests/services.rs"]
+mod services;
+#[path = "server_tests/stream_plane.rs"]
+mod stream_plane;
 #[path = "server_tests/support.rs"]
 mod support;
 
@@ -99,7 +103,7 @@ async fn conflicting_shutdown_request_keeps_live_server_available() -> TestResul
     client.probe().await?;
     assert_eq!(live_server.cancel().await?, ServerExit::Cancelled);
     let shutdown = runtime.shutdown().await?;
-    assert_eq!(shutdown.joined_tasks(), 2);
+    assert_eq!(shutdown.joined_tasks(), 3);
     assert!(shutdown.endpoint_closed());
     Ok(())
 }

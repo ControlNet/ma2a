@@ -11,6 +11,7 @@ pub struct SpaceMemberView {
     pub(crate) label: String,
     pub(crate) echo: bool,
     pub(crate) relay_provider: bool,
+    pub(crate) services: [bool; 5],
 }
 
 impl SpaceMemberView {
@@ -36,8 +37,17 @@ impl SpaceMemberView {
                 label: label.to_owned(),
                 echo,
                 relay_provider,
+                services: [false; 5],
             })
         }
+    }
+
+    /// Returns this record with its signed service grants, in `files_read`, `files_write`,
+    /// `exec`, `shell`, `proxy` order.
+    #[must_use]
+    pub const fn with_services(mut self, services: [bool; 5]) -> Self {
+        self.services = services;
+        self
     }
 }
 

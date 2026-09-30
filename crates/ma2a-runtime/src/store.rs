@@ -1,11 +1,13 @@
 mod backend_state;
 mod command;
+mod grant;
 mod identity;
 mod local_control;
 mod membership;
 mod mutation_replay;
 mod relay_state;
 mod runner;
+mod services;
 
 use ma2a_store::{KeyStore, Repository};
 use tokio::sync::mpsc;
@@ -13,10 +15,12 @@ use tokio::sync::mpsc;
 pub(crate) use crate::store_client::channel_error;
 
 pub(crate) use command::StoreCommand;
+pub(crate) use grant::{GrantRefusal, GrantResult, OwnedMemberGrant, SERVICE_CAPABILITIES};
 pub(crate) use identity::Identity;
 #[cfg(test)]
 pub(crate) use local_control::RelayPublicationTestCommand;
 pub(crate) use membership::{OwnedMemberRevocation, RemovedMember};
+pub(crate) use services::{ServiceGrant, ServiceStoreCommand};
 
 /// Everything one enrollment commit needs from the caller.
 pub(crate) struct EnrollmentPersistence {

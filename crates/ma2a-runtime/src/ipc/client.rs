@@ -14,6 +14,9 @@ static NEXT_CORRELATION: AtomicU64 = AtomicU64::new(1);
 
 mod lifecycle;
 mod snapshot;
+mod stream;
+
+pub use stream::{LocalStream, StreamUpgrade};
 
 #[cfg(all(test, unix))]
 #[path = "client_deadline_tests.rs"]

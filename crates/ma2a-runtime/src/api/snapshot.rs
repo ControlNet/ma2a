@@ -19,7 +19,9 @@ pub use member::{
 };
 pub use relay::{PrivateRelayCandidateView, PublicRelayFallbackView};
 pub use space::{SpaceIdentityView, SpaceView};
-pub(crate) use value::{endpoint_value, space_identity_value, space_value, ui_auth_value};
+pub(crate) use value::{
+    endpoint_value, member_value, space_identity_value, space_value, ui_auth_value,
+};
 
 /// Runtime Endpoint information safe for an authorized local client.
 #[derive(Debug, Clone, PartialEq, Eq)]

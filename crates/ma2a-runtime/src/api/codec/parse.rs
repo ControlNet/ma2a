@@ -52,6 +52,12 @@ pub(super) fn command(object: &Map<String, Value>) -> Result<Command, ApiError> 
         }
         "snapshot_fetch" => unit(object, CommandKind::SnapshotFetch)?,
         "graceful_shutdown" => request_only(object, true)?,
+        "space_grant" => crate::api::codec_services::space_grant(object)?,
+        "service_expose" => crate::api::codec_services::service_exposure(object, true)?,
+        "service_unexpose" => crate::api::codec_services::service_exposure(object, false)?,
+        "service_exposure_list" => unit(object, CommandKind::ServiceExposureList)?,
+        "operations_status" => unit(object, CommandKind::OperationsStatus)?,
+        "stream_open" => crate::api::codec_services::stream_open(object)?,
         _ => return Err(ApiError::invalid_input()),
     };
     Ok(Command { kind })

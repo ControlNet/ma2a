@@ -110,6 +110,7 @@ pub(super) fn detail_view(
                 member.echo(),
                 member.relay_provider(),
             )
+            .map(|view| view.with_services(member.services()))
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;

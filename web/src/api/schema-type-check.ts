@@ -6,6 +6,7 @@ import {
   exportedType,
   type LocalApiSchema,
   literalValue,
+  nullableValue,
   propertyType,
   requiredNode,
   type SchemaNode,
@@ -130,16 +131,8 @@ function assertNode(context: Context, actual: ts.Type, expected: SchemaNode, pat
     return
   }
   if (expected.nullable !== undefined) {
-    const members = actual.isUnion() ? actual.types : [actual]
-    const valueMembers = members.filter((member) => (member.flags & ts.TypeFlags.Null) === 0)
-    if (members.length !== 2 || valueMembers.length !== 1) {
-      throw new SchemaTypeMismatch(`${path}: expected nullable type`)
-    }
-    const value = valueMembers[0]
-    if (value === undefined) {
-      throw new SchemaTypeMismatch(`${path}: missing non-null type`)
-    }
-    assertNode(context, value, expected.nullable, path)
+    const value = nullableValue(context.checker, actual, expected.nullable, path)
+    if (value !== undefined) assertNode(context, value, expected.nullable, path)
     return
   }
   if (expected.literal !== undefined) {

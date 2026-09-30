@@ -3,6 +3,31 @@ use ma2a_core::{EndpointId, RequestId, SpaceId};
 use super::{Command, CommandKind, PrivateRelayConfiguration};
 
 impl Command {
+    /// Returns the request, target, and family of a stream-plane upgrade.
+    pub const fn stream_open(&self) -> Option<(RequestId, EndpointId, ma2a_core::ServiceKind)> {
+        match self.kind {
+            CommandKind::StreamOpen(id, target, service) => Some((id, target, service)),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn space_grant(&self) -> Option<((SpaceId, EndpointId), [bool; 5])> {
+        match self.kind {
+            CommandKind::SpaceGrant(_, space, peer, grants) => Some(((space, peer), grants)),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn service_exposure(
+        &self,
+    ) -> Option<(SpaceId, &super::super::codec_services::ExposureSpec)> {
+        match &self.kind {
+            CommandKind::ServiceExpose(_, space, spec)
+            | CommandKind::ServiceUnexpose(_, space, spec) => Some((*space, spec)),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn control_sync_peer(&self) -> Option<EndpointId> {
         match self.kind {
             CommandKind::ControlSyncStatus(peer) | CommandKind::ControlSyncTrigger(_, peer) => {

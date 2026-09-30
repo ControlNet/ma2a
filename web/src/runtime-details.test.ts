@@ -18,7 +18,19 @@ function detail(index: number, hash = "aa".repeat(32)): SpaceDetails {
       chain_hash: hash,
       revoked_count: 0,
     },
-    members: [{ endpoint_id: "bb".repeat(32), label: "peer", echo: true, relay_provider: false }],
+    members: [
+      {
+        endpoint_id: "bb".repeat(32),
+        label: "peer",
+        echo: true,
+        relay_provider: false,
+        files_read: false,
+        files_write: false,
+        exec: false,
+        shell: false,
+        proxy: false,
+      },
+    ],
   }
 }
 

@@ -41,7 +41,13 @@ impl Command {
             | CommandKind::UiStart(_, _)
             | CommandKind::UiStop
             | CommandKind::UiStatus
-            | CommandKind::GracefulShutdown(_) => Err(ApiError::invalid_input()),
+            | CommandKind::GracefulShutdown(_)
+            | CommandKind::SpaceGrant(..)
+            | CommandKind::ServiceExpose(..)
+            | CommandKind::ServiceUnexpose(..)
+            | CommandKind::ServiceExposureList
+            | CommandKind::OperationsStatus
+            | CommandKind::StreamOpen(..) => Err(ApiError::invalid_input()),
         }
     }
 
@@ -163,6 +169,12 @@ impl Command {
             CommandKind::SnapshotStamp => "snapshot_stamp",
             CommandKind::SnapshotFetch => "snapshot_fetch",
             CommandKind::GracefulShutdown(_) => "graceful_shutdown",
+            CommandKind::SpaceGrant(..) => "space_grant",
+            CommandKind::ServiceExpose(..) => "service_expose",
+            CommandKind::ServiceUnexpose(..) => "service_unexpose",
+            CommandKind::ServiceExposureList => "service_exposure_list",
+            CommandKind::OperationsStatus => "operations_status",
+            CommandKind::StreamOpen(..) => "stream_open",
         }
     }
 
@@ -182,7 +194,11 @@ impl Command {
             | CommandKind::SnapshotFetch
             | CommandKind::UiStart(_, _)
             | CommandKind::UiStop
-            | CommandKind::UiStatus => None,
+            | CommandKind::UiStatus
+            | CommandKind::ServiceExposureList
+            | CommandKind::OperationsStatus
+            // Replay applies to the streamed `open` header, never to the connection upgrade.
+            | CommandKind::StreamOpen(..) => None,
             CommandKind::SpaceCreate(id, _)
             | CommandKind::SpaceInvite(id, _, _, _)
             | CommandKind::SpaceRedeem(id, _)
@@ -198,7 +214,10 @@ impl Command {
             | CommandKind::UiPasswordSet(id, _)
             | CommandKind::UiPasswordReset(id, _)
             | CommandKind::SessionRevokeAll(id)
-            | CommandKind::GracefulShutdown(id) => Some(id),
+            | CommandKind::GracefulShutdown(id)
+            | CommandKind::SpaceGrant(id, ..)
+            | CommandKind::ServiceExpose(id, ..)
+            | CommandKind::ServiceUnexpose(id, ..) => Some(id),
         }
     }
 }

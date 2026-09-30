@@ -1,4 +1,7 @@
-use ma2a_core::{EndpointId, SpaceId};
+use ma2a_core::{
+    EndpointId, SpaceId,
+    service::{ProxyHostPattern, ProxyRule, RootAccess, ServiceError},
+};
 use ma2a_runtime::api::{
     CapabilityFlags, ClientSnapshotState, Command, CommandResult, ConnectionObservationView,
     ConnectionView, ControlRoundView, ControlSyncView, EchoReplyView, EchoSummaryView,
@@ -8,6 +11,9 @@ use ma2a_runtime::api::{
     ReachabilityView, RelayAddress, RelayCapabilities, RuntimeEvent, RuntimeSnapshot,
     RuntimeStatusView, SnapshotCollections, SnapshotHeader, SnapshotSpaceView, SnapshotState,
     SpaceChainHead, SpaceMemberView, SpaceView, UiAuthView, decode_command,
+};
+use ma2a_runtime::api::{
+    OperationEndView, OperationIdentity, OperationRecordView, OperationsView, ServiceExposureView,
 };
 
 type FixtureResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -89,6 +95,25 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         )?),
         CommandResult::snapshot_stamp(ma2a_runtime::api::SnapshotStampView::new(7, [0x51; 16])),
         CommandResult::shutting_down(),
+        CommandResult::space_granted(
+            SpaceMemberView::new(endpoint_id, "operator", true, false)?
+                .with_services([true, false, true, false, false]),
+        ),
+        CommandResult::service_exposed(ServiceExposureView::files_root(
+            space_id()?,
+            ("docs", "/srv/docs"),
+            RootAccess::ReadWrite,
+        )?),
+        CommandResult::service_unexposed(ServiceExposureView::exec(space_id()?)),
+        CommandResult::service_exposures(vec![
+            ServiceExposureView::shell(space_id()?),
+            ServiceExposureView::proxy(
+                space_id()?,
+                ProxyRule::new(ProxyHostPattern::Any, (8000, 8080))?,
+            ),
+        ]),
+        CommandResult::operations(operations()?),
+        CommandResult::stream_opened(),
     ])
 }
 
@@ -157,6 +182,32 @@ fn snapshot(fixture: SnapshotFixture) -> FixtureResult<RuntimeSnapshot> {
 
 fn snapshot_endpoint() -> FixtureResult<EndpointView> {
     EndpointView::new(endpoint_id()?, "ma2a-runtime", true).map_err(Into::into)
+}
+
+fn operations() -> FixtureResult<OperationsView> {
+    let request_id = ma2a_core::RequestId::try_from([3_u8; 16].as_slice())?;
+    let upload = OperationIdentity::new(
+        request_id,
+        endpoint_id()?,
+        (ma2a_core::ServiceKind::Transfer, "upload", false),
+    );
+    let exec = OperationIdentity::new(
+        request_id,
+        endpoint_id()?,
+        (ma2a_core::ServiceKind::Exec, "exec", true),
+    );
+    Ok(OperationsView::new(
+        vec![(upload, 1_200)],
+        vec![
+            OperationRecordView::new(exec, OperationEndView::completed(), (5, 1_024))
+                .with_duration_ms(40),
+            OperationRecordView::new(
+                upload,
+                OperationEndView::failed(ServiceError::IntegrityMismatch),
+                (4_096, 0),
+            ),
+        ],
+    ))
 }
 
 fn endpoint_id() -> FixtureResult<EndpointId> {
@@ -229,5 +280,19 @@ fn command_json() -> Vec<String> {
         format!(r#"{{"version":1,"operation":"space_details_fetch","space_id":"{SPACE_ID}"}}"#),
         r#"{"version":1,"operation":"snapshot_stamp"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
+        format!(
+            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_expose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"files_root","root":"docs","path":"/srv/docs","access":"read_only","host":null,"port_start":null,"port_end":null}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_unexpose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"proxy","root":null,"host":"*","port_start":8000,"port_end":8080}}"#
+        ),
+        r#"{"version":1,"operation":"service_exposure_list"}"#.to_owned(),
+        r#"{"version":1,"operation":"operations_status"}"#.to_owned(),
+        format!(
+            r#"{{"version":1,"operation":"stream_open","request_id":"{REQUEST_ID}","target_endpoint_id":"{ENDPOINT_ID}","service":"transfer"}}"#
+        ),
     ]
 }

@@ -3,6 +3,7 @@
 mod codec;
 mod codec_fields;
 mod codec_relay;
+mod codec_services;
 mod commands;
 mod events;
 pub(crate) mod fragments;
@@ -11,7 +12,9 @@ mod response_revision;
 mod response_value;
 mod responses;
 mod result_data;
+mod result_type;
 mod schema;
+mod service_views;
 mod snapshot;
 mod snapshot_state;
 mod strict_json;
@@ -20,6 +23,7 @@ pub(crate) use codec_fields::encode_hex;
 
 use ma2a_core::{ProtocolError, RequestId};
 
+pub(crate) use codec_services::ExposureSpec;
 pub use commands::{COMMAND_NAMES, Command};
 pub(crate) use commands::{PrivateRelayMode, UiControlCommand};
 pub use events::{
@@ -34,6 +38,10 @@ pub use result_data::{
     RelayAddress, RelayCapabilities, RuntimeStatusView, UiStatusView,
 };
 pub use schema::{ERROR_NAMES, LOCAL_API_SCHEMA_JSON, LOCAL_API_SCHEMA_SHA256, RESULT_NAMES};
+pub use service_views::{
+    MAX_LISTED_OPERATIONS, OperationEndView, OperationIdentity, OperationRecordView,
+    OperationsView, ServiceExposureView,
+};
 pub use snapshot::{
     ConnectionObservationView, ConnectionView, ControlRoundView, ControlSyncView, EchoSummaryView,
     EndpointView, MAX_RETAINED_CONTROL_ROUNDS, ObservedRelayStateView, PrivateRelayCandidateView,

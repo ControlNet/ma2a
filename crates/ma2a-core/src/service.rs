@@ -47,3 +47,19 @@ pub use transfer::{
     ContentIdentity, TransferAccept, TransferCommit, TransferOutcome, TransferRequest,
     TransferResource, TransferResult,
 };
+
+/// Encodes the family-independent failed `outcome` payload `{0: code, 1: null}`.
+///
+/// # Errors
+/// Returns [`crate::ProtocolError::INVALID_INPUT`] only if the bounded encoder fails.
+pub fn failed_outcome(error: ServiceError) -> Result<Vec<u8>, crate::ProtocolError> {
+    cbor::encode_outcome::<()>(Err(error), |(), _| Ok(()))
+}
+
+/// Returns the status of any family's `outcome` payload: `None` when it succeeded.
+///
+/// # Errors
+/// Returns [`crate::ProtocolError::INVALID_INPUT`] for a malformed envelope.
+pub fn outcome_status(payload: &[u8]) -> Result<Option<ServiceError>, crate::ProtocolError> {
+    cbor::outcome_status(payload)
+}

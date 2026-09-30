@@ -187,3 +187,18 @@ pub(crate) fn decode_outcome<T>(
     decoder.finish()?;
     Ok(outcome)
 }
+
+/// Reads only the status of an outcome envelope: `None` for success.
+pub(crate) fn outcome_status(bytes: &[u8]) -> Result<Option<ServiceError>, ProtocolError> {
+    let mut decoder = Decoder::new(bytes);
+    decoder.map(2)?;
+    decoder.key(0)?;
+    let status = u8::try_from(decoder.uint()?).map_err(|_| ProtocolError::INVALID_INPUT)?;
+    if status == 0 {
+        Ok(None)
+    } else {
+        ServiceError::from_code(status)
+            .map(Some)
+            .ok_or(ProtocolError::INVALID_INPUT)
+    }
+}

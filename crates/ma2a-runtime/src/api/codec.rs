@@ -59,7 +59,21 @@ fn command_value(command: &Command) -> Value {
         | CommandKind::UiStop
         | CommandKind::UiStatus
         | CommandKind::SnapshotStamp
-        | CommandKind::SnapshotFetch => json!({"operation": operation}),
+        | CommandKind::SnapshotFetch
+        | CommandKind::ServiceExposureList
+        | CommandKind::OperationsStatus => json!({"operation": operation}),
+        CommandKind::StreamOpen(id, target, service) => {
+            json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "target_endpoint_id": encode_hex(target.as_bytes()), "service": service.name()})
+        }
+        CommandKind::SpaceGrant(id, space, peer, grants) => {
+            super::codec_services::grant_value(operation, (*id, *space, *peer), *grants)
+        }
+        CommandKind::ServiceExpose(id, space, spec) => {
+            super::codec_services::exposure_value(operation, (*id, *space, true), spec)
+        }
+        CommandKind::ServiceUnexpose(id, space, spec) => {
+            super::codec_services::exposure_value(operation, (*id, *space, false), spec)
+        }
         CommandKind::UiStart(host, port) => {
             json!({"operation": operation, "host": host.as_str(), "port": port})
         }
