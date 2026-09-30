@@ -35,10 +35,13 @@ mod repository_mutations;
 mod repository_state;
 mod repository_state_models;
 mod revision;
+mod service_exposure_rows;
+mod service_exposures;
 mod session_mutations;
 mod sessions;
 mod space_rows;
 mod spaces;
+mod transfer_staging;
 mod web_auth;
 
 pub use address_record_queries::PersistedAddressRecord;
@@ -75,10 +78,12 @@ pub use repository_state_models::{
     RuntimeMetadata, RuntimeMetadataUpdate,
 };
 pub use revision::{SnapshotMember, SnapshotSpace, SnapshotState, SpaceDetails};
+pub use service_exposures::{ExposureRecord, FileRootExposure, LocalExposure};
 pub use sessions::{
     SessionAdmission, SessionCreate, SessionDigests, SessionRecord, SessionTimestamps, SessionTouch,
 };
 pub use spaces::SpaceChainPersistence;
+pub use transfer_staging::TransferStaging;
 pub use web_auth::{
     ARGON2_MEMORY_KIB, ARGON2_OUTPUT_BYTES, ARGON2_PARALLELISM, ARGON2_TIME_COST, CredentialRecord,
     PasswordTransition, derive_password_verifier, verify_password,
