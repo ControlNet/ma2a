@@ -1,16 +1,83 @@
-//! Closed Phase 1 Runtime, Endpoint, Space, and service ontology.
+//! Closed Runtime, Endpoint, Space, and built-in service ontology.
 
 use crate::{EndpointId, SpaceId};
 
-/// The complete Phase 1 service set.
+/// The complete closed set of built-in services.
+///
+/// There is no runtime registration: every service is known at compile time and
+/// every dispatch over this type is exhaustive.
 #[expect(
     clippy::exhaustive_enums,
     reason = "canonical dispatch must update every match when a service is added"
 )]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ServiceKind {
     /// The bounded encrypted Echo service.
     Echo,
+    /// Bounded remote filesystem operations on exported roots.
+    Files,
+    /// Streaming large-content transfer with integrity verification.
+    Transfer,
+    /// Non-interactive one-shot program execution.
+    Exec,
+    /// Interactive terminal sessions.
+    Shell,
+    /// Endpoint-targeted TCP byte-stream proxying.
+    Proxy,
+}
+
+impl ServiceKind {
+    /// Every built-in service in wire-code order.
+    pub const ALL: [Self; 6] = [
+        Self::Echo,
+        Self::Files,
+        Self::Transfer,
+        Self::Exec,
+        Self::Shell,
+        Self::Proxy,
+    ];
+
+    /// Returns the stable one-byte wire code.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Echo => 1,
+            Self::Files => 2,
+            Self::Transfer => 3,
+            Self::Exec => 4,
+            Self::Shell => 5,
+            Self::Proxy => 6,
+        }
+    }
+
+    /// Decodes a stable one-byte wire code.
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Echo),
+            2 => Some(Self::Files),
+            3 => Some(Self::Transfer),
+            4 => Some(Self::Exec),
+            5 => Some(Self::Shell),
+            6 => Some(Self::Proxy),
+            _ => None,
+        }
+    }
+
+    /// Returns the stable lowercase name used by the local API and CLI.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Echo => "echo",
+            Self::Files => "files",
+            Self::Transfer => "transfer",
+            Self::Exec => "exec",
+            Self::Shell => "shell",
+            Self::Proxy => "proxy",
+        }
+    }
+
+    /// Parses the stable lowercase name used by the local API and CLI.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
 }
 
 /// The one persistent Endpoint identity owned by a Runtime.

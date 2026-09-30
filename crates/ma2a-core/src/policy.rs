@@ -27,18 +27,40 @@ pub fn default_member_label(endpoint_id: EndpointId) -> String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// A capability that a Space policy and member can grant.
-pub struct Capability(u8);
+pub struct Capability(u16);
 
 impl Capability {
     /// Echo-service access.
     pub const ECHO: Self = Self(1);
     /// Permission to provide private relay service.
     pub const PRIVATE_RELAY_PROVIDER: Self = Self(2);
+    /// Caller permission to stat, list, read, and download from exported file roots.
+    pub const FILES_READ: Self = Self(4);
+    /// Caller permission to create, write, rename, remove, and upload into read-write roots.
+    pub const FILES_WRITE: Self = Self(8);
+    /// Caller permission to run one-shot Exec on a member that exposes it.
+    pub const EXEC: Self = Self(16);
+    /// Caller permission to open an interactive Shell on a member that exposes it.
+    pub const SHELL: Self = Self(32);
+    /// Caller permission to open TCP Proxy streams to destinations a member allows.
+    pub const PROXY: Self = Self(64);
+
+    /// Returns whether the genesis Space policy, rather than member grants alone, governs this.
+    ///
+    /// Remote-service capabilities are granted only by the authority-signed member record. The
+    /// Phase 1 genesis policy is fixed at creation, so extending it would leave every earlier
+    /// Space unable ever to adopt them without adding authority beyond the owner's signature.
+    pub const fn is_policy_governed(self) -> bool {
+        matches!(self.0, 1 | 2)
+    }
 }
+
+/// Every member capability bit accepted by this protocol version.
+const KNOWN_CAPABILITY_BITS: u16 = 0x7f;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Capability grants attached to one Space member.
-pub struct MemberCapabilities(u8);
+pub struct MemberCapabilities(u16);
 
 impl MemberCapabilities {
     /// Creates capability grants from the supported Phase 1 flags.
@@ -48,17 +70,29 @@ impl MemberCapabilities {
         Self(echo_bit | relay_bit)
     }
 
+    /// Returns these grants with `capability` added.
+    #[must_use]
+    pub const fn with(self, capability: Capability) -> Self {
+        Self(self.0 | capability.0)
+    }
+
+    /// Returns these grants with `capability` removed.
+    #[must_use]
+    pub const fn without(self, capability: Capability) -> Self {
+        Self(self.0 & !capability.0)
+    }
+
     /// Returns whether these grants include `capability`.
     pub const fn allows(self, capability: Capability) -> bool {
         self.0 & capability.0 != 0
     }
 
-    pub(crate) const fn bits(self) -> u8 {
+    pub(crate) const fn bits(self) -> u16 {
         self.0
     }
 
-    pub(crate) const fn from_bits(bits: u8) -> Result<Self, ProtocolError> {
-        if bits <= 3 {
+    pub(crate) const fn from_bits(bits: u16) -> Result<Self, ProtocolError> {
+        if bits & !KNOWN_CAPABILITY_BITS == 0 {
             Ok(Self(bits))
         } else {
             Err(ProtocolError::INVALID_INPUT)
@@ -89,6 +123,8 @@ impl SpacePolicyV1 {
         match capability.0 {
             1 => self.echo,
             2 => self.private_relay_provider,
+            // Remote-service capabilities are governed by signed member grants alone.
+            4 | 8 | 16 | 32 | 64 => true,
             _ => false,
         }
     }
@@ -190,7 +226,7 @@ impl SpaceMemberV1 {
         decoder.key(1)?;
         let label = decoder.text(MAX_MEMBER_LABEL_LEN)?.to_owned();
         decoder.key(2)?;
-        let bits = u8::try_from(decoder.uint()?).map_err(|_| ProtocolError::INVALID_INPUT)?;
+        let bits = u16::try_from(decoder.uint()?).map_err(|_| ProtocolError::INVALID_INPUT)?;
         Self::new(endpoint_id, label, MemberCapabilities::from_bits(bits)?)
     }
 }

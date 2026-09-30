@@ -134,6 +134,10 @@ impl AuthorizationEndpoints {
     pub const fn new(caller: EndpointId, target: EndpointId) -> Self {
         Self { caller, target }
     }
+
+    pub(crate) const fn parts(self) -> (EndpointId, EndpointId) {
+        (self.caller, self.target)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,6 +246,14 @@ pub struct AuthorizationPermit {
 }
 
 impl AuthorizationPermit {
+    pub(crate) const fn for_space(space: &SpaceAuthorizationView) -> Self {
+        Self {
+            authorized_via: space.space_id,
+            generation: space.generation,
+            manifest_hash: space.manifest_hash,
+        }
+    }
+
     fn matches(&self, space: &SpaceAuthorizationView) -> bool {
         self.authorized_via == space.space_id()
             && self.generation == space.generation()
@@ -267,11 +279,7 @@ pub fn authorize_endpoint(
         .iter()
         .find(|space| space.permits(request))
         .map(|space| {
-            let permit = AuthorizationPermit {
-                authorized_via: space.space_id,
-                generation: space.generation,
-                manifest_hash: space.manifest_hash,
-            };
+            let permit = AuthorizationPermit::for_space(space);
             debug_assert!(permit.matches(space));
             permit
         })

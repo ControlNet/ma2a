@@ -18,6 +18,7 @@ mod ontology;
 mod policy;
 mod reachability;
 mod relay;
+pub mod service;
 mod space;
 mod space_chain;
 mod space_codec;

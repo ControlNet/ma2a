@@ -13,6 +13,15 @@ pub(crate) fn buffer() -> Result<Vec<u8>, ProtocolError> {
     Ok(bytes)
 }
 
+/// Allocates an output buffer for one small bounded service object.
+pub(crate) fn small_buffer(capacity: usize) -> Result<Vec<u8>, ProtocolError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve(capacity)
+        .map_err(|_| ProtocolError::INTERNAL)?;
+    Ok(bytes)
+}
+
 pub(crate) fn write_uint(output: &mut Vec<u8>, value: u64) {
     write_major(output, 0, value);
 }
@@ -123,6 +132,14 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    pub(crate) fn array_exact(&mut self, expected: usize) -> Result<(), ProtocolError> {
+        if self.length(4)? == expected {
+            Ok(())
+        } else {
+            Err(ProtocolError::INVALID_INPUT)
+        }
+    }
+
     pub(crate) fn key(&mut self, expected: u64) -> Result<(), ProtocolError> {
         if self.uint()? == expected {
             Ok(())
@@ -154,6 +171,15 @@ impl<'a> Decoder<'a> {
         Ok(text)
     }
 
+    /// Reads any UTF-8 text, including empty and control-bearing text, except NUL.
+    pub(crate) fn text_without_nul(&mut self, maximum: usize) -> Result<&'a str, ProtocolError> {
+        let text = self.utf8_text(maximum)?;
+        if text.contains('\0') {
+            return Err(ProtocolError::INVALID_INPUT);
+        }
+        Ok(text)
+    }
+
     pub(crate) fn optional_text(
         &mut self,
         maximum: usize,
@@ -163,6 +189,16 @@ impl<'a> Decoder<'a> {
             return Ok(None);
         }
         self.utf8_text(maximum).map(Some)
+    }
+
+    /// Consumes a CBOR null when it is the next item and reports whether it was.
+    pub(crate) fn null(&mut self) -> bool {
+        if self.input.get(self.offset) == Some(&0xf6) {
+            self.offset += 1;
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn boolean(&mut self) -> Result<bool, ProtocolError> {

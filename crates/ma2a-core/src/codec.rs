@@ -25,6 +25,12 @@ pub fn encode_request(request: &RequestEnvelope<'_>) -> Result<Vec<u8>, Protocol
     output.extend_from_slice(&[3, PAIR, 0]);
     match request.operation().service_kind() {
         ServiceKind::Echo => {}
+        // The Phase 1 envelope carries Echo only; streaming services use service frames.
+        ServiceKind::Files
+        | ServiceKind::Transfer
+        | ServiceKind::Exec
+        | ServiceKind::Shell
+        | ServiceKind::Proxy => return Err(ProtocolError::INVALID_INPUT),
     }
     write_bytes(&mut output, request.operation().payload())?;
     Ok(output)
