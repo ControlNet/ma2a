@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     PublicRelayFallbackConfig, control::ControlCall, echo_protocol::EchoCall,
-    enrollment::EnrollmentCall,
+    enrollment::EnrollmentCall, service_protocol::ServiceCall,
 };
 
 /// Enrollment routing inputs for a lookup-aware Runtime Endpoint bind.
@@ -14,6 +14,7 @@ pub struct EndpointBindOptions {
     pub(super) control_calls: Option<mpsc::Sender<ControlCall>>,
     pub(super) control_enabled: bool,
     pub(super) echo_calls: Option<mpsc::Sender<EchoCall>>,
+    pub(super) service_calls: Option<mpsc::Sender<ServiceCall>>,
 }
 
 impl EndpointBindOptions {
@@ -29,6 +30,7 @@ impl EndpointBindOptions {
             control_calls: None,
             control_enabled: false,
             echo_calls: None,
+            service_calls: None,
         }
     }
 
@@ -65,6 +67,13 @@ impl EndpointBindOptions {
     #[must_use]
     pub fn with_echo(mut self, echo_calls: mpsc::Sender<EchoCall>) -> Self {
         self.echo_calls = Some(echo_calls);
+        self
+    }
+
+    /// Registers the handler receiving every admitted built-in streaming service call.
+    #[must_use]
+    pub fn with_services(mut self, service_calls: mpsc::Sender<ServiceCall>) -> Self {
+        self.service_calls = Some(service_calls);
         self
     }
 }

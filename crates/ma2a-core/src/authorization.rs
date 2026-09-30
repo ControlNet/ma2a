@@ -88,7 +88,7 @@ impl SpaceAuthorizationView {
             RemoteOperationKind::RelayAdvertisement => {
                 self.allows_private_relay_provider(endpoints.caller)
             }
-            RemoteOperationKind::Unsupported => false,
+            RemoteOperationKind::ServiceStream | RemoteOperationKind::Unsupported => false,
         }
     }
 }
@@ -100,6 +100,7 @@ enum RemoteOperationKind {
     MetadataRead,
     AddressRecordExchange,
     RelayAdvertisement,
+    ServiceStream,
     Unsupported,
 }
 
@@ -118,6 +119,8 @@ impl RemoteOperation {
     pub const ADDRESS_RECORD_EXCHANGE: Self = Self(RemoteOperationKind::AddressRecordExchange);
     /// Private relay advertisement publication operation.
     pub const RELAY_ADVERTISEMENT: Self = Self(RemoteOperationKind::RelayAdvertisement);
+    /// Built-in streaming service; never permitted here, only by `service::authorize_service`.
+    pub const SERVICE_STREAM: Self = Self(RemoteOperationKind::ServiceStream);
     /// Fail-closed value for unsupported or future services.
     pub const UNSUPPORTED: Self = Self(RemoteOperationKind::Unsupported);
 }
@@ -198,7 +201,8 @@ impl AuthorizationRequest {
                 | RemoteOperationKind::Unsupported,
                 None,
             ) => true,
-            (
+            (RemoteOperationKind::ServiceStream, _)
+            | (
                 RemoteOperationKind::EchoCall
                 | RemoteOperationKind::MetadataRead
                 | RemoteOperationKind::AddressRecordExchange

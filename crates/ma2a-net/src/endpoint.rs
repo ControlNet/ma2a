@@ -1,6 +1,7 @@
 mod enrollment;
 mod error;
 mod options;
+mod services;
 
 use std::{fmt, net::Ipv4Addr, time::Duration};
 
@@ -21,6 +22,7 @@ use crate::{
     echo_protocol::{ECHO_ALPN, EchoClient, EchoHandler, EchoMetrics},
     enrollment::{EnrollmentCall, EnrollmentHandler},
     protocols::ENROLLMENT_ALPN,
+    service_protocol::{ServiceClient, ServiceMetrics},
 };
 
 pub use error::{InvalidEndpointSecret, NetError};
@@ -77,6 +79,8 @@ pub struct RuntimeEndpoint {
     connections: crate::ConnectionManager,
     control_metrics: ControlMetrics,
     echo_metrics: EchoMetrics,
+    service_client: ServiceClient,
+    service_metrics: ServiceMetrics,
 }
 
 impl RuntimeEndpoint {
@@ -115,6 +119,7 @@ impl RuntimeEndpoint {
             control_calls,
             control_enabled,
             echo_calls,
+            service_calls,
         } = options;
         let runtime_lookup = RuntimeAddressLookup::new(lookup);
         let observation = runtime_lookup.observation();
@@ -146,8 +151,10 @@ impl RuntimeEndpoint {
         }
         let connections =
             crate::ConnectionManager::with_relays(endpoint.clone(), configured_relays);
+        let connections_for_services = connections.clone();
         let control_metrics = ControlMetrics::default();
         let echo_metrics = EchoMetrics::default();
+        let service_metrics = ServiceMetrics::default();
         let endpoint_id = endpoint.id().into();
         let router = Router::builder(endpoint)
             .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
@@ -158,8 +165,9 @@ impl RuntimeEndpoint {
             .accept(
                 CONTROL_ALPN,
                 ControlHandler::new(control_calls, control_metrics.clone()),
-            )
-            .spawn();
+            );
+        let router =
+            services::accept_services(router, service_calls.as_ref(), &service_metrics).spawn();
         if !control_enabled {
             router.endpoint().set_alpns(vec![ENROLLMENT_ALPN.to_vec()]);
         }
@@ -169,6 +177,8 @@ impl RuntimeEndpoint {
             connections,
             control_metrics,
             echo_metrics,
+            service_client: ServiceClient::new(connections_for_services),
+            service_metrics,
         })
     }
 
@@ -269,20 +279,6 @@ impl RuntimeEndpoint {
     /// Returns the bounded connection manager for target dials and telemetry.
     pub fn connection_manager(&self) -> crate::ConnectionManager {
         self.connections.clone()
-    }
-
-    /// Enables or disables control ALPN negotiation for new incoming connections.
-    pub fn set_control_enabled(&self, enabled: bool) {
-        let alpns = if enabled {
-            vec![
-                ENROLLMENT_ALPN.to_vec(),
-                ECHO_ALPN.to_vec(),
-                CONTROL_ALPN.to_vec(),
-            ]
-        } else {
-            vec![ENROLLMENT_ALPN.to_vec()]
-        };
-        self.router.endpoint().set_alpns(alpns);
     }
 
     /// Creates a publisher backed by this running Endpoint's current observations.

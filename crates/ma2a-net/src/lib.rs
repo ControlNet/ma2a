@@ -27,6 +27,7 @@ mod relay_map;
 mod relay_tls;
 #[cfg(windows)]
 mod relay_tls_windows;
+mod service_protocol;
 mod telemetry;
 
 pub use address_data::{address_endpoint_data_from_iroh, address_endpoint_data_to_iroh};
@@ -79,6 +80,11 @@ pub use relay_config::{
 };
 pub use relay_map::{LocalIrohRelayMap, PrivateRelayCandidate};
 pub use relay_tls::{NativeRelayTlsConfig, RelayTlsError};
+pub use service_protocol::{
+    EXEC_ALPN, FILES_ALPN, PROXY_ALPN, SHELL_ALPN, STREAMING_SERVICES, ServiceCall, ServiceClient,
+    ServiceLimits, ServiceMetrics, ServiceMetricsSnapshot, ServicePermit, ServiceStream,
+    TRANSFER_ALPN, service_alpn,
+};
 pub(crate) use telemetry::ConnectionObservationContext;
 pub use telemetry::{
     ConnectionErrorClass, ConnectionErrorObservation, ConnectionObservation, ConnectionPathState,
