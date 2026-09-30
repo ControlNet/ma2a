@@ -1,4 +1,5 @@
 //! In-memory frame pipes and temporary roots for host tests.
+#![allow(dead_code, reason = "each host test binary uses a different subset")]
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +21,6 @@ pub(crate) type ClientIo = (
 );
 
 /// Returns connected client and server frame halves.
-#[allow(dead_code, reason = "shared by only some host test binaries")]
 pub(crate) fn pipe() -> (ClientIo, ServerIo) {
     pipe_with(1 << 20)
 }
@@ -79,7 +79,6 @@ impl Drop for TempRoot {
 }
 
 /// Deterministic pseudo-random content of `length` bytes.
-#[allow(dead_code, reason = "shared by only some host test binaries")]
 pub(crate) fn content(length: usize) -> Vec<u8> {
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
     (0..length)

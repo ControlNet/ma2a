@@ -7,14 +7,17 @@
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 #![cfg_attr(windows, deny(unsafe_code))]
 
+pub mod exec;
 pub mod files;
 pub mod frame_io;
 mod fs_error;
+mod process;
 mod reply;
 pub mod report;
 pub mod transfer;
 
+pub use exec::serve_exec;
 pub use files::serve_files;
 pub use frame_io::{Frame, FrameReader, FrameWriter};
-pub use report::{OperationReport, Termination};
+pub use report::{OperationEnd, OperationReport};
 pub use transfer::{StagingJournal, serve_transfer};

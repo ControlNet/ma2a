@@ -13,7 +13,7 @@ use ma2a_core::{
         WriteMode,
     },
 };
-use ma2a_services::{Frame, StagingJournal, Termination, serve_transfer};
+use ma2a_services::{Frame, OperationEnd, StagingJournal, serve_transfer};
 use support::{ClientIo, TempRoot, TestResult, content, drain, pipe_with};
 
 #[derive(Debug, Default)]
@@ -121,7 +121,7 @@ async fn downloads_verify_full_content_and_resume_from_an_identity() -> TestResu
     let ((mut reader, _writer), server) =
         start((root.path(), request), std::sync::Arc::default(), 1 << 20)?;
     let frames = drain(&mut reader).await?;
-    assert_eq!(server.await?.termination, Termination::Completed);
+    assert_eq!(server.await?.end, OperationEnd::Completed);
     assert_eq!(data_bytes(&frames)?, source.get(250_001..).ok_or("tail")?);
     let resumed = transfer_outcome(&frames)?.map_err(|error| format!("{error:?}"))?;
     assert_eq!((resumed.bytes, resumed.hash), (49_999, full.hash));
@@ -136,8 +136,8 @@ async fn downloads_verify_full_content_and_resume_from_an_identity() -> TestResu
         ServiceError::PreconditionFailed
     );
     assert_eq!(
-        server.await?.termination,
-        Termination::Rejected(ServiceError::PreconditionFailed)
+        server.await?.end,
+        OperationEnd::Rejected(ServiceError::PreconditionFailed)
     );
     Ok(())
 }
@@ -153,10 +153,7 @@ async fn a_cancelled_download_stops_under_backpressure() -> TestResult {
     assert_eq!(reader.expect().await?.kind(), FrameKind::Data);
     writer.frame(FrameKind::Cancel, &[]).await?;
     let report = server.await?;
-    assert_eq!(
-        report.termination,
-        Termination::Failed(ServiceError::Cancelled)
-    );
+    assert_eq!(report.end, OperationEnd::Failed(ServiceError::Cancelled));
     assert!(report.bytes_out < 4 << 20);
     Ok(())
 }
@@ -179,8 +176,8 @@ async fn a_source_that_changes_during_download_fails_the_outcome() -> TestResult
         Err(ServiceError::ContentChanged)
     );
     assert_eq!(
-        server.await?.termination,
-        Termination::Failed(ServiceError::ContentChanged)
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::ContentChanged)
     );
     Ok(())
 }
@@ -247,10 +244,7 @@ async fn uploads_are_journaled_before_staging_and_published_atomically() -> Test
         frames.first().ok_or("reject")?.rejection()?,
         ServiceError::AlreadyExists
     );
-    assert!(matches!(
-        server.await?.termination,
-        Termination::Rejected(_)
-    ));
+    assert!(matches!(server.await?.end, OperationEnd::Rejected(_)));
     assert!(journal.events().is_empty());
     Ok(())
 }
@@ -273,8 +267,8 @@ async fn failed_uploads_leave_the_destination_and_no_staging_file() -> TestResul
         Err(ServiceError::IntegrityMismatch)
     );
     assert_eq!(
-        server.await?.termination,
-        Termination::Failed(ServiceError::IntegrityMismatch)
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::IntegrityMismatch)
     );
     assert_eq!(fs::read(root.path().join("keep"))?, b"original");
     let events = journal.events();
@@ -291,10 +285,7 @@ async fn failed_uploads_leave_the_destination_and_no_staging_file() -> TestResul
     writer.data(Channel::Input, chunk).await?;
     writer.frame(FrameKind::Cancel, &[]).await?;
     let report = server.await?;
-    assert_eq!(
-        report.termination,
-        Termination::Failed(ServiceError::Cancelled)
-    );
+    assert_eq!(report.end, OperationEnd::Failed(ServiceError::Cancelled));
     assert_eq!(report.bytes_in, 65_536);
     let names = fs::read_dir(root.path())?
         .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
@@ -313,8 +304,8 @@ async fn a_stalled_upload_times_out_and_is_removed() -> TestResult {
     let frames = drain(&mut reader).await?;
     assert_eq!(transfer_outcome(&frames)?, Err(ServiceError::TimedOut));
     assert_eq!(
-        server.await?.termination,
-        Termination::Failed(ServiceError::TimedOut)
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::TimedOut)
     );
     assert_eq!(fs::read_dir(root.path())?.count(), 0);
     Ok(())

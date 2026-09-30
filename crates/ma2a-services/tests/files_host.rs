@@ -9,7 +9,7 @@ use ma2a_core::service::{
     Channel, FileKind, FilesRequest, FilesResult, FrameKind, MAX_LIST_PAGE, RemotePath,
     ServiceError, WriteMode,
 };
-use ma2a_services::{Frame, Termination, serve_files};
+use ma2a_services::{Frame, OperationEnd, serve_files};
 use support::{TempRoot, TestResult, drain, pipe};
 
 fn path(text: &str) -> TestResult<RemotePath> {
@@ -132,14 +132,11 @@ async fn stat_list_mkdir_rename_and_remove_follow_the_contract() -> TestResult {
     )
     .await?;
     assert_eq!(outcome(&frames)?, Ok(FilesResult::Done));
-    assert_eq!(report.termination, Termination::Completed);
+    assert_eq!(report.end, OperationEnd::Completed);
     assert!(!root.path().join("a").exists());
     let (frames, report) = serve(root.path(), FilesRequest::Stat(path("docs:/a")?), None).await?;
     assert_eq!(rejection(&frames)?, ServiceError::NotFound);
-    assert_eq!(
-        report.termination,
-        Termination::Rejected(ServiceError::NotFound)
-    );
+    assert_eq!(report.end, OperationEnd::Rejected(ServiceError::NotFound));
     Ok(())
 }
 
@@ -285,8 +282,8 @@ async fn small_writes_are_atomic_and_leave_no_temporary_files() -> TestResult {
     let (frames, report) = serve(root.path(), short, Some(b"short")).await?;
     assert_eq!(outcome(&frames)?, Err(ServiceError::IntegrityMismatch));
     assert_eq!(
-        report.termination,
-        Termination::Failed(ServiceError::IntegrityMismatch)
+        report.end,
+        OperationEnd::Failed(ServiceError::IntegrityMismatch)
     );
     let long = FilesRequest::Write(path("docs:/f")?, WriteMode::Replace, 2);
     let (frames, _) = serve(root.path(), long, Some(b"too long")).await?;

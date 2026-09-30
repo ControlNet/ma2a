@@ -22,8 +22,8 @@ pub(crate) use content::open_regular;
 pub(crate) use resolve::destination;
 
 use crate::{
-    FrameReader, FrameWriter,
-    report::{OperationReport, Termination, len64},
+    FrameReader, FrameWriter, reply,
+    report::{OperationReport, len64},
 };
 use ops::Failure;
 
@@ -81,7 +81,7 @@ async fn content_free_reply<W: AsyncWrite + Unpin>(
             error,
             partial: true,
         }) => outcome(writer, Err(error), (0, 0)).await,
-        Err(Failure { error, .. }) => reject(writer, error).await,
+        Err(Failure { error, .. }) => reply::reject(writer, error).await,
     }
 }
 
@@ -91,7 +91,7 @@ async fn read_reply<W: AsyncWrite + Unpin>(
 ) -> OperationReport {
     let (bytes, size, offset) = match result {
         Ok(read) => read,
-        Err(Failure { error, .. }) => return reject(writer, error).await,
+        Err(Failure { error, .. }) => return reply::reject(writer, error).await,
     };
     let sent = async {
         writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await?;
@@ -101,7 +101,7 @@ async fn read_reply<W: AsyncWrite + Unpin>(
         Ok::<(), ServiceError>(())
     };
     if let Err(error) = sent.await {
-        return OperationReport::new(Termination::Failed(error));
+        return reply::lost(error, (0, 0));
     }
     let length = len64(bytes.len());
     let eof = offset.saturating_add(length) >= size;
@@ -126,10 +126,10 @@ where
     let prepared = blocking(move || Ok(content::prepare_write(&root, &path, mode)?)).await;
     let prepared = match prepared {
         Ok(prepared) => prepared,
-        Err(Failure { error, .. }) => return reject(writer, error).await,
+        Err(Failure { error, .. }) => return reply::reject(writer, error).await,
     };
     if let Err(error) = writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await {
-        return OperationReport::new(Termination::Failed(error));
+        return reply::lost(error, (0, 0));
     }
     let content = match receive_content(reader, length).await {
         Ok(content) => content,
@@ -175,32 +175,11 @@ pub(crate) async fn receive_content<R: AsyncRead + Unpin>(
     }
 }
 
-async fn reject<W: AsyncWrite + Unpin>(
-    writer: &mut FrameWriter<W>,
-    error: ServiceError,
-) -> OperationReport {
-    let _sent = writer.reject(error).await;
-    let _closed = writer.shutdown().await;
-    OperationReport::new(Termination::Rejected(error))
-}
-
 async fn outcome<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,
     result: Result<FilesResult, ServiceError>,
-    (bytes_in, bytes_out): (u64, u64),
+    bytes: (u64, u64),
 ) -> OperationReport {
-    let termination = match result {
-        Ok(_) => Termination::Completed,
-        Err(error) => Termination::Failed(error),
-    };
-    let sent = match FilesResult::encode_outcome(&result) {
-        Ok(encoded) => writer.frame(FrameKind::Outcome, &encoded).await,
-        Err(_) => Err(ServiceError::Internal),
-    };
-    let _closed = writer.shutdown().await;
-    let termination = match sent {
-        Ok(()) => termination,
-        Err(error) => Termination::Failed(error),
-    };
-    OperationReport::new(termination).with_bytes(bytes_in, bytes_out)
+    let encoded = FilesResult::encode_outcome(&result);
+    reply::outcome(writer, (encoded, result.err()), bytes).await
 }

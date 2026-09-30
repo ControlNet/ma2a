@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     FrameReader, FrameWriter,
-    report::{OperationReport, Termination},
+    report::{OperationEnd, OperationReport},
 };
 
 /// Longest wait for progress on a streaming transfer before it fails as timed out.
@@ -23,7 +23,7 @@ pub(crate) async fn reject<W: AsyncWrite + Unpin>(
 ) -> OperationReport {
     let _sent = writer.reject(error).await;
     let _closed = writer.shutdown().await;
-    OperationReport::new(Termination::Rejected(error))
+    OperationReport::new(OperationEnd::Rejected(error))
 }
 
 /// Sends one encoded terminal `outcome`, half-closes, and reports its class.
@@ -37,11 +37,11 @@ pub(crate) async fn outcome<W: AsyncWrite + Unpin>(
         Err(_) => Err(ServiceError::Internal),
     };
     let _closed = writer.shutdown().await;
-    let termination = match (sent, failure) {
-        (Err(error), _) | (Ok(()), Some(error)) => Termination::Failed(error),
-        (Ok(()), None) => Termination::Completed,
+    let end = match (sent, failure) {
+        (Err(error), _) | (Ok(()), Some(error)) => OperationEnd::Failed(error),
+        (Ok(()), None) => OperationEnd::Completed,
     };
-    OperationReport::new(termination).with_bytes(bytes_in, bytes_out)
+    OperationReport::new(end).with_bytes(bytes_in, bytes_out)
 }
 
 /// Reports an operation that started but whose stream failed before a terminal frame.
@@ -49,7 +49,7 @@ pub(crate) const fn lost(
     error: ServiceError,
     (bytes_in, bytes_out): (u64, u64),
 ) -> OperationReport {
-    OperationReport::new(Termination::Failed(error)).with_bytes(bytes_in, bytes_out)
+    OperationReport::new(OperationEnd::Failed(error)).with_bytes(bytes_in, bytes_out)
 }
 
 /// Resolves once the client cancels, resets, or violates the protocol.

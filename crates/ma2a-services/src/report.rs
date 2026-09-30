@@ -8,7 +8,7 @@ use ma2a_core::service::ServiceError;
     reason = "the three terminal classes mirror the reject/outcome frame contract"
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Termination {
+pub enum OperationEnd {
     /// A `reject` frame was sent; no side effect happened.
     Rejected(ServiceError),
     /// A successful `outcome` was sent.
@@ -22,7 +22,7 @@ pub enum Termination {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OperationReport {
     /// Terminal class.
-    pub termination: Termination,
+    pub end: OperationEnd,
     /// Content bytes received from the caller.
     pub bytes_in: u64,
     /// Content bytes sent to the caller.
@@ -31,9 +31,9 @@ pub struct OperationReport {
 
 impl OperationReport {
     /// Creates a report with zero byte counters.
-    pub const fn new(termination: Termination) -> Self {
+    pub const fn new(end: OperationEnd) -> Self {
         Self {
-            termination,
+            end,
             bytes_in: 0,
             bytes_out: 0,
         }
