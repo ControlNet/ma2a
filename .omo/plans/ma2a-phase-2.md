@@ -270,3 +270,60 @@ Endpoint denied; revoked Endpoint denied; one valid shared Space permits; two in
 (grant in S1, exposure in S2) denied; zero-Space Endpoint exposes no Phase 2 ALPN; limits bounded
 (saturation returns `concurrency_exceeded`, permits released); restart leaves no active operation
 and no staging residue. Phase 1 E2E remains green.
+
+## As built (amendments recorded at implementation)
+
+These refine the decisions above; where they differ, this section is authoritative.
+
+- **D6 fingerprint.** BLAKE3 `derive_key("ma2a stream-plane open v1")` over the family code, the
+  target Endpoint ID, and the exact canonical `open` payload. It is domain-separated from local
+  API command fingerprints, which share the replay table.
+- **D6 terminals.** A completed operation records its exact `outcome` frame, and a replay answers
+  with that frame verbatim; there is no `stream_replayed` wrapper. An indeterminate operation is
+  settled as a recorded failed `outcome(outcome_unknown)`, which its replay returns identically.
+  A pending reservation with the same fingerprint answers `reject(unavailable)` while the
+  operation runs in this process, and `outcome(outcome_unknown)` otherwise. A `reject` that
+  arrives after the target's `accept` breaks the "nothing happened" promise, so the relay treats
+  that stream as indeterminate instead of releasing its reservation.
+- **D7 list.** Pages hold at most 128 entries, not 512.
+- **D9 spawn failure.** A program that cannot start is a `reject(spawn_failed)` before any effect,
+  not an outcome reason. Outcome reasons are `completed | timed_out | cancelled | shutdown`.
+- **CLI shape.** Remote commands name the target with `--endpoint ID`, as `echo` does:
+  `file --endpoint ID stat|ls|mkdir|rm|mv|cat|write|get|put`, `exec --endpoint ID [--stdin] -- …`,
+  `shell --endpoint ID [-- …]`, `proxy connect --endpoint ID HOST PORT`, and
+  `proxy forward --endpoint ID --listen ADDR HOST PORT`. `space grant` and
+  `service expose|unexpose|list` cover consent, and `ops` shows operations. `exec` exits with the
+  remote status: 124 on timeout, 130 on cancel, 128+N for signal N, and 255 on shutdown or an
+  unknown status.
+- **Client helpers.** The caller-side drivers live in `ma2a-services::client`, together with
+  resumable download state (a partial file plus a durable sidecar naming the source) and local
+  terminal raw mode. The Windows console-mode FFI is the audited unsafe boundary
+  `client/terminal_windows.rs`.
+- **Full duplex.** `FrameReader::next` is cancel-safe. The stream-plane relay and every caller
+  driver run the two directions independently, so full-duplex traffic (for example,
+  `exec --stdin -- cat` on a large input) can never deadlock.
+- **Endpoint lifetime.** `RuntimeHandle` never stores Endpoint-holding values. The outbound
+  `ServiceClient` is lent by the actor for each operation, because a handle may outlive its
+  Runtime and would otherwise keep the old sockets bound.
+- **Zero-Space callers.** An Endpoint sharing no Space with the target cannot even locate it,
+  because address lookup is Space-scoped. Its attempts end as `unavailable` before any
+  authorization decision is needed.
+- **Consent ends with membership.** Every stored-chain write (import, enrollment, control sync,
+  departure) withdraws, in the same transaction, the exposures of a Space whose chain no longer
+  lists this Endpoint, and forgets file roots no remaining exposure binds. Rejoining needs fresh
+  `service expose` consent.
+- **Web Services view.** The console's Services route reads `GET /api/v1/services` and
+  `GET /api/v1/operations`, polling every 3 s while it is open, and the Spaces screen shows each
+  member's signed grants as neutral chips. Grants and consent stay CLI-only: no HTTP route changes
+  them, so a browser session cannot make this Runtime serve anything.
+- **Freeze audit fixes.** The end-of-phase audit found and this phase fixed:
+  - Files containment raced by the caller's own `rename` (ancestor checked by `lstat`, then used
+    by name). Resolution now holds directory handles: `openat(O_DIRECTORY | O_NOFOLLOW)` walks and
+    `*at` final steps on Unix, and ancestors pinned without delete sharing on Windows.
+  - Shell jobs in other process groups outliving their session. Cleanup now hangs up the leader's
+    group, kills it, and on Linux kills every remaining member of the terminal session.
+  - Revocation, grant removal, unexposure, or departure did not stop running operations. Every
+    running inbound operation is now re-authorized after each durable change and stopped when it
+    no longer passes.
+  - Detached blocking Files work after a deadline (now bounded Runtime-wide), a Proxy caller's
+    cancel after `end` being ignored, and a post-accept `reject` releasing a replay reservation.
