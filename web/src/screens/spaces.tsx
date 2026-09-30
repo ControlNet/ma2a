@@ -49,6 +49,11 @@ export function SpacesScreen({
                         <span className="member__label">{member.label}</span>
                         <span className="member__caps">
                           {member.echo ? <Pill tone="direct">echo</Pill> : null}
+                          {member.grants.map((grant) => (
+                            <span className="grant" key={grant}>
+                              {grant}
+                            </span>
+                          ))}
                         </span>
                       </li>
                     ))}

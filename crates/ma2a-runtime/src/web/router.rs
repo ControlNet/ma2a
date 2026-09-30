@@ -161,6 +161,11 @@ fn routes(state: WebState, runtime: bool) -> Router {
                 "/api/v1/spaces/{space_id}",
                 get(super::runtime_routes::space_details),
             )
+            .route(
+                "/api/v1/services",
+                get(super::runtime_routes::service_exposures),
+            )
+            .route("/api/v1/operations", get(super::runtime_routes::operations))
             .route("/api/v1/snapshot", get(super::runtime_routes::snapshot))
             .route("/api/v1/events", get(super::runtime_routes::events))
             .route(

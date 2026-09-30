@@ -10,11 +10,16 @@ export type EndpointView = {
   readonly observedPath: ObservedPath
 }
 
+/** A signed service grant, named as the Spaces screen prints it. */
+export type ServiceGrant = "files read" | "files write" | "exec" | "shell" | "proxy"
+
 export type SpaceMemberView = {
   readonly endpointId: string
   readonly label: string
   readonly echo: boolean
   readonly relayProvider: boolean
+  /** What the Space owner signed for this member; serving still needs each target's consent. */
+  readonly grants: readonly ServiceGrant[]
 }
 
 export type SpaceView = {

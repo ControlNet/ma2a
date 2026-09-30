@@ -10,5 +10,6 @@
 @import "./styles/map.css";
 @import "./styles/grid.css";
 @import "./styles/screen.css";
+@import "./styles/services.css";
 @import "./styles/responsive.css";
 @import "./styles/accessibility.css";

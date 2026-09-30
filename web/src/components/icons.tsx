@@ -6,6 +6,7 @@ const PATHS = {
   peers: "M4 12h4l3-7 3 14 3-7h4",
   relays: "M12 4v16M4 8h16M4 16h16",
   echo: "M5 12a7 7 0 0 1 14 0M8 12a4 4 0 0 1 8 0M12 12v6",
+  services: "M4 5h16v5H4zM4 14h16v5H4zM7 7.5h2M7 16.5h2",
   settings: "M12 8a4 4 0 100 8 4 4 0 000-8zM12 2v3M12 19v3M2 12h3M19 12h3",
 } as const
 

@@ -68,7 +68,9 @@ never make any Runtime serve anything by themselves.
   request ID, the peer, the service, a content-free operation name, and a direction. They never
   carry paths, argv, environment, or content. This state is in memory only.
 
-These commands are local IPC operations and are not routed over HTTP. Grants and consent
+These commands are local IPC operations. The HTTP layer routes only the two reads, for the Web
+console's Services view: authenticated `GET /api/v1/services` returns the `service_exposures`
+payload, and `GET /api/v1/operations` returns the `operations` payload. Grants and consent
 (`space_grant`, `service_expose`, `service_unexpose`) are never routed over HTTP, so a browser
 session cannot make this Runtime serve anything.
 

@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import { createRuntimeMutationClient } from "./api/mutations"
+import type { ServicesData } from "./api/services"
 import {
   currentWebSession,
   loginAndTouchSession,
@@ -13,6 +14,7 @@ import { createRuntimeActions } from "./runtime-actions"
 import { RuntimeController } from "./runtime-controller"
 import { LoginScreen, SetupScreen } from "./screens/auth"
 import { routeView } from "./screens/route-view"
+import { useServices } from "./screens/use-services"
 import type { RuntimeViewData } from "./view-model"
 
 function browserPath(): RoutePath {
@@ -22,9 +24,11 @@ function browserPath(): RoutePath {
 export function App({
   initialPath,
   runtime,
+  services,
 }: {
   readonly initialPath?: RoutePath
   readonly runtime?: RuntimeViewData
+  readonly services?: ServicesData
 }): ReactNode {
   const [path, setPath] = useState<RoutePath>(initialPath ?? browserPath)
   const [session, setSession] = useState<WebSession | undefined>(currentWebSession)
@@ -35,6 +39,14 @@ export function App({
   const [syncMessage, setSyncMessage] = useState<string | undefined>()
   const controlled = initialPath !== undefined
   const displayedRuntime = controlled ? runtime : liveRuntime
+  const liveServices = useServices(
+    !controlled && session !== undefined && path === ROUTE_PATHS.services,
+  )
+  const displayedServices = controlled
+    ? services === undefined
+      ? ({ status: "pending" } as const)
+      : ({ status: "ready", data: services } as const)
+    : liveServices
 
   const actions = useMemo(() => {
     if (session === undefined || controller === undefined) return undefined
@@ -128,6 +140,7 @@ export function App({
   const view = routeView({
     path,
     runtime: displayedRuntime,
+    services: displayedServices,
     actions,
     selectedPeer,
     syncMessage,

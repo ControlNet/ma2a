@@ -8,6 +8,7 @@ export const ROUTE_PATHS = {
   spaces: "/spaces",
   relays: "/relays",
   echo: "/echo",
+  services: "/services",
   settings: "/settings",
 } as const
 
@@ -18,6 +19,7 @@ export const RUNTIME_ROUTES = [
   { path: ROUTE_PATHS.spaces, label: "Spaces", icon: "spaces" },
   { path: ROUTE_PATHS.endpoint, label: "Peers", icon: "peers" },
   { path: ROUTE_PATHS.relays, label: "Relays", icon: "relays" },
+  { path: ROUTE_PATHS.services, label: "Services", icon: "services" },
   { path: ROUTE_PATHS.echo, label: "Echo", icon: "echo" },
   { path: ROUTE_PATHS.settings, label: "Settings", icon: "settings" },
 ] as const satisfies readonly {

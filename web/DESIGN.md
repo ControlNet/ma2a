@@ -122,7 +122,7 @@ pulse and every transition.
 
 ## 7. Accessibility
 
-WCAG 2.2 AA, with zero serious or critical axe findings on all eight routes asserted in
+WCAG 2.2 AA, with zero serious or critical axe findings on all nine routes asserted in
 `src/app.test.tsx`. Targets are at least `--target-min` (44px). Focus is a 3px `--accent` outline at
 3px offset and is never colour alone. Layout is usable at 375px, 768px, 1280px and 200% zoom.
 
@@ -147,6 +147,9 @@ parser and the docs together.
 | Retained observation track | `connection.observations`, at most eight per peer |
 | Control round history | `runtime_snapshot.control_rounds`, at most sixteen, memory only |
 | Echo round-trip time | `echo_reply.duration_ms`, saturated at 10,000 |
+| Service exposures | `GET /api/v1/services`, read beside the snapshot, never cached |
+| Active and recent operations | `GET /api/v1/operations`, polled every 3 s while the Services view is open |
+| Member service grants | `space_member` grant booleans, drawn as neutral chips because grants are signed facts |
 
 One thing is still deliberately absent, and the UI says so rather than guessing:
 which Space authorized a given request. `authorized_via` is on the schema's own

@@ -69,13 +69,37 @@ pub(super) async fn space_details(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(bearer) = cookie(&headers) else {
+    let request = json!({"version": 1, "operation": "space_details_fetch", "space_id": id});
+    read(&state, &headers, (&request, "space_details")).await
+}
+
+/// Every exposure this Runtime serves; consent itself is changed only through the CLI.
+pub(super) async fn service_exposures(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> Response {
+    let request = json!({"version": 1, "operation": "service_exposure_list"});
+    read(&state, &headers, (&request, "service_exposures")).await
+}
+
+/// Active operations and the bounded recent audit, both content-free.
+pub(super) async fn operations(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    let request = json!({"version": 1, "operation": "operations_status"});
+    read(&state, &headers, (&request, "operations")).await
+}
+
+/// Answers one authenticated read-only Local API command with its result payload.
+async fn read(
+    state: &WebState,
+    headers: &HeaderMap,
+    (request, result): (&Value, &str),
+) -> Response {
+    let Some(bearer) = cookie(headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if state.auth.authenticate(bearer).await.is_err() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let request = json!({"version": 1, "operation": "space_details_fetch", "space_id": id});
     let Ok(command) = crate::api::decode_command(request.to_string().as_bytes()) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -91,7 +115,7 @@ pub(super) async fn space_details(
     if value.get("error").and_then(Value::as_str) == Some("not_found") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if value.pointer("/result/type").and_then(Value::as_str) != Some("space_details") {
+    if value.pointer("/result/type").and_then(Value::as_str) != Some(result) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     value.pointer("/result/payload").map_or_else(

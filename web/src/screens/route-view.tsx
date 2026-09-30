@@ -8,12 +8,14 @@ import { MapInspector, MapScreen } from "./map"
 import { PeerInspector, PeersScreen } from "./peers"
 import { RelaysInspector } from "./relay-config"
 import { RelaysScreen } from "./relays"
+import { ServicesInspector, ServicesScreen, type ServicesState } from "./services"
 import { SettingsInspector, SettingsScreen } from "./settings"
 import { SpacesInspector, SpacesScreen } from "./spaces"
 
 export type RouteViewOptions = {
   readonly path: RoutePath
   readonly runtime: RuntimeViewData | undefined
+  readonly services: ServicesState
   readonly actions: RuntimeActions | undefined
   readonly selectedPeer: string | undefined
   readonly syncMessage: string | undefined
@@ -57,6 +59,11 @@ export function routeView(options: RouteViewOptions): RouteView {
       return {
         content: <RelaysScreen runtime={runtime} />,
         inspector: <RelaysInspector actions={actions} />,
+      }
+    case ROUTE_PATHS.services:
+      return {
+        content: <ServicesScreen runtime={runtime} services={options.services} />,
+        inspector: <ServicesInspector />,
       }
     case ROUTE_PATHS.echo:
       return {

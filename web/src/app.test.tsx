@@ -22,6 +22,7 @@ const ROUTES = [
   "/spaces",
   "/relays",
   "/echo",
+  "/services",
   "/settings",
 ] as const
 
@@ -74,7 +75,7 @@ test("every destination stays reachable at every width, with the current one mar
   const navigation = screen.getByRole("navigation", { name: "Console sections" })
   const links = within(navigation).getAllByRole("link")
 
-  expect(links).toHaveLength(6)
+  expect(links).toHaveLength(7)
   expect(links.filter((link) => link.getAttribute("aria-current") === "page")).toHaveLength(1)
   expect(within(navigation).getByRole("link", { name: "Settings" })).toHaveAttribute(
     "aria-current",
@@ -95,6 +96,7 @@ test.each([
 test("a Space shows its signed member set, not just a count", () => {
   render(<App initialPath="/spaces" runtime={MANY_RUNTIME_FIXTURE} />)
 
+  expect(screen.getAllByText("files read")[0]).toBeVisible()
   const shared = screen.getAllByText("field-station-2")
   expect(shared).toHaveLength(2)
   expect(screen.getByText("lab-archive")).toBeVisible()

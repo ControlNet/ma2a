@@ -1,6 +1,6 @@
 import type { RuntimeSnapshot } from "./api/client"
 import type { SpaceDetails } from "./api/codec"
-import type { ConnectionState, RuntimeViewData } from "./view-model"
+import type { ConnectionState, RuntimeViewData, ServiceGrant } from "./view-model"
 import type { Tone } from "./viz/tone"
 
 const REACHABILITY_TONE: Record<RuntimeViewData["reachability"]["state"], Tone> = {
@@ -8,6 +8,20 @@ const REACHABILITY_TONE: Record<RuntimeViewData["reachability"]["state"], Tone> 
   DegradedNoCommonHome: "failed",
   AwaitingIrohHome: "relay",
   IrohHomeConnected: "direct",
+}
+
+type SignedMember = SpaceDetails["members"][number]
+
+const GRANTS: readonly (readonly [ServiceGrant, (member: SignedMember) => boolean])[] = [
+  ["files read", (member) => member.files_read],
+  ["files write", (member) => member.files_write],
+  ["exec", (member) => member.exec],
+  ["shell", (member) => member.shell],
+  ["proxy", (member) => member.proxy],
+]
+
+function memberGrants(member: SignedMember): ServiceGrant[] {
+  return GRANTS.filter(([, granted]) => granted(member)).map(([name]) => name)
 }
 
 /**
@@ -54,6 +68,7 @@ export function runtimeViewFromSnapshot(
         label: member.label,
         echo: member.echo,
         relayProvider: member.relay_provider,
+        grants: memberGrants(member),
       })),
       revokedCount: space.revoked_count,
     })),
