@@ -136,6 +136,10 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: cli::Cli) -> Result<(), AppError> {
+    // A supervisor reads its launch record and needs no state directory of its own.
+    if matches!(cli.command, cli::Command::ProcessSupervisor) {
+        return commands::supervisor::run().await;
+    }
     let state_dir = match cli.state_dir {
         Some(path) => path,
         None => default_state_dir()?,
@@ -192,6 +196,10 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
         cli::Command::Exec(arguments) => commands::remote::process::exec(paths, arguments).await,
         cli::Command::Shell(arguments) => commands::remote::process::shell(paths, arguments).await,
         cli::Command::Proxy { command } => commands::remote::proxy::run(paths, command).await,
+        cli::Command::Process(arguments) => {
+            commands::remote::hosted::run(&state_dir, paths, arguments).await
+        }
+        cli::Command::ProcessSupervisor => commands::supervisor::run().await,
         cli::Command::Ui { command } => commands::workflows::run_ui(&state_dir, command).await,
     }
 }

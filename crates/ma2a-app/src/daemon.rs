@@ -9,7 +9,7 @@ use std::{
 };
 
 use ma2a_runtime::{
-    Runtime,
+    ProcessHosting, Runtime,
     current_user::CurrentUserRuntime,
     ipc::{DaemonIdentity, DaemonReport, IpcPaths, LocalApiServer, RuntimeBoot, ServerExit},
     web::{SystemClock, WebAuthConfig},
@@ -89,7 +89,12 @@ async fn serve(
     startup_lock: Option<File>,
 ) -> Result<(), AppError> {
     let launch_nonce = std::env::var(LAUNCH_NONCE_VARIABLE).ok();
-    let runtime = Runtime::start(StoreConfig::new(&state_dir)).await?;
+    // Supervisors are this same executable in hidden mode, so they share its version.
+    let hosting = ProcessHosting::executable(
+        std::env::current_exe()?,
+        vec!["__process-supervisor".into()],
+    );
+    let runtime = Runtime::start_with_processes(StoreConfig::new(&state_dir), hosting).await?;
     let control = CurrentUserRuntime::open_at(
         &state_dir,
         Arc::new(SystemClock::default()),

@@ -2,6 +2,7 @@ use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
+pub(crate) mod processes;
 mod secret_argv;
 pub(crate) mod services;
 
@@ -27,6 +28,9 @@ pub(crate) enum Command {
     Daemon,
     #[command(hide = true)]
     DaemonDetached,
+    /// Runs one Process supervisor from the launch record on stdin.
+    #[command(name = "__process-supervisor", hide = true)]
+    ProcessSupervisor,
     Status {
         #[arg(long)]
         json: bool,
@@ -65,6 +69,8 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: services::ProxyCommand,
     },
+    /// Durable Processes on another Endpoint, or hosted by this one.
+    Process(processes::ProcessArgs),
     Ui {
         #[command(subcommand)]
         command: UiCommand,

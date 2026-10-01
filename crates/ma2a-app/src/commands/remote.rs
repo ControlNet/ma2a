@@ -17,6 +17,9 @@ use crate::{
 };
 
 pub(crate) mod files;
+pub(crate) mod hosted;
+mod hosted_stream;
+mod hosted_view;
 pub(crate) mod process;
 pub(crate) mod proxy;
 mod transfer;
@@ -42,8 +45,23 @@ pub(crate) async fn open(
     endpoint: &str,
     body: OpenBody,
 ) -> Result<Halves, AppError> {
+    open_as(paths, (endpoint, None), body).await
+}
+
+/// Opens one remote operation under `request_id`, or a fresh one when it is `None`.
+pub(crate) async fn open_as(
+    paths: &IpcPaths,
+    (endpoint, request_id): (&str, Option<&str>),
+    body: OpenBody,
+) -> Result<Halves, AppError> {
     crate::daemon_control::require(paths).await?;
     let mut fields = request_fields()?;
+    if let Some(request_id) = request_id {
+        fields.insert(
+            "request_id".to_owned(),
+            Value::String(request_id.to_owned()),
+        );
+    }
     fields.insert(
         "target_endpoint_id".to_owned(),
         Value::String(endpoint.to_owned()),

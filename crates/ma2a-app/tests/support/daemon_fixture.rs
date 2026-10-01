@@ -93,16 +93,50 @@ impl DaemonFixture {
     /// daemon is genuinely serving rather than after a guessed interval, and a
     /// daemon that dies during startup ends the wait at once with end-of-file.
     pub(crate) fn start_owned(&mut self) -> TestValue<()> {
+        self.start_owned_with(&[])
+    }
+
+    /// Runs the foreground daemon with extra environment, such as a test fault point.
+    pub(crate) fn start_owned_with(&mut self, environment: &[(&str, &str)]) -> TestValue<()> {
         // Its diagnostics go to a file rather than a pipe. Nothing reads the
         // daemon's standard error for the life of the test, and a pipe nobody
         // drains eventually blocks the process writing to it.
-        let diagnostics = fs::File::create(self.state_dir.join("foreground-daemon.log"))?;
+        let diagnostics = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.state_dir.join("foreground-daemon.log"))?;
         let child = self
             .command(&["daemon"])
+            .envs(environment.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(diagnostics))
             .spawn()?;
         self.adopt_owned_child(child)
+    }
+
+    /// Kills the owned daemon outright, as a crash would, and reaps it.
+    pub(crate) fn kill_owned(&mut self) -> TestResult {
+        if let Some(mut child) = self.owned.take() {
+            let _killed = child.kill();
+            let _reaped = child.wait();
+        }
+        prove_released(&self.runtime_dir())
+    }
+
+    /// Waits until the owned daemon exits by itself, such as at a fault point.
+    pub(crate) fn await_owned_exit(&mut self, deadline: Duration) -> TestResult {
+        let Some(child) = self.owned.as_mut() else {
+            return Ok(());
+        };
+        let until = Instant::now() + deadline;
+        while Instant::now() < until {
+            if !matches!(child.try_wait(), Ok(None)) {
+                self.owned = None;
+                return prove_released(&self.runtime_dir());
+            }
+            std::thread::sleep(POLL);
+        }
+        Err("the daemon did not exit".into())
     }
 
     /// Waits for an already spawned foreground daemon and takes responsibility for it.

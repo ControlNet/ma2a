@@ -29,6 +29,7 @@ pub(crate) async fn grant(
         ("exec", arguments.exec),
         ("shell", arguments.shell),
         ("proxy", arguments.proxy),
+        ("process", arguments.process),
     ] {
         fields.insert(name.to_owned(), Value::Bool(granted));
     }
@@ -63,6 +64,7 @@ pub(crate) async fn run(
         ExposureArgs::Files { space, .. }
         | ExposureArgs::Exec { space }
         | ExposureArgs::Shell { space }
+        | ExposureArgs::Process { space }
         | ExposureArgs::Proxy { space, .. } => space,
     };
     fields.insert(
@@ -99,6 +101,7 @@ fn selector(exposure: ExposureArgs, expose: bool) -> Result<Map<String, Value>, 
         }
         ExposureArgs::Exec { .. } => ("exec", None, None, None, None),
         ExposureArgs::Shell { .. } => ("shell", None, None, None, None),
+        ExposureArgs::Process { .. } => ("process", None, None, None, None),
         ExposureArgs::Proxy { host, ports, .. } => {
             ("proxy", None, None, Some(host), Some(port_range(&ports)?))
         }

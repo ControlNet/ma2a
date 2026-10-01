@@ -1,5 +1,10 @@
 //! Real daemons joined through the installed CLI, with services exposed and granted.
 
+#![allow(
+    dead_code,
+    reason = "the Phase 2 and Phase 3 acceptance binaries use different parts of the lab"
+)]
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -71,6 +76,30 @@ impl Node {
     pub(crate) fn restart(&mut self) -> TestResult {
         self.fixture.stop_owned()?;
         self.fixture.start_owned()
+    }
+
+    /// Kills the daemon as a crash would, then starts it again with `environment`.
+    pub(crate) fn crash_restart(&mut self, environment: &[(&str, &str)]) -> TestResult {
+        self.fixture.kill_owned()?;
+        self.fixture.start_owned_with(environment)
+    }
+
+    /// Restarts the daemon with `environment`, such as a fault point it will abort at.
+    pub(crate) fn restart_with(&mut self, environment: &[(&str, &str)]) -> TestResult {
+        self.fixture.stop_owned()?;
+        self.fixture.start_owned_with(environment)
+    }
+
+    /// Waits for a daemon that aborts by itself at a fault point, then starts a clean one.
+    pub(crate) fn recover_from_fault(&mut self) -> TestResult {
+        self.fixture
+            .await_owned_exit(std::time::Duration::from_secs(30))?;
+        self.fixture.start_owned()
+    }
+
+    /// Returns the process identifier of this Endpoint's daemon.
+    pub(crate) fn daemon_pid(&self) -> Option<u32> {
+        self.fixture.owned_pid()
     }
 
     /// Returns the `active_count` of this Runtime's operations.

@@ -105,7 +105,7 @@ fn spec(
 }
 
 /// Completes on the first Ctrl-C; never, when the signal cannot be observed.
-async fn interrupted() {
+pub(super) async fn interrupted() {
     if tokio::signal::ctrl_c().await.is_err() {
         std::future::pending::<()>().await;
     }

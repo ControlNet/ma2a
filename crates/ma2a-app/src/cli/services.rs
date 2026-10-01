@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-/// The five service grants an owner can give one Space member.
+/// The six service grants an owner can give one Space member.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "one independent command-line switch per service grant"
@@ -32,6 +32,9 @@ pub(crate) struct GrantArgs {
     /// Reach TCP destinations this Space's proxy rules allow.
     #[arg(long)]
     pub(crate) proxy: bool,
+    /// Start and manage durable Processes where this Space exposes them.
+    #[arg(long)]
+    pub(crate) process: bool,
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -83,6 +86,11 @@ pub(crate) enum ExposureArgs {
     },
     /// Interactive terminals.
     Shell {
+        #[arg(value_name = "SPACE_REF")]
+        space: String,
+    },
+    /// Durable Processes, each managed only by the member that started it.
+    Process {
         #[arg(value_name = "SPACE_REF")]
         space: String,
     },
