@@ -40,7 +40,7 @@ The sender forwards original canonical signed bytes unchanged. It does not re-si
 
 ## Reconciliation
 
-For each authorized shared Space, the responder verifies the receiver's manifest generation and hash against its local contiguous chain. It returns the missing contiguous manifest suffix, then current unexpired address and relay artifacts whose signed sequence exceeds the corresponding receiver cursor.
+For each authorized shared Space, the responder verifies the receiver's manifest generation and hash against its local contiguous chain. It returns the missing contiguous manifest suffix, then current unexpired address and relay artifacts whose signed sequence exceeds the corresponding receiver cursor. A subject without a receiver cursor entry is one the receiver has never accepted anything from, so all of its current artifacts are returned, including a first artifact at sequence zero.
 
 Opportunistic push pages carry the sender's bounded contiguous manifest chain plus current unexpired address and relay artifacts. A receiver accepts already-known manifests only when their canonical bytes exactly match its accepted chain, applies newer manifests sequentially through `SpaceChain`, and rejects gaps or forks.
 

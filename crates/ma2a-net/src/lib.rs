@@ -43,7 +43,7 @@ pub use control::{
     CONTROL_ALPN, CONTROL_DIAL_CONCURRENCY, CONTROL_GLOBAL_LIMIT, CONTROL_MAX_ATTEMPTS,
     CONTROL_PER_PEER_LIMIT, CONTROL_ROUND_DEADLINE, ControlAuthorizedCall, ControlCall,
     ControlClient, ControlMetrics, ControlMetricsSnapshot, ControlRejection, ControlResponder,
-    cursor_sequence, exchange_control_with_retry, retry_delay, select_peer_window,
+    exchange_control_with_retry, is_unseen, retry_delay, select_peer_window,
 };
 pub use dial::{
     DialCancellation, DialClock, DialDriver, DialFailure, DialJitter, DialPolicyError, DialRequest,

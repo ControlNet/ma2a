@@ -8,7 +8,7 @@ mod protocol;
 mod sync;
 
 pub use call::{ControlAuthorizedCall, ControlCall, ControlResponder};
-pub use cursor::cursor_sequence;
+pub use cursor::is_unseen;
 pub use dial::{exchange_control_with_retry, retry_delay};
 pub use handler::{ControlMetrics, ControlMetricsSnapshot};
 pub use peer_selection::select_peer_window;

@@ -4,7 +4,7 @@ mod staging;
 use std::collections::BTreeSet;
 
 use ma2a_core::{ControlArtifactKind, ControlCursorV1, ControlPageV1, SpaceChain};
-use ma2a_net::{ControlRejection, cursor_sequence};
+use ma2a_net::{ControlRejection, is_unseen};
 use ma2a_store::ControlSpaceState;
 
 use crate::error::{RuntimeError, RuntimeErrorKind};
@@ -99,8 +99,10 @@ pub(super) fn pull_page(
         omitted |= !page.add_control(ControlArtifactKind::MANIFEST, manifest.canonical_bytes())?;
     }
     for record in state.address_records() {
-        if record.sequence() > cursor_sequence(cursor.address_cursors(), record.endpoint_id())
-            && u64::try_from(record.issued_at_ms()).is_ok_and(|issued| issued <= request.now_ms)
+        if is_unseen(
+            cursor.address_cursors(),
+            (record.endpoint_id(), record.sequence()),
+        ) && u64::try_from(record.issued_at_ms()).is_ok_and(|issued| issued <= request.now_ms)
             && u64::try_from(record.expires_at_ms()).is_ok_and(|expires| expires > request.now_ms)
         {
             omitted |=
@@ -108,10 +110,14 @@ pub(super) fn pull_page(
         }
     }
     for advertisement in state.active_relay_advertisements() {
-        if advertisement.sequence()
-            > cursor_sequence(cursor.relay_cursors(), advertisement.provider_endpoint_id())
-            && u64::try_from(advertisement.issued_at_ms())
-                .is_ok_and(|issued| issued <= request.now_ms)
+        if is_unseen(
+            cursor.relay_cursors(),
+            (
+                advertisement.provider_endpoint_id(),
+                advertisement.sequence(),
+            ),
+        ) && u64::try_from(advertisement.issued_at_ms())
+            .is_ok_and(|issued| issued <= request.now_ms)
             && u64::try_from(advertisement.expires_at_ms())
                 .is_ok_and(|expires| expires > request.now_ms)
         {
