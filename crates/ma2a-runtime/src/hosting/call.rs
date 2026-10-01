@@ -5,31 +5,37 @@
 //! and enforces their direction rules; a stop or a withdrawn authorization reaches the
 //! service as a `cancel`, and a lost service connection ends as `outcome_unknown`.
 
-use std::time::Duration;
+mod relay;
+
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use ma2a_core::{
     EndpointId, RequestId,
-    service::{FrameKind, HostedCall, ServiceError, ServiceName, encode_call_outcome},
+    service::{FrameKind, HostedCall, ServiceError, encode_call_outcome},
 };
 use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, DuplexStream},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _},
     sync::oneshot,
 };
 use tokio_util::sync::CancellationToken;
 
 use super::{Accepted, CallDetails, HostedServices, Notice, Pending, fault};
-use crate::stream_plane::relay::{Terminal, relay};
+use crate::stream_plane::relay::Terminal;
 
 /// Longest wait for a service to accept a call it was told about.
 const ACCEPT_DEADLINE: Duration = Duration::from_secs(10);
-/// Bytes buffered between the caller's frames and the relay.
-const PUMP_BUFFER: usize = 128 * 1024;
 
 /// Releases one call's slot, and withdraws it if it is still pending, however it ends.
 struct Slot {
     manager: HostedServices,
-    service: ServiceName,
+    running: Arc<AtomicUsize>,
     call: [u8; 16],
 }
 
@@ -37,9 +43,8 @@ impl Drop for Slot {
     fn drop(&mut self) {
         let mut state = self.manager.state();
         state.pending.remove(&self.call);
-        if let Some(live) = state.services.get_mut(&self.service) {
-            live.running = live.running.saturating_sub(1);
-        }
+        self.running.fetch_sub(1, Ordering::Relaxed);
+        drop(state);
     }
 }
 
@@ -85,26 +90,7 @@ where
     if written.is_err() {
         return lost(writer, true).await;
     }
-    let (read, write) = tokio::io::split(stream);
-    let mut target = (FrameReader::new(read), FrameWriter::new(write));
-    let (pipe_in, pipe_out) = tokio::io::duplex(PUMP_BUFFER);
-    let mut client = FrameReader::new(pipe_out);
-    let relayed = {
-        let pump = pump(reader, FrameWriter::new(pipe_in), (stop, &service_stop));
-        let relaying = relay(
-            (&mut client, &mut *writer),
-            (&mut target.0, &mut target.1),
-            before_outcome,
-        );
-        tokio::pin!(pump, relaying);
-        let mut pumping = true;
-        loop {
-            tokio::select! {
-                relayed = &mut relaying => break relayed,
-                () = &mut pump, if pumping => pumping = false,
-            }
-        }
-    };
+    let relayed = relay::relay_call((reader, &mut *writer), stream, (stop, &service_stop)).await;
     drop(slot);
     let report = match relayed.terminal {
         Terminal::Rejected(error) => OperationReport::new(OperationEnd::Rejected(error)),
@@ -115,10 +101,6 @@ where
     };
     let _closed = writer.shutdown().await;
     report.with_bytes(relayed.to_target, relayed.from_target)
-}
-
-fn before_outcome() {
-    fault("before_outcome_relayed");
 }
 
 impl HostedServices {
@@ -155,13 +137,14 @@ impl HostedServices {
             .as_ref()
             .filter(|link| link.ready)
             .ok_or(ServiceError::Unavailable)?;
-        if live.running >= usize::from(record.manifest.max_calls()) {
+        if live.running.load(Ordering::Relaxed) >= usize::from(record.manifest.max_calls()) {
             return Err(ServiceError::ConcurrencyExceeded);
         }
         link.notices
             .try_send(Notice::Call(id))
             .map_err(|_| ServiceError::Unavailable)?;
-        live.running = live.running.saturating_add(1);
+        live.running.fetch_add(1, Ordering::Relaxed);
+        let running = Arc::clone(&live.running);
         let count = live.calls.entry(call.version()).or_default();
         *count = count.saturating_add(1);
         let service_stop = live.stop.clone();
@@ -176,7 +159,7 @@ impl HostedServices {
         state.pending.insert(
             id,
             Pending {
-                service: service.clone(),
+                service,
                 details,
                 deliver,
             },
@@ -184,45 +167,10 @@ impl HostedServices {
         drop(state);
         let slot = Slot {
             manager: self.clone(),
-            service,
+            running,
             call: id,
         };
         Ok((slot, delivered, service_stop))
-    }
-}
-
-/// Forwards the caller's frames to the relay, and turns a stop into the caller's `cancel`.
-///
-/// Returning closes the relay's client side, which the relay reads as the caller leaving.
-async fn pump<R: AsyncRead + Unpin>(
-    reader: &mut FrameReader<R>,
-    mut pipe: FrameWriter<DuplexStream>,
-    (stop, service_stop): (&CancellationToken, &CancellationToken),
-) {
-    loop {
-        let next = tokio::select! {
-            biased;
-            () = stop.cancelled() => None,
-            () = service_stop.cancelled() => None,
-            next = reader.next() => Some(next),
-        };
-        let Some(Ok(Some(frame))) = next else {
-            if next.is_none() {
-                let _cancelled = async {
-                    pipe.frame(FrameKind::Cancel, &[]).await?;
-                    pipe.flush().await
-                }
-                .await;
-            }
-            return;
-        };
-        let forwarded = async {
-            pipe.frame(frame.kind(), frame.payload()).await?;
-            pipe.flush().await
-        };
-        if forwarded.await.is_err() {
-            return;
-        }
     }
 }
 

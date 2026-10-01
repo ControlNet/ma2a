@@ -61,6 +61,10 @@ pub(crate) async fn discover(
     Ok(())
 }
 
+/// Most discovery pages read to find one service: every built-in family and the 64 hosted
+/// services a Runtime registers fit in 5, so a target paging further is not believed.
+const MAX_PAGES: usize = 8;
+
 /// The highest version of `service` that lists `operation`, from discovery.
 async fn newest(
     target: (&IpcPaths, &str),
@@ -68,7 +72,7 @@ async fn newest(
 ) -> Result<u16, AppError> {
     let origin = ServiceOrigin::Hosted(service.clone());
     let mut after = None;
-    loop {
+    for _ in 0..MAX_PAGES {
         let page = page(target, after).await?;
         if let Some(descriptor) = page
             .descriptors
@@ -89,16 +93,15 @@ async fn newest(
                     ))
                 });
         }
-        after = match page.next {
-            Some(next) => Some(next),
-            None => {
-                return Err(AppError::NotFound(format!(
-                    "unknown_service: the target serves this Endpoint no service {}",
-                    service.as_str()
-                )));
-            }
-        };
+        if page.next.is_none() {
+            break;
+        }
+        after = page.next;
     }
+    Err(AppError::NotFound(format!(
+        "unknown_service: the target serves this Endpoint no service {}",
+        service.as_str()
+    )))
 }
 
 /// Calls one operation; output goes to stdout followed by the result, errors to stderr, and

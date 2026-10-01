@@ -153,6 +153,11 @@ call whose service connection is lost ends with `outcome(outcome_unknown)`.
 **Stop.** `service_stop` disables the service, sends `{"t":"stop"}` on the link, withdraws calls not
 yet accepted, and cancels running ones, which get the 5 s cancel grace.
 
+**Bounded cancellation.** A call that is being cancelled ends within 6 s, whether the caller
+cancelled or left, the service was stopped, or the authorization was withdrawn. That holds even
+when the service stopped reading its call and the relay cannot forward the `cancel`. A call ended
+this way is `outcome_unknown`, and its audit record has no byte counts.
+
 **Restart.** After a Runtime restart every started service is `unavailable` until its process
 attaches again. A service process restart is the same: the old link's end, then a new attach. The
 SDK attaches again with backoff from 250 ms doubling to 5 s.
@@ -230,6 +235,15 @@ again after the restart.
   program; the Runtime only tracks its link.
 - **No durable calls.** A call lives as long as its streams. Effects keyed by caller and RequestId
   are the service's own responsibility.
+- **Backpressure reaches the caller.** A service that stops reading its input stops the caller's
+  input too. The caller's own `cancel` then waits behind the input it already sent, so such a call
+  ends only when the service reads or exits, on a stop, or on a withdrawn authorization.
+- **Payload bounds are the caller's to check.** The Runtime relays a service's `accept` and
+  `outcome` verbatim within the frame bounds. A non-SDK service that exceeds the 8 KiB header or
+  the 60,000-byte result reaches the caller as a malformed frame, and a replay of such a call may
+  answer `outcome_unknown`.
+- **Before the accept.** A call waits up to 10 s for its service to accept it. The caller's stream
+  is not read meanwhile, so a caller that leaves holds its slot until then.
 - **Compatibility.** Phase 4 Runtimes cannot decode a signed member entry that carries `service`
   (bit value `512`), so a Space owner should grant `service` only once every member runs Phase 5.
 

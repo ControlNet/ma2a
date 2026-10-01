@@ -14,7 +14,10 @@ mod operator;
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use ma2a_core::{
@@ -84,7 +87,9 @@ struct Link {
 #[derive(Default)]
 struct Live {
     link: Option<Link>,
-    running: usize,
+    /// Running calls; each call's slot holds it, so a call that outlives this registration
+    /// never counts against a later one of the same name.
+    running: Arc<AtomicUsize>,
     calls: BTreeMap<u16, u64>,
     /// Cancelled when the operator stops the service; replaced when it starts again.
     stop: CancellationToken,
@@ -180,7 +185,7 @@ impl HostedServices {
         let ready = live
             .and_then(|live| live.link.as_ref())
             .is_some_and(|link| link.ready);
-        let running = live.map_or(0, |live| live.running);
+        let running = live.map_or(0, |live| live.running.load(Ordering::Relaxed));
         let calls = live.map_or_else(Vec::new, |live| {
             live.calls
                 .iter()
