@@ -91,7 +91,8 @@ fn launch_records_roundtrip_and_keep_the_secret_out_of_debug() -> TestResult {
 
     let shown = format!("{:?}", record.credentials);
     assert!(shown.contains("redacted"));
-    assert!(!shown.contains("9, 9"));
+    // The 16-byte random Process ID can print "9, 9"; only the whole 32-byte secret is telling.
+    assert!(!shown.contains(format!("{:?}", [9_u8; 32]).trim_matches(['[', ']'])));
     Ok(())
 }
 
