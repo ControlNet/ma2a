@@ -7,6 +7,7 @@ use ma2a_runtime::{
     current_user::CurrentUserError,
     ipc::{IpcError, IpcPaths, LocalApiClient},
 };
+mod a2a;
 mod cli;
 mod commands;
 mod credential_command;
@@ -200,6 +201,9 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
             commands::remote::hosted::run(&state_dir, paths, arguments).await
         }
         cli::Command::Agent(arguments) => commands::agents::run(&state_dir, paths, arguments).await,
+        cli::Command::A2a {
+            command: cli::A2aCommand::Serve { listen, token_file },
+        } => a2a::serve(&state_dir, paths, (listen, token_file)).await,
         cli::Command::ProcessSupervisor => commands::supervisor::run().await,
         cli::Command::Ui { command } => commands::workflows::run_ui(&state_dir, command).await,
     }

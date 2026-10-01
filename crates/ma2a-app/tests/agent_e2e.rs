@@ -5,9 +5,13 @@
 mod daemon_fixture;
 #[path = "services_e2e/harness.rs"]
 mod harness;
+#[path = "agent_e2e/http_client.rs"]
+mod http_client;
 #[path = "agent_e2e/lab.rs"]
 mod lab;
 
+#[path = "agent_e2e/a2a.rs"]
+mod a2a;
 #[path = "agent_e2e/acceptance.rs"]
 mod acceptance;
 #[path = "agent_e2e/adversarial.rs"]

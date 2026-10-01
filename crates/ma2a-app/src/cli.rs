@@ -1,4 +1,4 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::{ffi::OsString, net::SocketAddr, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -16,6 +16,22 @@ pub(crate) struct Cli {
     pub(crate) state_dir: Option<PathBuf>,
     #[command(subcommand)]
     pub(crate) command: Command,
+}
+
+/// `ma2a a2a`: the A2A v1.0 adapter.
+#[derive(Debug, Subcommand)]
+pub(crate) enum A2aCommand {
+    /// Serve this Runtime's Agents at `/agents/AGENT` and another Endpoint's at
+    /// `/endpoints/ENDPOINT_ID/agents/AGENT` until interrupted; print the URL and the file
+    /// holding the bearer token.
+    Serve {
+        /// Loopback address to listen on.
+        #[arg(long, default_value = "127.0.0.1:41241")]
+        listen: SocketAddr,
+        /// Where to write the bearer token (default: STATE_DIR/a2a-token).
+        #[arg(long, value_name = "FILE")]
+        token_file: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -74,6 +90,11 @@ pub(crate) enum Command {
     Process(processes::ProcessArgs),
     /// Agents hosted by this Runtime, or another Endpoint's with --endpoint.
     Agent(agents::AgentArgs),
+    /// Serve Agents to A2A v1.0 clients.
+    A2a {
+        #[command(subcommand)]
+        command: A2aCommand,
+    },
     Ui {
         #[command(subcommand)]
         command: UiCommand,
