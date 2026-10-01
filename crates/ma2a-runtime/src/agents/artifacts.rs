@@ -36,8 +36,9 @@ type ArtifactRequest<'a> = (
     (u64, Option<ContentIdentity>),
 );
 
-/// Copies `source` into the blob store and returns its size and hash.
-fn store_blob(source: &Path, blobs: &Path) -> io::Result<(u64, [u8; 32])> {
+/// Copies `source` into a staging file of the blob store; returns its size, its hash, and
+/// the staging file.
+fn stage_blob(source: &Path, blobs: &Path) -> io::Result<(u64, [u8; 32], PathBuf)> {
     private_dir(blobs)?;
     let mut input = std::fs::File::open(source)?;
     if !input.metadata()?.is_file() {
@@ -67,14 +68,28 @@ fn store_blob(source: &Path, blobs: &Path) -> io::Result<(u64, [u8; 32])> {
         output.sync_all()?;
         Ok((size, *hasher.finalize().as_bytes()))
     })();
-    let published = copied.and_then(|(size, hash)| {
-        std::fs::rename(&staging, blobs.join(hex(&hash)))?;
-        Ok((size, hash))
-    });
-    if published.is_err() {
-        let _removed = std::fs::remove_file(&staging);
+    match copied {
+        Ok((size, hash)) => Ok((size, hash, staging)),
+        Err(error) => {
+            let _removed = std::fs::remove_file(&staging);
+            Err(error)
+        }
     }
-    published
+}
+
+/// Makes a staged copy the blob of `hash`. A blob already stored is left untouched, so a
+/// resumed download of it keeps its content identity; the copy is discarded.
+fn place_blob(staging: &Path, blobs: &Path, hash: &[u8; 32]) -> io::Result<()> {
+    let blob = blobs.join(hex(hash));
+    let placed = if blob.try_exists()? {
+        std::fs::remove_file(staging)
+    } else {
+        std::fs::rename(staging, &blob)
+    };
+    if placed.is_err() {
+        let _removed = std::fs::remove_file(staging);
+    }
+    placed
 }
 
 impl AgentManager {
@@ -85,16 +100,27 @@ impl AgentManager {
         (name, source, media_type): (&str, PathBuf, &str),
     ) -> Result<ArtifactRef, ServiceError> {
         let blobs = self.blobs();
-        let stored = tokio::task::spawn_blocking(move || store_blob(&source, &blobs))
+        let staged = tokio::task::spawn_blocking(move || stage_blob(&source, &blobs))
             .await
             .map_err(|_| ServiceError::Internal)?;
-        let (size, hash) = stored.map_err(|error| match error.kind() {
+        let (size, hash, staging) = staged.map_err(|error| match error.kind() {
             io::ErrorKind::FileTooLarge => ServiceError::TooLarge,
             io::ErrorKind::NotFound => ServiceError::NotFound,
             _ => ServiceError::InvalidInput,
         })?;
-        let artifact = ArtifactRef::new((name, media_type), (size, hash))
-            .map_err(|_| ServiceError::InvalidInput)?;
+        let artifact = ArtifactRef::new((name, media_type), (size, hash));
+        let Ok(artifact) = artifact else {
+            let _removed = tokio::fs::remove_file(&staging).await;
+            return Err(ServiceError::InvalidInput);
+        };
+        // Collection waits until the blob is placed and referenced, so a blob kept as
+        // already stored cannot be collected before this task references it.
+        let _placing = self.0.blob_lock.lock().await;
+        let blobs = self.blobs();
+        tokio::task::spawn_blocking(move || place_blob(&staging, &blobs, &hash))
+            .await
+            .map_err(|_| ServiceError::Internal)?
+            .map_err(|_| ServiceError::Internal)?;
         let (recorded, at_ms) = (artifact.clone(), self.now_ms());
         match self
             .commit(move |repository| repository.add_agent_artifact(task, (&recorded, at_ms)))
@@ -144,6 +170,7 @@ impl AgentManager {
 
     /// Removes every old blob no retained task references.
     pub(super) async fn collect_blobs(&self) {
+        let _collecting = self.0.blob_lock.lock().await;
         let Ok(referenced) = self
             .store(|repository| repository.referenced_artifact_hashes())
             .await
@@ -170,5 +197,43 @@ impl AgentManager {
             Ok(())
         })
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::MetadataExt as _;
+
+    use super::{hex, place_blob, stage_blob};
+
+    #[test]
+    fn publishing_stored_content_again_keeps_the_blob_untouched()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut nonce = [0_u8; 8];
+        getrandom::fill(&mut nonce)?;
+        let dir = std::env::temp_dir().join(format!("ma2a-blobs-{}", hex(&nonce)));
+        std::fs::create_dir_all(&dir)?;
+        let (source, blobs) = (dir.join("report.txt"), dir.join("blobs"));
+        std::fs::write(&source, b"the same content")?;
+
+        let (size, hash, staging) = stage_blob(&source, &blobs)?;
+        place_blob(&staging, &blobs, &hash)?;
+        let blob = blobs.join(hex(&hash));
+        let first = std::fs::metadata(&blob)?;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let (_, again, staging) = stage_blob(&source, &blobs)?;
+        place_blob(&staging, &blobs, &again)?;
+        let second = std::fs::metadata(&blob)?;
+
+        // A resumed download names the blob by size and modification time.
+        assert_eq!((size, again), (16, hash));
+        assert_eq!(
+            (first.ino(), first.mtime_nsec(), first.mtime()),
+            (second.ino(), second.mtime_nsec(), second.mtime())
+        );
+        assert!(!staging.exists(), "the second copy is discarded");
+        assert_eq!(std::fs::read_dir(&blobs)?.count(), 1);
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
     }
 }

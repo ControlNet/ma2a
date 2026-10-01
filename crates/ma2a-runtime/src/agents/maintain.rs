@@ -41,6 +41,7 @@ pub(crate) async fn run(manager: AgentManager) {
             _tick = tick.tick() => {
                 manager.instances().await;
                 manager.expire_cancels().await;
+                manager.release_ended().await;
                 let Ok(revision) = manager.0.store.revision().await else {
                     continue;
                 };
@@ -93,6 +94,25 @@ impl AgentManager {
         }
         for task in ended {
             self.task_ended(task);
+        }
+    }
+
+    /// Releases what a task held once it ended, however it ended: an Agent stop or a
+    /// limit ends a task without passing through the paths that release it at once.
+    async fn release_ended(&self) {
+        let held: Vec<_> = self.coordination().listeners.keys().copied().collect();
+        for task in held {
+            let record = self
+                .store(move |repository| repository.agent_task(task))
+                .await;
+            let ended = match record {
+                Ok(Some(record)) => record.summary.state.is_terminal(),
+                Ok(None) => true,
+                Err(_) => false,
+            };
+            if ended {
+                self.task_ended(task);
+            }
         }
     }
 

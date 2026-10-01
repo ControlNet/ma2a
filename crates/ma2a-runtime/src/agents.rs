@@ -70,6 +70,8 @@ struct Inner {
     /// Advanced after every change of an Agent, instance, task, or delivery.
     changes: signal::Sender<u64>,
     coordination: Mutex<Coordination>,
+    /// Serializes placing and referencing a blob against collecting unreferenced ones.
+    blob_lock: tokio::sync::Mutex<()>,
 }
 
 /// Every Agent this Runtime hosts; cheap to clone.
@@ -94,6 +96,7 @@ impl AgentManager {
             tasks: TaskTracker::new(),
             changes: signal::Sender::new(0),
             coordination: Mutex::new(Coordination::default()),
+            blob_lock: tokio::sync::Mutex::new(()),
         }))
     }
 
