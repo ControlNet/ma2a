@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/ma2a-agent",
     "crates/ma2a-app",
     "crates/ma2a-core",
     "crates/ma2a-net",
@@ -9,6 +10,7 @@ members = [
     "xtask",
 ]
 default-members = [
+    "crates/ma2a-agent",
     "crates/ma2a-app",
     "crates/ma2a-core",
     "crates/ma2a-net",
@@ -40,6 +42,7 @@ iroh-base = "=1.1.0"
 iroh-dns = "=1.1.0"
 iroh-relay = "=1.1.0"
 iroh-tickets = "=1.0.0"
+ma2a-agent = { path = "crates/ma2a-agent", version = "=0.1.0" }
 ma2a-core = { path = "crates/ma2a-core", version = "=0.1.0" }
 ma2a-net = { path = "crates/ma2a-net", version = "=0.1.0" }
 ma2a-runtime = { path = "crates/ma2a-runtime", version = "=0.1.0" }

@@ -1,0 +1,24 @@
+[package]
+name = "ma2a-agent"
+description = "Agent adapter protocol and SDK for ma2a Runtimes"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "ma2a-example-agent"
+path = "src/bin/ma2a-example-agent.rs"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+
+[lints]
+workspace = true
