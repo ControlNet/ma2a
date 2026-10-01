@@ -31,6 +31,7 @@ pub(crate) struct HostContext {
     pub(crate) store: StoreClient,
     pub(crate) processes: crate::processes::ProcessManager,
     pub(crate) agents: crate::agents::AgentManager,
+    pub(crate) hosted: crate::hosting::HostedServices,
     pub(crate) shutdown: CancellationToken,
     pub(crate) operations: OperationsRegistry,
     pub(crate) authorizations: Authorizations,

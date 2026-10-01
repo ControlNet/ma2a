@@ -18,6 +18,23 @@ impl Command {
         }
     }
 
+    pub(crate) const fn hosted_command(&self) -> Option<&super::super::HostedCommand> {
+        match &self.kind {
+            CommandKind::Hosted(command) => Some(command),
+            _ => None,
+        }
+    }
+
+    /// Whether this command upgrades its connection into a hosted service's link or call.
+    pub const fn is_hosted_upgrade(&self) -> bool {
+        matches!(
+            self.kind,
+            CommandKind::Hosted(
+                super::super::HostedCommand::Attach(_) | super::super::HostedCommand::Accept(..)
+            )
+        )
+    }
+
     pub(crate) const fn agent_command(&self) -> Option<&super::super::AgentCommand> {
         match &self.kind {
             CommandKind::Agent(command) => Some(command),

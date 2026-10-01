@@ -33,6 +33,16 @@ impl RuntimeHandle {
         self.agents.get()
     }
 
+    /// Installs the manager of hosted services; only the first installation counts.
+    pub(crate) fn install_hosted(&self, manager: crate::hosting::HostedServices) {
+        let _installed = self.hosted.set(manager);
+    }
+
+    /// Returns the manager of hosted services once the Runtime started it.
+    pub(crate) fn hosted(&self) -> Option<&crate::hosting::HostedServices> {
+        self.hosted.get()
+    }
+
     /// Borrows the outbound client that opens one stream per remote service operation.
     ///
     /// The client is lent per operation rather than kept here: it holds the Endpoint, and a

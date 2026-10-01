@@ -12,6 +12,7 @@ use crate::{
 use super::{ConnectionContext, IpcError};
 
 mod agents;
+mod hosted;
 mod interaction;
 mod processes;
 mod relay;
@@ -188,6 +189,11 @@ pub(super) async fn execute(
             processes::execute(context, command).await?
         }
         operation if operation.starts_with("agent_") => agents::execute(context, command).await?,
+        "service_register"
+        | "service_unregister"
+        | "service_start"
+        | "service_stop"
+        | "service_hosted_list" => hosted::execute(context, command).await?,
         _ => return Err(ProtocolError::UNAVAILABLE.into()),
     })
 }

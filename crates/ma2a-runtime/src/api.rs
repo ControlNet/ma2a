@@ -7,6 +7,7 @@ mod codec_agent_spec;
 mod codec_agents;
 mod codec_exposure;
 mod codec_fields;
+mod codec_hosted;
 mod codec_messages;
 mod codec_processes;
 mod codec_relay;
@@ -14,6 +15,7 @@ mod codec_services;
 mod commands;
 mod events;
 pub(crate) mod fragments;
+mod hosted_results;
 mod process_views;
 mod response_decode;
 mod response_revision;
@@ -38,6 +40,7 @@ pub use agent_views::{
     summary_value as agent_task_value,
 };
 pub(crate) use codec_agents::AgentCommand;
+pub(crate) use codec_hosted::HostedCommand;
 pub(crate) use codec_processes::ProcessCommand;
 pub(crate) use codec_services::ExposureSpec;
 pub use commands::{COMMAND_NAMES, Command};
@@ -45,6 +48,7 @@ pub(crate) use commands::{PrivateRelayMode, UiControlCommand};
 pub use events::{
     EVENT_NAMES, EventContinuity, RuntimeEvent, classify_event_revision, encode_event,
 };
+pub use hosted_results::{HostedServiceState, HostedServiceView, MAX_HOSTED_LIST_PAGE};
 pub(crate) use process_views::ProcessResult;
 pub use process_views::{MAX_PROCESS_LIST_PAGE, ProcessDetailsView, ProcessView};
 pub use response_decode::decode_ui_control_response;

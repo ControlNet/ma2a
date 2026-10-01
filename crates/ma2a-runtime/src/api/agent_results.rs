@@ -22,7 +22,7 @@ const MAX_PAGE_BYTES: usize = 49_152;
 
 /// Keeps the longest prefix of `values` within [`MAX_PAGE_BYTES`], at least one; `true`
 /// when anything was left out.
-fn bounded(values: Vec<Value>) -> (Vec<Value>, bool) {
+pub(super) fn bounded(values: Vec<Value>) -> (Vec<Value>, bool) {
     let total = values.len();
     let mut used = 0;
     let kept: Vec<Value> = values

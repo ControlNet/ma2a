@@ -146,6 +146,7 @@ fn round_trips_every_command_variant_through_the_transport_neutral_codec() {
     let operations = requests
         .iter()
         .chain(agent_requests().iter())
+        .chain(hosted_requests().iter())
         .map(|request| {
             let command = decode_command(request.as_bytes()).expect("fixture command must decode");
             let encoded = encode_command(&command).expect("typed command must encode");
@@ -256,8 +257,8 @@ fn rejects_oversize_input_before_parsing_or_callbacks() {
 #[test]
 fn freezes_version_variants_gap_policy_and_schema_hash() {
     assert_eq!(LOCAL_API_VERSION, 1);
-    assert_eq!(COMMAND_NAMES.len(), 52);
-    assert_eq!(RESULT_NAMES.len(), 48);
+    assert_eq!(COMMAND_NAMES.len(), 59);
+    assert_eq!(RESULT_NAMES.len(), 55);
     assert_eq!(ERROR_NAMES.len(), 9);
     assert_eq!(
         ERROR_NAMES,
@@ -355,6 +356,29 @@ fn agent_requests() -> Vec<String> {
         ),
         format!(
             r#"{{"version":1,"operation":"agent_task_cancel","request_id":"{REQUEST_ID}","task_id":"{PROCESS_ID}"}}"#
+        ),
+    ]
+}
+
+/// Every hosted-service command, in inventory order.
+fn hosted_requests() -> Vec<String> {
+    vec![
+        format!(
+            r#"{{"version":1,"operation":"service_register","request_id":"{REQUEST_ID}","service":"example","manifest":{{"description":"An example.","max_calls":2,"versions":[{{"version":1,"operations":[{{"name":"echo","interaction":"unary"}}]}},{{"version":2,"operations":[{{"name":"echo","interaction":"unary"}},{{"name":"count","interaction":"stream"}}]}}]}}}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_unregister","request_id":"{REQUEST_ID}","service":"example"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_start","request_id":"{REQUEST_ID}","service":"example"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_stop","request_id":"{REQUEST_ID}","service":"example"}}"#
+        ),
+        r#"{"version":1,"operation":"service_hosted_list","after":null}"#.to_owned(),
+        r#"{"version":1,"operation":"service_attach","service":"example"}"#.to_owned(),
+        format!(
+            r#"{{"version":1,"operation":"service_accept","service":"example","call_id":"{PROCESS_ID}"}}"#
         ),
     ]
 }

@@ -239,6 +239,8 @@ fn service_host(
         cancellation.child_token(),
     );
     handle.install_processes(processes.clone());
+    let hosted = crate::hosting::HostedServices::new((local, store.clone(), Arc::clone(&clock)));
+    handle.install_hosted(hosted.clone());
     let agents = crate::agents::AgentManager::new(
         (local, store.clone(), clock),
         (state_dir, processes.clone()),
@@ -250,6 +252,7 @@ fn service_host(
         store,
         processes,
         agents,
+        hosted,
         shutdown: cancellation.child_token(),
         operations: handle.operations().clone(),
         authorizations: crate::stream_host::Authorizations::default(),

@@ -16,6 +16,7 @@ use super::{
 
 mod dispatch;
 mod execute;
+mod hosted;
 mod mutation_outcome;
 #[cfg(test)]
 mod mutation_test_hooks;

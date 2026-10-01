@@ -21,6 +21,7 @@ mod files;
 mod files_result;
 mod frame;
 mod hosted_names;
+mod hosted_outcome;
 mod hosted_request;
 mod names;
 mod open;
@@ -74,6 +75,10 @@ pub use frame::{
     MAX_OUTCOME_FRAME_LEN,
 };
 pub use hosted_names::{MAX_OPERATION_NAME_LEN, MAX_SERVICE_NAME_LEN, OperationName, ServiceName};
+pub use hosted_outcome::{
+    MAX_CALL_ACCEPT_LEN, MAX_CALL_RESULT_LEN, decode_call_accept, decode_call_outcome,
+    encode_call_accept, encode_call_outcome,
+};
 pub use hosted_request::{
     DescribePage, HostedCall, MAX_CALL_BODY_LEN, MAX_DESCRIBE_PAGE, ServiceRequest, sorts_after,
 };

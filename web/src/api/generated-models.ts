@@ -11,6 +11,14 @@ import type {
   AgentUndefinedView,
   AgentView,
 } from "./generated-agents"
+import type {
+  HostedServicePageView,
+  HostedServiceView,
+  ServiceAttachedView,
+  ServiceCallView,
+  ServiceRegisteredView,
+  ServiceUnregisteredView,
+} from "./generated-hosted"
 import type { ProcessDetailsView, ProcessPageView, ProcessSummaryView } from "./generated-processes"
 import type { OperationsView, ServiceExposureView } from "./generated-services"
 
@@ -251,6 +259,13 @@ export type CommandResult =
   | { readonly type: "agent_task_submitted"; readonly payload: AgentSubmittedView }
   | { readonly type: "agent_task_sent"; readonly payload: AgentTaskView }
   | { readonly type: "agent_task_cancelled"; readonly payload: AgentTaskView }
+  | { readonly type: "hosted_services"; readonly payload: HostedServicePageView }
+  | { readonly type: "service_registered"; readonly payload: ServiceRegisteredView }
+  | { readonly type: "service_unregistered"; readonly payload: ServiceUnregisteredView }
+  | { readonly type: "service_started"; readonly payload: HostedServiceView }
+  | { readonly type: "service_stopped"; readonly payload: HostedServiceView }
+  | { readonly type: "service_attached"; readonly payload: ServiceAttachedView }
+  | { readonly type: "service_call"; readonly payload: ServiceCallView }
 
 /** Ordered transport frame for one frozen logical snapshot. */
 export type SnapshotFragment = {

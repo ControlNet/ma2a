@@ -32,10 +32,14 @@ pub(super) async fn handle_connection(
     let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
     if !lifecycle_only
         && let Ok(command) = api::decode_command(&frame.payload)
-        && command.stream_open().is_some()
+        && (command.stream_open().is_some() || command.is_hosted_upgrade())
     {
         let upgrade = ((frame.correlation, &command), admission.permit);
-        return super::stream::open(stream, &context, upgrade).await;
+        return if command.is_hosted_upgrade() {
+            super::hosted::upgrade(stream, &context, upgrade).await
+        } else {
+            super::stream::open(stream, &context, upgrade).await
+        };
     }
     let _permit = admission.permit;
     let (encoded, requests_shutdown) = answer(&frame.payload, &context, lifecycle_only).await?;

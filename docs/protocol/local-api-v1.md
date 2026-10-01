@@ -18,7 +18,7 @@ Unknown fields, duplicate JSON object members, and unknown operations are reject
 
 ## Commands And Results
 
-The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `5b15b3c225a6ea9735a1149d518d041aa6985827828ed526eb61c7c36c49b4da`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 48 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
+The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `a05039d59ec3cb38270f9e0d74541ea4a8fbff8f1f3523e1d3fccee2d8f826fd`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 55 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
 
 Successful responses contain required `version`, nullable `request_id`, `revision`, and discriminated `result` fields. Error responses contain required `version`, `error`, and nullable `remediation` fields. TypeScript exposes `LocalApiSuccessResponse`, `LocalApiErrorResponse`, and their `LocalApiResponse` union.
 
@@ -262,6 +262,62 @@ Errors:
 | A reused request ID with a different body | `conflict`, no effect |
 | A task bound is reached | `unavailable` ("retry once tasks end"), no effect |
 | This Runtime does not host Agents | `unavailable`, no effect |
+
+### Hosted services (Phase 5)
+
+These commands let the operator of a Runtime host third-party services (`docs/protocol/service-v1.md`).
+They are local IPC operations only; another Endpoint's services are discovered and called through
+`stream_open` with service `service`.
+
+Registrations:
+
+- **`service_register`** carries a request ID, `service` (a `ServiceName`), and `manifest`:
+  - `description`, at most 256 bytes;
+  - `max_calls`, 1–64: the bound on running calls;
+  - `versions`, 1–8 in strictly ascending order, each `{version, operations}` with 1–16 distinct
+    `{name, interaction}` operations (`unary`, `stream`, `bytes`, or `resource`), and at most 64
+    operations in all.
+
+  It returns `service_registered` with the service and `created`. A new service starts stopped;
+  replacing a registration needs the service stopped. At most 64 services are registered.
+- **`service_unregister`** removes a stopped service's registration and returns
+  `service_unregistered`. Exposures naming it stay as consent and serve nothing.
+- **`service_start`** enables a service and **`service_stop`** disables it; both return the
+  service (`service_started` and `service_stopped`). A stop tells the attached process to stop,
+  withdraws calls it has not accepted, and cancels running ones.
+- **`service_hosted_list`** carries a nullable `after` and returns `hosted_services`: at most 16
+  services in name order, and a nullable `next`. A hosted service view carries:
+  - `service`, the `manifest`, and `enabled`;
+  - `state`: `stopped`, `unavailable` (started without a ready process), or `ready`;
+  - `running_calls`, and `calls`, the calls per version since this Runtime started;
+  - `created_at_ms` and `updated_at_ms`.
+
+Process upgrades (no request ID; never replayed):
+
+- **`service_attach`** carries `service` and turns the connection into the service's link,
+  answered by `service_attached` with the registered manifest. A service has at most one link.
+  After the answer each frame carries one JSON message of at most 1 KiB:
+  - the process sends `{"t":"ready"}` or `{"t":"unavailable"}`; anything else ends the link;
+  - the Runtime sends `{"t":"call","call":"<32 hex>"}` for each call waiting to be accepted, and
+    `{"t":"stop"}` once before it ends the link.
+
+  The link's end makes the service `unavailable` at once.
+- **`service_accept`** carries `service` and `call_id` and turns a fresh connection into that one
+  call. Its answer `service_call` carries `service`, `call_id`, `caller_endpoint_id`,
+  `request_id`, `version`, `operation`, and `body` (standard base64, at most 8 KiB decoded). The
+  connection then carries Services v1 frames for the call. A call not accepted within 10 s is
+  withdrawn.
+
+Errors:
+
+| Condition | Error |
+| --- | --- |
+| No such service, or no such waiting call | `not_found`, no effect |
+| `service_register` or `service_unregister` on a started service | `conflict` ("stop it first"), no effect |
+| `service_attach` while stopped | `unavailable` ("start it first") |
+| `service_attach` while another process is attached | `conflict` |
+| A 65th registration | `unavailable` ("unregister one first"), no effect |
+| This Runtime does not host services | `unavailable`, no effect |
 
 ## Mutation Replay
 

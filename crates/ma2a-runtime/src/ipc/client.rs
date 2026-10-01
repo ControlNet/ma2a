@@ -16,7 +16,7 @@ mod lifecycle;
 mod snapshot;
 mod stream;
 
-pub use stream::{LocalStream, StreamUpgrade};
+pub use stream::{LinkReader, LinkWriter, LocalStream, MAX_LINK_MESSAGE_BYTES, StreamUpgrade};
 
 #[cfg(all(test, unix))]
 #[path = "client_deadline_tests.rs"]

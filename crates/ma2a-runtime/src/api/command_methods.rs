@@ -49,7 +49,8 @@ impl Command {
             | CommandKind::OperationsStatus
             | CommandKind::StreamOpen(..)
             | CommandKind::Process(_)
-            | CommandKind::Agent(_) => Err(ApiError::invalid_input()),
+            | CommandKind::Agent(_)
+            | CommandKind::Hosted(_) => Err(ApiError::invalid_input()),
         }
     }
 
@@ -179,6 +180,7 @@ impl Command {
             CommandKind::StreamOpen(..) => "stream_open",
             CommandKind::Process(ref command) => command.operation(),
             CommandKind::Agent(ref command) => command.operation(),
+            CommandKind::Hosted(ref command) => command.operation(),
         }
     }
 
@@ -224,6 +226,7 @@ impl Command {
             | CommandKind::ServiceUnexpose(id, ..) => Some(id),
             CommandKind::Process(ref command) => command.request_id(),
             CommandKind::Agent(ref command) => command.request_id(),
+            CommandKind::Hosted(ref command) => command.request_id(),
         }
     }
 }

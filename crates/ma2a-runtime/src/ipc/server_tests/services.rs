@@ -2,12 +2,12 @@ use serde_json::{Value, json};
 
 use super::*;
 
-async fn call(client: &LocalApiClient, request: Value) -> TestResult<Value> {
+pub(super) async fn call(client: &LocalApiClient, request: Value) -> TestResult<Value> {
     let command = api::decode_command(&serde_json::to_vec(&request)?)?;
     Ok(serde_json::from_slice(&client.call(&command).await?)?)
 }
 
-fn text<'a>(response: &'a Value, pointer: &str) -> Option<&'a str> {
+pub(super) fn text<'a>(response: &'a Value, pointer: &str) -> Option<&'a str> {
     response.pointer(pointer).and_then(Value::as_str)
 }
 
@@ -19,17 +19,17 @@ fn root_exposure(request_id: &str, space: &str, path: &str) -> Value {
     })
 }
 
-struct Harness {
+pub(super) struct Harness {
     runtime: Runtime,
     live_server: LiveServer,
-    client: LocalApiClient,
+    pub(super) client: LocalApiClient,
     space: String,
     local: String,
     _state: TempState,
 }
 
 impl Harness {
-    async fn start(name: &str) -> TestResult<Self> {
+    pub(super) async fn start(name: &str) -> TestResult<Self> {
         let state = TempState::new_named(name)?;
         let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
         let handle = runtime.handle();
@@ -58,7 +58,7 @@ impl Harness {
         })
     }
 
-    async fn stop(self) -> TestResult {
+    pub(super) async fn stop(self) -> TestResult {
         assert_eq!(self.live_server.cancel().await?, ServerExit::Cancelled);
         self.runtime.shutdown().await?;
         Ok(())

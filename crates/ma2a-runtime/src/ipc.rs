@@ -14,7 +14,9 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
-pub use client::{LocalApiClient, LocalStream, StreamUpgrade};
+pub use client::{
+    LinkReader, LinkWriter, LocalApiClient, LocalStream, MAX_LINK_MESSAGE_BYTES, StreamUpgrade,
+};
 pub use lifecycle::{
     DaemonIdentity, DaemonReport, LifecycleRequest, ProcessIncarnation, RuntimeBoot,
     random_launch_nonce,

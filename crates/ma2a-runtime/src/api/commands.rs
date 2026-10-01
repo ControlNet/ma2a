@@ -11,7 +11,7 @@ mod accessors;
 mod methods;
 
 /// Exact ordered operation inventory carried by the schema and TypeScript contract.
-pub const COMMAND_NAMES: [&str; 52] = [
+pub const COMMAND_NAMES: [&str; 59] = [
     "handshake",
     "status",
     "endpoint_info",
@@ -64,6 +64,13 @@ pub const COMMAND_NAMES: [&str; 52] = [
     "agent_task_submit",
     "agent_task_send",
     "agent_task_cancel",
+    "service_register",
+    "service_unregister",
+    "service_start",
+    "service_stop",
+    "service_hosted_list",
+    "service_attach",
+    "service_accept",
 ];
 
 #[derive(Clone, PartialEq, Eq)]
@@ -164,6 +171,7 @@ pub(crate) enum CommandKind {
     StreamOpen(RequestId, EndpointId, ma2a_core::ServiceKind),
     Process(super::codec_processes::ProcessCommand),
     Agent(super::codec_agents::AgentCommand),
+    Hosted(super::codec_hosted::HostedCommand),
 }
 
 /// One parsed member of the exact local API v1 command set.

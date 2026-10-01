@@ -20,7 +20,7 @@ pub(crate) use identity::Identity;
 #[cfg(test)]
 pub(crate) use local_control::RelayPublicationTestCommand;
 pub(crate) use membership::{OwnedMemberRevocation, RemovedMember};
-pub(crate) use services::{ProcessJob, ServiceGrant, ServiceStoreCommand};
+pub(crate) use services::{ProcessJob, ServiceGrant, ServiceStoreCommand, authorize};
 
 /// Everything one enrollment commit needs from the caller.
 pub(crate) struct EnrollmentPersistence {

@@ -55,6 +55,13 @@ export function commandOperation(command: LocalApiCommand): string {
     case "agent_task_submit":
     case "agent_task_send":
     case "agent_task_cancel":
+    case "service_register":
+    case "service_unregister":
+    case "service_start":
+    case "service_stop":
+    case "service_hosted_list":
+    case "service_attach":
+    case "service_accept":
       return command.operation
     default:
       return assertNever(command)
@@ -111,6 +118,13 @@ export function resultType(result: CommandResult): string {
     case "agent_task_submitted":
     case "agent_task_sent":
     case "agent_task_cancelled":
+    case "hosted_services":
+    case "service_registered":
+    case "service_unregistered":
+    case "service_started":
+    case "service_stopped":
+    case "service_attached":
+    case "service_call":
       return result.type
     default:
       return assertNever(result)

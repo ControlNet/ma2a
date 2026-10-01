@@ -88,20 +88,26 @@ async fn read_payload(
     })
 }
 
-pub(crate) async fn write_frame(
-    stream: &mut (impl AsyncWrite + Unpin),
-    frame: FrameRef<'_>,
-) -> Result<(), IpcError> {
+/// Encodes one frame exactly as [`write_frame`] would send it.
+pub(crate) fn encode_frame(frame: &FrameRef<'_>) -> Result<Vec<u8>, IpcError> {
     if frame.payload.is_empty() || frame.payload.len() > frame.maximum {
         return Err(IpcError::InvalidFrame);
     }
     let length = u32::try_from(frame.payload.len()).map_err(|_| IpcError::InvalidFrame)?;
-    let mut header = [0_u8; HEADER_BYTES];
-    header[..4].copy_from_slice(&length.to_be_bytes());
-    header[4..].copy_from_slice(&frame.correlation.to_be_bytes());
+    let mut bytes = Vec::with_capacity(HEADER_BYTES + frame.payload.len());
+    bytes.extend_from_slice(&length.to_be_bytes());
+    bytes.extend_from_slice(&frame.correlation.to_be_bytes());
+    bytes.extend_from_slice(frame.payload);
+    Ok(bytes)
+}
+
+pub(crate) async fn write_frame(
+    stream: &mut (impl AsyncWrite + Unpin),
+    frame: FrameRef<'_>,
+) -> Result<(), IpcError> {
+    let bytes = encode_frame(&frame)?;
     tokio::time::timeout(IO_DEADLINE, async {
-        stream.write_all(&header).await?;
-        stream.write_all(frame.payload).await?;
+        stream.write_all(&bytes).await?;
         stream.flush().await
     })
     .await

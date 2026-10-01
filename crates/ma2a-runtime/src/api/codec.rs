@@ -67,6 +67,7 @@ fn command_value(command: &Command) -> Value {
         }
         CommandKind::Process(command) => command.to_value(),
         CommandKind::Agent(command) => command.to_value(),
+        CommandKind::Hosted(command) => command.to_value(),
         CommandKind::SpaceGrant(id, space, peer, grants) => {
             super::codec_services::grant_value(operation, (*id, *space, *peer), *grants)
         }

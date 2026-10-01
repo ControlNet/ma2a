@@ -104,9 +104,11 @@ impl Shared {
 ///
 /// The two directions run independently, so neither side blocking on a full stream can
 /// stall the other, and a full-duplex operation can never deadlock inside the relay.
+/// `before_terminal` runs once the target's terminal is read and before it is forwarded.
 pub(crate) async fn relay<CR, CW, TR, TW>(
     (client_reader, client_writer): (&mut FrameReader<CR>, &mut FrameWriter<CW>),
     (target_reader, target_writer): (&mut FrameReader<TR>, &mut FrameWriter<TW>),
+    before_terminal: fn(),
 ) -> Relayed
 where
     CR: AsyncRead + Unpin,
@@ -115,7 +117,7 @@ where
     TW: AsyncWrite + Unpin,
 {
     let shared = Shared::default();
-    let downstream = downstream((target_reader, client_writer), &shared);
+    let downstream = downstream((target_reader, client_writer), (&shared, before_terminal));
     let upstream = upstream((client_reader, target_writer), &shared);
     let grace = tokio::time::sleep(Duration::MAX);
     tokio::pin!(downstream, upstream, grace);
@@ -183,7 +185,7 @@ async fn upstream<CR, TW>(
 /// Target → client until the target's terminal; a malformed or missing one is a loss.
 async fn downstream<TR, CW>(
     (target_reader, client_writer): (&mut FrameReader<TR>, &mut FrameWriter<CW>),
-    shared: &Shared,
+    (shared, before_terminal): (&Shared, fn()),
 ) -> Terminal
 where
     TR: AsyncRead + Unpin,
@@ -219,6 +221,9 @@ where
             }
             _ => return Terminal::Lost,
         };
+        if terminal.is_some() {
+            before_terminal();
+        }
         if !shared.client_gone.load(Ordering::Relaxed)
             && forward(client_writer, &frame).await.is_err()
         {

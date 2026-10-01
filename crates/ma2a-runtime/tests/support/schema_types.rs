@@ -71,10 +71,11 @@ pub(super) fn string(node: Node<'_>) -> Check {
         Some("ip_or_hostname") => ip_or_hostname(text, node.path),
         Some("agent_name") if ma2a_core::service::AgentId::new(text).is_ok() => Ok(()),
         Some("service_name") if ma2a_core::service::ServiceName::new(text).is_ok() => Ok(()),
+        Some("operation_name") if ma2a_core::service::OperationName::new(text).is_ok() => Ok(()),
         Some("absolute_path") if std::path::Path::new(text).is_absolute() => Ok(()),
         Some("base64") if is_base64(text) => Ok(()),
         Some("base64") => mismatch(node.path, "malformed standard padded base64"),
-        Some("agent_name" | "service_name" | "absolute_path") => {
+        Some("agent_name" | "service_name" | "operation_name" | "absolute_path") => {
             mismatch(node.path, "malformed name or path")
         }
         Some(format) => mismatch(node.path, &format!("unsupported string format {format}")),

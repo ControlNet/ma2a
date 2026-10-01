@@ -2,6 +2,9 @@ use ma2a_core::service::{
     AgentEvent, AgentEventBody, AgentId, AgentMessage, AgentTaskDetails, AgentTaskId,
     AgentTaskReason, AgentTaskState, AgentTaskSummary, ArtifactRef, MessagePart, MessageRole,
 };
+use ma2a_core::service::{
+    Interaction, OperationName, ServiceManifest, ServiceName, ServiceVersion,
+};
 use ma2a_core::{
     EndpointId, RequestId, SpaceId,
     service::{
@@ -9,7 +12,7 @@ use ma2a_core::{
         ProcessState, ProxyHostPattern, ProxyRule, RootAccess, ServiceError, Termination,
     },
 };
-use ma2a_runtime::api::AgentView;
+use ma2a_runtime::api::{AgentView, HostedServiceState, HostedServiceView};
 use ma2a_runtime::api::{
     CapabilityFlags, ClientSnapshotState, Command, CommandResult, ConnectionObservationView,
     ConnectionView, ControlRoundView, ControlSyncView, EchoReplyView, EchoSummaryView,
@@ -37,6 +40,7 @@ pub(crate) fn commands() -> FixtureResult<Vec<Command>> {
     command_json()
         .iter()
         .chain(agent_requests().iter())
+        .chain(hosted_requests().iter())
         .map(|request| decode_command(request.as_bytes()).map_err(Into::into))
         .collect()
 }
@@ -136,6 +140,7 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
     ]
     .into_iter()
     .chain(agent_results()?)
+    .chain(hosted_results()?)
     .collect())
 }
 
@@ -507,4 +512,85 @@ fn agent_requests() -> Vec<String> {
             r#"{{"version":1,"operation":"agent_task_cancel","request_id":"{REQUEST_ID}","task_id":"{PROCESS_ID}"}}"#
         ),
     ]
+}
+
+/// Every hosted-service command, in inventory order.
+fn hosted_requests() -> Vec<String> {
+    vec![
+        format!(
+            r#"{{"version":1,"operation":"service_register","request_id":"{REQUEST_ID}","service":"example","manifest":{{"description":"An example.","max_calls":2,"versions":[{{"version":1,"operations":[{{"name":"echo","interaction":"unary"}}]}},{{"version":2,"operations":[{{"name":"echo","interaction":"unary"}},{{"name":"count","interaction":"stream"}}]}}]}}}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_unregister","request_id":"{REQUEST_ID}","service":"example"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_start","request_id":"{REQUEST_ID}","service":"example"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_stop","request_id":"{REQUEST_ID}","service":"example"}}"#
+        ),
+        r#"{"version":1,"operation":"service_hosted_list","after":null}"#.to_owned(),
+        r#"{"version":1,"operation":"service_attach","service":"example"}"#.to_owned(),
+        format!(
+            r#"{{"version":1,"operation":"service_accept","service":"example","call_id":"{PROCESS_ID}"}}"#
+        ),
+    ]
+}
+
+/// One registered, ready example service, and one call of it.
+fn hosted_results() -> FixtureResult<Vec<CommandResult>> {
+    let name = ServiceName::new("example")?;
+    let echo = (OperationName::new("echo")?, Interaction::Unary);
+    let count = (OperationName::new("count")?, Interaction::Stream);
+    let manifest = ServiceManifest::new(
+        "An example.",
+        vec![
+            ServiceVersion::new(1, vec![echo.clone()])?,
+            ServiceVersion::new(2, vec![echo, count])?,
+        ],
+        2,
+    )?;
+    let record = repository_record(&name, &manifest)?;
+    let view = HostedServiceView::new(record, (HostedServiceState::Ready, 1, vec![(1, 3), (2, 1)]));
+    let caller = EndpointId::try_from(decode(ENDPOINT_ID)?.as_slice())?;
+    let request = RequestId::try_from(decode(REQUEST_ID)?.as_slice())?;
+    let call_id: [u8; 16] = decode(PROCESS_ID)?.as_slice().try_into()?;
+    Ok(vec![
+        CommandResult::hosted_services(vec![view.clone()]),
+        CommandResult::service_registered(&view, true),
+        CommandResult::service_unregistered(&name),
+        CommandResult::service_started(&view),
+        CommandResult::service_stopped(&view),
+        CommandResult::service_attached(&name, &manifest),
+        CommandResult::service_call(
+            (&name, call_id),
+            (caller, request),
+            (2, &OperationName::new("count")?, b"3"),
+        ),
+    ])
+}
+
+/// The registration a Store returns for `name`, read back from a real repository.
+fn repository_record(
+    name: &ServiceName,
+    manifest: &ServiceManifest,
+) -> FixtureResult<ma2a_store::HostedServiceRecord> {
+    let directory = std::env::temp_dir().join(format!(
+        "ma2a-hosted-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let record = {
+        let mut repository =
+            ma2a_store::Repository::open(&ma2a_store::StoreConfig::new(&directory))?;
+        repository.register_service((name, manifest), 1_000)?;
+        repository.set_service_enabled(name, (true, 2_000))?;
+        repository
+            .hosted_service(name)?
+            .ok_or("registration was not stored")?
+    };
+    std::fs::remove_dir_all(&directory)?;
+    Ok(record)
 }

@@ -24,6 +24,7 @@ pub struct RuntimeHandle {
     operations: crate::stream_host::OperationsRegistry,
     processes: std::sync::Arc<std::sync::OnceLock<crate::processes::ProcessManager>>,
     agents: std::sync::Arc<std::sync::OnceLock<crate::agents::AgentManager>>,
+    hosted: std::sync::Arc<std::sync::OnceLock<crate::hosting::HostedServices>>,
     #[cfg(test)]
     control_schedule_events:
         std::sync::Arc<std::sync::Mutex<Vec<crate::control_sync::ControlRoundTrigger>>>,
@@ -98,6 +99,7 @@ impl RuntimeHandle {
             operations: crate::stream_host::OperationsRegistry::new(),
             processes: std::sync::Arc::default(),
             agents: std::sync::Arc::default(),
+            hosted: std::sync::Arc::default(),
             #[cfg(test)]
             control_schedule_events,
             #[cfg(test)]

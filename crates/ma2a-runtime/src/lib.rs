@@ -24,6 +24,7 @@ mod echo_audit;
 mod enrollment;
 mod enrollment_actor;
 mod error;
+mod hosting;
 mod lifecycle;
 mod processes;
 mod reachability;

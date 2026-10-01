@@ -193,6 +193,7 @@ async fn run<R, W>(
         relay(
             (client_reader, client_writer),
             (&mut target.0, &mut target.1),
+            || (),
         )
         .await
     } else {

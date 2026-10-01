@@ -215,3 +215,30 @@ fn every_built_in_family_has_a_valid_catalog_entry() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn hosted_accept_and_outcome_payloads_are_bounded_byte_strings() -> TestResult {
+    use ma2a_core::service::{
+        MAX_CALL_ACCEPT_LEN, MAX_CALL_RESULT_LEN, decode_call_accept, decode_call_outcome,
+        encode_call_accept, encode_call_outcome, outcome_status,
+    };
+    for header in [&b""[..], b"v2", &[7; MAX_CALL_ACCEPT_LEN]] {
+        assert_eq!(decode_call_accept(&encode_call_accept(header)?)?, header);
+    }
+    assert!(encode_call_accept(&[0; MAX_CALL_ACCEPT_LEN + 1]).is_err());
+    // A text string, trailing bytes, and a non-minimal length are all refused.
+    assert!(decode_call_accept(&[0x60]).is_err());
+    assert!(decode_call_accept(&[0x40, 0]).is_err());
+    assert!(decode_call_accept(&[0x58, 1, 9]).is_err());
+
+    let largest = vec![1; MAX_CALL_RESULT_LEN];
+    let encoded = encode_call_outcome(Ok(&largest))?;
+    assert!(encoded.len() <= MAX_OUTCOME_FRAME_LEN);
+    assert_eq!(outcome_status(&encoded)?, None);
+    assert_eq!(decode_call_outcome(&encoded)?, Ok(largest));
+    assert!(encode_call_outcome(Ok(&vec![0; MAX_CALL_RESULT_LEN + 1])).is_err());
+    let failed = encode_call_outcome(Err(ServiceError::Cancelled))?;
+    assert_eq!(outcome_status(&failed)?, Some(ServiceError::Cancelled));
+    assert_eq!(decode_call_outcome(&failed)?, Err(ServiceError::Cancelled));
+    Ok(())
+}

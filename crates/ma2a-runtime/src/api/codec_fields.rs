@@ -58,6 +58,14 @@ pub(crate) fn endpoint_id(
     EndpointId::try_from(bytes.as_slice()).map_err(|_| ApiError::invalid_input())
 }
 
+/// Reads one fixed-length lowercase hex field.
+pub(crate) fn fixed_hex<const N: usize>(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<[u8; N], ApiError> {
+    decode_hex::<N>(text(object, field)?)
+}
+
 pub(crate) fn space_id(object: &Map<String, Value>, field: &str) -> Result<SpaceId, ApiError> {
     let bytes = decode_hex::<32>(text(object, field)?)?;
     SpaceId::try_from(bytes.as_slice()).map_err(|_| ApiError::invalid_input())

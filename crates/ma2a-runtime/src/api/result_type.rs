@@ -40,6 +40,7 @@ impl CommandResult {
             ResultKind::StreamOpened => "stream_opened",
             ResultKind::Process(ref result) => result.result_type(),
             ResultKind::Agent(ref result) => result.result_type(),
+            ResultKind::Hosted(ref result) => result.result_type(),
         }
     }
 }

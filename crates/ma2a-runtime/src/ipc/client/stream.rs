@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 
 use super::{
     super::{
@@ -46,6 +46,37 @@ impl LocalApiClient {
         if command.stream_open().is_none() {
             return Err(IpcError::InvalidFrame);
         }
+        let (response, stream) = self.upgrade(command, "stream_opened").await?;
+        Ok(stream.map_or(StreamUpgrade::Refused(response), StreamUpgrade::Opened))
+    }
+
+    /// Performs the handshake, then upgrades one fresh connection with `service_attach` or
+    /// `service_accept`.
+    ///
+    /// Returns the daemon's exact answer, and the upgraded connection when it was accepted:
+    /// a link after `service_attached`, or one call's Services v1 frames after
+    /// `service_call`.
+    ///
+    /// # Errors
+    /// Returns [`IpcError::InvalidFrame`] for any other command, and a transport, version, or
+    /// correlation error.
+    pub async fn open_hosted(
+        &self,
+        command: &Command,
+    ) -> Result<(Vec<u8>, Option<LocalStream>), IpcError> {
+        let upgraded = match command.operation() {
+            "service_attach" => "service_attached",
+            "service_accept" => "service_call",
+            _ => return Err(IpcError::InvalidFrame),
+        };
+        self.upgrade(command, upgraded).await
+    }
+
+    async fn upgrade(
+        &self,
+        command: &Command,
+        upgraded: &str,
+    ) -> Result<(Vec<u8>, Option<LocalStream>), IpcError> {
         validate_handshake(&self.roundtrip(&handshake_command()?).await?)?;
         let correlation = NEXT_CORRELATION.fetch_add(1, Ordering::Relaxed);
         let mut stream = platform::connect(&self.paths).await?;
@@ -64,13 +95,55 @@ impl LocalApiClient {
         }
         let value: Value =
             serde_json::from_slice(&response.payload).map_err(|_| IpcError::InvalidFrame)?;
-        Ok(
-            if value.pointer("/result/type").and_then(Value::as_str) == Some("stream_opened") {
-                StreamUpgrade::Opened(LocalStream(stream))
-            } else {
-                StreamUpgrade::Refused(response.payload)
-            },
-        )
+        let opened = value.pointer("/result/type").and_then(Value::as_str) == Some(upgraded);
+        Ok((response.payload, opened.then_some(LocalStream(stream))))
+    }
+}
+
+impl LocalStream {
+    /// Splits an attached link into its two directions of local API messages.
+    #[must_use]
+    pub fn into_link(self) -> (LinkReader, LinkWriter) {
+        let (read, write) = tokio::io::split(self.0);
+        (LinkReader(read), LinkWriter(write))
+    }
+}
+
+/// Largest message either side sends on a hosted service's link.
+pub const MAX_LINK_MESSAGE_BYTES: usize = 1_024;
+
+/// The Runtime-to-service direction of a link.
+#[derive(Debug)]
+pub struct LinkReader(ReadHalf<PlatformStream>);
+
+impl LinkReader {
+    /// Waits for the next message, as long as the link lasts.
+    ///
+    /// # Errors
+    /// Returns a transport error once the link ended, or a malformed frame.
+    pub async fn next(&mut self) -> Result<Vec<u8>, IpcError> {
+        Ok(read_reply(&mut self.0, MAX_LINK_MESSAGE_BYTES)
+            .await?
+            .payload)
+    }
+}
+
+/// The service-to-Runtime direction of a link.
+#[derive(Debug)]
+pub struct LinkWriter(WriteHalf<PlatformStream>);
+
+impl LinkWriter {
+    /// Sends one message.
+    ///
+    /// # Errors
+    /// Returns a transport error, or an empty or oversized message.
+    pub async fn send(&mut self, payload: &[u8]) -> Result<(), IpcError> {
+        let frame = FrameRef {
+            correlation: 0,
+            payload,
+            maximum: MAX_LINK_MESSAGE_BYTES,
+        };
+        write_frame(&mut self.0, frame).await
     }
 }
 

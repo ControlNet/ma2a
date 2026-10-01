@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use ma2a_core::ServiceKind;
 use ma2a_core::service::{
-    FrameKind, OpenBody, OpenHeader, ServiceError, TransferRequest, admission,
+    DescribePage, FrameKind, OpenBody, OpenHeader, ServiceError, ServiceRequest, TransferRequest,
+    admission,
 };
 use ma2a_net::{RecvStream, SendStream, ServiceCall};
 use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport};
@@ -73,10 +74,14 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
         .await
     {
         Ok(grant) => grant,
-        // Past admission, an Agent this caller may not use answers exactly like one that
-        // is not defined.
+        // Past admission, an Agent or a hosted service this caller may not use answers
+        // exactly like one that does not exist.
         Err(ServiceError::Unauthorized) if kind == ServiceKind::Agent => {
             reject(&mut writer, (&context, key), ServiceError::UnknownAgent).await;
+            return;
+        }
+        Err(ServiceError::Unauthorized) if kind == ServiceKind::Service => {
+            reject(&mut writer, (&context, key), ServiceError::UnknownService).await;
             return;
         }
         Err(error) => {
@@ -187,9 +192,39 @@ async fn dispatch(
             let operation = ((peer, request_id), request, stop);
             crate::agents::serve(&context.agents, operation, (reader, writer)).await
         }
+        (OpenBody::Service(ServiceRequest::Describe(after)), None) => {
+            let page = context.hosted.describe(peer, after).await;
+            describe(writer, page).await
+        }
+        (OpenBody::Service(ServiceRequest::Call(call)), None) => {
+            let operation = ((peer, request_id), call, stop);
+            crate::hosting::serve(&context.hosted, operation, (reader, writer)).await
+        }
         _ => {
             let _sent = writer.reject(ServiceError::Internal).await;
             OperationReport::new(OperationEnd::Rejected(ServiceError::Internal))
         }
     }
+}
+
+/// Answers `describe`: its one outcome, or its refusal before any effect.
+async fn describe(
+    writer: &mut Writer<'_>,
+    page: Result<DescribePage, ServiceError>,
+) -> OperationReport {
+    let encoded = match &page {
+        Ok(page) => DescribePage::encode_outcome(Ok(page)),
+        Err(error) => {
+            let _sent = writer.reject(*error).await;
+            return OperationReport::new(OperationEnd::Rejected(*error));
+        }
+    };
+    let Ok(payload) = encoded else {
+        let _sent = writer.reject(ServiceError::Internal).await;
+        return OperationReport::new(OperationEnd::Rejected(ServiceError::Internal));
+    };
+    if writer.frame(FrameKind::Outcome, &payload).await.is_err() {
+        return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+    }
+    OperationReport::new(OperationEnd::Completed)
 }
