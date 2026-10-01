@@ -9,6 +9,14 @@
 
 mod address_record_queries;
 mod address_records;
+mod agent_actions;
+mod agent_log;
+mod agent_output;
+mod agent_reads;
+mod agent_rows;
+mod agent_tasks;
+mod agent_tools;
+mod agents;
 mod backup;
 mod committed;
 mod config;
@@ -52,6 +60,17 @@ pub use address_records::{
     AddressRecordBoundaryError, AddressRecordOutcome, AddressRecordTarget, AddressRecordValidation,
     ValidatedAddressRecord,
 };
+pub use agent_actions::AgentTaskChange;
+pub use agent_log::{AgentDelivery, MAX_DURABLE_EVENTS, MAX_PROGRESS_EVENTS};
+pub use agent_output::{AgentOutput, AgentOutputApplied, AgentOutputEffect};
+pub use agent_reads::{AGENT_TASK_RETENTION_MS, AgentOutboxEntry, AgentTaskFilter};
+pub use agent_rows::{AgentDefinition, AgentInstanceRecord, AgentRecord, AgentTaskRecord};
+pub use agent_tasks::{
+    AgentTaskCreation, MAX_LIVE_TASKS, MAX_LIVE_TASKS_PER_CREATOR, MAX_RETAINED_TASKS,
+    MAX_RETAINED_TASKS_PER_CREATOR, NewAgentTask,
+};
+pub use agent_tools::{AgentToolCall, MAX_OPEN_TOOL_CALLS_PER_TASK, MAX_TOOL_CALLS_PER_TASK};
+pub use agents::AgentDefine;
 pub use committed::Committed;
 pub use config::StoreConfig;
 pub use control_batch::ControlBatch;

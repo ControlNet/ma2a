@@ -2,7 +2,9 @@
 
 use ma2a_core::{
     ProtocolError, SpaceId,
-    service::{ExportedRoot, ProxyHostPattern, ProxyRule, RootAccess, RootName, SpaceExposureView},
+    service::{
+        AgentId, ExportedRoot, ProxyHostPattern, ProxyRule, RootAccess, RootName, SpaceExposureView,
+    },
 };
 use rusqlite::{OptionalExtension as _, params};
 
@@ -58,6 +60,8 @@ pub enum LocalExposure {
     Proxy(ProxyRule),
     /// Durable Processes for this Space's members.
     Process,
+    /// One Agent this Space's members may use.
+    Agent(AgentId),
 }
 
 impl LocalExposure {
@@ -68,6 +72,7 @@ impl LocalExposure {
             Self::Shell => 2,
             Self::Proxy(_) => 3,
             Self::Process => 4,
+            Self::Agent(_) => 5,
         }
     }
 
@@ -76,6 +81,7 @@ impl LocalExposure {
         match self {
             Self::FilesRoot(root) => root.name.as_str().to_owned(),
             Self::Exec | Self::Shell | Self::Process => String::new(),
+            Self::Agent(agent) => agent.as_str().to_owned(),
             Self::Proxy(rule) => {
                 let host = match rule.host() {
                     ProxyHostPattern::Any => "*",
@@ -130,9 +136,10 @@ impl Repository {
                     None,
                 )
             }
-            LocalExposure::Exec | LocalExposure::Shell | LocalExposure::Process => {
-                (None, None, None)
-            }
+            LocalExposure::Exec
+            | LocalExposure::Shell
+            | LocalExposure::Process
+            | LocalExposure::Agent(_) => (None, None, None),
             LocalExposure::Proxy(rule) => (None, None, Some(rule)),
         };
         let proxy_host = proxy.map(|rule| match rule.host() {
@@ -227,6 +234,7 @@ impl Repository {
                 LocalExposure::Shell => current.with_shell(),
                 LocalExposure::Proxy(rule) => current.with_proxy_rule(rule),
                 LocalExposure::Process => current.with_process(),
+                LocalExposure::Agent(agent) => current.with_agent(agent),
             };
         }
         Ok(views)

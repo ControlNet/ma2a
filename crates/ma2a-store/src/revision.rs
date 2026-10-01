@@ -24,7 +24,7 @@ pub struct SnapshotMember {
     label: String,
     echo: bool,
     relay_provider: bool,
-    services: [bool; 6],
+    services: [bool; 7],
 }
 
 impl SnapshotMember {
@@ -49,8 +49,8 @@ impl SnapshotMember {
     }
 
     /// Returns the signed service grants: files read, files write, exec, shell, proxy,
-    /// process.
-    pub const fn services(&self) -> [bool; 6] {
+    /// process, agent.
+    pub const fn services(&self) -> [bool; 7] {
         self.services
     }
 }
@@ -270,6 +270,7 @@ impl Repository {
                     Capability::SHELL,
                     Capability::PROXY,
                     Capability::PROCESS,
+                    Capability::AGENT,
                 ]
                 .map(|capability| member.capabilities().allows(capability)),
             })

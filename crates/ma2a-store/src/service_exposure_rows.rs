@@ -2,7 +2,7 @@
 
 use ma2a_core::{
     SpaceId,
-    service::{ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName},
+    service::{AgentId, ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName},
 };
 
 use rusqlite::OptionalExtension as _;
@@ -10,8 +10,7 @@ use rusqlite::OptionalExtension as _;
 use crate::{ExposureRecord, FileRootExposure, LocalExposure, Repository, StoreError};
 
 type ExposureRow = (
-    Vec<u8>,
-    u8,
+    (Vec<u8>, u8, String),
     Option<String>,
     Option<u8>,
     Option<String>,
@@ -25,14 +24,13 @@ pub(crate) fn load_exposures(
 ) -> Result<Vec<ExposureRecord>, StoreError> {
     let mut statement = connection.prepare(
         "SELECT e.space_id, e.kind, e.root_name, e.root_access, e.proxy_host,
-                e.port_start, e.port_end, r.path
+                e.port_start, e.port_end, r.path, e.exposure_selector
          FROM service_exposures e LEFT JOIN file_roots r ON r.name = e.root_name
          ORDER BY e.space_id, e.kind, e.exposure_selector",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((
-            row.get(0)?,
-            row.get(1)?,
+            (row.get(0)?, row.get(1)?, row.get(8)?),
             row.get(2)?,
             row.get(3)?,
             row.get(4)?,
@@ -48,7 +46,7 @@ fn decode_row(row: ExposureRow) -> Result<ExposureRecord, StoreError> {
     const MALFORMED: StoreError = StoreError::SchemaMismatch {
         detail: "persisted service exposure is malformed",
     };
-    let (space_id, kind, root_name, root_access, proxy_host, start, end, path) = row;
+    let ((space_id, kind, selector), root_name, root_access, proxy_host, start, end, path) = row;
     let space_id = SpaceId::try_from(space_id.as_slice()).map_err(|_| MALFORMED)?;
     let exposure = match (kind, root_name, root_access, path, proxy_host, start, end) {
         (0, Some(name), Some(access), Some(path), None, None, None) => {
@@ -63,6 +61,9 @@ fn decode_row(row: ExposureRow) -> Result<ExposureRecord, StoreError> {
         (1, None, None, None, None, None, None) => LocalExposure::Exec,
         (2, None, None, None, None, None, None) => LocalExposure::Shell,
         (4, None, None, None, None, None, None) => LocalExposure::Process,
+        (5, None, None, None, None, None, None) => {
+            LocalExposure::Agent(AgentId::new(&selector).map_err(|_| MALFORMED)?)
+        }
         (3, None, None, None, Some(host), Some(start), Some(end)) => {
             let pattern = if host == "*" {
                 ProxyHostPattern::Any
