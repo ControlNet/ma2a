@@ -1,6 +1,6 @@
 //! `ma2a agent --endpoint`: another Endpoint's Agents, used as this Endpoint.
 
-use std::{io::Write as _, path::Path, time::Duration};
+use std::{fmt::Write as _, io::Write as _, path::Path, time::Duration};
 
 use ma2a_core::service::{
     AgentAccept, AgentCard, AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit,
@@ -156,7 +156,8 @@ async fn call(
 
 async fn submit(target: Target<'_>, arguments: SubmitArgs) -> Result<(), AppError> {
     let agent = agent_id(&arguments.agent)?;
-    let submit = AgentSubmit::new(agent.clone(), message(&arguments.message)?, None);
+    let from = arguments.from_agent.as_deref().map(agent_id).transpose()?;
+    let submit = AgentSubmit::new(agent.clone(), message(&arguments.message)?, from);
     let body = OpenBody::Agent(AgentRequest::Submit(submit));
     let (accept, reply) = call(target, body, arguments.request_id.as_deref()).await?;
     let existing = matches!(accept, Some(AgentAccept::Submitted(_, true)));
@@ -248,7 +249,10 @@ async fn artifact(
     print(&json!({
         "output": output.display().to_string(),
         "size": result.size,
-        "blake3": result.hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        "blake3": result.hash.iter().fold(String::with_capacity(64), |mut hex, byte| {
+            let _written = write!(hex, "{byte:02x}");
+            hex
+        }),
     }))
 }
 

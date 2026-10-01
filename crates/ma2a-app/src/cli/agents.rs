@@ -118,6 +118,10 @@ pub(crate) struct SubmitArgs {
     /// Follow the task until it ends, then print it in full.
     #[arg(long)]
     pub(crate) wait: bool,
+    /// With --endpoint: name the submitting Agent. The target records and shows it; it
+    /// never authorizes anything.
+    #[arg(long, value_name = "AGENT")]
+    pub(crate) from_agent: Option<String>,
 }
 
 #[derive(Debug, Args)]

@@ -1,6 +1,8 @@
 //! Opening one remote operation through this Runtime's own local API, exactly as the CLI
 //! does: the daemon dials the target as itself and relays the Services v1 frames.
 
+use std::time::Duration;
+
 use ma2a_agent::protocol::ToolError;
 use ma2a_core::{
     RequestId,
@@ -16,6 +18,9 @@ use crate::{
     api,
     ipc::{LocalApiClient, LocalStream, StreamUpgrade},
 };
+
+/// Longest wait for this Runtime's local API server to be bound.
+const LOOPBACK_WAIT: Duration = Duration::from_secs(30);
 
 /// The caller's frame halves of one opened operation.
 pub(super) type Halves = (
@@ -45,10 +50,8 @@ impl Call<'_> {
         body: OpenBody,
     ) -> Result<Halves, ToolError> {
         let paths = self
-            .manager
-            .0
-            .loopback
-            .get()
+            .loopback()
+            .await
             .ok_or_else(|| status(ServiceError::Unavailable))?;
         let request = json!({
             "version": 1,
@@ -82,6 +85,23 @@ impl Call<'_> {
             .map_err(status)?;
         writer.flush().await.map_err(status)?;
         Ok((reader, writer))
+    }
+}
+
+impl Call<'_> {
+    /// Returns this Runtime's own local API paths once its server is bound: a call
+    /// re-run during recovery may start before it is.
+    async fn loopback(&self) -> Option<crate::ipc::IpcPaths> {
+        let deadline = tokio::time::Instant::now() + LOOPBACK_WAIT;
+        loop {
+            if let Some(paths) = self.manager.0.loopback.get() {
+                return Some(paths.clone());
+            }
+            if tokio::time::Instant::now() >= deadline || self.manager.0.shutdown.is_cancelled() {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }
 

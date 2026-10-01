@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use ma2a_core::ServiceKind;
 use ma2a_core::service::{
     FrameKind, OpenBody, OpenHeader, ServiceError, TransferRequest, admission,
 };
@@ -72,6 +73,12 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
         .await
     {
         Ok(grant) => grant,
+        // Past admission, an Agent this caller may not use answers exactly like one that
+        // is not defined.
+        Err(ServiceError::Unauthorized) if kind == ServiceKind::Agent => {
+            reject(&mut writer, (&context, key), ServiceError::UnknownAgent).await;
+            return;
+        }
         Err(error) => {
             reject(&mut writer, (&context, key), error).await;
             return;

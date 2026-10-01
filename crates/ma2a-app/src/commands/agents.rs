@@ -35,7 +35,7 @@ type Runtime<'a> = (&'a Path, IpcPaths);
 
 async fn local(runtime: Runtime<'_>, agent_command: AgentCommand) -> Result<(), AppError> {
     let (operation, fields) = match agent_command {
-        AgentCommand::Define(arguments) => ("agent_define", define(arguments)?),
+        AgentCommand::Define(arguments) => ("agent_define", define(&arguments)?),
         AgentCommand::Undefine { agent } => ("agent_undefine", named(&agent)?),
         AgentCommand::Start { agent } => ("agent_start", named(&agent)?),
         AgentCommand::Stop { agent } => ("agent_stop", named(&agent)?),
@@ -95,7 +95,7 @@ fn named(agent: &str) -> Result<Map<String, Value>, AppError> {
     Ok(fields)
 }
 
-fn define(arguments: DefineArgs) -> Result<Map<String, Value>, AppError> {
+fn define(arguments: &DefineArgs) -> Result<Map<String, Value>, AppError> {
     let (program, args) = arguments
         .argv
         .split_first()
@@ -137,6 +137,11 @@ fn message_json(message: &AgentMessage) -> Value {
 }
 
 async fn submit(runtime: &Runtime<'_>, arguments: SubmitArgs) -> Result<(), AppError> {
+    if arguments.from_agent.is_some() {
+        return Err(AppError::Usage(
+            "--from-agent names the submitting Agent to another Endpoint; add --endpoint",
+        ));
+    }
     let mut fields = mutation(arguments.request_id)?;
     fields.insert("agent".to_owned(), json!(arguments.agent));
     fields.insert(
