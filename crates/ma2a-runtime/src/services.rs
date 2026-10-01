@@ -17,7 +17,8 @@ pub(crate) fn dispatch(
         | ServiceKind::Exec
         | ServiceKind::Shell
         | ServiceKind::Proxy
-        | ServiceKind::Process => echo::EchoDispatchOutcome {
+        | ServiceKind::Process
+        | ServiceKind::Agent => echo::EchoDispatchOutcome {
             response: Err(ma2a_core::EchoError::Unavailable),
             audit: None,
         },

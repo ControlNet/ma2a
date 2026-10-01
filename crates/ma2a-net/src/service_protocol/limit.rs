@@ -18,6 +18,8 @@ impl ServiceLimits {
             ServiceKind::Transfer | ServiceKind::Shell => (4, 16),
             ServiceKind::Exec => (8, 32),
             ServiceKind::Proxy => (64, 256),
+            // Watches are long-lived, so an Agent caller may hold several at once.
+            ServiceKind::Agent => (32, 128),
         };
         Self { per_peer, global }
     }

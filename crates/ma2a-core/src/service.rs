@@ -1,10 +1,17 @@
 //! Closed built-in remote service contracts: names, consent, authorization, and wire codecs.
 //!
 //! Every streaming service shares one frame format and one canonical `open` header. The
-//! typed bodies, results, and controls below are the complete Phase 2 vocabulary; nothing
-//! is registered at runtime.
+//! typed bodies, results, and controls below are the complete built-in vocabulary;
+//! nothing is registered at runtime.
 
 mod access;
+mod agent_event;
+mod agent_id;
+mod agent_message;
+mod agent_reply;
+mod agent_request;
+mod agent_state;
+mod agent_task;
 mod cbor;
 mod exec;
 mod exposure;
@@ -25,6 +32,20 @@ mod status;
 mod transfer;
 
 pub use access::{ServiceAccess, ServiceAuthorizationRequest, authorize_service};
+pub use agent_event::{
+    AgentCard, AgentEvent, AgentEventBody, MAX_AGENT_DESCRIPTION_LEN, MAX_AGENT_TASKS,
+};
+pub use agent_id::{AgentId, AgentTaskId, MAX_AGENT_ID_LEN};
+pub use agent_message::{
+    AgentMessage, MAX_MESSAGE_BYTES, MAX_MESSAGE_PARTS, MessagePart, MessageRole,
+};
+pub use agent_reply::{AgentAccept, AgentReply, AgentReplyOutcome};
+pub use agent_request::{AgentRequest, AgentSubmit, MAX_AGENT_PAGE, MAX_TASK_PAGE};
+pub use agent_state::{AgentTaskReason, AgentTaskState};
+pub use agent_task::{
+    AgentTaskDetails, AgentTaskSummary, ArtifactRef, MAX_ARTIFACT_NAME_LEN, MAX_MEDIA_TYPE_LEN,
+    MAX_TASK_ARTIFACTS, MAX_TASK_NOTE_LEN,
+};
 pub use exec::{
     ExecRequest, MAX_OPERATION_LIFETIME_MS, MAX_TERM_LEN, ProcessOutcome, ProcessResult,
     ShellRequest, TerminalSize,

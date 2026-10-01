@@ -26,11 +26,13 @@ pub enum ServiceKind {
     Proxy,
     /// Durable workloads that outlive the operation that started them.
     Process,
+    /// Tasks for Agents the target Endpoint hosts.
+    Agent,
 }
 
 impl ServiceKind {
     /// Every built-in service in wire-code order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Echo,
         Self::Files,
         Self::Transfer,
@@ -38,6 +40,7 @@ impl ServiceKind {
         Self::Shell,
         Self::Proxy,
         Self::Process,
+        Self::Agent,
     ];
 
     /// Returns the stable one-byte wire code.
@@ -50,6 +53,7 @@ impl ServiceKind {
             Self::Shell => 5,
             Self::Proxy => 6,
             Self::Process => 7,
+            Self::Agent => 8,
         }
     }
 
@@ -63,6 +67,7 @@ impl ServiceKind {
             5 => Some(Self::Shell),
             6 => Some(Self::Proxy),
             7 => Some(Self::Process),
+            8 => Some(Self::Agent),
             _ => None,
         }
     }
@@ -77,6 +82,7 @@ impl ServiceKind {
             Self::Shell => "shell",
             Self::Proxy => "proxy",
             Self::Process => "process",
+            Self::Agent => "agent",
         }
     }
 

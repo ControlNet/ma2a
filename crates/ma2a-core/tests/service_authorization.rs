@@ -7,8 +7,8 @@ use ma2a_core::{
     SpaceManifestLink, SpaceManifestMembership, SpaceManifestV1, SpaceMemberV1, SpacePolicyV1,
     SpaceRevocationV1,
     service::{
-        ExportedRoot, ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName, ServiceAccess,
-        ServiceAuthorizationRequest, SpaceExposureView, authorize_service,
+        AgentId, ExportedRoot, ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName,
+        ServiceAccess, ServiceAuthorizationRequest, SpaceExposureView, authorize_service,
     },
 };
 
@@ -257,6 +257,7 @@ fn remote_service_grants_roundtrip_through_signed_manifests() -> TestResult {
         Capability::SHELL,
         Capability::PROXY,
         Capability::PROCESS,
+        Capability::AGENT,
     ]);
     let view = space(&SpaceFixture {
         authority: 0x48,
@@ -268,6 +269,7 @@ fn remote_service_grants_roundtrip_through_signed_manifests() -> TestResult {
         Capability::PROXY,
         Capability::FILES_WRITE,
         Capability::PROCESS,
+        Capability::AGENT,
     ] {
         assert!(view.allows(endpoint(CALLER), capability));
         assert!(!capability.is_policy_governed());
@@ -301,5 +303,50 @@ fn process_needs_the_grant_and_the_exposure_of_one_single_space() -> TestResult 
         revoke_caller: true,
     })?;
     assert!(!allowed(&ServiceAccess::Process, &[revoked], &complete));
+    Ok(())
+}
+
+#[test]
+fn an_agent_needs_the_grant_and_its_own_exposure_in_one_single_space() -> TestResult {
+    let helper = AgentId::new("helper")?;
+    let other = AgentId::new("other-agent")?;
+    let granted = space(&SpaceFixture {
+        authority: 0x4b,
+        caller: grants(&[Capability::AGENT]),
+        revoke_caller: false,
+    })?;
+    let exposing = space(&SpaceFixture {
+        authority: 0x4c,
+        caller: grants(&[Capability::PROCESS]),
+        revoke_caller: false,
+    })?;
+    let spaces = [granted.clone(), exposing.clone()];
+    let access = ServiceAccess::Agent(helper.clone());
+    // The grant in one Space and the exposure in another never combine.
+    let split = [SpaceExposureView::new(exposing.space_id()).with_agent(helper.clone())];
+    assert!(!allowed(&access, &spaces, &split));
+    assert!(!allowed(&ServiceAccess::AgentAdmission, &spaces, &split));
+    let complete = [SpaceExposureView::new(granted.space_id()).with_agent(helper.clone())];
+    assert!(allowed(&access, &spaces, &complete));
+    assert!(allowed(&ServiceAccess::AgentAdmission, &spaces, &complete));
+    // Exposing one Agent never exposes another, and a Process exposure is not an Agent one.
+    assert!(!allowed(&ServiceAccess::Agent(other), &spaces, &complete));
+    let process_only = [SpaceExposureView::new(granted.space_id()).with_process()];
+    assert!(!allowed(&access, &spaces, &process_only));
+    assert!(!allowed(
+        &ServiceAccess::AgentAdmission,
+        &spaces,
+        &process_only
+    ));
+    // Without the grant, the exposure alone allows nothing.
+    let ungranted = [exposing];
+    let exposed_there = [SpaceExposureView::new(ungranted[0].space_id()).with_agent(helper)];
+    assert!(!allowed(&access, &ungranted, &exposed_there));
+    let revoked = space(&SpaceFixture {
+        authority: 0x4b,
+        caller: grants(&[Capability::AGENT]),
+        revoke_caller: true,
+    })?;
+    assert!(!allowed(&access, &[revoked], &complete));
     Ok(())
 }

@@ -5,7 +5,7 @@ use crate::{
     SpaceAuthorizationView,
 };
 
-use super::{ProxyHost, RootAccess, RootName, SpaceExposureView};
+use super::{AgentId, ProxyHost, RootAccess, RootName, SpaceExposureView};
 
 /// The complete access one remote service request needs from one Space.
 #[expect(
@@ -30,6 +30,10 @@ pub enum ServiceAccess {
     ProxyConnect(ProxyHost, u16),
     /// Create or manage the caller's own durable Processes.
     Process,
+    /// Pre-read admission to the Agent family: some Agent may be usable.
+    AgentAdmission,
+    /// Submit tasks to, or manage the caller's own tasks of, one exact Agent.
+    Agent(AgentId),
 }
 
 /// The authenticated pair, the requested access, and this Runtime's per-Space exposure.
@@ -107,6 +111,12 @@ fn permits(request: &ServiceAuthorizationRequest<'_>, space: &SpaceAuthorization
             granted(Capability::PROXY) && !exposure.proxy_rules().is_empty()
         }
         ServiceAccess::Process => granted(Capability::PROCESS) && exposure.process(),
+        ServiceAccess::AgentAdmission => {
+            granted(Capability::AGENT) && !exposure.agents().is_empty()
+        }
+        ServiceAccess::Agent(agent) => {
+            granted(Capability::AGENT) && exposure.agents().contains(agent)
+        }
         ServiceAccess::ProxyConnect(host, port) => {
             granted(Capability::PROXY)
                 && exposure

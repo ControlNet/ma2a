@@ -2,7 +2,7 @@
 
 use crate::{ProtocolError, SpaceId};
 
-use super::{ProxyHost, RootName};
+use super::{AgentId, ProxyHost, RootName};
 
 /// Whether an exported root accepts mutation.
 #[expect(
@@ -127,6 +127,7 @@ pub struct SpaceExposureView {
     shell: bool,
     proxy_rules: Vec<ProxyRule>,
     process: bool,
+    agents: Vec<AgentId>,
 }
 
 impl SpaceExposureView {
@@ -173,6 +174,15 @@ impl SpaceExposureView {
         self
     }
 
+    /// Exposes one Agent in this Space.
+    #[must_use]
+    pub fn with_agent(mut self, agent: AgentId) -> Self {
+        if !self.agents.contains(&agent) {
+            self.agents.push(agent);
+        }
+        self
+    }
+
     /// Returns the Space this exposure belongs to.
     pub const fn space_id(&self) -> Option<SpaceId> {
         self.space_id
@@ -201,6 +211,11 @@ impl SpaceExposureView {
     /// Returns allowed proxy destination rules in this Space.
     pub fn proxy_rules(&self) -> &[ProxyRule] {
         &self.proxy_rules
+    }
+
+    /// Returns the Agents exposed in this Space.
+    pub fn agents(&self) -> &[AgentId] {
+        &self.agents
     }
 
     pub(crate) fn root(&self, name: &RootName) -> Option<&ExportedRoot> {

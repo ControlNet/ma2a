@@ -34,23 +34,28 @@ impl ProcessId {
     /// # Errors
     /// Returns [`ProtocolError::INVALID_INPUT`] for any other text.
     pub fn parse(text: &str) -> Result<Self, ProtocolError> {
-        let digits = text.as_bytes();
-        if digits.len() != 32 {
-            return Err(ProtocolError::INVALID_INPUT);
-        }
-        let mut bytes = [0; 16];
-        for (byte, pair) in bytes.iter_mut().zip(digits.chunks_exact(2)) {
-            let [high, low] = pair else {
-                return Err(ProtocolError::INVALID_INPUT);
-            };
-            *byte = (nibble(*high)? << 4) | nibble(*low)?;
-        }
-        Ok(Self(bytes))
+        parse_hex16(text).map(Self)
     }
 
     pub(crate) fn decode_from(decoder: &mut Decoder<'_>) -> Result<Self, ProtocolError> {
         Self::try_from(decoder.bytes(16)?)
     }
+}
+
+/// Parses exactly 32 lowercase hexadecimal characters into 16 bytes.
+pub(crate) fn parse_hex16(text: &str) -> Result<[u8; 16], ProtocolError> {
+    let digits = text.as_bytes();
+    if digits.len() != 32 {
+        return Err(ProtocolError::INVALID_INPUT);
+    }
+    let mut bytes = [0; 16];
+    for (byte, pair) in bytes.iter_mut().zip(digits.chunks_exact(2)) {
+        let [high, low] = pair else {
+            return Err(ProtocolError::INVALID_INPUT);
+        };
+        *byte = (nibble(*high)? << 4) | nibble(*low)?;
+    }
+    Ok(bytes)
 }
 
 const fn nibble(digit: u8) -> Result<u8, ProtocolError> {

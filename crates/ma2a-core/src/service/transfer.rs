@@ -58,12 +58,12 @@ impl ContentIdentity {
         self.modified_ns
     }
 
-    fn encode(self, writer: &mut Writer) -> Result<(), ProtocolError> {
+    pub(crate) fn encode(self, writer: &mut Writer) -> Result<(), ProtocolError> {
         writer.array(2)?.uint(self.size).uint(self.modified_ns);
         Ok(())
     }
 
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, ProtocolError> {
+    pub(crate) fn decode(decoder: &mut Decoder<'_>) -> Result<Self, ProtocolError> {
         decoder.array_exact(2)?;
         Ok(Self::new(decoder.uint()?, decoder.uint()?))
     }

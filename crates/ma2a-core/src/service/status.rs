@@ -87,6 +87,11 @@ service_errors! {
     WriterBusy = 82, "writer_busy", "another attachment holds the Process stdin";
     StdinClosed = 83, "stdin_closed", "the Process has no open stdin";
     ProcessActive = 84, "process_active", "the Process has not ended yet";
+    UnknownAgent = 96, "unknown_agent", "no such Agent is available to this caller";
+    UnknownTask = 97, "unknown_task", "no such task of this Agent belongs to this caller";
+    AgentUnavailable = 98, "agent_unavailable", "the Agent is not started";
+    TaskEnded = 99, "task_ended", "the task has already ended";
+    UnknownArtifact = 100, "unknown_artifact", "the task has no artifact of that name";
 }
 
 impl ServiceError {
@@ -125,7 +130,7 @@ mod tests {
                 assert!(seen.insert(error.name()));
             }
         }
-        assert_eq!(seen.len(), 33);
+        assert_eq!(seen.len(), 38);
         assert_eq!(ServiceError::from_code(0), None);
     }
 }
