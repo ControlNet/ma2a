@@ -1,6 +1,7 @@
 pub(crate) mod agent_artifact;
 pub(crate) mod agents;
 pub(crate) mod control;
+pub(crate) mod hosted_services;
 pub(crate) mod remote;
 pub(crate) mod services;
 pub(crate) mod supervisor;

@@ -1,11 +1,12 @@
 use std::{collections::BTreeSet, error::Error, fs, path::Path, process::Command};
 
-const EXPECTED_MEMBERS: [&str; 8] = [
+const EXPECTED_MEMBERS: [&str; 9] = [
     "ma2a-agent",
     "ma2a-app",
     "ma2a-core",
     "ma2a-net",
     "ma2a-runtime",
+    "ma2a-service",
     "ma2a-services",
     "ma2a-store",
     "xtask",

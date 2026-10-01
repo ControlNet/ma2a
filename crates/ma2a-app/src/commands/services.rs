@@ -59,6 +59,9 @@ pub(crate) async fn run(
         }
         ServiceCommand::Expose { exposure, json } => ("service_expose", exposure, json),
         ServiceCommand::Unexpose { exposure, json } => ("service_unexpose", exposure, json),
+        ServiceCommand::Hosted(hosted) => {
+            return super::hosted_services::run(state_dir, paths, hosted).await;
+        }
     };
     let expose = operation == "service_expose";
     let mut fields = request_fields()?;

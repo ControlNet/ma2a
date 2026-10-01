@@ -82,7 +82,7 @@ where
 }
 
 /// Caller → target: input, resizes, and at most one `cancel`, until nothing is left to send.
-async fn inbound<W, I, C>(
+pub(super) async fn inbound<W, I, C>(
     writer: &mut FrameWriter<W>,
     (mut input, control): (Option<I>, ProcessControl<C>),
     lost: &Notify,
@@ -171,7 +171,10 @@ where
     }
 }
 
-async fn write_flushed<T: AsyncWrite + Unpin>(sink: &mut T, bytes: &[u8]) -> std::io::Result<()> {
+pub(super) async fn write_flushed<T: AsyncWrite + Unpin>(
+    sink: &mut T,
+    bytes: &[u8],
+) -> std::io::Result<()> {
     sink.write_all(bytes).await?;
     sink.flush().await
 }

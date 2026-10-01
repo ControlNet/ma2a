@@ -1,4 +1,6 @@
 //! Command-line shape of service grants, exposure, operations, and remote services.
+//!
+//! Hosted services have their own shape in [`super::hosted`].
 
 use std::path::PathBuf;
 
@@ -66,6 +68,8 @@ pub(crate) enum ServiceCommand {
         #[arg(long)]
         json: bool,
     },
+    #[command(flatten)]
+    Hosted(super::hosted::HostedServiceCommand),
 }
 
 /// One exposure selector.

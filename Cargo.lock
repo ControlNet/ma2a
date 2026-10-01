@@ -2159,6 +2159,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ma2a-service"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.4.3",
+ "ma2a-core",
+ "ma2a-runtime",
+ "ma2a-services",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ma2a-services"
 version = "0.1.0"
 dependencies = [

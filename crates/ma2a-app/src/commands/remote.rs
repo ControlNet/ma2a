@@ -23,6 +23,7 @@ mod hosted_stream;
 mod hosted_view;
 pub(crate) mod process;
 pub(crate) mod proxy;
+pub(crate) mod service;
 mod transfer;
 
 /// The caller's frame halves of one opened operation.

@@ -3,6 +3,7 @@ use std::{ffi::OsString, net::SocketAddr, path::PathBuf};
 use clap::{Args, Parser, Subcommand};
 
 pub(crate) mod agents;
+pub(crate) mod hosted;
 pub(crate) mod processes;
 mod secret_argv;
 pub(crate) mod services;
