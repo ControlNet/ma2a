@@ -30,17 +30,28 @@ fn components(relative: &str) -> Result<Vec<&str>, ToolError> {
     Ok(parts)
 }
 
-/// Resolves an existing file for reading; symlinks may be followed only within the workspace.
+/// Resolves an existing regular file for reading; symlinks may be followed only within the
+/// workspace.
 pub(super) fn existing(workspace: &Path, relative: &str) -> Result<PathBuf, ToolError> {
     let path = components(relative)?
         .into_iter()
         .fold(workspace.to_path_buf(), |path, part| path.join(part));
     let root = std::fs::canonicalize(workspace).map_err(|error| local(&error))?;
     let resolved = std::fs::canonicalize(&path).map_err(|error| local(&error))?;
-    if resolved.starts_with(&root) {
+    if !resolved.starts_with(&root) {
+        return Err(outside());
+    }
+    // Only a regular file is read: a FIFO or device could block its reader forever.
+    if std::fs::metadata(&resolved)
+        .map_err(|error| local(&error))?
+        .is_file()
+    {
         Ok(resolved)
     } else {
-        Err(outside())
+        Err(ToolError::new(
+            "invalid_tool",
+            "the path names no regular file",
+        ))
     }
 }
 
@@ -111,6 +122,13 @@ mod tests {
             std::os::unix::fs::symlink(&base, workspace.join("link"))?;
             assert!(existing(&workspace, "link/secret").is_err());
             assert!(destination(&workspace, "link/new").is_err());
+            // A FIFO would block the reader forever; directories are not files either.
+            let made = std::process::Command::new("mkfifo")
+                .arg(workspace.join("pipe"))
+                .status()?;
+            assert!(made.success());
+            assert!(existing(&workspace, "pipe").is_err());
+            assert!(existing(&workspace, "out").is_err());
         }
         std::fs::remove_dir_all(&base)?;
         Ok(())

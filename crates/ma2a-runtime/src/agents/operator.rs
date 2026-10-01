@@ -9,7 +9,7 @@ use ma2a_store::{AgentDefine, AgentDefinition, AgentRecord};
 use super::AgentManager;
 
 /// Grace period of an instance whose Agent the operator stopped.
-const STOP_GRACE_MS: u32 = 5_000;
+pub(super) const STOP_GRACE_MS: u32 = 5_000;
 
 /// One Agent definition as the operator writes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,11 +114,8 @@ impl AgentManager {
             .commit(move |repository| repository.set_agent_enabled(&id, (false, at_ms)))
             .await?
             .ok_or(ServiceError::UnknownAgent)?;
-        if let Some(process) = record
-            .instance
-            .filter(ma2a_store::AgentInstanceRecord::is_live)
-            .and_then(|instance| instance.process_id)
-        {
+        // The stop ended the instance; its Process still runs until terminated here.
+        if let Some(process) = record.instance.and_then(|instance| instance.process_id) {
             let reason = (STOP_GRACE_MS, ProcessReason::Requested);
             let _ended = self.0.processes.terminate((None, process), reason).await;
         }

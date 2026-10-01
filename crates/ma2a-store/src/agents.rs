@@ -155,7 +155,8 @@ impl Repository {
         Ok(Committed::new(revision, outcome))
     }
 
-    /// Starts or stops an Agent; stopping fails every task it has not finished.
+    /// Starts or stops an Agent; stopping fails every task it has not finished and ends its
+    /// live instance.
     ///
     /// # Errors
     /// Returns [`StoreError`] when the change cannot be committed.
@@ -174,6 +175,17 @@ impl Repository {
                 &transaction,
                 (agent, None),
                 (AgentTaskReason::AgentStopped, at_ms),
+            )?;
+            // The live instance ends with the stop: a later start begins a new one and never
+            // reuses one whose Process is being terminated.
+            transaction.execute(
+                "UPDATE agent_instances SET ended_at_ms = max(?2, started_at_ms)
+                 WHERE agent_id = ?1 AND ended_at_ms IS NULL",
+                params![agent.as_str(), at_ms],
+            )?;
+            transaction.execute(
+                "DELETE FROM agent_outbox WHERE agent_id = ?1",
+                [agent.as_str()],
             )?;
         }
         let revision = if changed {

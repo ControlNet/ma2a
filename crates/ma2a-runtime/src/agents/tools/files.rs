@@ -104,8 +104,8 @@ impl Call<'_> {
     pub(super) async fn transfer_put(&self, args: TransferPut) -> Outcome {
         let source = existing(&self.workspace, &args.from)?;
         let resource = TransferResource::File(remote(&args.root, &args.path)?);
-        let mut file = tokio::fs::File::open(&source)
-            .await
+        let mut file = crate::agents::artifacts::open_regular(&source)
+            .map(tokio::fs::File::from_std)
             .map_err(|error| local(&error))?;
         let size = file.metadata().await.map_err(|error| local(&error))?.len();
         let mode = if args.replace {

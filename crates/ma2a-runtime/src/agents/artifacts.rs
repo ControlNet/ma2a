@@ -36,14 +36,29 @@ type ArtifactRequest<'a> = (
     (u64, Option<ContentIdentity>),
 );
 
+/// Opens a regular file for reading without ever blocking on a FIFO swapped in after its
+/// path was checked.
+pub(super) fn open_regular(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits().cast_signed());
+    }
+    let file = options.open(path)?;
+    if file.metadata()?.is_file() {
+        Ok(file)
+    } else {
+        Err(io::Error::from(io::ErrorKind::InvalidInput))
+    }
+}
+
 /// Copies `source` into a staging file of the blob store; returns its size, its hash, and
 /// the staging file.
 fn stage_blob(source: &Path, blobs: &Path) -> io::Result<(u64, [u8; 32], PathBuf)> {
     private_dir(blobs)?;
-    let mut input = std::fs::File::open(source)?;
-    if !input.metadata()?.is_file() {
-        return Err(io::Error::from(io::ErrorKind::InvalidInput));
-    }
+    let mut input = open_regular(source)?;
     let mut suffix = [0_u8; 8];
     getrandom::fill(&mut suffix).map_err(io::Error::other)?;
     let staging = blobs.join(format!(".staging-{}", hex(&suffix)));

@@ -479,3 +479,35 @@ fn finished_tasks_beyond_the_retention_bound_make_room_oldest_first() -> TestRes
     );
     Ok(())
 }
+
+#[test]
+fn stopping_an_agent_ends_its_instance_so_a_restart_begins_a_new_one() -> TestResult {
+    let (_state, mut repository) = open("agent-stop-instance")?;
+    let generation = ready_agent(&mut repository, 1)?;
+    let stopped = repository
+        .set_agent_enabled(&agent()?, (false, 30))?
+        .into_value()
+        .ok_or("missing Agent")?;
+    let instance = stopped.instance.ok_or("no instance")?;
+    assert_eq!(instance.ended_ms, Some(30));
+    // The stopped instance's Process is still named, so the caller can terminate it.
+    assert_eq!(instance.process_id, Some(ProcessId::from_bytes([0x44; 16])));
+    assert!(repository.agent_outbox((&agent()?, generation))?.is_empty());
+
+    repository.set_agent_enabled(&agent()?, (true, 31))?;
+    let next = repository
+        .begin_agent_instance(&agent()?, 32)?
+        .into_value()
+        .ok_or("no new instance")?
+        .instance
+        .ok_or("no instance")?;
+    assert_eq!(next.generation, generation + 1);
+    // A launch racing the stop finds nothing to bind.
+    repository.set_agent_enabled(&agent()?, (false, 33))?;
+    assert!(
+        !repository
+            .bind_agent_process((&agent()?, next.generation), ProcessId::from_bytes([9; 16]))?
+            .into_value()
+    );
+    Ok(())
+}

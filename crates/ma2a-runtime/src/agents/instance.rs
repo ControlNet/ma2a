@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use ma2a_core::{
     RequestId,
-    service::{AgentId, AgentTaskId, ProcessSpec, ProcessStart, ServiceError},
+    service::{
+        AgentId, AgentTaskId, ProcessId, ProcessReason, ProcessSpec, ProcessStart, ServiceError,
+    },
 };
 use ma2a_store::{AgentInstanceRecord, AgentRecord};
 use tokio::time::Instant;
@@ -18,10 +20,17 @@ const STABLE_UPTIME_MS: u64 = 60_000;
 
 /// The `RequestId` of one instance's start, so a crash between the Process commit and the
 /// instance commit can never start a second Process for the same generation.
-fn start_request(agent: &AgentId, generation: u64) -> Result<RequestId, ServiceError> {
+///
+/// A definition's creation time is part of it: an Agent undefined and defined again counts
+/// its generations from zero, and must never find the Processes of the earlier one.
+fn start_request(
+    agent: &AgentId,
+    (defined_at_ms, generation): (u64, u64),
+) -> Result<RequestId, ServiceError> {
     let mut hasher = blake3::Hasher::new_derive_key("ma2a agent instance start v1");
     hasher.update(agent.as_str().as_bytes());
     hasher.update(&[0]);
+    hasher.update(&defined_at_ms.to_be_bytes());
     hasher.update(&generation.to_be_bytes());
     let hash = hasher.finalize();
     RequestId::try_from(hash.as_bytes().get(..16).unwrap_or_default())
@@ -74,20 +83,40 @@ impl AgentManager {
             let workspace = self.workspace(agent);
             private_dir(&workspace).map_err(|_| ServiceError::Unavailable)?;
             let start = instance_start(record, &workspace.to_string_lossy())?;
-            let request_id = start_request(agent, instance.generation)?;
+            let request_id = start_request(agent, (record.times.0, instance.generation))?;
             self.0.processes.start_local(request_id, start).await
         };
         match launched.await {
             Ok(process) => {
                 let (id, generation) = (agent.clone(), instance.generation);
-                let _bound = self
+                let bound = self
                     .commit(move |repository| {
                         repository.bind_agent_process((&id, generation), process.id)
                     })
                     .await;
+                if matches!(bound, Ok(false)) {
+                    self.release_unbound(agent, (generation, process.id)).await;
+                }
             }
             // Nothing could start: the instance ends now and its successor waits.
             Err(_) => self.conclude_instance(agent, &instance).await,
+        }
+    }
+
+    /// Terminates a Process launched for an instance that ended before it was bound, as when
+    /// the Agent was stopped meanwhile; one bound by a concurrent launch keeps running.
+    async fn release_unbound(&self, agent: &AgentId, (generation, process): (u64, ProcessId)) {
+        let Ok(Some(record)) = self.agent(agent).await else {
+            return;
+        };
+        let kept = record.instance.is_some_and(|instance| {
+            instance.generation == generation
+                && instance.is_live()
+                && instance.process_id == Some(process)
+        });
+        if !kept {
+            let reason = (super::operator::STOP_GRACE_MS, ProcessReason::Requested);
+            let _ended = self.0.processes.terminate((None, process), reason).await;
         }
     }
 
@@ -165,4 +194,23 @@ fn instance_start(record: &AgentRecord, workspace: &str) -> Result<ProcessStart,
             start.with_label("ma2a.agent".to_owned(), record.definition.id.to_string())
         })
         .map_err(invalid)
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::service::AgentId;
+
+    use super::start_request;
+
+    #[test]
+    fn instance_starts_are_distinct_per_definition_and_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let agent = AgentId::new("worker")?;
+        let first = start_request(&agent, (1_000, 1))?;
+        assert_eq!(first, start_request(&agent, (1_000, 1))?);
+        assert_ne!(first, start_request(&agent, (1_000, 2))?);
+        // The same generation of a later definition is another start.
+        assert_ne!(first, start_request(&agent, (2_000, 1))?);
+        Ok(())
+    }
 }
