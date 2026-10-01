@@ -217,3 +217,73 @@ On Endpoints A (caller) and B (host) in one Space, with `ma2a-example-service` o
 - stop and unregister: the SDK returns cleanly on stop, and the name is no longer discovered;
 - the fault points;
 - the built-ins keep working through the pipeline, and Phase 1–4 E2E remain green.
+
+## Freeze record (as built)
+
+Phase 5 is frozen on local `master`. The commits after the Phase 4 freeze (`af7a23b`) are:
+
+- `docs(plan)`: this plan;
+- `feat(core)`, `feat(store)`, `feat(runtime)`, `feat(service)`, `feat(web)`: Phase 5 itself. That
+  is the Service v1 contract and built-in catalog; Store schema 10; the hosting manager,
+  discovery, and local API; the `ma2a-service` SDK, `ma2a-example-service`, the `ma2a service`
+  CLI, and the acceptance E2E; and the read-only hosted-services card;
+- `test(services)`: a pre-existing flaky redaction check that matched a random-ID substring;
+- `docs(protocol)`: `docs/protocol/service-v1.md` and the exact `[1, 0]` envelope version;
+- `fix(runtime)`: the freeze-audit fixes; and this freeze commit.
+
+**As built, against this plan.**
+
+- `OperationName` is 1–32 bytes, not 64. A version lists 1–16 operations, not 32, with at most 64
+  in a manifest, so the encoded manifest stays within 4 KiB.
+- The listing command is `service_hosted_list` (result `hosted_services`), not `services_hosted`.
+  `service_accept` names its call `call_id`.
+- A unary call may be answered with an `outcome` alone, without an `accept`.
+- The CLI adds `--request-id` to `call`. Without `--version` it picks the highest version that
+  lists the operation.
+- Every deviation is also listed in `docs/protocol/service-v1.md`.
+
+**Audit fixes.** The fresh audit found 1 blocker and 6 non-blocking observations.
+
+- Fixed (blocker): a service that stopped reading its call connection blocked the relay while it
+  forwarded caller input. After that, no cancel, stop, or withdrawn authorization could end the
+  call, and its slot and stream permit stayed held. A call being cancelled now ends lost
+  (`outcome_unknown`) one second past the 5 s cancel grace.
+- Fixed: a call that outlived an unregister decremented the running count of a re-registered
+  service with the same name.
+- Fixed: `ma2a service call` followed a target's discovery pages without a limit; it now reads at
+  most 8.
+- Documented as known limitations:
+  - the Runtime relays a service's `accept` and `outcome` verbatim within the frame bounds;
+  - the caller's stream is not read while a call waits up to 10 s for its accept;
+  - a caller's own `cancel` waits behind input it already sent to a service that stopped reading.
+- Not changed: granting `service` in a Space that still has Phase 4 members, which is already
+  documented. There is still no deterministic unit test of the deliver-versus-withdraw race; the
+  E2E and IPC tests cover the hand-over.
+
+**Test-only items.**
+
+- `MA2A_TEST_SERVICE_FAULT`, debug builds only.
+- `ma2a-example-service`: a deterministic example, not a production service.
+- The E2E lab's service registrations.
+- The scripted service end in `crates/ma2a-services/tests/client_service.rs`.
+- The paused-clock call-relay tests.
+- The hosted-services data in `web/src/test/services-fixture.ts`.
+- The `repository_record()` helper in `crates/ma2a-runtime/tests/support/fixtures.rs`.
+
+**Verification at freeze**, on Linux x86_64:
+
+| Check | Result |
+| --- | --- |
+| `cargo run --locked -p xtask -- check` (fmt, clippy `-D warnings` with all features, LOC, deny, machete, nextest, web) | clean, 896/896 tests passed |
+| `cargo test -p ma2a-app --test ecosystem_e2e`, three runs | 3/3 each |
+| `ma2a-core` and `ma2a-services` (`--features blake3/pure`) clippy for `aarch64-apple-darwin` and `aarch64-pc-windows-msvc` | clean |
+| web: `biome check`, `tsc --noEmit`, `bun test` | clean, 149 tests passed |
+
+`ma2a-service` depends on `ma2a-runtime` (`ring`), so it is cross-linted only by native CI.
+
+Two flakes appeared under concurrent load and are unrelated to Phase 5:
+
+- once, `process_e2e` `a_restarted_or_crashed_daemon_readopts_its_running_processes`. It passed 3/3
+  alone and in the next full run;
+- earlier, `ma2a-store` `two_concurrent_redemptions_have_exactly_one_winner` ("database is
+  locked").
