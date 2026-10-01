@@ -13,7 +13,13 @@ mod files_result;
 mod frame;
 mod names;
 mod open;
+mod process;
+mod process_id;
+mod process_record;
+mod process_reply;
 mod process_spec;
+mod process_start;
+mod process_state;
 mod proxy;
 mod status;
 mod transfer;
@@ -37,10 +43,23 @@ pub use names::{
     MAX_ROOT_NAME_LEN, ProxyHost, RemotePath, RootName,
 };
 pub use open::{EMPTY_ACCEPT, OpenBody, OpenHeader, admission};
+pub use process::{
+    LogFrom, MAX_LOGS_READ, MAX_PROCESS_PAGE, MAX_TERMINATE_GRACE_MS, ProcessRequest, ProcessSignal,
+};
+pub use process_id::ProcessId;
+pub use process_record::{LogWindow, ProcessDetails, ProcessSummary};
+pub use process_reply::{
+    ProcessAccept, ProcessReply, ProcessReplyOutcome, decode_skipped, encode_skipped,
+};
 pub use process_spec::{
     EndReason, MAX_ENV_NAME_LEN, MAX_PROCESS_ARGS, MAX_PROCESS_ENV, MAX_PROCESS_TEXT_LEN,
     ProcessSpec, Termination,
 };
+pub use process_start::{
+    DEFAULT_LOG_LIMIT, MAX_LABEL_KEY_LEN, MAX_LABEL_VALUE_LEN, MAX_LOG_LIMIT, MAX_PROCESS_LABELS,
+    MAX_PROCESS_NAME_LEN, MIN_LOG_LIMIT, ProcessStart,
+};
+pub use process_state::{ProcessReason, ProcessState};
 pub use proxy::{MAX_PROXY_IDLE_MS, ProxyOutcome, ProxyRequest, ProxyResult};
 pub use status::ServiceError;
 pub use transfer::{

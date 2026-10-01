@@ -126,6 +126,7 @@ pub struct SpaceExposureView {
     exec: bool,
     shell: bool,
     proxy_rules: Vec<ProxyRule>,
+    process: bool,
 }
 
 impl SpaceExposureView {
@@ -158,6 +159,13 @@ impl SpaceExposureView {
         self
     }
 
+    /// Enables durable Processes in this Space.
+    #[must_use]
+    pub const fn with_process(mut self) -> Self {
+        self.process = true;
+        self
+    }
+
     /// Adds an allowed proxy destination rule.
     #[must_use]
     pub fn with_proxy_rule(mut self, rule: ProxyRule) -> Self {
@@ -183,6 +191,11 @@ impl SpaceExposureView {
     /// Returns whether Shell is exposed in this Space.
     pub const fn shell(&self) -> bool {
         self.shell
+    }
+
+    /// Returns whether durable Processes are exposed in this Space.
+    pub const fn process(&self) -> bool {
+        self.process
     }
 
     /// Returns allowed proxy destination rules in this Space.

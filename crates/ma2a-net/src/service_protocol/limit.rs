@@ -14,7 +14,7 @@ impl ServiceLimits {
     pub const fn of(kind: ServiceKind) -> Self {
         let (per_peer, global) = match kind {
             ServiceKind::Echo => (16, 128),
-            ServiceKind::Files => (16, 64),
+            ServiceKind::Files | ServiceKind::Process => (16, 64),
             ServiceKind::Transfer | ServiceKind::Shell => (4, 16),
             ServiceKind::Exec => (8, 32),
             ServiceKind::Proxy => (64, 256),

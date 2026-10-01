@@ -82,6 +82,11 @@ service_errors! {
     ConnectionRefused = 64, "connection_refused", "destination refused the connection";
     Unreachable = 65, "unreachable", "destination is unreachable";
     DnsFailed = 66, "dns_failed", "destination name could not be resolved";
+    UnknownProcess = 80, "unknown_process", "no such Process belongs to this caller";
+    NotRunning = 81, "not_running", "the Process is not running";
+    WriterBusy = 82, "writer_busy", "another attachment holds the Process stdin";
+    StdinClosed = 83, "stdin_closed", "the Process has no open stdin";
+    ProcessActive = 84, "process_active", "the Process has not ended yet";
 }
 
 impl ServiceError {
@@ -120,7 +125,7 @@ mod tests {
                 assert!(seen.insert(error.name()));
             }
         }
-        assert_eq!(seen.len(), 28);
+        assert_eq!(seen.len(), 33);
         assert_eq!(ServiceError::from_code(0), None);
     }
 }

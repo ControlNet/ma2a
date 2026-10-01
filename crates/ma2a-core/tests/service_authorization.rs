@@ -256,6 +256,7 @@ fn remote_service_grants_roundtrip_through_signed_manifests() -> TestResult {
         Capability::EXEC,
         Capability::SHELL,
         Capability::PROXY,
+        Capability::PROCESS,
     ]);
     let view = space(&SpaceFixture {
         authority: 0x48,
@@ -266,10 +267,39 @@ fn remote_service_grants_roundtrip_through_signed_manifests() -> TestResult {
         Capability::SHELL,
         Capability::PROXY,
         Capability::FILES_WRITE,
+        Capability::PROCESS,
     ] {
         assert!(view.allows(endpoint(CALLER), capability));
         assert!(!capability.is_policy_governed());
     }
     assert!(!all.without(Capability::SHELL).allows(Capability::SHELL));
+    Ok(())
+}
+
+#[test]
+fn process_needs_the_grant_and_the_exposure_of_one_single_space() -> TestResult {
+    let granted = space(&SpaceFixture {
+        authority: 0x49,
+        caller: grants(&[Capability::PROCESS]),
+        revoke_caller: false,
+    })?;
+    let exposing = space(&SpaceFixture {
+        authority: 0x4a,
+        caller: grants(&[Capability::EXEC]),
+        revoke_caller: false,
+    })?;
+    let split = [SpaceExposureView::new(exposing.space_id()).with_process()];
+    let spaces = [granted.clone(), exposing];
+    assert!(!allowed(&ServiceAccess::Process, &spaces, &split));
+    let complete = [SpaceExposureView::new(granted.space_id()).with_process()];
+    assert!(allowed(&ServiceAccess::Process, &spaces, &complete));
+    let exec_only = [SpaceExposureView::new(granted.space_id()).with_exec()];
+    assert!(!allowed(&ServiceAccess::Process, &spaces, &exec_only));
+    let revoked = space(&SpaceFixture {
+        authority: 0x49,
+        caller: grants(&[Capability::PROCESS]),
+        revoke_caller: true,
+    })?;
+    assert!(!allowed(&ServiceAccess::Process, &[revoked], &complete));
     Ok(())
 }

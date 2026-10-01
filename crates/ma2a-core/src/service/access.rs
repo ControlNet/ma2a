@@ -28,6 +28,8 @@ pub enum ServiceAccess {
     ProxyAdmission,
     /// Connect to one exact destination.
     ProxyConnect(ProxyHost, u16),
+    /// Create or manage the caller's own durable Processes.
+    Process,
 }
 
 /// The authenticated pair, the requested access, and this Runtime's per-Space exposure.
@@ -104,6 +106,7 @@ fn permits(request: &ServiceAuthorizationRequest<'_>, space: &SpaceAuthorization
         ServiceAccess::ProxyAdmission => {
             granted(Capability::PROXY) && !exposure.proxy_rules().is_empty()
         }
+        ServiceAccess::Process => granted(Capability::PROCESS) && exposure.process(),
         ServiceAccess::ProxyConnect(host, port) => {
             granted(Capability::PROXY)
                 && exposure

@@ -24,17 +24,20 @@ pub enum ServiceKind {
     Shell,
     /// Endpoint-targeted TCP byte-stream proxying.
     Proxy,
+    /// Durable workloads that outlive the operation that started them.
+    Process,
 }
 
 impl ServiceKind {
     /// Every built-in service in wire-code order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Echo,
         Self::Files,
         Self::Transfer,
         Self::Exec,
         Self::Shell,
         Self::Proxy,
+        Self::Process,
     ];
 
     /// Returns the stable one-byte wire code.
@@ -46,6 +49,7 @@ impl ServiceKind {
             Self::Exec => 4,
             Self::Shell => 5,
             Self::Proxy => 6,
+            Self::Process => 7,
         }
     }
 
@@ -58,6 +62,7 @@ impl ServiceKind {
             4 => Some(Self::Exec),
             5 => Some(Self::Shell),
             6 => Some(Self::Proxy),
+            7 => Some(Self::Process),
             _ => None,
         }
     }
@@ -71,6 +76,7 @@ impl ServiceKind {
             Self::Exec => "exec",
             Self::Shell => "shell",
             Self::Proxy => "proxy",
+            Self::Process => "process",
         }
     }
 

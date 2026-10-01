@@ -30,7 +30,8 @@ pub fn encode_request(request: &RequestEnvelope<'_>) -> Result<Vec<u8>, Protocol
         | ServiceKind::Transfer
         | ServiceKind::Exec
         | ServiceKind::Shell
-        | ServiceKind::Proxy => return Err(ProtocolError::INVALID_INPUT),
+        | ServiceKind::Proxy
+        | ServiceKind::Process => return Err(ProtocolError::INVALID_INPUT),
     }
     write_bytes(&mut output, request.operation().payload())?;
     Ok(output)

@@ -44,6 +44,9 @@ impl Capability {
     pub const SHELL: Self = Self(32);
     /// Caller permission to open TCP Proxy streams to destinations a member allows.
     pub const PROXY: Self = Self(64);
+    /// Caller permission to create and manage its own durable Processes on a member that
+    /// exposes them.
+    pub const PROCESS: Self = Self(128);
 
     /// Returns whether the genesis Space policy, rather than member grants alone, governs this.
     ///
@@ -56,7 +59,7 @@ impl Capability {
 }
 
 /// Every member capability bit accepted by this protocol version.
-const KNOWN_CAPABILITY_BITS: u16 = 0x7f;
+const KNOWN_CAPABILITY_BITS: u16 = 0xff;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Capability grants attached to one Space member.
@@ -124,7 +127,7 @@ impl SpacePolicyV1 {
             1 => self.echo,
             2 => self.private_relay_provider,
             // Remote-service capabilities are governed by signed member grants alone.
-            4 | 8 | 16 | 32 | 64 => true,
+            4 | 8 | 16 | 32 | 64 | 128 => true,
             _ => false,
         }
     }

@@ -10,7 +10,7 @@ use std::{
 
 use ma2a_core::{
     EndpointId, RequestId, ServiceKind,
-    service::{FilesRequest, OpenBody, ServiceError, TransferRequest},
+    service::{FilesRequest, OpenBody, ProcessRequest, ServiceError, TransferRequest},
 };
 use ma2a_services::{OperationEnd, OperationReport};
 
@@ -39,6 +39,15 @@ pub(crate) const fn operation_name(body: &OpenBody) -> &'static str {
         OpenBody::Exec(_) => "exec",
         OpenBody::Shell(_) => "shell",
         OpenBody::Proxy(_) => "proxy",
+        OpenBody::Process(ProcessRequest::Start(_)) => "process_start",
+        OpenBody::Process(ProcessRequest::List(_)) => "process_list",
+        OpenBody::Process(ProcessRequest::Inspect(_)) => "process_inspect",
+        OpenBody::Process(ProcessRequest::Logs(..)) => "process_logs",
+        OpenBody::Process(ProcessRequest::Attach(..)) => "process_attach",
+        OpenBody::Process(ProcessRequest::Stdin(..)) => "process_stdin",
+        OpenBody::Process(ProcessRequest::Signal(..)) => "process_signal",
+        OpenBody::Process(ProcessRequest::Terminate(..)) => "process_terminate",
+        OpenBody::Process(ProcessRequest::Delete(_)) => "process_delete",
     }
 }
 

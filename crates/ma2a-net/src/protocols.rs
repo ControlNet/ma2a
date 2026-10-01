@@ -3,7 +3,9 @@ use ma2a_core::RemoteOperation;
 use crate::{
     control::CONTROL_ALPN,
     echo_protocol::ECHO_ALPN,
-    service_protocol::{EXEC_ALPN, FILES_ALPN, PROXY_ALPN, SHELL_ALPN, TRANSFER_ALPN},
+    service_protocol::{
+        EXEC_ALPN, FILES_ALPN, PROCESS_ALPN, PROXY_ALPN, SHELL_ALPN, TRANSFER_ALPN,
+    },
 };
 
 /// Reserved bootstrap-only enrollment ALPN.
@@ -11,7 +13,7 @@ pub const ENROLLMENT_ALPN: &[u8] = b"ma2a/enrollment/1";
 /// The complete ALPN set exposed by an Endpoint with no current Space memberships.
 pub const ZERO_SPACE_ALPNS: [&[u8]; 1] = [ENROLLMENT_ALPN];
 /// Normal MA2A ALPNs rejected by a zero-Space Runtime during TLS negotiation.
-pub const NORMAL_PROTOCOL_ALPNS: [&[u8]; 10] = [
+pub const NORMAL_PROTOCOL_ALPNS: [&[u8]; 11] = [
     ECHO_ALPN,
     CONTROL_ALPN,
     b"ma2a/metadata/1",
@@ -22,6 +24,7 @@ pub const NORMAL_PROTOCOL_ALPNS: [&[u8]; 10] = [
     EXEC_ALPN,
     SHELL_ALPN,
     PROXY_ALPN,
+    PROCESS_ALPN,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,7 +59,16 @@ impl ProtocolRole {
             )))
         } else if alpn == NORMAL_PROTOCOL_ALPNS[4] {
             Some(Self(RoleKind::Normal(RemoteOperation::RELAY_ADVERTISEMENT)))
-        } else if [FILES_ALPN, TRANSFER_ALPN, EXEC_ALPN, SHELL_ALPN, PROXY_ALPN].contains(&alpn) {
+        } else if [
+            FILES_ALPN,
+            TRANSFER_ALPN,
+            EXEC_ALPN,
+            SHELL_ALPN,
+            PROXY_ALPN,
+            PROCESS_ALPN,
+        ]
+        .contains(&alpn)
+        {
             Some(Self(RoleKind::Normal(RemoteOperation::SERVICE_STREAM)))
         } else {
             None

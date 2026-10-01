@@ -85,9 +85,9 @@ pub use relay_config::{
 pub use relay_map::{LocalIrohRelayMap, PrivateRelayCandidate};
 pub use relay_tls::{NativeRelayTlsConfig, RelayTlsError};
 pub use service_protocol::{
-    EXEC_ALPN, FILES_ALPN, PROXY_ALPN, SHELL_ALPN, STREAMING_SERVICES, ServiceCall, ServiceClient,
-    ServiceLimits, ServiceMetrics, ServiceMetricsSnapshot, ServicePermit, ServiceStream,
-    TRANSFER_ALPN, service_alpn,
+    EXEC_ALPN, FILES_ALPN, PROCESS_ALPN, PROXY_ALPN, SHELL_ALPN, STREAMING_SERVICES, ServiceCall,
+    ServiceClient, ServiceLimits, ServiceMetrics, ServiceMetricsSnapshot, ServicePermit,
+    ServiceStream, TRANSFER_ALPN, service_alpn,
 };
 pub(crate) use telemetry::ConnectionObservationContext;
 pub use telemetry::{
