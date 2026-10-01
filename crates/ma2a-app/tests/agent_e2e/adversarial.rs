@@ -94,38 +94,22 @@ fn unknown_stopped_foreign_and_cross_space_agents_are_refused() -> TestResult {
     lab.a
         .run_ok(&["space", "grant", &other, c.id(), "--agent"])?;
     lab.a.run_ok(&["space", "grant", &lab.space, c.id()])?;
+    // Until C's control state converges, C may still pass admission and see no Agent.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let denied = remote_from(&c, &lab, &["submit", "worker", "--text", "echo x"])?;
-        if !denied.status.success() {
-            refused(&denied, "unauthorized")?;
+        let stderr = String::from_utf8_lossy(&denied.stderr);
+        if !denied.status.success() && stderr.starts_with("unauthorized") {
             break;
         }
         if std::time::Instant::now() >= deadline {
-            return Err("the revoked grant still authorized C".into());
+            return Err(format!("the revoked grant still admitted C: {stderr}").into());
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     // A's own task was never touched.
     let still = last(&lab.remote(&["task", "--agent", "worker", &owned])?)?;
     assert_eq!(text(&still, "/task/state"), "running", "{still}");
-    let dump = std::path::Path::new(
-        "/tmp/ma2a-agent-e2e-probe",
-    );
-    let _ = std::fs::remove_dir_all(dump);
-    std::fs::create_dir_all(dump)?;
-    for (name, node) in [("a", &lab.a), ("b", &lab.b), ("c", &c)] {
-        let out = std::process::Command::new("cp")
-            .arg("-r")
-            .arg(node.state_dir())
-            .arg(dump.join(name))
-            .output()?;
-        eprintln!(
-            "PROBE cp {name} {} -> ids {}",
-            String::from_utf8_lossy(&out.stderr),
-            node.id()
-        );
-    }
     c.shutdown()?;
     lab.shutdown()
 }

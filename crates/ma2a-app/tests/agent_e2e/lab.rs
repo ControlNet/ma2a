@@ -21,7 +21,25 @@ use super::{
 /// Size of the file the `worker` fetches from `docs`.
 pub(crate) const INPUT_LEN: usize = 200_000;
 
+/// Stops both Agents when dropped, before the daemons: Agent instances are hosted
+/// Processes, which outlive their daemon, so a test that fails early would leak them.
+struct AgentsStopped([PathBuf; 2]);
+
+impl Drop for AgentsStopped {
+    fn drop(&mut self) {
+        for (state_dir, agent) in self.0.iter().zip(["lead", "worker"]) {
+            let _stopped = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+                .arg("--state-dir")
+                .arg(state_dir)
+                .args(["agent", "stop", agent])
+                .output();
+        }
+    }
+}
+
 pub(crate) struct AgentLab {
+    // Declared first, so it drops before the daemons.
+    _agents: AgentsStopped,
     pub(crate) a: Node,
     pub(crate) b: Node,
     pub(crate) space: String,
@@ -122,6 +140,7 @@ impl AgentLab {
     pub(crate) fn start(label: &str) -> TestValue<Self> {
         let a = Node::start(&format!("{label}-a"))?;
         let b = Node::start(&format!("{label}-b"))?;
+        let agents = AgentsStopped([a.state_dir().to_path_buf(), b.state_dir().to_path_buf()]);
         let space = join(&a, &b, "lab")?;
         let root = Root::new(label)?;
         std::fs::write(root.path().join("input.txt"), content(INPUT_LEN))?;
@@ -140,6 +159,7 @@ impl AgentLab {
         host(&b, "worker", &["transfer", "files"])?;
         host(&a, "lead", &["agent"])?;
         Ok(Self {
+            _agents: agents,
             a,
             b,
             space,
