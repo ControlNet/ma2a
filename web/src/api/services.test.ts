@@ -30,13 +30,44 @@ const PROCESS = {
   archived: false,
 }
 const PROCESSES = { processes: [PROCESS], next: null }
+const AGENT = {
+  agent: "helper",
+  description: "answers questions",
+  tools: ["files", "agent"],
+  max_tasks: 4,
+  enabled: true,
+  generation: 2,
+  live_tasks: 1,
+  instance: {
+    generation: 2,
+    process_id: "0a".repeat(16),
+    ready: true,
+    started_at_ms: 1_000,
+    ended_at_ms: null,
+  },
+}
+const TASK = {
+  task_id: "0b".repeat(16),
+  agent: "helper",
+  creator_endpoint_id: "44".repeat(32),
+  from_agent: "lead",
+  request_id: "0c".repeat(16),
+  state: "running",
+  reason: null,
+  created_at_ms: 1_000,
+  started_at_ms: 1_100,
+  ended_at_ms: null,
+  last_seq: 3,
+}
+const AGENTS = { agents: [AGENT], more_agents: false, tasks: [TASK], more_tasks: true }
 
-test("accepts the Runtime's exposure, operation, and Process payloads", () => {
-  const parsed = parseServicesData([EXPOSURE], OPERATIONS, PROCESSES)
+test("accepts the Runtime's exposure, operation, Process, and Agent payloads", () => {
+  const parsed = parseServicesData([EXPOSURE], OPERATIONS, [PROCESSES, AGENTS])
 
   expect(parsed.exposures).toEqual([EXPOSURE])
   expect(parsed.operations.recent_count).toBe(0)
   expect(parsed.processes.processes).toEqual([PROCESS])
+  expect(parsed.agents).toEqual(AGENTS)
 })
 
 test.each([
@@ -52,5 +83,19 @@ test.each([
   ],
   ["Process arguments", [], OPERATIONS, { processes: [{ ...PROCESS, args: ["-c"] }], next: null }],
 ])("rejects %s", (_, exposures, operations, processes) => {
-  expect(() => parseServicesData(exposures, operations, processes)).toThrow(RuntimeApiPayloadError)
+  expect(() => parseServicesData(exposures, operations, [processes, AGENTS])).toThrow(
+    RuntimeApiPayloadError,
+  )
+})
+
+test.each([
+  ["an Agent's program", { ...AGENTS, agents: [{ ...AGENT, program: "/bin/sh" }] }],
+  ["an Agent's environment names", { ...AGENTS, agents: [{ ...AGENT, env_names: ["KEY"] }] }],
+  ["an unknown tool family", { ...AGENTS, agents: [{ ...AGENT, tools: ["shell"] }] }],
+  ["an unknown task state", { ...AGENTS, tasks: [{ ...TASK, state: "working" }] }],
+  ["a task message", { ...AGENTS, tasks: [{ ...TASK, input: { role: "user", parts: [] } }] }],
+])("rejects Agents carrying %s", (_, agents) => {
+  expect(() => parseServicesData([], OPERATIONS, [PROCESSES, agents])).toThrow(
+    RuntimeApiPayloadError,
+  )
 })

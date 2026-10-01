@@ -11,6 +11,7 @@ import { Inspector } from "../components/inspector"
 import { Card, Section } from "../components/ui"
 import type { RuntimeViewData } from "../view-model"
 import { shortId } from "./derive"
+import { AgentTable, AgentTaskTable } from "./services-agents"
 import { byteCount, duration, exposureScope } from "./services-format"
 import { ProcessTable } from "./services-processes"
 
@@ -140,8 +141,9 @@ export function ServicesScreen({
       </Section>
     )
   }
-  const { exposures, operations, processes } = services.data
-  const more = processes.next === null ? "" : " (first page)"
+  const { exposures, operations, processes, agents } = services.data
+  const firstPage = (more: boolean): string => (more ? " (first page)" : "")
+  const more = firstPage(processes.next !== null)
   return (
     <Section title="Services">
       <Card label={`Exposures · ${exposures.length}`}>
@@ -189,6 +191,29 @@ export function ServicesScreen({
           </div>
         )}
       </Card>
+      <Card label={`Agents · ${agents.agents.length}${firstPage(agents.more_agents)}`}>
+        {agents.agents.length === 0 ? (
+          <EmptyState title="No Agent">
+            The operator defines Agents from the trusted terminal with{" "}
+            <code>ma2a agent define</code>.
+          </EmptyState>
+        ) : (
+          <div className="scroll-x">
+            <AgentTable agents={agents.agents} />
+          </div>
+        )}
+      </Card>
+      <Card label={`Agent tasks · ${agents.tasks.length}${firstPage(agents.more_tasks)}`}>
+        {agents.tasks.length === 0 ? (
+          <EmptyState title="No task">
+            Members granted <code>agent</code> submit tasks to the Agents exposed to them.
+          </EmptyState>
+        ) : (
+          <div className="scroll-x">
+            <AgentTaskTable tasks={agents.tasks} />
+          </div>
+        )}
+      </Card>
     </Section>
   )
 }
@@ -206,6 +231,7 @@ export function ServicesInspector(): ReactNode {
           ma2a service expose files SPACE_REF ROOT PATH --read-only{"\n"}
           ma2a service expose exec SPACE_REF{"\n"}
           ma2a service expose process SPACE_REF{"\n"}
+          ma2a service expose agent SPACE_REF AGENT{"\n"}
           ma2a service unexpose exec SPACE_REF
         </pre>
       </Card>
@@ -213,7 +239,9 @@ export function ServicesInspector(): ReactNode {
         <p className="field__help">
           Operations record the peer, service, result, byte counts and duration. Paths, arguments,
           environment, file content, terminal and proxy bytes are never recorded. Processes show
-          their creator, state, and outcome; their output is read only through the CLI.
+          their creator, state, and outcome; their output is read only through the CLI. Agents show
+          their tools and task counts, and tasks their creator and state; messages and artifacts are
+          read only through the CLI.
         </p>
       </Card>
     </Inspector>

@@ -1,4 +1,5 @@
-//! Authenticated Web projection of service exposures, operations, and hosted Processes.
+//! Authenticated Web projection of service exposures, operations, hosted Processes, and
+//! Agents.
 
 #[path = "support/web.rs"]
 #[allow(
@@ -55,8 +56,39 @@ async fn body(response: axum::response::Response) -> TestResult<Value> {
     )?)
 }
 
+/// The browser sees what an Agent is and does, never its program, arguments, or
+/// environment.
+async fn agents_are_content_free(
+    router: &axum::Router,
+    (client, cookie): (&LocalApiClient, &str),
+) -> TestResult {
+    call(
+        client,
+        &json!({"version": 1, "operation": "agent_define", "request_id": "33".repeat(16),
+            "agent": "helper", "description": "answers questions", "program": "/bin/sh",
+            "args": ["-c", "secret-argument"], "cwd": null,
+            "env": [{"name": "SECRET_NAME", "value": "secret-value"}],
+            "tools": ["files"], "max_tasks": 2}),
+    )
+    .await?;
+    let agents = router
+        .clone()
+        .oneshot(web_read("/api/v1/agents", Some(cookie))?)
+        .await?;
+    assert_eq!(agents.status(), StatusCode::OK);
+    assert_eq!(
+        body(agents).await?,
+        json!({"agents": [{"agent": "helper", "description": "answers questions",
+            "tools": ["files"], "max_tasks": 2, "enabled": false, "generation": 0,
+            "live_tasks": 0, "instance": null}], "more_agents": false,
+            "tasks": [], "more_tasks": false})
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn exposures_operations_and_processes_are_readable_only_with_a_session() -> TestResult {
+async fn exposures_operations_processes_and_agents_are_readable_only_with_a_session() -> TestResult
+{
     let state = TempState::new("web-services")?;
     let runtime = Runtime::start(StoreConfig::new(state.path())).await?;
     let control =
@@ -96,7 +128,7 @@ async fn exposures_operations_and_processes_are_readable_only_with_a_session() -
         WebRuntimeDependencies::new(
             control.web_auth().clone(),
             WebAssets::new(&[("index.html", b"ok")]),
-            client,
+            client.clone(),
         ),
         WebServerConfig::default(),
         43_210,
@@ -107,6 +139,7 @@ async fn exposures_operations_and_processes_are_readable_only_with_a_session() -
         "/api/v1/services",
         "/api/v1/operations",
         "/api/v1/processes",
+        "/api/v1/agents",
     ] {
         let denied = router.clone().oneshot(web_read(uri, None)?).await?;
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED, "{uri}");
@@ -140,6 +173,8 @@ async fn exposures_operations_and_processes_are_readable_only_with_a_session() -
         body(processes).await?,
         json!({"processes": [], "next": null})
     );
+
+    agents_are_content_free(&router, (&client, &cookie)).await?;
 
     cancellation.cancel();
     api_task.await??;

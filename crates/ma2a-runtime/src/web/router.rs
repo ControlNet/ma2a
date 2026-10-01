@@ -167,6 +167,7 @@ fn routes(state: WebState, runtime: bool) -> Router {
             )
             .route("/api/v1/operations", get(super::runtime_routes::operations))
             .route("/api/v1/processes", get(super::runtime_routes::processes))
+            .route("/api/v1/agents", get(super::runtime_routes::agents))
             .route("/api/v1/snapshot", get(super::runtime_routes::snapshot))
             .route("/api/v1/events", get(super::runtime_routes::events))
             .route(

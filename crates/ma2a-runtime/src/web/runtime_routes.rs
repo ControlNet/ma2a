@@ -8,8 +8,10 @@ use serde_json::{Value, json};
 
 use super::{WebState, cookie};
 
+mod agents;
 mod events;
 mod snapshot_stream;
+pub(super) use agents::agents;
 pub(super) use events::events;
 
 #[cfg(test)]
@@ -100,34 +102,43 @@ async fn read(
     headers: &HeaderMap,
     (request, result): (&Value, &str),
 ) -> Response {
-    let Some(bearer) = cookie(headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if state.auth.authenticate(bearer).await.is_err() {
-        return StatusCode::UNAUTHORIZED.into_response();
+    match payload(state, headers, (request, result)).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(status) => status.into_response(),
     }
-    let Ok(command) = crate::api::decode_command(request.to_string().as_bytes()) else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    let Some(runtime) = state.runtime.as_ref() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let Ok(response) = super::gateway::call(runtime, &command).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let Ok(value) = serde_json::from_slice::<Value>(&response) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
+}
+
+/// The result payload of one authenticated read-only Local API command.
+async fn payload(
+    state: &WebState,
+    headers: &HeaderMap,
+    (request, result): (&Value, &str),
+) -> Result<Value, StatusCode> {
+    let bearer = cookie(headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    if state.auth.authenticate(bearer).await.is_err() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let command = crate::api::decode_command(request.to_string().as_bytes())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let runtime = state
+        .runtime
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let response = super::gateway::call(runtime, &command)
+        .await
+        .map_err(|()| StatusCode::SERVICE_UNAVAILABLE)?;
+    let mut value = serde_json::from_slice::<Value>(&response)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if value.get("error").and_then(Value::as_str) == Some("not_found") {
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(StatusCode::NOT_FOUND);
     }
     if value.pointer("/result/type").and_then(Value::as_str) != Some(result) {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    value.pointer("/result/payload").map_or_else(
-        || StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        |payload| Json(payload.clone()).into_response(),
-    )
+    value
+        .pointer_mut("/result/payload")
+        .map(Value::take)
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[cfg(test)]

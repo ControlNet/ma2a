@@ -53,6 +53,7 @@ test("says nothing is served rather than drawing an empty table", () => {
           exposures: [],
           operations: { active_count: 0, active: [], recent_count: 0, recent: [] },
           processes: { processes: [], next: null },
+          agents: { agents: [], more_agents: false, tasks: [], more_tasks: false },
         },
       }}
     />,
@@ -61,6 +62,8 @@ test("says nothing is served rather than drawing an empty table", () => {
   expect(screen.getByText("Nothing is served")).toBeVisible()
   expect(screen.getByText("Nothing running")).toBeVisible()
   expect(screen.getByText("No Process")).toBeVisible()
+  expect(screen.getByText("No Agent")).toBeVisible()
+  expect(screen.getByText("No task")).toBeVisible()
   expect(screen.queryByRole("table")).toBeNull()
 })
 
@@ -104,5 +107,37 @@ test("lists hosted Processes by creator with their state and outcome only", () =
   expect(rows.map((row) => row.textContent)).toEqual([
     "ticker444444…4444running",
     "0e0e0e…0e0e555555…5555terminated (archived)unauthorized, signal 15",
+  ])
+})
+
+test("lists Agents and their tasks without programs, arguments, or messages", () => {
+  render(
+    <ServicesScreen
+      runtime={MANY_RUNTIME_FIXTURE}
+      services={{ status: "ready", data: SERVICES_FIXTURE }}
+    />,
+  )
+
+  expect(screen.getByText("Agents · 2")).toBeVisible()
+  const agents = screen.getByRole("table", { name: "Agents this Runtime hosts" })
+  expect(
+    within(agents)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.textContent),
+  ).toEqual([
+    "helperanswers questionsready (generation 2)files, agent1 of 4",
+    "idlestoppednone0 of 1",
+  ])
+  expect(screen.getByText("Agent tasks · 2 (first page)")).toBeVisible()
+  const tasks = screen.getByRole("table", { name: "Agent tasks, by creator" })
+  expect(
+    within(tasks)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.textContent),
+  ).toEqual([
+    "0b0b0b…0b0bhelper444444…4444 (from lead)running",
+    "0c0c0c…0c0chelper555555…5555cancelled (unauthorized)",
   ])
 })
