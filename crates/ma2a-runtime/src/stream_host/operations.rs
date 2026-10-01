@@ -11,7 +11,8 @@ use std::{
 use ma2a_core::{
     EndpointId, RequestId, ServiceKind,
     service::{
-        AgentRequest, FilesRequest, OpenBody, ProcessRequest, ServiceError, TransferRequest,
+        AgentRequest, FilesRequest, OpenBody, ProcessRequest, ServiceError, ServiceRequest,
+        TransferRequest,
     },
 };
 use ma2a_services::{OperationEnd, OperationReport};
@@ -58,6 +59,8 @@ pub(crate) const fn operation_name(body: &OpenBody) -> &'static str {
         OpenBody::Agent(AgentRequest::Watch(..)) => "agent_watch",
         OpenBody::Agent(AgentRequest::Cancel(..)) => "agent_cancel",
         OpenBody::Agent(AgentRequest::Artifact(..)) => "agent_artifact",
+        OpenBody::Service(ServiceRequest::Describe(_)) => "service_describe",
+        OpenBody::Service(ServiceRequest::Call(_)) => "service_call",
     }
 }
 
@@ -257,5 +260,29 @@ mod tests {
             snapshot.recent.first().map(|record| record.bytes_in),
             Some(AUDIT_CAPACITY as u64 + 9)
         );
+    }
+
+    #[test]
+    fn every_audit_operation_name_is_in_the_service_catalog() {
+        // The audit names are the catalog's operation names, so discovery describes exactly
+        // the operations the Runtime serves and reports.
+        let source = include_str!("operations.rs");
+        let body = source
+            .split("pub(crate) const fn operation_name")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .unwrap_or_default();
+        let named: std::collections::BTreeSet<&str> = body
+            .split("=> \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+        let catalog: std::collections::BTreeSet<&str> = ServiceKind::ALL
+            .into_iter()
+            .filter(|kind| *kind != ServiceKind::Echo)
+            .flat_map(|kind| ma2a_core::service::builtin_operations(kind).iter())
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(named, catalog);
     }
 }

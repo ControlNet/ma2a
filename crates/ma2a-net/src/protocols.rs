@@ -4,7 +4,8 @@ use crate::{
     control::CONTROL_ALPN,
     echo_protocol::ECHO_ALPN,
     service_protocol::{
-        AGENT_ALPN, EXEC_ALPN, FILES_ALPN, PROCESS_ALPN, PROXY_ALPN, SHELL_ALPN, TRANSFER_ALPN,
+        AGENT_ALPN, EXEC_ALPN, FILES_ALPN, PROCESS_ALPN, PROXY_ALPN, SERVICE_ALPN, SHELL_ALPN,
+        TRANSFER_ALPN,
     },
 };
 
@@ -13,7 +14,7 @@ pub const ENROLLMENT_ALPN: &[u8] = b"ma2a/enrollment/1";
 /// The complete ALPN set exposed by an Endpoint with no current Space memberships.
 pub const ZERO_SPACE_ALPNS: [&[u8]; 1] = [ENROLLMENT_ALPN];
 /// Normal MA2A ALPNs rejected by a zero-Space Runtime during TLS negotiation.
-pub const NORMAL_PROTOCOL_ALPNS: [&[u8]; 12] = [
+pub const NORMAL_PROTOCOL_ALPNS: [&[u8]; 13] = [
     ECHO_ALPN,
     CONTROL_ALPN,
     b"ma2a/metadata/1",
@@ -26,6 +27,7 @@ pub const NORMAL_PROTOCOL_ALPNS: [&[u8]; 12] = [
     PROXY_ALPN,
     PROCESS_ALPN,
     AGENT_ALPN,
+    SERVICE_ALPN,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +70,7 @@ impl ProtocolRole {
             PROXY_ALPN,
             PROCESS_ALPN,
             AGENT_ALPN,
+            SERVICE_ALPN,
         ]
         .contains(&alpn)
         {

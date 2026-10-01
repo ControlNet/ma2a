@@ -30,9 +30,11 @@ pub const PROXY_ALPN: &[u8] = b"ma2a/proxy/1";
 pub const PROCESS_ALPN: &[u8] = b"ma2a/process/1";
 /// Exact Agent v1 application ALPN.
 pub const AGENT_ALPN: &[u8] = b"ma2a/agent/1";
+/// Exact Service v1 application ALPN: discovery and hosted services.
+pub const SERVICE_ALPN: &[u8] = b"ma2a/service/1";
 
 /// Every streaming service in ALPN inventory order.
-pub const STREAMING_SERVICES: [ServiceKind; 7] = [
+pub const STREAMING_SERVICES: [ServiceKind; 8] = [
     ServiceKind::Files,
     ServiceKind::Transfer,
     ServiceKind::Exec,
@@ -40,6 +42,7 @@ pub const STREAMING_SERVICES: [ServiceKind; 7] = [
     ServiceKind::Proxy,
     ServiceKind::Process,
     ServiceKind::Agent,
+    ServiceKind::Service,
 ];
 
 /// Returns the exact ALPN of a streaming service, or `None` for Echo.
@@ -53,5 +56,6 @@ pub const fn service_alpn(kind: ServiceKind) -> Option<&'static [u8]> {
         ServiceKind::Proxy => Some(PROXY_ALPN),
         ServiceKind::Process => Some(PROCESS_ALPN),
         ServiceKind::Agent => Some(AGENT_ALPN),
+        ServiceKind::Service => Some(SERVICE_ALPN),
     }
 }

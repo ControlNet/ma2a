@@ -1,8 +1,8 @@
-//! Closed built-in remote service contracts: names, consent, authorization, and wire codecs.
+//! Remote service contracts: names, consent, authorization, descriptors, and wire codecs.
 //!
 //! Every streaming service shares one frame format and one canonical `open` header. The
-//! typed bodies, results, and controls below are the complete built-in vocabulary;
-//! nothing is registered at runtime.
+//! typed bodies, results, and controls below are the complete built-in vocabulary; a hosted
+//! service is registered at runtime and reached through the one `service` family.
 
 mod access;
 mod agent_event;
@@ -12,12 +12,16 @@ mod agent_reply;
 mod agent_request;
 mod agent_state;
 mod agent_task;
+mod catalog;
 mod cbor;
+mod descriptor;
 mod exec;
 mod exposure;
 mod files;
 mod files_result;
 mod frame;
+mod hosted_names;
+mod hosted_request;
 mod names;
 mod open;
 mod process;
@@ -28,6 +32,7 @@ mod process_spec;
 mod process_start;
 mod process_state;
 mod proxy;
+mod service_version;
 mod status;
 mod transfer;
 
@@ -46,6 +51,15 @@ pub use agent_task::{
     AgentTaskDetails, AgentTaskSummary, ArtifactRef, MAX_ARTIFACT_NAME_LEN, MAX_MEDIA_TYPE_LEN,
     MAX_TASK_ARTIFACTS, MAX_TASK_NOTE_LEN,
 };
+pub use catalog::{
+    BUILTIN_VERSION, admission, builtin_description, builtin_descriptor, builtin_operations,
+    stream_limits,
+};
+pub use descriptor::{
+    MAX_MANIFEST_LEN, MAX_SERVICE_CALLS, MAX_SERVICE_DESCRIPTION_LEN, MAX_SERVICE_OPERATIONS,
+    MAX_SERVICE_VERSIONS, MAX_VERSION_OPERATIONS, ServiceDescriptor, ServiceManifest,
+    ServiceOrigin, select_version,
+};
 pub use exec::{
     ExecRequest, MAX_OPERATION_LIFETIME_MS, MAX_TERM_LEN, ProcessOutcome, ProcessResult,
     ShellRequest, TerminalSize,
@@ -59,11 +73,15 @@ pub use frame::{
     Channel, FRAME_HEADER_LEN, FrameHeader, FrameKind, MAX_DATA_CHUNK_LEN, MAX_HEADER_FRAME_LEN,
     MAX_OUTCOME_FRAME_LEN,
 };
+pub use hosted_names::{MAX_OPERATION_NAME_LEN, MAX_SERVICE_NAME_LEN, OperationName, ServiceName};
+pub use hosted_request::{
+    DescribePage, HostedCall, MAX_CALL_BODY_LEN, MAX_DESCRIBE_PAGE, ServiceRequest, sorts_after,
+};
 pub use names::{
     MAX_PATH_COMPONENT_LEN, MAX_PATH_COMPONENTS, MAX_PROXY_HOST_LEN, MAX_REMOTE_PATH_LEN,
     MAX_ROOT_NAME_LEN, ProxyHost, RemotePath, RootName,
 };
-pub use open::{EMPTY_ACCEPT, OpenBody, OpenHeader, admission};
+pub use open::{EMPTY_ACCEPT, OpenBody, OpenHeader};
 pub use process::{
     LogFrom, MAX_LOGS_READ, MAX_PROCESS_PAGE, MAX_TERMINATE_GRACE_MS, ProcessRequest, ProcessSignal,
 };
@@ -82,6 +100,7 @@ pub use process_start::{
 };
 pub use process_state::{ProcessReason, ProcessState};
 pub use proxy::{MAX_PROXY_IDLE_MS, ProxyOutcome, ProxyRequest, ProxyResult};
+pub use service_version::{Interaction, ServiceVersion};
 pub use status::ServiceError;
 pub use transfer::{
     ContentIdentity, TransferAccept, TransferCommit, TransferOutcome, TransferRequest,

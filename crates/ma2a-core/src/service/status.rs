@@ -92,6 +92,7 @@ service_errors! {
     AgentUnavailable = 98, "agent_unavailable", "the Agent is not started";
     TaskEnded = 99, "task_ended", "the task has already ended";
     UnknownArtifact = 100, "unknown_artifact", "the task has no artifact of that name";
+    UnknownService = 101, "unknown_service", "no such service is available to this caller";
 }
 
 impl ServiceError {
@@ -130,7 +131,7 @@ mod tests {
                 assert!(seen.insert(error.name()));
             }
         }
-        assert_eq!(seen.len(), 38);
+        assert_eq!(seen.len(), 39);
         assert_eq!(ServiceError::from_code(0), None);
     }
 }

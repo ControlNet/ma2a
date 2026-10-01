@@ -5,7 +5,7 @@ use crate::{
     SpaceAuthorizationView,
 };
 
-use super::{AgentId, ProxyHost, RootAccess, RootName, SpaceExposureView};
+use super::{AgentId, ProxyHost, RootAccess, RootName, ServiceName, SpaceExposureView};
 
 /// The complete access one remote service request needs from one Space.
 #[expect(
@@ -34,6 +34,10 @@ pub enum ServiceAccess {
     AgentAdmission,
     /// Submit tasks to, or manage the caller's own tasks of, one exact Agent.
     Agent(AgentId),
+    /// Discover what this Runtime serves the caller: both are members of one Space.
+    Discover,
+    /// Call one exact hosted service.
+    Hosted(ServiceName),
 }
 
 /// The authenticated pair, the requested access, and this Runtime's per-Space exposure.
@@ -83,6 +87,9 @@ fn permits(request: &ServiceAuthorizationRequest<'_>, space: &SpaceAuthorization
     if !space.contains_member(caller) || !space.contains_member(target) {
         return false;
     }
+    if *request.access == ServiceAccess::Discover {
+        return true;
+    }
     let Some(exposure) = request
         .exposures
         .iter()
@@ -116,6 +123,10 @@ fn permits(request: &ServiceAuthorizationRequest<'_>, space: &SpaceAuthorization
         }
         ServiceAccess::Agent(agent) => {
             granted(Capability::AGENT) && exposure.agents().contains(agent)
+        }
+        ServiceAccess::Discover => true,
+        ServiceAccess::Hosted(service) => {
+            granted(Capability::SERVICE) && exposure.services().contains(service)
         }
         ServiceAccess::ProxyConnect(host, port) => {
             granted(Capability::PROXY)

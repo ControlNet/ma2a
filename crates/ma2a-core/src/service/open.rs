@@ -4,7 +4,7 @@ use crate::{EndpointId, ProtocolError, RequestId, ServiceKind, space_codec::Deco
 
 use super::{
     AgentRequest, ExecRequest, FilesRequest, MAX_HEADER_FRAME_LEN, ProcessRequest, ProxyRequest,
-    ServiceAccess, ShellRequest, TransferRequest, cbor::Writer,
+    ServiceAccess, ServiceRequest, ShellRequest, TransferRequest, cbor::Writer,
 };
 
 /// `accept` payload of services whose admission carries no data: an empty CBOR array.
@@ -31,6 +31,8 @@ pub enum OpenBody {
     Process(ProcessRequest),
     /// An Agent task operation.
     Agent(AgentRequest),
+    /// Discovery, or a call to a hosted service.
+    Service(ServiceRequest),
 }
 
 impl OpenBody {
@@ -44,6 +46,7 @@ impl OpenBody {
             Self::Proxy(_) => ServiceKind::Proxy,
             Self::Process(_) => ServiceKind::Process,
             Self::Agent(_) => ServiceKind::Agent,
+            Self::Service(_) => ServiceKind::Service,
         }
     }
 
@@ -57,6 +60,7 @@ impl OpenBody {
             Self::Proxy(request) => request.access(),
             Self::Process(request) => request.access(),
             Self::Agent(request) => request.access(),
+            Self::Service(request) => request.access(),
         }
     }
 
@@ -67,21 +71,9 @@ impl OpenBody {
             Self::Transfer(request) => request.is_mutation(),
             Self::Process(request) => request.is_mutation(),
             Self::Agent(request) => request.is_mutation(),
+            Self::Service(request) => request.is_mutation(),
             Self::Exec(_) | Self::Shell(_) | Self::Proxy(_) => true,
         }
-    }
-}
-
-/// Returns the coarse admission evaluated before any byte of a stream is read.
-pub const fn admission(kind: ServiceKind) -> Option<ServiceAccess> {
-    match kind {
-        ServiceKind::Echo => None,
-        ServiceKind::Files | ServiceKind::Transfer => Some(ServiceAccess::FilesAdmission),
-        ServiceKind::Exec => Some(ServiceAccess::Exec),
-        ServiceKind::Shell => Some(ServiceAccess::Shell),
-        ServiceKind::Proxy => Some(ServiceAccess::ProxyAdmission),
-        ServiceKind::Process => Some(ServiceAccess::Process),
-        ServiceKind::Agent => Some(ServiceAccess::AgentAdmission),
     }
 }
 
@@ -150,6 +142,7 @@ impl OpenHeader {
             OpenBody::Proxy(request) => request.encode(&mut writer)?,
             OpenBody::Process(request) => request.encode(&mut writer)?,
             OpenBody::Agent(request) => request.encode(&mut writer)?,
+            OpenBody::Service(request) => request.encode(&mut writer)?,
         }
         writer.finish(MAX_HEADER_FRAME_LEN)
     }
@@ -187,6 +180,7 @@ impl OpenHeader {
             Some(ServiceKind::Proxy) => OpenBody::Proxy(ProxyRequest::decode(&mut decoder)?),
             Some(ServiceKind::Process) => OpenBody::Process(ProcessRequest::decode(&mut decoder)?),
             Some(ServiceKind::Agent) => OpenBody::Agent(AgentRequest::decode(&mut decoder)?),
+            Some(ServiceKind::Service) => OpenBody::Service(ServiceRequest::decode(&mut decoder)?),
             Some(ServiceKind::Echo) | None => return Err(ProtocolError::INVALID_INPUT),
         };
         decoder.finish()?;

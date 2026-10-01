@@ -8,7 +8,8 @@ use ma2a_core::{
     SpaceRevocationV1,
     service::{
         AgentId, ExportedRoot, ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName,
-        ServiceAccess, ServiceAuthorizationRequest, SpaceExposureView, authorize_service,
+        ServiceAccess, ServiceAuthorizationRequest, ServiceName, SpaceExposureView,
+        authorize_service,
     },
 };
 
@@ -258,6 +259,7 @@ fn remote_service_grants_roundtrip_through_signed_manifests() -> TestResult {
         Capability::PROXY,
         Capability::PROCESS,
         Capability::AGENT,
+        Capability::SERVICE,
     ]);
     let view = space(&SpaceFixture {
         authority: 0x48,
@@ -270,6 +272,7 @@ fn remote_service_grants_roundtrip_through_signed_manifests() -> TestResult {
         Capability::FILES_WRITE,
         Capability::PROCESS,
         Capability::AGENT,
+        Capability::SERVICE,
     ] {
         assert!(view.allows(endpoint(CALLER), capability));
         assert!(!capability.is_policy_governed());
@@ -348,5 +351,62 @@ fn an_agent_needs_the_grant_and_its_own_exposure_in_one_single_space() -> TestRe
         revoke_caller: true,
     })?;
     assert!(!allowed(&access, &[revoked], &complete));
+    Ok(())
+}
+
+#[test]
+fn a_hosted_service_needs_the_grant_and_its_own_exposure_in_one_single_space() -> TestResult {
+    let example = ServiceName::new("example")?;
+    let other = ServiceName::new("other")?;
+    let granted = space(&SpaceFixture {
+        authority: 0x4d,
+        caller: grants(&[Capability::SERVICE]),
+        revoke_caller: false,
+    })?;
+    let exposing = space(&SpaceFixture {
+        authority: 0x4e,
+        caller: grants(&[Capability::AGENT]),
+        revoke_caller: false,
+    })?;
+    let spaces = [granted.clone(), exposing.clone()];
+    let access = ServiceAccess::Hosted(example.clone());
+    // The grant in one Space and the exposure in another never combine.
+    let split = [SpaceExposureView::new(exposing.space_id()).with_service(example.clone())];
+    assert!(!allowed(&access, &spaces, &split));
+    let complete = [SpaceExposureView::new(granted.space_id()).with_service(example.clone())];
+    assert!(allowed(&access, &spaces, &complete));
+    // Exposing one service never exposes another, and an Agent exposure is not a service one.
+    assert!(!allowed(&ServiceAccess::Hosted(other), &spaces, &complete));
+    let agent_only =
+        [SpaceExposureView::new(granted.space_id()).with_agent(AgentId::new("example")?)];
+    assert!(!allowed(&access, &spaces, &agent_only));
+    // Without the grant, the exposure alone allows nothing.
+    let exposed_there = [SpaceExposureView::new(exposing.space_id()).with_service(example)];
+    assert!(!allowed(&access, &[exposing], &exposed_there));
+    let revoked = space(&SpaceFixture {
+        authority: 0x4d,
+        caller: grants(&[Capability::SERVICE]),
+        revoke_caller: true,
+    })?;
+    assert!(!allowed(&access, &[revoked], &complete));
+    Ok(())
+}
+
+#[test]
+fn discovery_needs_only_one_shared_space_and_no_exposure() -> TestResult {
+    let member = space(&SpaceFixture {
+        authority: 0x4f,
+        caller: grants(&[]),
+        revoke_caller: false,
+    })?;
+    // No grant and no exposure row at all: membership of both Endpoints is enough.
+    assert!(allowed(&ServiceAccess::Discover, &[member], &[]));
+    let revoked = space(&SpaceFixture {
+        authority: 0x4f,
+        caller: grants(&[]),
+        revoke_caller: true,
+    })?;
+    assert!(!allowed(&ServiceAccess::Discover, &[revoked], &[]));
+    assert!(!allowed(&ServiceAccess::Discover, &[], &[]));
     Ok(())
 }
