@@ -172,6 +172,9 @@ fn send_replay_and_continue(adapter: &Adapter, lead: &str) -> TestResult {
     assert_eq!(text(&again, "/task/id"), text(&sent, "/task/id"));
     let reused = adapter.call(sending, &message("m-echo", "echo other"))?;
     assert_eq!(error_code(&reused)?, -32_603, "{:?}", reused.json());
+    let late = continuing("m-late", "echo late", &text(&sent, "/task/id"));
+    let late = adapter.call(sending, &late)?;
+    assert_eq!(error_code(&late)?, -32_004, "{:?}", late.json());
 
     let asked = adapter.result(sending, &message("m-ask", "ask colour?"))?;
     assert_eq!(
