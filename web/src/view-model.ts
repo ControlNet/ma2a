@@ -11,7 +11,7 @@ export type EndpointView = {
 }
 
 /** A signed service grant, named as the Spaces screen prints it. */
-export type ServiceGrant = "files read" | "files write" | "exec" | "shell" | "proxy"
+export type ServiceGrant = "files read" | "files write" | "exec" | "shell" | "proxy" | "process"
 
 export type SpaceMemberView = {
   readonly endpointId: string

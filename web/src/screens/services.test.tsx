@@ -52,6 +52,7 @@ test("says nothing is served rather than drawing an empty table", () => {
         data: {
           exposures: [],
           operations: { active_count: 0, active: [], recent_count: 0, recent: [] },
+          processes: { processes: [], next: null },
         },
       }}
     />,
@@ -59,6 +60,7 @@ test("says nothing is served rather than drawing an empty table", () => {
 
   expect(screen.getByText("Nothing is served")).toBeVisible()
   expect(screen.getByText("Nothing running")).toBeVisible()
+  expect(screen.getByText("No Process")).toBeVisible()
   expect(screen.queryByRole("table")).toBeNull()
 })
 
@@ -85,5 +87,22 @@ test("formats byte counts and durations exactly at their unit boundaries", () =>
     "1.0 s",
     "60.0 s",
     "1 h 0 m",
+  ])
+})
+
+test("lists hosted Processes by creator with their state and outcome only", () => {
+  render(
+    <ServicesScreen
+      runtime={MANY_RUNTIME_FIXTURE}
+      services={{ status: "ready", data: SERVICES_FIXTURE }}
+    />,
+  )
+
+  expect(screen.getByText("Hosted Processes · 2")).toBeVisible()
+  const hosted = screen.getByRole("table", { name: "Processes this Runtime hosts" })
+  const rows = within(hosted).getAllByRole("row").slice(1)
+  expect(rows.map((row) => row.textContent)).toEqual([
+    "ticker444444…4444running",
+    "0e0e0e…0e0e555555…5555terminated (archived)unauthorized, signal 15",
   ])
 })

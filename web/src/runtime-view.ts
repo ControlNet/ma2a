@@ -18,6 +18,7 @@ const GRANTS: readonly (readonly [ServiceGrant, (member: SignedMember) => boolea
   ["exec", (member) => member.exec],
   ["shell", (member) => member.shell],
   ["proxy", (member) => member.proxy],
+  ["process", (member) => member.process],
 ]
 
 function memberGrants(member: SignedMember): ServiceGrant[] {

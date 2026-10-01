@@ -19,6 +19,7 @@ const SpaceMemberViewSchema = z.strictObject({
   exec: z.boolean(),
   shell: z.boolean(),
   proxy: z.boolean(),
+  process: z.boolean(),
 })
 const SpaceViewSchema = z.strictObject({
   space_id: SpaceIdSchema,

@@ -12,6 +12,7 @@ import { Card, Section } from "../components/ui"
 import type { RuntimeViewData } from "../view-model"
 import { shortId } from "./derive"
 import { byteCount, duration, exposureScope } from "./services-format"
+import { ProcessTable } from "./services-processes"
 
 /** Exposures and operations are read beside the snapshot, never cached in the browser. */
 export type ServicesState =
@@ -24,6 +25,7 @@ const SERVICE_NAME: Record<ServiceExposure["kind"], string> = {
   exec: "Exec",
   shell: "Shell",
   proxy: "Proxy",
+  process: "Process",
 }
 
 function spaceName(runtime: RuntimeViewData, id: string): string {
@@ -137,7 +139,8 @@ export function ServicesScreen({
       </Section>
     )
   }
-  const { exposures, operations } = services.data
+  const { exposures, operations, processes } = services.data
+  const more = processes.next === null ? "" : " (first page)"
   return (
     <Section title="Services">
       <Card label={`Exposures · ${exposures.length}`}>
@@ -174,6 +177,17 @@ export function ServicesScreen({
           </div>
         )}
       </Card>
+      <Card label={`Hosted Processes · ${processes.processes.length}${more}`}>
+        {processes.processes.length === 0 ? (
+          <EmptyState title="No Process">
+            Members granted <code>process</code> start Processes here from their own Runtime.
+          </EmptyState>
+        ) : (
+          <div className="scroll-x">
+            <ProcessTable processes={processes.processes} />
+          </div>
+        )}
+      </Card>
     </Section>
   )
 }
@@ -190,13 +204,15 @@ export function ServicesInspector(): ReactNode {
           ma2a space grant SPACE_REF ENDPOINT_ID --files-read --exec{"\n"}
           ma2a service expose files SPACE_REF ROOT PATH --read-only{"\n"}
           ma2a service expose exec SPACE_REF{"\n"}
+          ma2a service expose process SPACE_REF{"\n"}
           ma2a service unexpose exec SPACE_REF
         </pre>
       </Card>
       <Card label="What is recorded">
         <p className="field__help">
           Operations record the peer, service, result, byte counts and duration. Paths, arguments,
-          environment, file content, terminal and proxy bytes are never recorded.
+          environment, file content, terminal and proxy bytes are never recorded. Processes show
+          their creator, state, and outcome; their output is read only through the CLI.
         </p>
       </Card>
     </Inspector>

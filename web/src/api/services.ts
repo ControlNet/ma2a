@@ -6,7 +6,7 @@ import { RuntimeApiPayloadError } from "./codec"
 const HexId = (bytes: number) => z.string().regex(new RegExp(`^[0-9a-f]{${bytes * 2}}$`))
 const Port = z.number().int().min(1).max(65_535)
 const U64 = z.number().int().nonnegative()
-const Service = z.enum(["files", "transfer", "exec", "shell", "proxy"])
+const Service = z.enum(["files", "transfer", "exec", "shell", "proxy", "process"])
 const Operation = z.enum([
   "stat",
   "list",
@@ -20,6 +20,15 @@ const Operation = z.enum([
   "exec",
   "shell",
   "proxy",
+  "process_start",
+  "process_list",
+  "process_inspect",
+  "process_logs",
+  "process_attach",
+  "process_stdin",
+  "process_signal",
+  "process_terminate",
+  "process_delete",
 ])
 const ServiceError = z.enum([
   "version_mismatch",
@@ -50,11 +59,16 @@ const ServiceError = z.enum([
   "connection_refused",
   "unreachable",
   "dns_failed",
+  "unknown_process",
+  "not_running",
+  "writer_busy",
+  "stdin_closed",
+  "process_active",
 ])
 
 const ExposureSchema = z.strictObject({
   space_id: HexId(32),
-  kind: z.enum(["files_root", "exec", "shell", "proxy"]),
+  kind: z.enum(["files_root", "exec", "shell", "proxy", "process"]),
   root: z.string().min(1).max(64).nullable(),
   path: z.string().min(1).max(4096).nullable(),
   access: z.enum(["read_only", "read_write"]).nullable(),
@@ -91,7 +105,30 @@ const OperationsSchema = z.strictObject({
     .readonly(),
 })
 
+const ProcessSchema = z.strictObject({
+  process_id: HexId(16),
+  creator_endpoint_id: HexId(32),
+  request_id: HexId(16),
+  name: z.string().min(1).max(64).nullable(),
+  state: z.enum(["created", "starting", "running", "exited", "terminated", "failed", "lost"]),
+  reason: z
+    .enum(["spawn_failed", "interrupted", "requested", "unauthorized", "supervisor_lost"])
+    .nullable(),
+  exit_code: z.number().int().nullable(),
+  signal: z.number().int().nonnegative().nullable(),
+  created_at_ms: U64,
+  started_at_ms: U64.nullable(),
+  ended_at_ms: U64.nullable(),
+  archived: z.boolean(),
+})
+const ProcessPageSchema = z.strictObject({
+  processes: z.array(ProcessSchema).max(64).readonly(),
+  next: HexId(16).nullable(),
+})
+
 export type ServiceExposure = z.infer<typeof ExposureSchema>
+export type HostedProcess = z.infer<typeof ProcessSchema>
+export type ProcessPage = z.infer<typeof ProcessPageSchema>
 export type Operations = z.infer<typeof OperationsSchema>
 export type ActiveOperation = Operations["active"][number]
 export type OperationRecord = Operations["recent"][number]
@@ -100,6 +137,7 @@ export type OperationRecord = Operations["recent"][number]
 export type ServicesData = {
   readonly exposures: readonly ServiceExposure[]
   readonly operations: Operations
+  readonly processes: ProcessPage
 }
 
 function parse<Value>(schema: z.ZodType<Value>, value: unknown): Value {
@@ -110,10 +148,15 @@ function parse<Value>(schema: z.ZodType<Value>, value: unknown): Value {
   return result.data
 }
 
-export function parseServicesData(exposures: unknown, operations: unknown): ServicesData {
+export function parseServicesData(
+  exposures: unknown,
+  operations: unknown,
+  processes: unknown,
+): ServicesData {
   return {
     exposures: parse(z.array(ExposureSchema).max(256).readonly(), exposures),
     operations: parse(OperationsSchema, operations),
+    processes: parse(ProcessPageSchema, processes),
   }
 }
 
@@ -124,9 +167,10 @@ export async function fetchServicesData(): Promise<ServicesData> {
     retry: 0,
     timeout: 5_000,
   })
-  const [exposures, operations] = await Promise.all([
+  const [exposures, operations, processes] = await Promise.all([
     http.get("/api/v1/services").json(),
     http.get("/api/v1/operations").json(),
+    http.get("/api/v1/processes").json(),
   ])
-  return parseServicesData(exposures, operations)
+  return parseServicesData(exposures, operations, processes)
 }

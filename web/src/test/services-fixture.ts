@@ -1,6 +1,6 @@
 import type { ServicesData } from "../api/services"
 
-/** Test-only operations data; Space IDs match the Space fixtures so names resolve. */
+/** Test-only Services data; Space IDs match the Space fixtures so names resolve. */
 export const SERVICES_FIXTURE: ServicesData = {
   exposures: [
     {
@@ -73,5 +73,38 @@ export const SERVICES_FIXTURE: ServicesData = {
         duration_ms: 4,
       },
     ],
+  },
+  processes: {
+    processes: [
+      {
+        process_id: "0d".repeat(16),
+        creator_endpoint_id: "44".repeat(32),
+        request_id: "0f".repeat(16),
+        name: "ticker",
+        state: "running",
+        reason: null,
+        exit_code: null,
+        signal: null,
+        created_at_ms: 1_000,
+        started_at_ms: 1_100,
+        ended_at_ms: null,
+        archived: false,
+      },
+      {
+        process_id: "0e".repeat(16),
+        creator_endpoint_id: "55".repeat(32),
+        request_id: "10".repeat(16),
+        name: null,
+        state: "terminated",
+        reason: "unauthorized",
+        exit_code: null,
+        signal: 15,
+        created_at_ms: 2_000,
+        started_at_ms: 2_100,
+        ended_at_ms: 9_000,
+        archived: true,
+      },
+    ],
+    next: null,
   },
 }

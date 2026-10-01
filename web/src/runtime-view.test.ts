@@ -73,6 +73,7 @@ test("projects only authoritative snapshot state into the console view", () => {
             exec: false,
             shell: false,
             proxy: false,
+            process: false,
           },
           {
             endpoint_id: "cd".repeat(32),
@@ -84,6 +85,7 @@ test("projects only authoritative snapshot state into the console view", () => {
             exec: false,
             shell: false,
             proxy: false,
+            process: true,
           },
         ],
       },
@@ -102,6 +104,7 @@ test("projects only authoritative snapshot state into the console view", () => {
     uiAuth: { active_sessions: 2 },
   })
   expect(view.spaces[0]?.members).toHaveLength(2)
+  expect(view.spaces[0]?.members?.[1]?.grants).toEqual(["process"])
   expect(view.spaces[0]).toMatchObject({ name: "Operations", memberCount: 2 })
   expect(view.privateRelayCandidates[0]).toMatchObject({
     providerEndpointId: "ef".repeat(32),

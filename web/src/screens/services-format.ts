@@ -40,5 +40,7 @@ export function exposureScope(exposure: ServiceExposure): string {
       return "one-shot programs"
     case "shell":
       return "interactive terminals"
+    case "process":
+      return "long-running Processes"
   }
 }
