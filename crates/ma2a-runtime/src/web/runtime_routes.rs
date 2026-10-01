@@ -10,9 +10,11 @@ use super::{WebState, cookie};
 
 mod agents;
 mod events;
+mod hosted;
 mod snapshot_stream;
 pub(super) use agents::agents;
 pub(super) use events::events;
+pub(super) use hosted::hosted_services;
 
 #[cfg(test)]
 use events::{

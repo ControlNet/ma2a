@@ -13,6 +13,7 @@ import type { RuntimeViewData } from "../view-model"
 import { shortId } from "./derive"
 import { AgentTable, AgentTaskTable } from "./services-agents"
 import { byteCount, duration, exposureScope } from "./services-format"
+import { HostedServicesCard } from "./services-hosted"
 import { ProcessTable } from "./services-processes"
 
 /** Exposures and operations are read beside the snapshot, never cached in the browser. */
@@ -142,7 +143,7 @@ export function ServicesScreen({
       </Section>
     )
   }
-  const { exposures, operations, processes, agents } = services.data
+  const { exposures, operations, processes, agents, hosted } = services.data
   const firstPage = (more: boolean): string => (more ? " (first page)" : "")
   const more = firstPage(processes.next !== null)
   return (
@@ -215,6 +216,7 @@ export function ServicesScreen({
           </div>
         )}
       </Card>
+      <HostedServicesCard hosted={hosted} />
     </Section>
   )
 }
@@ -233,6 +235,7 @@ export function ServicesInspector(): ReactNode {
           ma2a service expose exec SPACE_REF{"\n"}
           ma2a service expose process SPACE_REF{"\n"}
           ma2a service expose agent SPACE_REF AGENT{"\n"}
+          ma2a service expose service SPACE_REF SERVICE{"\n"}
           ma2a service unexpose exec SPACE_REF
         </pre>
       </Card>
@@ -242,7 +245,8 @@ export function ServicesInspector(): ReactNode {
           environment, file content, terminal and proxy bytes are never recorded. Processes show
           their creator, state, and outcome; their output is read only through the CLI. Agents show
           their tools and task counts, and tasks their creator and state; messages and artifacts are
-          read only through the CLI.
+          read only through the CLI. Hosted services show their versions, state, and call counts;
+          calls carry no body, caller, or result here.
         </p>
       </Card>
     </Inspector>

@@ -54,6 +54,7 @@ test("says nothing is served rather than drawing an empty table", () => {
           operations: { active_count: 0, active: [], recent_count: 0, recent: [] },
           processes: { processes: [], next: null },
           agents: { agents: [], more_agents: false, tasks: [], more_tasks: false },
+          hosted: { services: [], more: false },
         },
       }}
     />,
@@ -64,6 +65,7 @@ test("says nothing is served rather than drawing an empty table", () => {
   expect(screen.getByText("No Process")).toBeVisible()
   expect(screen.getByText("No Agent")).toBeVisible()
   expect(screen.getByText("No task")).toBeVisible()
+  expect(screen.getByText("No hosted service")).toBeVisible()
   expect(screen.queryByRole("table")).toBeNull()
 })
 
@@ -139,5 +141,26 @@ test("lists Agents and their tasks without programs, arguments, or messages", ()
   ).toEqual([
     "0b0b0b…0b0bhelper444444…4444 (from lead)running",
     "0c0c0c…0c0chelper555555…5555cancelled (unauthorized)",
+  ])
+})
+
+test("lists hosted services with their versions, state, and call counts only", () => {
+  render(
+    <ServicesScreen
+      runtime={MANY_RUNTIME_FIXTURE}
+      services={{ status: "ready", data: SERVICES_FIXTURE }}
+    />,
+  )
+
+  expect(screen.getByText("Hosted services · 2")).toBeVisible()
+  const hosted = screen.getByRole("table", { name: "Services this Runtime hosts" })
+  expect(
+    within(hosted)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.textContent),
+  ).toEqual([
+    "exampleDeterministic example serviceready1, 21 of 4v1: 3, v2: 5",
+    "retiredstopped10 of 1none yet",
   ])
 })

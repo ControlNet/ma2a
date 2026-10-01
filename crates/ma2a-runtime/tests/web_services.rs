@@ -1,5 +1,5 @@
-//! Authenticated Web projection of service exposures, operations, hosted Processes, and
-//! Agents.
+//! Authenticated Web projection of service exposures, operations, hosted Processes, Agents,
+//! and hosted services.
 
 #[path = "support/web.rs"]
 #[allow(
@@ -86,9 +86,36 @@ async fn agents_are_content_free(
     Ok(())
 }
 
+/// The browser sees what a hosted service offers and its state, flattened from its view.
+async fn hosted_services_are_readable(
+    router: &axum::Router,
+    (client, cookie): (&LocalApiClient, &str),
+) -> TestResult {
+    let versions =
+        json!([{"version": 1, "operations": [{"name": "echo", "interaction": "unary"}]}]);
+    call(
+        client,
+        &json!({"version": 1, "operation": "service_register", "request_id": "44".repeat(16),
+            "service": "example", "manifest": {"description": "echoes", "max_calls": 2,
+            "versions": versions}}),
+    )
+    .await?;
+    let hosted = router
+        .clone()
+        .oneshot(web_read("/api/v1/hosted-services", Some(cookie))?)
+        .await?;
+    assert_eq!(hosted.status(), StatusCode::OK);
+    assert_eq!(
+        body(hosted).await?,
+        json!({"services": [{"service": "example", "description": "echoes",
+            "versions": versions, "max_calls": 2, "enabled": false, "state": "stopped",
+            "running_calls": 0, "calls": []}], "more": false})
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn exposures_operations_processes_and_agents_are_readable_only_with_a_session() -> TestResult
-{
+async fn exposures_operations_processes_agents_and_hosted_services_need_a_session() -> TestResult {
     let state = TempState::new("web-services")?;
     let runtime = Runtime::start(StoreConfig::new(state.path())).await?;
     let control =
@@ -140,6 +167,7 @@ async fn exposures_operations_processes_and_agents_are_readable_only_with_a_sess
         "/api/v1/operations",
         "/api/v1/processes",
         "/api/v1/agents",
+        "/api/v1/hosted-services",
     ] {
         let denied = router.clone().oneshot(web_read(uri, None)?).await?;
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED, "{uri}");
@@ -175,6 +203,7 @@ async fn exposures_operations_processes_and_agents_are_readable_only_with_a_sess
     );
 
     agents_are_content_free(&router, (&client, &cookie)).await?;
+    hosted_services_are_readable(&router, (&client, &cookie)).await?;
 
     cancellation.cancel();
     api_task.await??;

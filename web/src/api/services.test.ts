@@ -61,14 +61,26 @@ const TASK = {
   last_seq: 3,
 }
 const AGENTS = { agents: [AGENT], more_agents: false, tasks: [TASK], more_tasks: true }
+const HOSTED_SERVICE = {
+  service: "example",
+  description: "echoes",
+  versions: [{ version: 1, operations: [{ name: "echo", interaction: "unary" }] }],
+  max_calls: 2,
+  enabled: true,
+  state: "ready",
+  running_calls: 0,
+  calls: [{ version: 1, count: 4 }],
+}
+const HOSTED = { services: [HOSTED_SERVICE], more: false }
 
 test("accepts the Runtime's exposure, operation, Process, and Agent payloads", () => {
-  const parsed = parseServicesData([EXPOSURE], OPERATIONS, [PROCESSES, AGENTS])
+  const parsed = parseServicesData([EXPOSURE], OPERATIONS, [PROCESSES, AGENTS, HOSTED])
 
   expect(parsed.exposures).toEqual([EXPOSURE])
   expect(parsed.operations.recent_count).toBe(0)
   expect(parsed.processes.processes).toEqual([PROCESS])
   expect(parsed.agents).toEqual(AGENTS)
+  expect(parsed.hosted).toEqual(HOSTED)
 })
 
 test.each([
@@ -84,7 +96,7 @@ test.each([
   ],
   ["Process arguments", [], OPERATIONS, { processes: [{ ...PROCESS, args: ["-c"] }], next: null }],
 ])("rejects %s", (_, exposures, operations, processes) => {
-  expect(() => parseServicesData(exposures, operations, [processes, AGENTS])).toThrow(
+  expect(() => parseServicesData(exposures, operations, [processes, AGENTS, HOSTED])).toThrow(
     RuntimeApiPayloadError,
   )
 })
@@ -96,7 +108,32 @@ test.each([
   ["an unknown task state", { ...AGENTS, tasks: [{ ...TASK, state: "working" }] }],
   ["a task message", { ...AGENTS, tasks: [{ ...TASK, input: { role: "user", parts: [] } }] }],
 ])("rejects Agents carrying %s", (_, agents) => {
-  expect(() => parseServicesData([], OPERATIONS, [PROCESSES, agents])).toThrow(
+  expect(() => parseServicesData([], OPERATIONS, [PROCESSES, agents, HOSTED])).toThrow(
+    RuntimeApiPayloadError,
+  )
+})
+
+test.each([
+  ["a call body", { ...HOSTED, services: [{ ...HOSTED_SERVICE, body: "aGk=" }] }],
+  [
+    "a caller",
+    { ...HOSTED, services: [{ ...HOSTED_SERVICE, caller_endpoint_id: "44".repeat(32) }] },
+  ],
+  ["an unknown state", { ...HOSTED, services: [{ ...HOSTED_SERVICE, state: "running" }] }],
+  [
+    "an unknown interaction",
+    {
+      ...HOSTED,
+      services: [
+        {
+          ...HOSTED_SERVICE,
+          versions: [{ version: 1, operations: [{ name: "echo", interaction: "rpc" }] }],
+        },
+      ],
+    },
+  ],
+])("rejects hosted services carrying %s", (_, hosted) => {
+  expect(() => parseServicesData([], OPERATIONS, [PROCESSES, AGENTS, hosted])).toThrow(
     RuntimeApiPayloadError,
   )
 })

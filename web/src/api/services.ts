@@ -2,6 +2,8 @@ import ky from "ky"
 import { z } from "zod"
 
 import { RuntimeApiPayloadError } from "./codec"
+import { AgentsSchema, type AgentsView } from "./services-agents"
+import { HostedServicesSchema, type HostedServicesView } from "./services-hosted"
 
 const HexId = (bytes: number) => z.string().regex(new RegExp(`^[0-9a-f]{${bytes * 2}}$`))
 const Port = z.number().int().min(1).max(65_535)
@@ -153,65 +155,10 @@ const ProcessPageSchema = z.strictObject({
   next: HexId(16).nullable(),
 })
 
-const AgentState = z.enum(["queued", "running", "waiting", "completed", "failed", "cancelled"])
-const AgentReason = z.enum([
-  "requested",
-  "unauthorized",
-  "agent_failed",
-  "agent_lost",
-  "agent_stopped",
-  "limit",
-])
-const AgentName = z.string().min(1).max(63)
-/** An Agent as the browser sees it: never its program, arguments, or environment. */
-const AgentSchema = z.strictObject({
-  agent: AgentName,
-  description: z.string().max(256),
-  tools: z
-    .array(z.enum(["files", "transfer", "exec", "process", "proxy", "agent"]))
-    .max(6)
-    .readonly(),
-  max_tasks: z.number().int().min(1).max(16),
-  enabled: z.boolean(),
-  generation: U64,
-  live_tasks: U64,
-  instance: z
-    .strictObject({
-      generation: U64,
-      process_id: HexId(16).nullable(),
-      ready: z.boolean(),
-      started_at_ms: U64,
-      ended_at_ms: U64.nullable(),
-    })
-    .nullable(),
-})
-/** A task as the browser sees it: never a message, progress text, or artifact. */
-const AgentTaskSchema = z.strictObject({
-  task_id: HexId(16),
-  agent: AgentName,
-  creator_endpoint_id: HexId(32),
-  from_agent: AgentName.nullable(),
-  request_id: HexId(16),
-  state: AgentState,
-  reason: AgentReason.nullable(),
-  created_at_ms: U64,
-  started_at_ms: U64.nullable(),
-  ended_at_ms: U64.nullable(),
-  last_seq: U64,
-})
-const AgentsSchema = z.strictObject({
-  agents: z.array(AgentSchema).max(64).readonly(),
-  more_agents: z.boolean(),
-  tasks: z.array(AgentTaskSchema).max(64).readonly(),
-  more_tasks: z.boolean(),
-})
-
 export type ServiceExposure = z.infer<typeof ExposureSchema>
 export type HostedProcess = z.infer<typeof ProcessSchema>
 export type ProcessPage = z.infer<typeof ProcessPageSchema>
-export type HostedAgent = z.infer<typeof AgentSchema>
-export type HostedAgentTask = z.infer<typeof AgentTaskSchema>
-export type AgentsView = z.infer<typeof AgentsSchema>
+export type { AgentsView, HostedAgent, HostedAgentTask } from "./services-agents"
 export type Operations = z.infer<typeof OperationsSchema>
 export type ActiveOperation = Operations["active"][number]
 export type OperationRecord = Operations["recent"][number]
@@ -222,6 +169,7 @@ export type ServicesData = {
   readonly operations: Operations
   readonly processes: ProcessPage
   readonly agents: AgentsView
+  readonly hosted: HostedServicesView
 }
 
 function parse<Value>(schema: z.ZodType<Value>, value: unknown): Value {
@@ -235,13 +183,14 @@ function parse<Value>(schema: z.ZodType<Value>, value: unknown): Value {
 export function parseServicesData(
   exposures: unknown,
   operations: unknown,
-  [processes, agents]: readonly [unknown, unknown],
+  [processes, agents, hosted]: readonly [unknown, unknown, unknown],
 ): ServicesData {
   return {
     exposures: parse(z.array(ExposureSchema).max(256).readonly(), exposures),
     operations: parse(OperationsSchema, operations),
     processes: parse(ProcessPageSchema, processes),
     agents: parse(AgentsSchema, agents),
+    hosted: parse(HostedServicesSchema, hosted),
   }
 }
 
@@ -252,11 +201,12 @@ export async function fetchServicesData(): Promise<ServicesData> {
     retry: 0,
     timeout: 5_000,
   })
-  const [exposures, operations, processes, agents] = await Promise.all([
+  const [exposures, operations, processes, agents, hosted] = await Promise.all([
     http.get("/api/v1/services").json(),
     http.get("/api/v1/operations").json(),
     http.get("/api/v1/processes").json(),
     http.get("/api/v1/agents").json(),
+    http.get("/api/v1/hosted-services").json(),
   ])
-  return parseServicesData(exposures, operations, [processes, agents])
+  return parseServicesData(exposures, operations, [processes, agents, hosted])
 }

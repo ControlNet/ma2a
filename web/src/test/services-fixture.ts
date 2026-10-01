@@ -173,4 +173,41 @@ export const SERVICES_FIXTURE: ServicesData = {
     ],
     more_tasks: true,
   },
+  hosted: {
+    services: [
+      {
+        service: "example",
+        description: "Deterministic example service",
+        versions: [
+          { version: 1, operations: [{ name: "echo", interaction: "unary" }] },
+          {
+            version: 2,
+            operations: [
+              { name: "echo", interaction: "unary" },
+              { name: "count", interaction: "stream" },
+            ],
+          },
+        ],
+        max_calls: 4,
+        enabled: true,
+        state: "ready",
+        running_calls: 1,
+        calls: [
+          { version: 1, count: 3 },
+          { version: 2, count: 5 },
+        ],
+      },
+      {
+        service: "retired",
+        description: "",
+        versions: [{ version: 1, operations: [{ name: "get", interaction: "unary" }] }],
+        max_calls: 1,
+        enabled: false,
+        state: "stopped",
+        running_calls: 0,
+        calls: [],
+      },
+    ],
+    more: false,
+  },
 }
