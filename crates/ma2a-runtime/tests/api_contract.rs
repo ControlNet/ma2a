@@ -256,8 +256,8 @@ fn rejects_oversize_input_before_parsing_or_callbacks() {
 #[test]
 fn freezes_version_variants_gap_policy_and_schema_hash() {
     assert_eq!(LOCAL_API_VERSION, 1);
-    assert_eq!(COMMAND_NAMES.len(), 51);
-    assert_eq!(RESULT_NAMES.len(), 47);
+    assert_eq!(COMMAND_NAMES.len(), 52);
+    assert_eq!(RESULT_NAMES.len(), 48);
     assert_eq!(ERROR_NAMES.len(), 9);
     assert_eq!(
         ERROR_NAMES,
@@ -343,6 +343,9 @@ fn agent_requests() -> Vec<String> {
         format!(r#"{{"version":1,"operation":"agent_task_inspect","task_id":"{PROCESS_ID}"}}"#),
         format!(
             r#"{{"version":1,"operation":"agent_task_events","task_id":"{PROCESS_ID}","after":3}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_task_artifact_read","task_id":"{PROCESS_ID}","name":"report.txt","offset":4096}}"#
         ),
         format!(
             r#"{{"version":1,"operation":"agent_task_submit","request_id":"{REQUEST_ID}","agent":"reviewer","message":{{"role":"user","parts":[{{"kind":"text","content":"review"}},{{"kind":"data","content":"{{\"depth\":2}}"}}]}}}}"#

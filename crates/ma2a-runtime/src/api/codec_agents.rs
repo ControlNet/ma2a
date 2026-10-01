@@ -2,7 +2,7 @@
 
 use ma2a_core::{
     RequestId,
-    service::{AgentId, AgentMessage, AgentTaskId},
+    service::{AgentId, AgentMessage, AgentTaskId, MAX_ARTIFACT_NAME_LEN},
 };
 use serde_json::{Map, Value, json};
 
@@ -34,6 +34,8 @@ pub(crate) enum AgentCommand {
     Inspect(AgentTaskId),
     /// Retained events of one task after this sequence number.
     Events(AgentTaskId, u32),
+    /// A bounded chunk of one task's artifact from this offset.
+    Artifact(AgentTaskId, String, u64),
     /// A new task from this Endpoint.
     Submit(RequestId, AgentId, AgentMessage),
     /// The next message of one task.
@@ -53,6 +55,7 @@ impl AgentCommand {
             Self::Tasks(..) => "agent_task_list",
             Self::Inspect(_) => "agent_task_inspect",
             Self::Events(..) => "agent_task_events",
+            Self::Artifact(..) => "agent_task_artifact_read",
             Self::Submit(..) => "agent_task_submit",
             Self::Send(..) => "agent_task_send",
             Self::Cancel(..) => "agent_task_cancel",
@@ -61,7 +64,11 @@ impl AgentCommand {
 
     pub(crate) const fn request_id(&self) -> Option<RequestId> {
         match self {
-            Self::List(_) | Self::Tasks(..) | Self::Inspect(_) | Self::Events(..) => None,
+            Self::List(_)
+            | Self::Tasks(..)
+            | Self::Inspect(_)
+            | Self::Events(..)
+            | Self::Artifact(..) => None,
             Self::Define(id, _)
             | Self::Undefine(id, _)
             | Self::Start(id, _)
@@ -92,6 +99,12 @@ impl AgentCommand {
             Self::Events(task, after) => {
                 json!({"operation": operation, "task_id": task.to_string(), "after": after})
             }
+            Self::Artifact(task, name, offset) => json!({
+                "operation": operation,
+                "task_id": task.to_string(),
+                "name": name,
+                "offset": offset,
+            }),
             Self::Submit(id, agent, message) => json!({
                 "operation": operation,
                 "request_id": request(id),
@@ -180,6 +193,18 @@ pub(super) fn parse(object: &Map<String, Value>) -> Result<CommandKind, ApiError
             let after =
                 u32::try_from(number(object, "after")?).map_err(|_| ApiError::invalid_input())?;
             AgentCommand::Events(task(object, "task_id")?, after)
+        }
+        "agent_task_artifact_read" => {
+            exact_fields(
+                object,
+                &["version", "operation", "task_id", "name", "offset"],
+            )?;
+            let name = text(object, "name")?;
+            if name.is_empty() || name.len() > MAX_ARTIFACT_NAME_LEN {
+                return Err(ApiError::invalid_input());
+            }
+            let offset = number(object, "offset")?;
+            AgentCommand::Artifact(task(object, "task_id")?, name.to_owned(), offset)
         }
         "agent_task_submit" => {
             exact_fields(

@@ -31,7 +31,7 @@ pub(crate) async fn run(
     }
 }
 
-type Runtime<'a> = (&'a Path, IpcPaths);
+pub(crate) type Runtime<'a> = (&'a Path, IpcPaths);
 
 async fn local(runtime: Runtime<'_>, agent_command: AgentCommand) -> Result<(), AppError> {
     let (operation, fields) = match agent_command {
@@ -65,9 +65,14 @@ async fn local(runtime: Runtime<'_>, agent_command: AgentCommand) -> Result<(), 
             fields.insert("task_id".to_owned(), json!(task));
             ("agent_task_cancel", fields)
         }
-        AgentCommand::Discover { .. } | AgentCommand::Artifact { .. } => {
+        AgentCommand::Artifact {
+            target,
+            name,
+            output,
+        } => return super::agent_artifact::save(&runtime, (&target.task, &name), &output).await,
+        AgentCommand::Discover { .. } => {
             return Err(AppError::Usage(
-                "discover and artifact act on another Endpoint; add --endpoint",
+                "discover lists another Endpoint's Agents; add --endpoint",
             ));
         }
     };
@@ -212,7 +217,7 @@ async fn inspect(runtime: &Runtime<'_>, task: &str) -> Result<Value, AppError> {
 }
 
 /// Runs one local API command and answers its result payload.
-async fn payload(
+pub(crate) async fn payload(
     (state_dir, paths): &Runtime<'_>,
     operation: &str,
     fields: Map<String, Value>,
@@ -226,7 +231,7 @@ async fn payload(
         .unwrap_or(Value::Null))
 }
 
-fn print(value: &Value) -> Result<(), AppError> {
+pub(crate) fn print(value: &Value) -> Result<(), AppError> {
     use std::io::Write as _;
     writeln!(std::io::stdout().lock(), "{value}")?;
     Ok(())

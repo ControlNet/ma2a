@@ -1,10 +1,13 @@
 //! Results of the `agent_*` local API commands.
 
-use ma2a_core::service::{AgentEvent, AgentTaskDetails, AgentTaskSummary};
+use base64::Engine as _;
+use ma2a_core::service::{AgentEvent, AgentTaskDetails, AgentTaskSummary, ArtifactRef};
 use serde_json::{Value, json};
 
 use super::{
-    agent_views::{AgentView, details_value, encoded_len, event_value, summary_value},
+    agent_views::{
+        AgentView, artifact_value, details_value, encoded_len, event_value, summary_value,
+    },
     responses::{CommandResult, ResultKind},
 };
 
@@ -46,6 +49,7 @@ pub(crate) enum AgentResult {
     Tasks(Vec<Value>, Option<String>),
     Task(Value),
     Events(Vec<Value>, bool),
+    Artifact(Value),
     Submitted(Value, bool),
     Sent(Value),
     Cancelled(Value),
@@ -62,6 +66,7 @@ impl AgentResult {
             Self::Tasks(..) => "agent_tasks",
             Self::Task(_) => "agent_task",
             Self::Events(..) => "agent_task_events",
+            Self::Artifact(_) => "agent_task_artifact",
             Self::Submitted(..) => "agent_task_submitted",
             Self::Sent(_) => "agent_task_sent",
             Self::Cancelled(_) => "agent_task_cancelled",
@@ -79,6 +84,7 @@ impl AgentResult {
             Self::Started(value)
             | Self::Stopped(value)
             | Self::Task(value)
+            | Self::Artifact(value)
             | Self::Sent(value)
             | Self::Cancelled(value) => value.clone(),
         }
@@ -148,6 +154,18 @@ impl CommandResult {
         events.truncate(MAX_AGENT_EVENT_PAGE);
         let (values, cut) = bounded(events.iter().map(event_value).collect());
         Self::agent(AgentResult::Events(values, more || cut))
+    }
+
+    /// Creates an `agent_task_artifact` chunk: `content` is the artifact from `offset`, and
+    /// `eof` says it reaches the end.
+    pub fn agent_task_artifact(artifact: &ArtifactRef, (offset, content): (u64, &[u8])) -> Self {
+        let length = u64::try_from(content.len()).unwrap_or(u64::MAX);
+        Self::agent(AgentResult::Artifact(json!({
+            "artifact": artifact_value(artifact),
+            "offset": offset,
+            "content": base64::engine::general_purpose::STANDARD.encode(content),
+            "eof": offset.saturating_add(length) >= artifact.size(),
+        })))
     }
 
     /// Creates an `agent_task_submitted` result; `existing` when the request was a retry.

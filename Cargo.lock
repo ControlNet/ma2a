@@ -2058,6 +2058,7 @@ name = "ma2a-app"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "blake3",
  "clap",
  "iroh",
@@ -2128,6 +2129,7 @@ name = "ma2a-runtime"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "blake3",
  "getrandom 0.4.3",
  "hyper-util",

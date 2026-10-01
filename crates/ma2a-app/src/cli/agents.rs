@@ -73,7 +73,7 @@ pub(crate) enum AgentCommand {
     },
     /// Cancel one task.
     Cancel(TaskTarget),
-    /// Download one artifact of a remote task (needs --endpoint and --agent).
+    /// Download one artifact of a task into a new file (a remote task also needs --agent).
     Artifact {
         #[command(flatten)]
         target: TaskTarget,

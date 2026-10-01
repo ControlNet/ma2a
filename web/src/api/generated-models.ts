@@ -1,5 +1,6 @@
 import type { EndpointId, SpaceId } from "./generated"
 import type {
+  AgentArtifactChunkView,
   AgentDefinedView,
   AgentEventPageView,
   AgentPageView,
@@ -245,6 +246,7 @@ export type CommandResult =
   | { readonly type: "agent_tasks"; readonly payload: AgentTaskPageView }
   | { readonly type: "agent_task"; readonly payload: AgentTaskDetailsView }
   | { readonly type: "agent_task_events"; readonly payload: AgentEventPageView }
+  | { readonly type: "agent_task_artifact"; readonly payload: AgentArtifactChunkView }
   | { readonly type: "agent_task_submitted"; readonly payload: AgentSubmittedView }
   | { readonly type: "agent_task_sent"; readonly payload: AgentTaskView }
   | { readonly type: "agent_task_cancelled"; readonly payload: AgentTaskView }

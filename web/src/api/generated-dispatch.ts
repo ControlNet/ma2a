@@ -51,6 +51,7 @@ export function commandOperation(command: LocalApiCommand): string {
     case "agent_task_list":
     case "agent_task_inspect":
     case "agent_task_events":
+    case "agent_task_artifact_read":
     case "agent_task_submit":
     case "agent_task_send":
     case "agent_task_cancel":
@@ -106,6 +107,7 @@ export function resultType(result: CommandResult): string {
     case "agent_tasks":
     case "agent_task":
     case "agent_task_events":
+    case "agent_task_artifact":
     case "agent_task_submitted":
     case "agent_task_sent":
     case "agent_task_cancelled":

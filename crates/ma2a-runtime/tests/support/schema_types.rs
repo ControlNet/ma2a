@@ -71,6 +71,8 @@ pub(super) fn string(node: Node<'_>) -> Check {
         Some("ip_or_hostname") => ip_or_hostname(text, node.path),
         Some("agent_name") if ma2a_core::service::AgentId::new(text).is_ok() => Ok(()),
         Some("absolute_path") if std::path::Path::new(text).is_absolute() => Ok(()),
+        Some("base64") if is_base64(text) => Ok(()),
+        Some("base64") => mismatch(node.path, "malformed standard padded base64"),
         Some("agent_name" | "absolute_path") => mismatch(node.path, "malformed name or path"),
         Some(format) => mismatch(node.path, &format!("unsupported string format {format}")),
         None => Ok(()),
@@ -91,6 +93,16 @@ fn check_text_bounds(text: &str, specification: &Value, path: &str) -> Check {
         }
     }
     Ok(())
+}
+
+/// Returns whether `text` is standard, padded base64.
+fn is_base64(text: &str) -> bool {
+    let body = text.trim_end_matches('=');
+    text.len().is_multiple_of(4)
+        && text.len() - body.len() <= 2
+        && body
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
 }
 
 fn lowercase_hex(text: &str, specification: &Value, path: &str) -> Check {

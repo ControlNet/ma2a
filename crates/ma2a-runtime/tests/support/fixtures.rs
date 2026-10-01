@@ -194,6 +194,7 @@ fn agent_results() -> FixtureResult<Vec<CommandResult>> {
         ],
     )?;
     let artifact = ArtifactRef::new(("report.txt", "text/plain"), (12, [0x42; 32]))?;
+    let chunked = artifact.clone();
     let mut details = AgentTaskDetails::new(summary.clone(), input.clone());
     details.result = Some(AgentMessage::text(MessageRole::Agent, "done")?);
     details.artifacts = vec![artifact.clone()];
@@ -221,6 +222,7 @@ fn agent_results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::agent_tasks(vec![summary.clone()]),
         CommandResult::agent_task(&details),
         CommandResult::agent_task_events(events),
+        CommandResult::agent_task_artifact(&chunked, (4, b"o, world")),
         CommandResult::agent_task_submitted(&summary, false),
         CommandResult::agent_task_sent(&summary),
         CommandResult::agent_task_cancelled(&summary),
@@ -491,6 +493,9 @@ fn agent_requests() -> Vec<String> {
         format!(r#"{{"version":1,"operation":"agent_task_inspect","task_id":"{PROCESS_ID}"}}"#),
         format!(
             r#"{{"version":1,"operation":"agent_task_events","task_id":"{PROCESS_ID}","after":0}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_task_artifact_read","task_id":"{PROCESS_ID}","name":"report.txt","offset":0}}"#
         ),
         format!(
             r#"{{"version":1,"operation":"agent_task_submit","request_id":"{REQUEST_ID}","agent":"reviewer","message":{{"role":"user","parts":[{{"kind":"text","content":"review"}},{{"kind":"data","content":"[1,2]"}}]}}}}"#

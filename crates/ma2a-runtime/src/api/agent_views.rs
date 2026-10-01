@@ -112,7 +112,7 @@ fn bounded_message(message: Option<&AgentMessage>) -> (Value, bool) {
     }
 }
 
-fn artifact_value(artifact: &ArtifactRef) -> Value {
+pub(super) fn artifact_value(artifact: &ArtifactRef) -> Value {
     json!({
         "name": artifact.name(),
         "media_type": artifact.media_type(),

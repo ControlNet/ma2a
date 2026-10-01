@@ -73,6 +73,16 @@ pub(super) async fn execute(
                 .map_err(refusal)?;
             return Ok(CommandResult::agent_task_events(events));
         }
+        AgentCommand::Artifact(task, name, offset) => {
+            let (artifact, bytes) = manager
+                .read_artifact(OPERATOR, ((*task, name), *offset))
+                .await
+                .map_err(refusal)?;
+            return Ok(CommandResult::agent_task_artifact(
+                &artifact,
+                (*offset, &bytes),
+            ));
+        }
         AgentCommand::Submit(request_id, agent, message) => {
             let submit = AgentSubmit::new(agent.clone(), message.clone(), None);
             let (record, existing) = manager
@@ -142,7 +152,7 @@ const fn active(error: ServiceError) -> ApiError {
 /// Maps an Agent refusal onto the local API error set.
 const fn refusal(error: ServiceError) -> ApiError {
     match error {
-        ServiceError::UnknownAgent | ServiceError::UnknownTask => {
+        ServiceError::UnknownAgent | ServiceError::UnknownTask | ServiceError::UnknownArtifact => {
             ApiError::new(ProtocolError::NOT_FOUND).without_effects()
         }
         ServiceError::AgentUnavailable => ApiError::with_remediation(

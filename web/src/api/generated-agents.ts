@@ -43,6 +43,12 @@ export type AgentCommand =
       readonly task_id: AgentTaskId
       readonly after: number
     })
+  | (Versioned & {
+      readonly operation: "agent_task_artifact_read"
+      readonly task_id: AgentTaskId
+      readonly name: string
+      readonly offset: number
+    })
   | (Mutation & {
       readonly operation: "agent_task_submit"
       readonly agent: string
@@ -156,6 +162,14 @@ export type AgentEventView = {
 export type AgentEventPageView = {
   readonly events: readonly AgentEventView[]
   readonly more: boolean
+}
+
+/** One bounded chunk of an artifact from `offset`; `content` is standard base64. */
+export type AgentArtifactChunkView = {
+  readonly artifact: AgentArtifactView
+  readonly offset: number
+  readonly content: string
+  readonly eof: boolean
 }
 
 export type AgentSubmittedView = { readonly task: AgentTaskView; readonly existing: boolean }

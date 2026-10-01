@@ -6,6 +6,7 @@
 //! unacknowledged deliveries to its stdin. Tools run as same-user stream-plane clients of
 //! this Runtime, so an Agent never holds more authority than its hosting Endpoint.
 
+mod artifact_read;
 mod artifacts;
 mod convert;
 mod host;

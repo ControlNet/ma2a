@@ -11,7 +11,7 @@ mod accessors;
 mod methods;
 
 /// Exact ordered operation inventory carried by the schema and TypeScript contract.
-pub const COMMAND_NAMES: [&str; 51] = [
+pub const COMMAND_NAMES: [&str; 52] = [
     "handshake",
     "status",
     "endpoint_info",
@@ -60,6 +60,7 @@ pub const COMMAND_NAMES: [&str; 51] = [
     "agent_task_list",
     "agent_task_inspect",
     "agent_task_events",
+    "agent_task_artifact_read",
     "agent_task_submit",
     "agent_task_send",
     "agent_task_cancel",

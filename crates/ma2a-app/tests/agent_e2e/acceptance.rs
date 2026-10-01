@@ -82,6 +82,32 @@ fn a_delegated_task_fetches_from_its_creator_and_returns_an_artifact() -> TestRe
     // An existing output file is never overwritten.
     refused(&lab.remote(&artifact)?, "exists")?;
 
+    // A's operator downloads `lead`'s own artifact through bounded local API chunks.
+    let local = lab.output_path("local-report.txt");
+    let local_arg = local.to_str().ok_or("output path is not UTF-8")?;
+    let lead_task = text(&details, "/task/task_id");
+    let saved = last(&lab.a.run_ok(&[
+        "agent",
+        "artifact",
+        &lead_task,
+        "report.txt",
+        "--output",
+        local_arg,
+    ])?)?;
+    assert_eq!(text(&saved, "/blake3"), expected);
+    assert_eq!(std::fs::read(&local)?, content(INPUT_LEN));
+    refused(
+        &lab.a.run(&[
+            "agent",
+            "artifact",
+            &lead_task,
+            "missing.txt",
+            "--output",
+            local_arg,
+        ])?,
+        "not_found",
+    )?;
+
     // The same task through the local API and through A's remote view agree.
     let remote = last(&lab.remote(&["task", "--agent", "worker", &worker_task])?)?;
     assert_eq!(remote.pointer("/artifacts"), details.pointer("/artifacts"));
