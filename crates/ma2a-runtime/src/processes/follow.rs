@@ -38,11 +38,18 @@ impl ProcessManager {
         });
     }
 
+    /// Follows until the Process is terminal or gone; a transient Store or supervisor
+    /// failure is retried with backoff, never taken as the end of following.
     async fn follower(&self, id: ProcessId, mut watching: Option<Channel>) {
         let mut backoff = Duration::from_millis(250);
         loop {
-            let Ok(Some(record)) = self.record(id).await else {
-                return;
+            let record = match self.record(id).await {
+                Ok(Some(record)) => record,
+                Ok(None) => return,
+                Err(_) => {
+                    backoff = pause(backoff).await;
+                    continue;
+                }
             };
             let Some(credentials) = credentials(&record).filter(|_| !record.state.is_terminal())
             else {
@@ -54,21 +61,21 @@ impl ProcessManager {
             };
             match channel {
                 Ok(channel) => {
-                    backoff = Duration::from_millis(250);
                     if matches!(self.relay_statuses(id, channel).await, Followed::Final) {
                         return;
                     }
+                    // A broken watch is reopened promptly, but never in a tight loop.
+                    backoff = pause(Duration::from_millis(250)).await;
                 }
                 // Nothing listens, or something that cannot prove the secret does.
                 Err(ServiceError::Unreachable | ServiceError::Unauthorized) => {
-                    let _concluded = self.conclude(&record).await;
-                    return;
+                    if self.conclude(&record).await.is_ok() {
+                        return;
+                    }
+                    backoff = pause(backoff).await;
                 }
                 // A slow or busy supervisor is never mistaken for a lost one.
-                Err(_) => {
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
-                }
+                Err(_) => backoff = pause(backoff).await,
             }
         }
     }
@@ -114,13 +121,35 @@ impl ProcessManager {
     }
 }
 
+/// Sleeps `backoff` and returns the next, longer one.
+async fn pause(backoff: Duration) -> Duration {
+    tokio::time::sleep(backoff).await;
+    (backoff * 2).min(MAX_BACKOFF)
+}
+
+/// Longest wait for a supervisor's answer beyond the time its request may take by design.
+pub(super) const ANSWER_MARGIN: Duration = Duration::from_secs(10);
+
 /// Sends one request on a proven connection and returns the status in its `outcome`.
+///
+/// A supervisor that does not answer in time is `Unavailable`, never lost: `terminate`
+/// may take its grace period plus the margin, which a child stuck in the kernel exceeds.
 pub(super) async fn request(
     (mut reader, mut writer): Channel,
     request: SupervisorRequest,
 ) -> Result<SupervisorStatus, ServiceError> {
-    writer.frame(FrameKind::Open, &request.to_bytes()).await?;
-    let frame = reader.expect().await?;
+    let deadline = match request {
+        SupervisorRequest::Terminate(grace_ms) => {
+            Duration::from_millis(u64::from(grace_ms)) + ANSWER_MARGIN
+        }
+        _ => ANSWER_MARGIN,
+    };
+    let answered = tokio::time::timeout(deadline, async {
+        writer.frame(FrameKind::Open, &request.to_bytes()).await?;
+        reader.expect().await
+    })
+    .await;
+    let frame = answered.map_err(|_| ServiceError::Unavailable)??;
     match frame.kind() {
         FrameKind::Outcome => {
             SupervisorStatus::from_bytes(frame.payload()).map_err(|_| ServiceError::Unavailable)

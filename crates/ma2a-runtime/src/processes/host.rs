@@ -157,13 +157,17 @@ impl ProcessManager {
             .filter(|_| record.state == ProcessState::Running)
             .ok_or(ServiceError::NotRunning)?;
         let (mut reader, mut writer) = self.address(id).connect(&credentials).await?;
-        writer
-            .frame(
-                FrameKind::Open,
-                &SupervisorRequest::Signal(signal).to_bytes(),
-            )
-            .await?;
-        let frame = reader.expect().await?;
+        let answered = tokio::time::timeout(super::follow::ANSWER_MARGIN, async {
+            writer
+                .frame(
+                    FrameKind::Open,
+                    &SupervisorRequest::Signal(signal).to_bytes(),
+                )
+                .await?;
+            reader.expect().await
+        })
+        .await;
+        let frame = answered.map_err(|_| ServiceError::Unavailable)??;
         match frame.kind() {
             FrameKind::Outcome if frame.payload() == ACKNOWLEDGED => {
                 Ok(ProcessReply::Summary(record.summary()))
@@ -191,13 +195,22 @@ impl ProcessManager {
             Ok(channel) => request(channel, SupervisorRequest::Terminate(grace_ms)).await,
             Err(error) => Err(error),
         };
-        match reported {
+        let ended = match reported {
             Ok(reported) => self.apply(id, reported).await,
             Err(ServiceError::Unreachable | ServiceError::Unauthorized) => {
                 self.conclude(&record).await
             }
             Err(_) => Err(ServiceError::Unavailable),
+        };
+        // A termination that did not end the Process leaves nothing behind, so convergence
+        // and later requests try again.
+        if !ended
+            .as_ref()
+            .is_ok_and(|record| record.state.is_terminal())
+        {
+            self.coordination().terminating.remove(&id);
         }
+        ended
     }
 
     /// Archives one terminal Process and removes its output; a tombstone keeps its binding.

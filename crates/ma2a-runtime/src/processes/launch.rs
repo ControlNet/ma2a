@@ -83,8 +83,14 @@ impl ProcessManager {
             Launcher::Executable(program, args) => {
                 let (mut child, channel) = launch::spawn((program, args), &record).await?;
                 // The supervisor outlives this Runtime; while both live, it is reaped here.
+                // Shutdown stops only the reaping (the child is not killed on drop), so it never
+                // waits for a supervisor.
+                let shutdown = self.0.shutdown.clone();
                 self.0.tasks.spawn(async move {
-                    let _reaped = child.wait().await;
+                    tokio::select! {
+                        _reaped = child.wait() => {}
+                        () = shutdown.cancelled() => {}
+                    }
                 });
                 Ok(channel)
             }

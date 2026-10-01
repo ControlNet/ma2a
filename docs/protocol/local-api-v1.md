@@ -155,8 +155,8 @@ Errors:
 | Supervisor not answering conclusively | `unavailable`; the Runtime keeps following the Process |
 
 The two mutations use ordinary mutation replay. `process_terminate` holds the local mutation lock
-for its grace period, so other local mutations wait up to 60 s behind it. The IPC client waits
-for a reply without a deadline.
+while it waits for the supervisor: at most the grace period plus 10 s, so other local mutations
+wait up to 70 s behind it. The IPC client waits for a reply without a deadline.
 
 ## Mutation Replay
 

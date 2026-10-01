@@ -103,7 +103,11 @@ async fn exposures_operations_and_processes_are_readable_only_with_a_session() -
     )
     .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12_345))));
 
-    for uri in ["/api/v1/services", "/api/v1/operations", "/api/v1/processes"] {
+    for uri in [
+        "/api/v1/services",
+        "/api/v1/operations",
+        "/api/v1/processes",
+    ] {
         let denied = router.clone().oneshot(web_read(uri, None)?).await?;
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED, "{uri}");
     }

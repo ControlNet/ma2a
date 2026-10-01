@@ -101,15 +101,18 @@ impl ProcessManager {
         let Ok(accept) = accept else {
             return super::host::refuse(writer, ServiceError::Internal).await;
         };
-        if writer.frame(FrameKind::Accept, &accept).await.is_err() {
-            return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
-        }
+        // The workload is independent of its caller: a caller gone before the accept still
+        // gets its Process, which a retry with the same RequestId then answers.
+        let accepted = writer.frame(FrameKind::Accept, &accept).await.is_ok();
         let outcome = if existing {
             Ok(record)
         } else {
             fault("after_created");
             self.bring_up(credentials, start).await
         };
+        if !accepted {
+            return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+        }
         fault("before_response");
         finish(
             writer,
@@ -143,13 +146,15 @@ impl ProcessManager {
             Err(error) => Err(error),
         };
         fault("after_go");
-        let record = match reported {
-            Ok(reported) => self.apply(id, reported).await,
-            // The follower sends `go` again and records whatever the supervisor reports.
-            Err(_) => self.record(id).await?.ok_or(ServiceError::UnknownProcess),
-        };
-        self.follow(id, watching.ok());
-        record
+        if let Ok(reported) = reported {
+            self.follow(id, watching.ok());
+            return self.apply(id, reported).await;
+        }
+        // Without the open watch the follower reaches the supervisor itself, and for a
+        // Process still `starting` that sends `go` again; a repeated `go` has no effect.
+        drop(watching);
+        self.follow(id, None);
+        self.record(id).await?.ok_or(ServiceError::UnknownProcess)
     }
 }
 

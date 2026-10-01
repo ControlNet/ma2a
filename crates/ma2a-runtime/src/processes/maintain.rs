@@ -11,6 +11,9 @@ use super::{ProcessManager, credentials, follow::request};
 
 /// How often durable state is checked for a change that may withdraw consent.
 const CONVERGE_INTERVAL: Duration = Duration::from_secs(1);
+/// How often convergence runs even without a durable change, so a termination that failed
+/// is retried and every live Process has a follower.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 /// How often ended Processes are archived and tombstones pruned.
 const EXPIRE_INTERVAL: Duration = Duration::from_secs(60);
 /// Grace period of a Process ended because its creator lost authorization.
@@ -28,12 +31,16 @@ pub(crate) async fn run(manager: ProcessManager) {
     converge.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut expire = tokio::time::interval(EXPIRE_INTERVAL);
     expire.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut sweep =
+        tokio::time::interval_at(tokio::time::Instant::now() + SWEEP_INTERVAL, SWEEP_INTERVAL);
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut seen = None;
     loop {
         tokio::select! {
             biased;
             () = manager.0.shutdown.cancelled() => break,
             _tick = expire.tick() => manager.expire().await,
+            _tick = sweep.tick() => manager.converge().await,
             _tick = converge.tick() => {
                 let Ok(revision) = manager.store().revision().await else {
                     continue;
@@ -89,12 +96,15 @@ impl ProcessManager {
         };
     }
 
-    /// Ends every Process whose creator no longer has one complete authorization path.
+    /// Ends every Process whose creator no longer has one complete authorization path, and
+    /// follows every live Process that lost its follower.
     pub(super) async fn converge(&self) {
         for record in self.active().await {
-            if record.state == ProcessState::Created
-                || self.coordination().terminating.contains_key(&record.id)
-            {
+            if record.state == ProcessState::Created {
+                continue;
+            }
+            self.follow(record.id, None);
+            if self.coordination().terminating.contains_key(&record.id) {
                 continue;
             }
             let decision = self

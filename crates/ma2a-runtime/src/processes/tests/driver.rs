@@ -263,3 +263,33 @@ async fn closed_stdin_archived_logs_relative_cwd_and_strangers_are_refused_exact
     shutdown.cancel();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_gone_before_the_accept_still_gets_its_process() -> TestResult {
+    let harness = Harness::new("driver-gone").await?;
+    let (manager, shutdown) = harness.manager();
+    let (caller, (mut host_reader, mut host_writer)) = pipe();
+    // The caller disappears right after its `open`: every host write fails.
+    drop(caller);
+    let stop = CancellationToken::new();
+    let request = ProcessRequest::Start(stdin_start("cat")?);
+    let scope = ((harness.creator, request_id(23)?), request, &stop);
+    let _report = serve(&manager, scope, (&mut host_reader, &mut host_writer)).await;
+
+    // The retry answers the Process the lost attempt started, and it runs.
+    let retry = ProcessRequest::Start(stdin_start("cat")?);
+    let (accept, _) = call((&harness, &manager), (23, retry)).await??;
+    let Some(ProcessAccept::Started(id, true)) = accept else {
+        return Err(format!("expected the existing Process, got {accept:?}").into());
+    };
+    reaches(&manager, id, ProcessState::Running).await?;
+    let ended = manager
+        .terminate(
+            (None, id),
+            (1_000, ma2a_core::service::ProcessReason::Requested),
+        )
+        .await?;
+    assert_eq!(ended.state, ProcessState::Terminated);
+    shutdown.cancel();
+    Ok(())
+}
