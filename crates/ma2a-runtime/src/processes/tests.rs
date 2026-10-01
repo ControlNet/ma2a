@@ -224,3 +224,32 @@ async fn withdrawn_authorization_terminates_the_creators_processes() -> TestResu
     shutdown.cancel();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn local_starts_make_room_by_archiving_the_oldest_ended_local_process() -> TestResult {
+    let harness = Harness::new("local-room").await?;
+    let (manager, shutdown) = harness.manager();
+    let retained = u8::try_from(ma2a_store::MAX_RETAINED_PROCESSES_PER_CREATOR)?;
+    let mut ended = Vec::new();
+    for byte in 1..=retained {
+        let record = manager
+            .start_local(request_id(byte)?, start("exit 0")?)
+            .await?;
+        ended.push(reaches(&manager, record.id, ProcessState::Exited).await?.id);
+    }
+
+    // Every retained slot holds an ended instance, yet the next one still starts.
+    let next = manager
+        .start_local(request_id(retained + 1)?, start("exit 0")?)
+        .await?;
+    let (first, rest) = ended.split_first().ok_or("no Process")?;
+    let oldest = manager.local_record(*first).await?.ok_or("no record")?;
+    assert!(oldest.times.archived_ms.is_some(), "{oldest:?}");
+    for kept in rest {
+        let kept = manager.local_record(*kept).await?.ok_or("no record")?;
+        assert!(kept.times.archived_ms.is_none(), "{kept:?}");
+    }
+    reaches(&manager, next.id, ProcessState::Exited).await?;
+    shutdown.cancel();
+    Ok(())
+}

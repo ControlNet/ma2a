@@ -1,14 +1,18 @@
 //! Processes the local Endpoint creates for itself: Agent instances.
 //!
 //! They are ordinary Processes with the local Endpoint as creator, so no remote peer can
-//! ever see or manage them, and withdrawal convergence never ends them.
+//! ever see or manage them, and withdrawal convergence never ends them. Their ended
+//! records stay readable until the next start needs the room: it then archives the
+//! oldest, so ended instances never block an Agent's restart.
 
 use ma2a_core::{
     RequestId,
     service::{LogFrom, ProcessId, ProcessStart, ServiceError},
 };
 use ma2a_services::supervisor::{Channel, SupervisorRequest};
-use ma2a_store::{ProcessCreation, ProcessRecord};
+use ma2a_store::{
+    MAX_RETAINED_PROCESSES_PER_CREATOR, ProcessCreation, ProcessFilter, ProcessRecord,
+};
 
 use super::ProcessManager;
 
@@ -22,12 +26,42 @@ impl ProcessManager {
         if self.0.hosting.is_none() {
             return Err(ServiceError::Unavailable);
         }
-        let (creation, credentials) = self.create((self.0.local, request_id), &start).await?;
+        let binding = (self.0.local, request_id);
+        let (mut creation, mut credentials) = self.create(binding, &start).await?;
+        if matches!(creation, ProcessCreation::LimitExceeded) && self.archive_oldest_local().await {
+            (creation, credentials) = self.create(binding, &start).await?;
+        }
         match creation {
             ProcessCreation::Created(_) => self.bring_up(credentials, start).await,
             ProcessCreation::Existing(record) => Ok(record),
             ProcessCreation::Conflict => Err(ServiceError::Conflict),
             ProcessCreation::LimitExceeded => Err(ServiceError::ConcurrencyExceeded),
+        }
+    }
+
+    /// Archives the local Process that ended first; `true` when one was archived.
+    async fn archive_oldest_local(&self) -> bool {
+        let filter = ProcessFilter {
+            creator: Some(self.0.local),
+            after: None,
+            limit: MAX_RETAINED_PROCESSES_PER_CREATOR,
+            archived: false,
+        };
+        let listed = self
+            .store()
+            .processes(move |repository| repository.processes(filter))
+            .await;
+        let Ok(Ok(listed)) = listed else {
+            return false;
+        };
+        let oldest = listed
+            .into_value()
+            .into_iter()
+            .filter(|record| record.state.is_terminal())
+            .min_by_key(|record| record.times.ended_ms);
+        match oldest {
+            Some(record) => self.delete(None, record.id).await.is_ok(),
+            None => false,
         }
     }
 
