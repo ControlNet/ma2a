@@ -8,6 +8,7 @@ use super::{
     host_serve::{Reader, Writer},
     log,
     protocol::{ACKNOWLEDGED, encode_reading, encode_written},
+    status::SupervisorStatus,
 };
 
 /// Most content bytes read from the log for one batch of `data` frames.
@@ -18,8 +19,17 @@ struct Lease<'a>(&'a Shared);
 
 impl<'a> Lease<'a> {
     /// Takes the lease of a Process whose stdin is still open.
+    ///
+    /// A child not spawned yet has no stdin to write: that is `NotRunning`, while a Process
+    /// started without stdin, or whose stdin was ended, is `StdinClosed`.
     async fn take(shared: &'a Shared) -> Result<Self, ServiceError> {
-        if !shared.start.stdin() || shared.stdin.lock().await.is_none() {
+        if !shared.start.stdin() {
+            return Err(ServiceError::StdinClosed);
+        }
+        if matches!(*shared.status.borrow(), SupervisorStatus::Awaiting) {
+            return Err(ServiceError::NotRunning);
+        }
+        if shared.stdin.lock().await.is_none() {
             return Err(ServiceError::StdinClosed);
         }
         if shared.lease() {

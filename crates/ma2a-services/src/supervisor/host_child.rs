@@ -142,11 +142,17 @@ async fn run(
 ) {
     let mut terminating: Option<(tokio::time::Instant, Vec<oneshot::Sender<SupervisorStatus>>)> =
         None;
+    // The grace period ends in one kill; a child that outlives it is waited for, not killed
+    // again on every turn of this loop.
+    let mut killed = false;
     let status = loop {
-        let kill_at = terminating.as_ref().map(|(at, _)| *at);
+        let kill_at = terminating.as_ref().map(|(at, _)| *at).filter(|_| !killed);
         tokio::select! {
             status = spawned.child.wait() => break status.ok(),
-            () = sleep_until(kill_at) => spawned.kill_all(),
+            () = sleep_until(kill_at) => {
+                spawned.kill_all();
+                killed = true;
+            }
             request = requests.recv() => match request {
                 Some(Lifecycle::Go(reply)) => {
                     let _sent = reply.send(*shared.status.borrow());

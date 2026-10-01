@@ -271,6 +271,27 @@ async fn before_go_no_child_exists() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdin_before_the_child_exists_is_not_running_and_without_stdin_is_closed() -> TestResult {
+    let harness = host("sup-stdin-early", start("cat", true)?)?;
+    let (mut early, _early_writer) = harness
+        .open(SupervisorRequest::Attach(LogFrom::Now, true))
+        .await?;
+    assert_eq!(early.expect().await?.rejection()?, ServiceError::NotRunning);
+    harness.ask(SupervisorRequest::Abort).await?;
+    harness.finish().await?;
+
+    let harness = host("sup-stdin-none", start("true", false)?)?;
+    let (mut closed, _closed_writer) = harness.open(SupervisorRequest::Stdin(false)).await?;
+    assert_eq!(
+        closed.expect().await?.rejection()?,
+        ServiceError::StdinClosed
+    );
+    harness.ask(SupervisorRequest::Abort).await?;
+    harness.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_program_that_cannot_start_is_recorded() -> TestResult {
     let spec = ProcessSpec::new(
         Some("/nonexistent/ma2a-test-program".to_owned()),
