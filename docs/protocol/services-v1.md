@@ -70,7 +70,8 @@ it may report a failure. A stream reset or connection loss counts as `cancel` on
 the caller it is indeterminate once `open` has been sent.
 
 The `open` header is the map `{0: [major 1, minor 0], 1: request_id[16], 2: target_endpoint_id[32],
-3: service code, 4: body}`. A different major version is rejected with `version_mismatch`. A target
+3: service code, 4: body}`. Any version other than exactly `[1, 0]` is rejected with
+`version_mismatch`; how services themselves are versioned is in `docs/protocol/service-v1.md`. A target
 that differs from the receiving Runtime, a family that differs from the negotiated ALPN, trailing
 bytes, and noncanonical encodings are all `invalid_input`.
 

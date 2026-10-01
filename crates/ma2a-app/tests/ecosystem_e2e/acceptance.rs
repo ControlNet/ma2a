@@ -203,8 +203,16 @@ fn cancellation_saturation_and_denial_are_exact() -> TestResult {
     assert!(named(&page, SERVICE).is_none(), "{page}");
     assert!(named(&page, "exec").is_none(), "{page}");
 
+    // A grant in another Space never combines with the exposure in `eco`.
+    let other = join(&lab.a, &c, "eco-other")?;
+    lab.a
+        .run_ok(&["space", "grant", &other, c.id(), "--service"])?;
+    refused(&c.run(&arguments)?, "unknown_service")?;
+
     // A removed member loses discovery at once.
-    succeed(&lab.a.run(&["space", "member", "remove", &space, c.id()])?)?;
+    for space in [&space, &other] {
+        succeed(&lab.a.run(&["space", "member", "remove", space, c.id()])?)?;
+    }
     let removed = c.run(&["service", "discover", "--endpoint", lab.a.id()])?;
     refused(&removed, "unauthorized")?;
 
