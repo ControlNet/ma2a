@@ -124,6 +124,18 @@ incremental = true
 opt-level = 0
 split-debuginfo = "unpacked"
 
+# Signature checks dominate Store and enrollment tests: every Space chain load verifies each
+# manifest, so unoptimized curve arithmetic made long-chain tests quadratic in seconds. Only
+# these leaf crypto crates are optimized; workspace code keeps full debug builds.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
 [profile.release]
 codegen-units = 1
 debug = "line-tables-only"
