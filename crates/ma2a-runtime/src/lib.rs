@@ -24,6 +24,7 @@ mod enrollment;
 mod enrollment_actor;
 mod error;
 mod lifecycle;
+mod processes;
 mod reachability;
 mod relay_publication;
 mod services;
@@ -45,4 +46,5 @@ pub use enrollment::{
 };
 pub use error::{RuntimeError, RuntimeErrorCode};
 pub use lifecycle::Runtime;
+pub use processes::ProcessHosting;
 pub use state::{Connectivity, RuntimeEvent, RuntimeStatus, ShutdownReport};

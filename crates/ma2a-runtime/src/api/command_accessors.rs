@@ -11,7 +11,14 @@ impl Command {
         }
     }
 
-    pub(crate) const fn space_grant(&self) -> Option<((SpaceId, EndpointId), [bool; 5])> {
+    pub(crate) const fn process_command(&self) -> Option<&super::super::ProcessCommand> {
+        match &self.kind {
+            CommandKind::Process(command) => Some(command),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn space_grant(&self) -> Option<((SpaceId, EndpointId), [bool; 6])> {
         match self.kind {
             CommandKind::SpaceGrant(_, space, peer, grants) => Some(((space, peer), grants)),
             _ => None,

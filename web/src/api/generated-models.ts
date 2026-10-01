@@ -1,4 +1,5 @@
 import type { EndpointId, SpaceId } from "./generated"
+import type { ProcessDetailsView, ProcessPageView, ProcessSummaryView } from "./generated-processes"
 import type { OperationsView, ServiceExposureView } from "./generated-services"
 
 export type EndpointView = {
@@ -32,6 +33,7 @@ export type SpaceMemberView = {
   readonly exec: boolean
   readonly shell: boolean
   readonly proxy: boolean
+  readonly process: boolean
 }
 
 export type SnapshotSpaceView = {
@@ -219,6 +221,10 @@ export type CommandResult =
   | { readonly type: "service_exposures"; readonly payload: readonly ServiceExposureView[] }
   | { readonly type: "operations"; readonly payload: OperationsView }
   | { readonly type: "stream_opened"; readonly payload: Record<string, never> }
+  | { readonly type: "processes"; readonly payload: ProcessPageView }
+  | { readonly type: "process"; readonly payload: ProcessDetailsView }
+  | { readonly type: "process_terminated"; readonly payload: ProcessSummaryView }
+  | { readonly type: "process_deleted"; readonly payload: ProcessSummaryView }
 
 /** Ordered transport frame for one frozen logical snapshot. */
 export type SnapshotFragment = {

@@ -1,6 +1,9 @@
 use ma2a_core::{
-    EndpointId, SpaceId,
-    service::{ProxyHostPattern, ProxyRule, RootAccess, ServiceError},
+    EndpointId, RequestId, SpaceId,
+    service::{
+        DEFAULT_LOG_LIMIT, LogWindow, ProcessId, ProcessReason, ProcessSpec, ProcessStart,
+        ProcessState, ProxyHostPattern, ProxyRule, RootAccess, ServiceError, Termination,
+    },
 };
 use ma2a_runtime::api::{
     CapabilityFlags, ClientSnapshotState, Command, CommandResult, ConnectionObservationView,
@@ -13,14 +16,17 @@ use ma2a_runtime::api::{
     SpaceChainHead, SpaceMemberView, SpaceView, UiAuthView, decode_command,
 };
 use ma2a_runtime::api::{
-    OperationEndView, OperationIdentity, OperationRecordView, OperationsView, ServiceExposureView,
+    OperationEndView, OperationIdentity, OperationRecordView, OperationsView, ProcessDetailsView,
+    ProcessView, ServiceExposureView,
 };
+use ma2a_store::{ProcessRecord, ProcessTimes};
 
 type FixtureResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 const REQUEST_ID: &str = "000102030405060708090a0b0c0d0e0f";
 const ENDPOINT_ID: &str = "5866666666666666666666666666666666666666666666666666666666666666";
 const SPACE_ID: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+const PROCESS_ID: &str = "f0e1d2c3b4a5968778695a4b3c2d1e0f";
 
 pub(crate) fn commands() -> FixtureResult<Vec<Command>> {
     command_json()
@@ -97,7 +103,7 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::shutting_down(),
         CommandResult::space_granted(
             SpaceMemberView::new(endpoint_id, "operator", true, false)?
-                .with_services([true, false, true, false, false]),
+                .with_services([true, false, true, false, false, true]),
         ),
         CommandResult::service_exposed(ServiceExposureView::files_root(
             space_id()?,
@@ -114,7 +120,56 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         ]),
         CommandResult::operations(operations()?),
         CommandResult::stream_opened(),
+        CommandResult::processes(vec![process(false)?], Some(process_id()?))?,
+        CommandResult::process_details(ProcessDetailsView::new(
+            process(false)?,
+            (Some(process_start()?), LogWindow::new(1_024, 4_096)),
+        )),
+        CommandResult::process_terminated(process(false)?),
+        CommandResult::process_deleted(process(true)?),
     ])
+}
+
+fn process_id() -> FixtureResult<ProcessId> {
+    Ok(ProcessId::parse(PROCESS_ID)?)
+}
+
+fn process_start() -> FixtureResult<ProcessStart> {
+    let spec = ProcessSpec::new(
+        Some("/usr/bin/tail".to_owned()),
+        vec!["-f".to_owned(), "/var/log/app.log".to_owned()],
+        Some("/srv/app".to_owned()),
+    )?
+    .with_env("APP_MODE".to_owned(), "fixture".to_owned())?;
+    Ok(ProcessStart::new(spec, true, DEFAULT_LOG_LIMIT)?
+        .with_name("tail".to_owned())?
+        .with_label("team".to_owned(), "ops".to_owned())?)
+}
+
+/// A Process that ran and was terminated; `archived` also drops its start.
+fn process(archived: bool) -> FixtureResult<ProcessView> {
+    Ok(ProcessView::new(ProcessRecord {
+        id: process_id()?,
+        creator: endpoint_id()?,
+        request_id: RequestId::try_from([0x0f_u8; 16].as_slice())?,
+        fingerprint: [0x2a; 32],
+        start: if archived {
+            None
+        } else {
+            Some(process_start()?.to_bytes()?)
+        },
+        name: Some("tail".to_owned()),
+        state: ProcessState::Terminated,
+        reason: Some(ProcessReason::Requested),
+        termination: Some(Termination::Signaled(15)),
+        secret: None,
+        times: ProcessTimes {
+            created_ms: 1_000,
+            started_ms: Some(1_010),
+            ended_ms: Some(2_000),
+            archived_ms: archived.then_some(3_000),
+        },
+    }))
 }
 
 pub(crate) fn events() -> FixtureResult<Vec<RuntimeEvent>> {
@@ -281,7 +336,7 @@ fn command_json() -> Vec<String> {
         r#"{"version":1,"operation":"snapshot_stamp"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
         format!(
-            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true}}"#
+            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true,"process":false}}"#
         ),
         format!(
             r#"{{"version":1,"operation":"service_expose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"files_root","root":"docs","path":"/srv/docs","access":"read_only","host":null,"port_start":null,"port_end":null}}"#
@@ -293,6 +348,14 @@ fn command_json() -> Vec<String> {
         r#"{"version":1,"operation":"operations_status"}"#.to_owned(),
         format!(
             r#"{{"version":1,"operation":"stream_open","request_id":"{REQUEST_ID}","target_endpoint_id":"{ENDPOINT_ID}","service":"transfer"}}"#
+        ),
+        r#"{"version":1,"operation":"process_list","after":null}"#.to_owned(),
+        format!(r#"{{"version":1,"operation":"process_inspect","process_id":"{PROCESS_ID}"}}"#),
+        format!(
+            r#"{{"version":1,"operation":"process_terminate","request_id":"{REQUEST_ID}","process_id":"{PROCESS_ID}","grace_ms":5000}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"process_delete","request_id":"{REQUEST_ID}","process_id":"{PROCESS_ID}"}}"#
         ),
     ]
 }

@@ -18,7 +18,7 @@ Unknown fields, duplicate JSON object members, and unknown operations are reject
 
 ## Commands And Results
 
-The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `3b443bc5ad80408284dc2835dc2cb1611d537ac475c4b9cc6bd04724bdba0ca4`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 32 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
+The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `e2d8f4a1a671038ac8315fc7bc63b872e4e1e1cca0f79186734433ea7bd83584`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 36 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
 
 Successful responses contain required `version`, nullable `request_id`, `revision`, and discriminated `result` fields. Error responses contain required `version`, `error`, and nullable `remediation` fields. TypeScript exposes `LocalApiSuccessResponse`, `LocalApiErrorResponse`, and their `LocalApiResponse` union.
 
@@ -37,18 +37,18 @@ Space and reporting the pre-departure count would present stale state as current
 
 ### Service grants, exposure, and operation status (Phase 2)
 
-`space_member` carries the signed service grants `files_read`, `files_write`, `exec`, `shell`, and
-`proxy` beside `echo` and `relay_provider`. These are what a member may ask other members for. They
+`space_member` carries the signed service grants `files_read`, `files_write`, `exec`, `shell`,
+`proxy`, and (since Phase 3) `process` beside `echo` and `relay_provider`. These are what a member may ask other members for. They
 never make any Runtime serve anything by themselves.
 
-- **`space_grant`** carries a request ID, `space_id`, `peer_endpoint_id`, and all five grant
-  booleans. It replaces exactly those five bits of the member and returns `space_granted` with the
+- **`space_grant`** carries a request ID, `space_id`, `peer_endpoint_id`, and all six grant
+  booleans. It replaces exactly those six bits of the member and returns `space_granted` with the
   signed `space_member`. Only the Space owner can sign it; any other Runtime gets `unauthorized`,
   and an unknown Space or member gets `not_found`. Neither refusal has any effect. An unchanged
   grant succeeds without signing a new generation. Grant changes reach peers through ordinary
   control sync.
 - **`service_expose`** carries a request ID, `space_id`, and one exposure in flat nullable form:
-  - `kind` is `files_root`, `exec`, `shell`, or `proxy`;
+  - `kind` is `files_root`, `exec`, `shell`, `proxy`, or `process`;
   - `root`, `path`, and `access` (`read_only` or `read_write`) are required exactly for
     `files_root`;
   - `host` (`*` or a canonical host) and the inclusive `port_start`–`port_end` range are required
@@ -68,14 +68,19 @@ never make any Runtime serve anything by themselves.
   request ID, the peer, the service, a content-free operation name, and a direction. They never
   carry paths, argv, environment, or content. This state is in memory only.
 
-These commands are local IPC operations. The HTTP layer routes only the two reads, for the Web
-console's Services view: authenticated `GET /api/v1/services` returns the `service_exposures`
-payload, and `GET /api/v1/operations` returns the `operations` payload. Grants and consent
+These commands are local IPC operations. The HTTP layer routes only three reads, all for the
+Web console's Services view. Each needs an authenticated session:
+
+- `GET /api/v1/services` returns the `service_exposures` payload.
+- `GET /api/v1/operations` returns the `operations` payload.
+- `GET /api/v1/processes` returns the first `processes` page of `process_list`.
+
+Grants and consent
 (`space_grant`, `service_expose`, `service_unexpose`) are never routed over HTTP, so a browser
 session cannot make this Runtime serve anything.
 
 `stream_open` carries a request ID, `target_endpoint_id`, and `service` (`files`, `transfer`,
-`exec`, `shell`, or `proxy`). It upgrades one IPC connection to the stream plane:
+`exec`, `shell`, `proxy`, or `process`). It upgrades one IPC connection to the stream plane:
 
 1. After the `stream_opened` response, the connection carries Services v1 frames
    (`docs/protocol/services-v1.md`) verbatim in both directions and no further local API frames.
@@ -102,6 +107,56 @@ Admission and replay:
   Runtime process.
 - **Duplicates.** A request ID reused with a different `open` receives `reject(conflict)`. One
   still running receives `reject(unavailable)`.
+
+Process mutations (`start`, `stdin`, `attach` with stdin, `signal`, `terminate`, `delete`) follow
+these same rules. A `start` also binds its request ID on the target, so a retry that reaches the
+target by any path answers the existing Process instead of creating a second one
+(`docs/protocol/process-v1.md`).
+
+### Hosted Processes (Phase 3)
+
+These four commands are local IPC operations for the operator of the Runtime that hosts the
+Processes. Only the first `process_list` page is routed over HTTP, read-only, as
+`GET /api/v1/processes`. Inspection, termination, and deletion are not. Starting a Process is
+always a remote `start` over the
+stream plane, because a Process belongs to the Endpoint that created it.
+
+- **`process_list`** carries a nullable `after` Process ID and returns `processes`: at most 64
+  `process_summary` values in Process ID order, archived tombstones included, and a nullable
+  `next` to continue from.
+- **`process_inspect`** carries a `process_id` and returns `process`:
+  - the summary;
+  - `start` (program, args, cwd, `env_names`, stdin policy, `log_limit`, labels), or `null` once
+    archived;
+  - the retained output window `log_first_available`–`log_end`.
+
+  Environment values are never shown, only names. Arguments above 32 KiB of encoded start are
+  replaced by `[]` with `args_elided: true`.
+- **`process_terminate`** carries a request ID, `process_id`, and `grace_ms` (0–60000). It sends
+  a terminate, waits the grace period, then kills the Process group. It answers
+  `process_terminated` with the resulting summary once the end is recorded. An already terminal
+  Process answers its current summary.
+- **`process_delete`** carries a request ID and `process_id`. It archives a terminal Process,
+  removes its output and start, and answers `process_deleted` with the tombstone.
+
+A summary carries `process_id`, `creator_endpoint_id`, `request_id`, nullable `name`, `state`
+(`created`, `starting`, `running`, `exited`, `terminated`, `failed`, or `lost`), nullable
+`reason`, nullable `exit_code` and `signal`, `created_at_ms`, nullable `started_at_ms` and
+`ended_at_ms`, and `archived`.
+
+Errors:
+
+| Condition | Error |
+| --- | --- |
+| No Process with that ID | `not_found`, no effect |
+| `process_delete` on a Process that has not ended | `conflict` with remediation, no effect |
+| `process_terminate` on a Process that never started | `conflict` with remediation, no effect |
+| This Runtime does not host Processes | `unavailable`, no effect |
+| Supervisor not answering conclusively | `unavailable`; the Runtime keeps following the Process |
+
+The two mutations use ordinary mutation replay. `process_terminate` holds the local mutation lock
+for its grace period, so other local mutations wait up to 60 s behind it. The IPC client waits
+for a reply without a deadline.
 
 ## Mutation Replay
 

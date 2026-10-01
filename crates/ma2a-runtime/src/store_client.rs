@@ -6,6 +6,7 @@ mod echo;
 mod membership;
 mod mutation_replay;
 mod observation;
+mod processes;
 mod relay;
 mod services;
 mod snapshot;

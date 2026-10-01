@@ -214,6 +214,7 @@ async fn local_exposure(spec: &ExposureSpec) -> Result<LocalExposure, ApiError> 
         ExposureSpec::FilesRoot { local: None, .. } => return Err(refused()),
         ExposureSpec::Exec => LocalExposure::Exec,
         ExposureSpec::Shell => LocalExposure::Shell,
+        ExposureSpec::Process => LocalExposure::Process,
         ExposureSpec::Proxy(rule) => LocalExposure::Proxy(rule.clone()),
     })
 }
@@ -224,9 +225,9 @@ fn same_exposure(exposure: &LocalExposure, spec: &ExposureSpec) -> bool {
         (LocalExposure::FilesRoot(stored), ExposureSpec::FilesRoot { root, .. }) => {
             stored.name() == root
         }
-        (LocalExposure::Exec, ExposureSpec::Exec) | (LocalExposure::Shell, ExposureSpec::Shell) => {
-            true
-        }
+        (LocalExposure::Exec, ExposureSpec::Exec)
+        | (LocalExposure::Shell, ExposureSpec::Shell)
+        | (LocalExposure::Process, ExposureSpec::Process) => true,
         (LocalExposure::Proxy(stored), ExposureSpec::Proxy(rule)) => stored == rule,
         _ => false,
     }
@@ -244,6 +245,7 @@ fn exposure_view(
         )?,
         LocalExposure::Exec => ServiceExposureView::exec(space_id),
         LocalExposure::Shell => ServiceExposureView::shell(space_id),
+        LocalExposure::Process => ServiceExposureView::process(space_id),
         LocalExposure::Proxy(rule) => ServiceExposureView::proxy(space_id, rule.clone()),
     })
 }

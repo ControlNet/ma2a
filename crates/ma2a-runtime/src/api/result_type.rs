@@ -38,6 +38,7 @@ impl CommandResult {
             ResultKind::ServiceExposures(_) => "service_exposures",
             ResultKind::Operations(_) => "operations",
             ResultKind::StreamOpened => "stream_opened",
+            ResultKind::Process(ref result) => result.result_type(),
         }
     }
 }

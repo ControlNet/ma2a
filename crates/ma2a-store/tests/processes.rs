@@ -1,0 +1,307 @@
+//! Durable Processes: `RequestId` binding, limits, guarded transitions, and retention.
+
+#[path = "common/support.rs"]
+mod support;
+
+use iroh_base::SecretKey;
+use ma2a_core::{
+    EndpointId, ProtocolError, RequestId,
+    service::{ProcessId, ProcessReason, ProcessState, Termination},
+};
+use ma2a_store::{
+    ENDED_RETENTION_MS, LocalExposure, MAX_ACTIVE_PROCESSES_PER_CREATOR, NewProcess,
+    ProcessArchive, ProcessCreation, ProcessFilter, ProcessTransition, Repository, StoreConfig,
+    StoreError,
+};
+use rusqlite::Connection;
+use support::{TempState, TestResult, TestResultValue as TestValue};
+
+fn endpoint(seed: u8) -> EndpointId {
+    SecretKey::from_bytes(&[seed; 32]).public().into()
+}
+
+fn request(seed: u8) -> TestValue<RequestId> {
+    Ok(RequestId::try_from([seed; 16].as_slice())?)
+}
+
+const fn new_process(
+    id: u8,
+    (creator, request_id): (EndpointId, RequestId),
+    fingerprint: u8,
+) -> NewProcess<'static> {
+    NewProcess {
+        id: ProcessId::from_bytes([id; 16]),
+        binding: (creator, request_id),
+        fingerprint: [fingerprint; 32],
+        start: (b"start bytes", Some("worker")),
+        secret: [0x5a; 32],
+        created_ms: 1_000,
+    }
+}
+
+const fn step(to: ProcessState, at_ms: u64) -> ProcessTransition {
+    ProcessTransition {
+        to,
+        reason: None,
+        termination: None,
+        at_ms,
+    }
+}
+
+fn created(creation: &ProcessCreation) -> TestValue<ProcessId> {
+    match creation {
+        ProcessCreation::Created(record) => Ok(record.id),
+        other => Err(format!("expected a new Process, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn one_request_id_binds_exactly_one_process_per_creator() -> TestResult {
+    let state = TempState::new("process-binding")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let binding = (endpoint(1), request(1)?);
+    let first = repository.create_process(&new_process(1, binding, 7))?;
+    let id = created(first.value())?;
+    let retry = repository.create_process(&new_process(2, binding, 7))?;
+    assert!(matches!(retry.value(), ProcessCreation::Existing(record) if record.id == id));
+    assert_eq!(retry.revision(), first.revision());
+    let changed = repository.create_process(&new_process(3, binding, 8))?;
+    assert_eq!(changed.value(), &ProcessCreation::Conflict);
+    let other = repository.create_process(&new_process(4, (endpoint(2), request(1)?), 7))?;
+    assert_eq!(created(other.value())?, ProcessId::from_bytes([4; 16]));
+    let record = repository.process(id)?.ok_or("missing Process")?;
+    assert_eq!(record.state, ProcessState::Created);
+    assert_eq!(record.secret, Some([0x5a; 32]));
+    assert_eq!(record.start.as_deref(), Some(b"start bytes".as_slice()));
+    assert!(
+        repository
+            .process(ProcessId::from_bytes([3; 16]))?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_creator_limit_refuses_without_recording_anything() -> TestResult {
+    let state = TempState::new("process-limit")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let limit = u8::try_from(MAX_ACTIVE_PROCESSES_PER_CREATOR)?;
+    for seed in 0..limit {
+        created(
+            repository
+                .create_process(&new_process(seed, (endpoint(1), request(seed)?), 1))?
+                .value(),
+        )?;
+    }
+    let before = repository.revision()?;
+    let refused = repository.create_process(&new_process(99, (endpoint(1), request(99)?), 1))?;
+    assert_eq!(refused.value(), &ProcessCreation::LimitExceeded);
+    assert_eq!(repository.revision()?, before);
+    let ended = ProcessId::from_bytes([0; 16]);
+    repository.transition_process(ended, step(ProcessState::Starting, 2))?;
+    repository.transition_process(
+        ended,
+        ProcessTransition {
+            reason: Some(ProcessReason::SpawnFailed),
+            ..step(ProcessState::Failed, 3)
+        },
+    )?;
+    created(
+        repository
+            .create_process(&new_process(99, (endpoint(1), request(99)?), 1))?
+            .value(),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn only_lifecycle_permitted_transitions_are_written() -> TestResult {
+    let state = TempState::new("process-transitions")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let id = created(
+        repository
+            .create_process(&new_process(1, (endpoint(1), request(1)?), 1))?
+            .value(),
+    )?;
+    let refused = repository.transition_process(id, step(ProcessState::Running, 2));
+    assert!(
+        matches!(refused, Err(StoreError::Protocol(error)) if error == ProtocolError::CONFLICT)
+    );
+    assert_eq!(
+        repository.process(id)?.ok_or("missing")?.state,
+        ProcessState::Created
+    );
+    repository.transition_process(id, step(ProcessState::Starting, 2))?;
+    let running = repository.transition_process(id, step(ProcessState::Running, 3))?;
+    assert_eq!(running.value().times.started_ms, Some(3));
+    assert!(running.value().secret.is_some());
+    let exited = repository.transition_process(
+        id,
+        ProcessTransition {
+            termination: Some(Termination::Exited(4)),
+            ..step(ProcessState::Exited, 9)
+        },
+    )?;
+    let record = exited.into_value();
+    assert_eq!(record.termination, Some(Termination::Exited(4)));
+    assert_eq!(record.times.ended_ms, Some(9));
+    assert_eq!(
+        record.secret, None,
+        "an ended Process forgets its supervisor secret"
+    );
+    assert!(
+        repository
+            .transition_process(id, step(ProcessState::Lost, 10))
+            .is_err()
+    );
+    let missing = repository.transition_process(
+        ProcessId::from_bytes([9; 16]),
+        step(ProcessState::Starting, 1),
+    );
+    assert!(
+        matches!(missing, Err(StoreError::Protocol(error)) if error == ProtocolError::NOT_FOUND)
+    );
+    Ok(())
+}
+
+#[test]
+fn archived_tombstones_keep_the_binding_and_expire_on_schedule() -> TestResult {
+    let state = TempState::new("process-archive")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let binding = (endpoint(1), request(1)?);
+    let id = created(
+        repository
+            .create_process(&new_process(1, binding, 1))?
+            .value(),
+    )?;
+    assert_eq!(
+        repository.archive_process(id, 5)?.value(),
+        &ProcessArchive::Active
+    );
+    repository.transition_process(id, step(ProcessState::Starting, 2))?;
+    repository.transition_process(
+        id,
+        ProcessTransition {
+            reason: Some(ProcessReason::SupervisorLost),
+            ..step(ProcessState::Lost, 3)
+        },
+    )?;
+    let archived = repository.archive_process(id, 4)?.into_value();
+    assert!(
+        matches!(&archived, ProcessArchive::Archived(record) if record.start.is_none() && record.is_archived())
+    );
+    let retry = repository.create_process(&new_process(2, binding, 1))?;
+    assert!(matches!(retry.value(), ProcessCreation::Existing(record) if record.id == id));
+    let listed = |archived| ProcessFilter {
+        creator: Some(endpoint(1)),
+        after: None,
+        limit: 32,
+        archived,
+    };
+    assert!(repository.processes(listed(false))?.value().is_empty());
+    assert_eq!(repository.processes(listed(true))?.value().len(), 1);
+    assert_eq!(
+        repository
+            .archive_process(ProcessId::from_bytes([8; 16]), 4)?
+            .value(),
+        &ProcessArchive::Missing
+    );
+    let other = created(
+        repository
+            .create_process(&new_process(3, (endpoint(1), request(3)?), 1))?
+            .value(),
+    )?;
+    repository.transition_process(other, step(ProcessState::Failed, 10))?;
+    assert!(
+        repository
+            .expire_processes(10 + ENDED_RETENTION_MS - 1)?
+            .is_empty()
+    );
+    assert_eq!(
+        repository.expire_processes(11 + ENDED_RETENTION_MS)?,
+        vec![other]
+    );
+    assert!(repository.expire_processes(4 + 31 * 86_400_000)?.is_empty());
+    assert!(
+        repository.process(id)?.is_none(),
+        "an expired tombstone is pruned"
+    );
+    Ok(())
+}
+
+#[test]
+fn listings_filter_by_creator_and_continue_after_a_cursor() -> TestResult {
+    let state = TempState::new("process-list")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    for seed in [3, 1, 2] {
+        created(
+            repository
+                .create_process(&new_process(seed, (endpoint(1), request(seed)?), 1))?
+                .value(),
+        )?;
+    }
+    created(
+        repository
+            .create_process(&new_process(9, (endpoint(2), request(9)?), 1))?
+            .value(),
+    )?;
+    let page = repository.processes(ProcessFilter {
+        creator: Some(endpoint(1)),
+        after: Some(ProcessId::from_bytes([1; 16])),
+        limit: 1,
+        archived: false,
+    })?;
+    let ids: Vec<_> = page.value().iter().map(|record| record.id).collect();
+    assert_eq!(ids, [ProcessId::from_bytes([2; 16])]);
+    let all = repository.processes(ProcessFilter {
+        creator: None,
+        after: None,
+        limit: 32,
+        archived: false,
+    })?;
+    assert_eq!(all.value().len(), 4);
+    assert_eq!(repository.active_processes()?.len(), 4);
+    Ok(())
+}
+
+#[test]
+fn schema_seven_exposures_survive_the_process_migration() -> TestResult {
+    let state = TempState::new("process-migration")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let space = support_space(&mut repository)?;
+    repository.expose_service(space, &LocalExposure::Exec)?;
+    drop(repository);
+    let connection = Connection::open(config.database_path())?;
+    connection.execute_batch(
+        "DROP TABLE processes; DELETE FROM schema_migrations WHERE version = 8; PRAGMA user_version = 7;",
+    )?;
+    drop(connection);
+    let mut reopened = Repository::open(&config)?;
+    let kinds: Vec<_> = reopened
+        .service_exposures()?
+        .into_value()
+        .into_iter()
+        .map(|record| record.exposure)
+        .collect();
+    assert_eq!(kinds, [LocalExposure::Exec]);
+    reopened.expose_service(space, &LocalExposure::Process)?;
+    let views = reopened.service_exposure_views()?;
+    assert!(views.iter().any(|view| view.process() && view.exec()));
+    Ok(())
+}
+
+fn support_space(repository: &mut Repository) -> TestValue<ma2a_core::SpaceId> {
+    let member = ma2a_core::SpaceMemberV1::new(
+        endpoint(0x61),
+        "owner".to_owned(),
+        ma2a_core::MemberCapabilities::new(true, true),
+    )?;
+    Ok(repository
+        .create_owned_space(&ma2a_store::SpaceCreation::new(
+            1_700_000_000_000,
+            member,
+            ma2a_core::SpacePolicyV1::phase_one_default(),
+        ))?
+        .space_id())
+}

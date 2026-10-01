@@ -55,7 +55,7 @@ impl Pair {
         let caller_id = caller.handle().status().await?.endpoint_id();
         let granted = target
             .handle()
-            .grant_owned_space_member((space, caller_id), [true, true, false, false, false])
+            .grant_owned_space_member((space, caller_id), [true, true, false, false, false, false])
             .await?;
         assert!(granted.is_ok());
         let canonical = std::fs::canonicalize(&root.0)?

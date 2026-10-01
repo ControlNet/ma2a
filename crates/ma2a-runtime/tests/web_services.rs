@@ -1,4 +1,4 @@
-//! Authenticated Web projection of service exposures and operations.
+//! Authenticated Web projection of service exposures, operations, and hosted Processes.
 
 #[path = "support/web.rs"]
 #[allow(
@@ -56,7 +56,7 @@ async fn body(response: axum::response::Response) -> TestResult<Value> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn exposures_and_operations_are_readable_only_with_a_session() -> TestResult {
+async fn exposures_operations_and_processes_are_readable_only_with_a_session() -> TestResult {
     let state = TempState::new("web-services")?;
     let runtime = Runtime::start(StoreConfig::new(state.path())).await?;
     let control =
@@ -103,7 +103,7 @@ async fn exposures_and_operations_are_readable_only_with_a_session() -> TestResu
     )
     .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12_345))));
 
-    for uri in ["/api/v1/services", "/api/v1/operations"] {
+    for uri in ["/api/v1/services", "/api/v1/operations", "/api/v1/processes"] {
         let denied = router.clone().oneshot(web_read(uri, None)?).await?;
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED, "{uri}");
     }
@@ -125,6 +125,16 @@ async fn exposures_and_operations_are_readable_only_with_a_session() -> TestResu
     assert_eq!(
         body(operations).await?,
         json!({"active_count": 0, "active": [], "recent_count": 0, "recent": []})
+    );
+
+    let processes = router
+        .clone()
+        .oneshot(web_read("/api/v1/processes", Some(&cookie))?)
+        .await?;
+    assert_eq!(processes.status(), StatusCode::OK);
+    assert_eq!(
+        body(processes).await?,
+        json!({"processes": [], "next": null})
     );
 
     cancellation.cancel();

@@ -22,6 +22,7 @@ export type ServiceCommand =
       readonly exec: boolean
       readonly shell: boolean
       readonly proxy: boolean
+      readonly process: boolean
     })
   | (Mutation &
       ExposureSelector & {
@@ -38,7 +39,7 @@ export type ServiceCommand =
       readonly service: OperationService
     })
 
-export type ExposureKind = "files_root" | "exec" | "shell" | "proxy"
+export type ExposureKind = "files_root" | "exec" | "shell" | "proxy" | "process"
 export type RootAccess = "read_only" | "read_write"
 
 /** One thing this Runtime serves inside one Space; inapplicable fields are null. */
@@ -53,7 +54,7 @@ export type ServiceExposureView = {
   readonly port_end: number | null
 }
 
-export type OperationService = "files" | "transfer" | "exec" | "shell" | "proxy"
+export type OperationService = "files" | "transfer" | "exec" | "shell" | "proxy" | "process"
 export type OperationName =
   | "stat"
   | "list"
@@ -67,6 +68,15 @@ export type OperationName =
   | "exec"
   | "shell"
   | "proxy"
+  | "process_start"
+  | "process_list"
+  | "process_inspect"
+  | "process_logs"
+  | "process_attach"
+  | "process_stdin"
+  | "process_signal"
+  | "process_terminate"
+  | "process_delete"
 export type ServiceErrorName =
   | "version_mismatch"
   | "invalid_input"
@@ -96,6 +106,11 @@ export type ServiceErrorName =
   | "connection_refused"
   | "unreachable"
   | "dns_failed"
+  | "unknown_process"
+  | "not_running"
+  | "writer_busy"
+  | "stdin_closed"
+  | "process_active"
 
 /** Content-free identity of one streaming operation. */
 type OperationIdentityView = {

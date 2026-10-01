@@ -49,6 +49,7 @@ pub(super) enum ResultKind {
     ServiceExposures(Vec<super::ServiceExposureView>),
     Operations(super::OperationsView),
     StreamOpened,
+    Process(super::ProcessResult),
 }
 
 /// One member of the exact local API v1 result set.
@@ -105,7 +106,8 @@ impl CommandResult {
             | ResultKind::ServiceUnexposed(_)
             | ResultKind::ServiceExposures(_)
             | ResultKind::Operations(_)
-            | ResultKind::StreamOpened => None,
+            | ResultKind::StreamOpened
+            | ResultKind::Process(_) => None,
         }
     }
 

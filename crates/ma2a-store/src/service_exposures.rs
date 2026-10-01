@@ -56,6 +56,8 @@ pub enum LocalExposure {
     Shell,
     /// One allowed proxy destination rule.
     Proxy(ProxyRule),
+    /// Durable Processes for this Space's members.
+    Process,
 }
 
 impl LocalExposure {
@@ -65,6 +67,7 @@ impl LocalExposure {
             Self::Exec => 1,
             Self::Shell => 2,
             Self::Proxy(_) => 3,
+            Self::Process => 4,
         }
     }
 
@@ -72,7 +75,7 @@ impl LocalExposure {
     pub fn key(&self) -> String {
         match self {
             Self::FilesRoot(root) => root.name.as_str().to_owned(),
-            Self::Exec | Self::Shell => String::new(),
+            Self::Exec | Self::Shell | Self::Process => String::new(),
             Self::Proxy(rule) => {
                 let host = match rule.host() {
                     ProxyHostPattern::Any => "*",
@@ -127,7 +130,9 @@ impl Repository {
                     None,
                 )
             }
-            LocalExposure::Exec | LocalExposure::Shell => (None, None, None),
+            LocalExposure::Exec | LocalExposure::Shell | LocalExposure::Process => {
+                (None, None, None)
+            }
             LocalExposure::Proxy(rule) => (None, None, Some(rule)),
         };
         let proxy_host = proxy.map(|rule| match rule.host() {
@@ -221,24 +226,10 @@ impl Repository {
                 LocalExposure::Exec => current.with_exec(),
                 LocalExposure::Shell => current.with_shell(),
                 LocalExposure::Proxy(rule) => current.with_proxy_rule(rule),
+                LocalExposure::Process => current.with_process(),
             };
         }
         Ok(views)
-    }
-
-    /// Returns the local directory bound to an exported root name, if any.
-    ///
-    /// # Errors
-    /// Returns [`StoreError`] when the row cannot be read.
-    pub fn file_root_path(&self, name: &RootName) -> Result<Option<String>, StoreError> {
-        Ok(self
-            .connection
-            .query_row(
-                "SELECT path FROM file_roots WHERE name = ?1",
-                [name.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?)
     }
 }
 

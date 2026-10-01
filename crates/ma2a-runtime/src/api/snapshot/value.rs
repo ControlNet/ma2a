@@ -46,7 +46,7 @@ fn observation_value(observation: &ConnectionObservationView) -> Value {
 }
 
 pub(crate) fn member_value(member: &SpaceMemberView) -> Value {
-    let [files_read, files_write, exec, shell, proxy] = member.services;
+    let [files_read, files_write, exec, shell, proxy, process] = member.services;
     json!({
         "endpoint_id": encode_hex(member.endpoint_id.as_bytes()),
         "label": member.label,
@@ -57,6 +57,7 @@ pub(crate) fn member_value(member: &SpaceMemberView) -> Value {
         "exec": exec,
         "shell": shell,
         "proxy": proxy,
+        "process": process,
     })
 }
 

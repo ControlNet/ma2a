@@ -12,6 +12,7 @@ use crate::{
 use super::{ConnectionContext, IpcError};
 
 mod interaction;
+mod processes;
 mod relay;
 mod services;
 mod space;
@@ -182,6 +183,9 @@ pub(super) async fn execute(
         "service_unexpose" => services::unexpose(context, command).await?,
         "service_exposure_list" => services::list(context).await?,
         "operations_status" => services::operations(context),
+        "process_list" | "process_inspect" | "process_terminate" | "process_delete" => {
+            processes::execute(context, command).await?
+        }
         _ => return Err(ProtocolError::UNAVAILABLE.into()),
     })
 }

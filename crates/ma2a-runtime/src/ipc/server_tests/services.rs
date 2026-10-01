@@ -145,7 +145,7 @@ async fn grants_are_owner_signed_and_operations_start_empty() -> TestResult {
         json!({
             "version": 1, "operation": "space_grant", "request_id": request_id,
             "space_id": harness.space, "peer_endpoint_id": peer, "files_read": true,
-            "files_write": false, "exec": true, "shell": false, "proxy": false,
+            "files_write": false, "exec": true, "shell": false, "proxy": false, "process": true,
         })
     };
     let granted = call(
@@ -159,6 +159,10 @@ async fn grants_are_owner_signed_and_operations_start_empty() -> TestResult {
         Some(&json!(true))
     );
     assert_eq!(granted.pointer("/result/payload/exec"), Some(&json!(true)));
+    assert_eq!(
+        granted.pointer("/result/payload/process"),
+        Some(&json!(true))
+    );
     assert_eq!(granted.pointer("/result/payload/echo"), Some(&json!(true)));
     let unknown = call(
         &harness.client,
@@ -176,5 +180,59 @@ async fn grants_are_owner_signed_and_operations_start_empty() -> TestResult {
         operations.pointer("/result/payload"),
         Some(&json!({"active_count": 0, "active": [], "recent_count": 0, "recent": []}))
     );
+    harness.stop().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_commands_answer_an_empty_host_and_process_exposure_round_trips() -> TestResult {
+    let harness = Harness::start("services-process").await?;
+    let (client, space) = (&harness.client, harness.space.as_str());
+    let listed = call(
+        client,
+        json!({"version": 1, "operation": "process_list", "after": null}),
+    )
+    .await?;
+    assert_eq!(text(&listed, "/result/type"), Some("processes"));
+    assert_eq!(
+        listed.pointer("/result/payload"),
+        Some(&json!({"processes": [], "next": null}))
+    );
+    let missing = "0102030405060708090a0b0c0d0e0f10";
+    let unknown = [
+        json!({"version": 1, "operation": "process_inspect", "process_id": missing}),
+        json!({
+            "version": 1, "operation": "process_terminate",
+            "request_id": "28282828282828282828282828282828", "process_id": missing, "grace_ms": 0,
+        }),
+        json!({
+            "version": 1, "operation": "process_delete",
+            "request_id": "29292929292929292929292929292929", "process_id": missing,
+        }),
+    ];
+    for request in unknown {
+        assert_eq!(
+            text(&call(client, request).await?, "/error"),
+            Some("not_found")
+        );
+    }
+
+    let exposure = |operation: &str, request_id: &str| {
+        json!({
+            "version": 1, "operation": operation, "request_id": request_id, "space_id": space,
+            "kind": "process", "root": null, "path": null, "access": null,
+            "host": null, "port_start": null, "port_end": null,
+        })
+    };
+    let exposed = call(
+        client,
+        exposure("service_expose", "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"),
+    )
+    .await?;
+    assert_eq!(text(&exposed, "/result/payload/kind"), Some("process"));
+    let mut removal = exposure("service_unexpose", "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b");
+    removal.as_object_mut().ok_or("object")?.remove("path");
+    removal.as_object_mut().ok_or("object")?.remove("access");
+    let removed = call(client, removal).await?;
+    assert_eq!(text(&removed, "/result/type"), Some("service_unexposed"));
     harness.stop().await
 }

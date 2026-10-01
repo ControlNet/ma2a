@@ -23,6 +23,9 @@ pub(crate) struct ServiceGrant {
     pub(crate) root: Option<PathBuf>,
 }
 
+/// One Process read or step, run on the store thread against the repository.
+pub(crate) type ProcessJob = Box<dyn FnOnce(&mut Repository) + Send>;
+
 pub(crate) enum ServiceStoreCommand {
     Authorize {
         endpoints: (EndpointId, EndpointId),
@@ -55,6 +58,7 @@ pub(crate) enum ServiceStoreCommand {
         reply: oneshot::Sender<Result<Committed<bool>, StoreError>>,
     },
     Exposures(oneshot::Sender<Result<Committed<Vec<ExposureRecord>>, StoreError>>),
+    Process(ProcessJob),
 }
 
 /// Authorizes one access for `peer` against this Runtime inside one complete shared Space.
@@ -150,6 +154,7 @@ impl StoreBackend {
             ServiceStoreCommand::Exposures(reply) => {
                 drop(reply.send(self.repository.service_exposures()));
             }
+            ServiceStoreCommand::Process(job) => job(&mut self.repository),
         }
     }
 

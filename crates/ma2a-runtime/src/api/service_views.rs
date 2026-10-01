@@ -64,6 +64,14 @@ impl ServiceExposureView {
         }
     }
 
+    /// Durable Processes hosted for this Space.
+    pub const fn process(space_id: SpaceId) -> Self {
+        Self {
+            space_id,
+            spec: ExposureSpec::Process,
+        }
+    }
+
     /// One allowed proxy destination rule in this Space.
     pub const fn proxy(space_id: SpaceId, rule: ProxyRule) -> Self {
         Self {

@@ -88,6 +88,12 @@ pub(super) async fn operations(State(state): State<WebState>, headers: HeaderMap
     read(&state, &headers, (&request, "operations")).await
 }
 
+/// The first page of hosted Processes, content-free: never their arguments or output.
+pub(super) async fn processes(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    let request = json!({"version": 1, "operation": "process_list", "after": null});
+    read(&state, &headers, (&request, "processes")).await
+}
+
 /// Answers one authenticated read-only Local API command with its result payload.
 async fn read(
     state: &WebState,

@@ -51,13 +51,31 @@ impl Runtime {
     ) -> Result<Self, RuntimeError> {
         // Initialization owns sizeable Runtime projections across I/O awaits.
         // Keep callers' future size independent of those internal projections.
-        Box::pin(Self::initialize(config, clock)).await
+        Box::pin(Self::initialize(config, clock, None)).await
+    }
+
+    /// Opens a Runtime that also starts new Processes with `hosting`.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError`] on any fail-closed storage, identity, or Endpoint failure.
+    pub async fn start_with_processes(
+        config: StoreConfig,
+        hosting: crate::ProcessHosting,
+    ) -> Result<Self, RuntimeError> {
+        Box::pin(Self::initialize(
+            config,
+            Arc::new(SystemClock),
+            Some(hosting),
+        ))
+        .await
     }
 
     async fn initialize(
         config: StoreConfig,
         clock: Arc<dyn crate::RuntimeClock>,
+        hosting: Option<crate::ProcessHosting>,
     ) -> Result<Self, RuntimeError> {
+        let state_dir = config.state_dir().to_path_buf();
         let backend = tokio::task::spawn_blocking(move || StoreBackend::open(&config)).await??;
         let (store_sender, store_receiver) = mpsc::channel(STORE_CAPACITY);
         let store = StoreClient::new(store_sender);
@@ -116,6 +134,7 @@ impl Runtime {
             direct_reachable: false,
             relay: crate::reachability::RelayReachabilityState::new(relay_map),
         };
+        let process_clock = Arc::clone(&clock);
         let (mut actor, handle, cancellation) = Actor::new(
             state,
             endpoint,
@@ -142,13 +161,11 @@ impl Runtime {
             return Err(error);
         }
         tasks.spawn(async move { actor.run().await.map(TaskExit::Actor) });
-        let host = crate::stream_host::HostContext {
-            local: identity.endpoint_id,
-            store,
-            shutdown: cancellation.child_token(),
-            operations: handle.operations().clone(),
-            authorizations: crate::stream_host::Authorizations::default(),
-        };
+        let host = service_host(
+            (identity.endpoint_id, store, process_clock),
+            (&state_dir, hosting),
+            (&cancellation, &handle),
+        );
         spawn_service_host(&mut tasks, service_calls, host);
         Ok(Self {
             handle,
@@ -203,6 +220,32 @@ impl Runtime {
             endpoint_closed: ack.endpoint_closed,
             revision: ack.revision,
         })
+    }
+}
+
+/// Everything the inbound service host and the Process manager share.
+fn service_host(
+    (local, store, clock): (
+        ma2a_core::EndpointId,
+        StoreClient,
+        Arc<dyn crate::RuntimeClock>,
+    ),
+    (state_dir, hosting): (&std::path::Path, Option<crate::ProcessHosting>),
+    (cancellation, handle): (&CancellationToken, &crate::RuntimeHandle),
+) -> crate::stream_host::HostContext {
+    let processes = crate::processes::ProcessManager::new(
+        (local, store.clone(), clock),
+        (state_dir, hosting),
+        cancellation.child_token(),
+    );
+    handle.install_processes(processes.clone());
+    crate::stream_host::HostContext {
+        local,
+        store,
+        processes,
+        shutdown: cancellation.child_token(),
+        operations: handle.operations().clone(),
+        authorizations: crate::stream_host::Authorizations::default(),
     }
 }
 

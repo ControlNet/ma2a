@@ -13,12 +13,13 @@ use crate::{
 };
 
 /// Service capabilities a grant sets; every other capability bit is left as it was.
-pub(crate) const SERVICE_CAPABILITIES: [Capability; 5] = [
+pub(crate) const SERVICE_CAPABILITIES: [Capability; 6] = [
     Capability::FILES_READ,
     Capability::FILES_WRITE,
     Capability::EXEC,
     Capability::SHELL,
     Capability::PROXY,
+    Capability::PROCESS,
 ];
 
 /// One requested grant change, applied by the Space owner.
@@ -27,7 +28,7 @@ pub(crate) struct OwnedMemberGrant {
     pub(crate) space_id: SpaceId,
     pub(crate) endpoint_id: EndpointId,
     /// Service grants in [`SERVICE_CAPABILITIES`] order.
-    pub(crate) services: [bool; 5],
+    pub(crate) services: [bool; 6],
     pub(crate) issued_at_ms: u64,
     pub(crate) local_endpoint_id: EndpointId,
 }
@@ -111,7 +112,7 @@ impl StoreBackend {
 }
 
 /// Replaces exactly the service capability bits of `current`.
-pub(crate) fn granted(current: MemberCapabilities, services: [bool; 5]) -> MemberCapabilities {
+pub(crate) fn granted(current: MemberCapabilities, services: [bool; 6]) -> MemberCapabilities {
     SERVICE_CAPABILITIES.into_iter().zip(services).fold(
         current,
         |capabilities, (capability, enabled)| {
@@ -133,7 +134,7 @@ mod tests {
     #[test]
     fn a_grant_replaces_service_bits_and_keeps_echo_and_relay() {
         let current = MemberCapabilities::new(true, true).with(Capability::SHELL);
-        let next = granted(current, [true, false, true, false, false]);
+        let next = granted(current, [true, false, true, false, false, true]);
         assert!(next.allows(Capability::ECHO));
         assert!(next.allows(Capability::PRIVATE_RELAY_PROVIDER));
         assert!(next.allows(Capability::FILES_READ));
@@ -141,5 +142,6 @@ mod tests {
         assert!(next.allows(Capability::EXEC));
         assert!(!next.allows(Capability::SHELL));
         assert!(!next.allows(Capability::PROXY));
+        assert!(next.allows(Capability::PROCESS));
     }
 }

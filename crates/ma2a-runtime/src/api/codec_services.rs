@@ -12,8 +12,15 @@ use super::{
     commands::{BoundedText, CommandKind},
 };
 
-/// Service grant flags in `files_read, files_write, exec, shell, proxy` order.
-pub(crate) const GRANT_FIELDS: [&str; 5] = ["files_read", "files_write", "exec", "shell", "proxy"];
+/// Service grant flags in `files_read, files_write, exec, shell, proxy, process` order.
+pub(crate) const GRANT_FIELDS: [&str; 6] = [
+    "files_read",
+    "files_write",
+    "exec",
+    "shell",
+    "proxy",
+    "process",
+];
 
 /// Most bytes of an exposed root's local directory path.
 const MAX_ROOT_PATH_BYTES: usize = 4_096;
@@ -29,6 +36,7 @@ pub(crate) enum ExposureSpec {
     Exec,
     Shell,
     Proxy(ProxyRule),
+    Process,
 }
 
 pub(super) fn stream_open(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
@@ -65,7 +73,7 @@ pub(super) fn space_grant(object: &Map<String, Value>) -> Result<CommandKind, Ap
     ];
     fields.extend(GRANT_FIELDS);
     exact_fields(object, &fields)?;
-    let mut grants = [false; 5];
+    let mut grants = [false; 6];
     for (slot, field) in grants.iter_mut().zip(GRANT_FIELDS) {
         *slot = object
             .get(field)
@@ -146,6 +154,7 @@ fn exposure_spec(object: &Map<String, Value>, expose: bool) -> Result<ExposureSp
         }
         "exec" if empty => Ok(ExposureSpec::Exec),
         "shell" if empty => Ok(ExposureSpec::Shell),
+        "process" if empty => Ok(ExposureSpec::Process),
         "proxy" if root.is_none() && path.is_none() && access.is_none() => {
             let host = match host.ok_or_else(ApiError::invalid_input)? {
                 "*" => ProxyHostPattern::Any,
@@ -185,7 +194,7 @@ fn nullable_port(object: &Map<String, Value>, field: &str) -> Result<Option<u16>
 pub(super) fn grant_value(
     operation: &str,
     (id, space, peer): (RequestId, ma2a_core::SpaceId, ma2a_core::EndpointId),
-    grants: [bool; 5],
+    grants: [bool; 6],
 ) -> Value {
     let mut value = json!({
         "operation": operation,
@@ -228,6 +237,7 @@ pub(crate) fn spec_fields(spec: &ExposureSpec) -> [(&'static str, Value); 7] {
         ExposureSpec::FilesRoot { root, local } => ("files_root", Some(root), local.as_ref(), None),
         ExposureSpec::Exec => ("exec", None, None, None),
         ExposureSpec::Shell => ("shell", None, None, None),
+        ExposureSpec::Process => ("process", None, None, None),
         ExposureSpec::Proxy(rule) => ("proxy", None, None, Some(rule)),
     };
     [

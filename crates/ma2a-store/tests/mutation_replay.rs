@@ -182,7 +182,7 @@ fn schema_five_replay_rows_gain_permanent_fences() -> TestResult {
     drop(repository);
     // Reconstruct the real schema-5 replay layout, retaining both row states.
     let connection = Connection::open(config.database_path())?;
-    connection.execute_batch("DROP TABLE service_exposures; DROP TABLE file_roots; DROP TABLE transfer_staging; DELETE FROM schema_migrations WHERE version = 7; DROP TRIGGER reserve_mutation_fence; DROP TABLE local_mutation_fences; DELETE FROM schema_migrations WHERE version = 6; PRAGMA user_version = 5;")?;
+    connection.execute_batch("DROP TABLE processes; DELETE FROM schema_migrations WHERE version = 8; DROP TABLE service_exposures; DROP TABLE file_roots; DROP TABLE transfer_staging; DELETE FROM schema_migrations WHERE version = 7; DROP TRIGGER reserve_mutation_fence; DROP TABLE local_mutation_fences; DELETE FROM schema_migrations WHERE version = 6; PRAGMA user_version = 5;")?;
     drop(connection);
     let mut reopened = Repository::open(&config)?;
     assert!(matches!(

@@ -47,7 +47,8 @@ impl Command {
             | CommandKind::ServiceUnexpose(..)
             | CommandKind::ServiceExposureList
             | CommandKind::OperationsStatus
-            | CommandKind::StreamOpen(..) => Err(ApiError::invalid_input()),
+            | CommandKind::StreamOpen(..)
+            | CommandKind::Process(_) => Err(ApiError::invalid_input()),
         }
     }
 
@@ -175,6 +176,7 @@ impl Command {
             CommandKind::ServiceExposureList => "service_exposure_list",
             CommandKind::OperationsStatus => "operations_status",
             CommandKind::StreamOpen(..) => "stream_open",
+            CommandKind::Process(ref command) => command.operation(),
         }
     }
 
@@ -218,6 +220,7 @@ impl Command {
             | CommandKind::SpaceGrant(id, ..)
             | CommandKind::ServiceExpose(id, ..)
             | CommandKind::ServiceUnexpose(id, ..) => Some(id),
+            CommandKind::Process(ref command) => command.request_id(),
         }
     }
 }

@@ -2,11 +2,13 @@
 
 mod codec;
 mod codec_fields;
+mod codec_processes;
 mod codec_relay;
 mod codec_services;
 mod commands;
 mod events;
 pub(crate) mod fragments;
+mod process_views;
 mod response_decode;
 mod response_revision;
 mod response_value;
@@ -23,12 +25,15 @@ pub(crate) use codec_fields::encode_hex;
 
 use ma2a_core::{ProtocolError, RequestId};
 
+pub(crate) use codec_processes::ProcessCommand;
 pub(crate) use codec_services::ExposureSpec;
 pub use commands::{COMMAND_NAMES, Command};
 pub(crate) use commands::{PrivateRelayMode, UiControlCommand};
 pub use events::{
     EVENT_NAMES, EventContinuity, RuntimeEvent, classify_event_revision, encode_event,
 };
+pub(crate) use process_views::ProcessResult;
+pub use process_views::{MAX_PROCESS_LIST_PAGE, ProcessDetailsView, ProcessView};
 pub use response_decode::decode_ui_control_response;
 pub(crate) use response_revision::snapshot_revision;
 pub use responses::{ApiResponse, CommandResult, UiControlResult, encode_error, encode_response};

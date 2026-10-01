@@ -80,7 +80,7 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
     watch.bind(grant.root.clone());
     let guard = context.operations.start(key);
     let mut report = dispatch(
-        (header, grant.root),
+        (header, grant.root, peer),
         (&context, &stop),
         (&mut reader, &mut writer),
     )
@@ -123,7 +123,11 @@ async fn reject(
 
 /// Serves the decoded request; `stop` is cancelled on shutdown or withdrawn authorization.
 async fn dispatch(
-    (header, root): (OpenHeader, Option<std::path::PathBuf>),
+    (header, root, peer): (
+        OpenHeader,
+        Option<std::path::PathBuf>,
+        ma2a_core::EndpointId,
+    ),
     (context, stop): (&HostContext, &CancellationToken),
     (reader, writer): (&mut Reader<'_>, &mut Writer<'_>),
 ) -> OperationReport {
@@ -167,6 +171,10 @@ async fn dispatch(
         }
         (OpenBody::Proxy(request), None) => {
             ma2a_services::serve_proxy(request, shutdown, (reader, writer)).await
+        }
+        (OpenBody::Process(request), None) => {
+            let operation = ((peer, request_id), request, stop);
+            crate::processes::serve(&context.processes, operation, (reader, writer)).await
         }
         _ => {
             let _sent = writer.reject(ServiceError::Internal).await;

@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 const REQUEST_ID: &str = "000102030405060708090a0b0c0d0e0f";
 const ENDPOINT_ID: &str = "5866666666666666666666666666666666666666666666666666666666666666";
 const SPACE_ID: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+const PROCESS_ID: &str = "f0e1d2c3b4a5968778695a4b3c2d1e0f";
 
 #[derive(Debug, Default)]
 struct BoundaryProbe {
@@ -119,7 +120,7 @@ fn round_trips_every_command_variant_through_the_transport_neutral_codec() {
         r#"{"version":1,"operation":"snapshot_stamp"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
         format!(
-            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true}}"#
+            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true,"process":false}}"#
         ),
         format!(
             r#"{{"version":1,"operation":"service_expose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"files_root","root":"docs","path":"/srv/docs","access":"read_only","host":null,"port_start":null,"port_end":null}}"#
@@ -131,6 +132,14 @@ fn round_trips_every_command_variant_through_the_transport_neutral_codec() {
         r#"{"version":1,"operation":"operations_status"}"#.to_owned(),
         format!(
             r#"{{"version":1,"operation":"stream_open","request_id":"{REQUEST_ID}","target_endpoint_id":"{ENDPOINT_ID}","service":"transfer"}}"#
+        ),
+        r#"{"version":1,"operation":"process_list","after":null}"#.to_owned(),
+        format!(r#"{{"version":1,"operation":"process_inspect","process_id":"{PROCESS_ID}"}}"#),
+        format!(
+            r#"{{"version":1,"operation":"process_terminate","request_id":"{REQUEST_ID}","process_id":"{PROCESS_ID}","grace_ms":5000}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"process_delete","request_id":"{REQUEST_ID}","process_id":"{PROCESS_ID}"}}"#
         ),
     ];
 
@@ -246,8 +255,8 @@ fn rejects_oversize_input_before_parsing_or_callbacks() {
 #[test]
 fn freezes_version_variants_gap_policy_and_schema_hash() {
     assert_eq!(LOCAL_API_VERSION, 1);
-    assert_eq!(COMMAND_NAMES.len(), 36);
-    assert_eq!(RESULT_NAMES.len(), 32);
+    assert_eq!(COMMAND_NAMES.len(), 40);
+    assert_eq!(RESULT_NAMES.len(), 36);
     assert_eq!(ERROR_NAMES.len(), 9);
     assert_eq!(
         ERROR_NAMES,

@@ -13,6 +13,16 @@ impl RuntimeHandle {
         &self.operations
     }
 
+    /// Installs the manager of hosted Processes; only the first installation counts.
+    pub(crate) fn install_processes(&self, manager: crate::processes::ProcessManager) {
+        let _installed = self.processes.set(manager);
+    }
+
+    /// Returns the manager of hosted Processes once the Runtime started it.
+    pub(crate) fn processes(&self) -> Option<&crate::processes::ProcessManager> {
+        self.processes.get()
+    }
+
     /// Borrows the outbound client that opens one stream per remote service operation.
     ///
     /// The client is lent per operation rather than kept here: it holds the Endpoint, and a
@@ -36,7 +46,7 @@ impl RuntimeHandle {
     pub(crate) async fn grant_owned_space_member(
         &self,
         member: (SpaceId, EndpointId),
-        services: [bool; 5],
+        services: [bool; 6],
     ) -> crate::store::GrantResult {
         let (reply, response) = oneshot::channel();
         self.commands

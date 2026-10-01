@@ -52,6 +52,7 @@ pub(super) fn result_value(result: &CommandResult) -> Value {
                 .collect(),
         ),
         ResultKind::Operations(value) => value.to_value(),
+        ResultKind::Process(result) => result.to_value(),
     };
     json!({"type": result.result_type(), "payload": payload})
 }

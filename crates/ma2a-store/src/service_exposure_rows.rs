@@ -5,7 +5,9 @@ use ma2a_core::{
     service::{ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName},
 };
 
-use crate::{ExposureRecord, FileRootExposure, LocalExposure, StoreError};
+use rusqlite::OptionalExtension as _;
+
+use crate::{ExposureRecord, FileRootExposure, LocalExposure, Repository, StoreError};
 
 type ExposureRow = (
     Vec<u8>,
@@ -60,6 +62,7 @@ fn decode_row(row: ExposureRow) -> Result<ExposureRecord, StoreError> {
         }
         (1, None, None, None, None, None, None) => LocalExposure::Exec,
         (2, None, None, None, None, None, None) => LocalExposure::Shell,
+        (4, None, None, None, None, None, None) => LocalExposure::Process,
         (3, None, None, None, Some(host), Some(start), Some(end)) => {
             let pattern = if host == "*" {
                 ProxyHostPattern::Any
@@ -71,4 +74,21 @@ fn decode_row(row: ExposureRow) -> Result<ExposureRecord, StoreError> {
         _ => return Err(MALFORMED),
     };
     Ok(ExposureRecord { space_id, exposure })
+}
+
+impl Repository {
+    /// Returns the local directory bound to an exported root name, if any.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the row cannot be read.
+    pub fn file_root_path(&self, name: &RootName) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT path FROM file_roots WHERE name = ?1",
+                [name.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
 }

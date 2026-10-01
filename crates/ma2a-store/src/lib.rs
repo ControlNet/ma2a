@@ -24,6 +24,9 @@ mod migrations;
 mod mutation_replay;
 mod owned_spaces;
 mod permissions;
+mod process_retention;
+mod process_rows;
+mod processes;
 mod relay_activity;
 mod relay_advertisement;
 mod relay_config;
@@ -66,6 +69,12 @@ pub use mutation_replay::{
     MutationReplayState,
 };
 pub use owned_spaces::{AdvancedOwnedSpace, CreatedSpace, OwnedSpaceUpdate, SpaceCreation};
+pub use process_retention::{ENDED_RETENTION_MS, MAX_TOMBSTONES, TOMBSTONE_RETENTION_MS};
+pub use process_rows::{ProcessRecord, ProcessTimes};
+pub use processes::{
+    MAX_ACTIVE_PROCESSES, MAX_ACTIVE_PROCESSES_PER_CREATOR, MAX_RETAINED_PROCESSES, NewProcess,
+    ProcessArchive, ProcessCreation, ProcessFilter, ProcessTransition,
+};
 pub use relay_advertisement::{RelayAdvertisementBoundaryError, ValidatedRelayAdvertisement};
 pub use relay_config::{PersistedRelayAdvertisement, RelayAdvertisementOutcome};
 pub use repository::Repository;
