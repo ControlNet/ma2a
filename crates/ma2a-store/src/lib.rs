@@ -61,7 +61,9 @@ pub use address_records::{
     ValidatedAddressRecord,
 };
 pub use agent_actions::AgentTaskChange;
-pub use agent_log::{AgentDelivery, MAX_DURABLE_EVENTS, MAX_PROGRESS_EVENTS};
+pub use agent_log::{
+    AgentDelivery, MAX_DURABLE_EVENTS, MAX_PROGRESS_EVENTS, MAX_UNACKED_DELIVERIES,
+};
 pub use agent_output::{AgentOutput, AgentOutputApplied, AgentOutputEffect};
 pub use agent_reads::{AGENT_TASK_RETENTION_MS, AgentOutboxEntry, AgentTaskFilter};
 pub use agent_rows::{AgentDefinition, AgentInstanceRecord, AgentRecord, AgentTaskRecord};

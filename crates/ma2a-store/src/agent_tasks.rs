@@ -9,7 +9,9 @@ use rusqlite::{OptionalExtension as _, Transaction, params};
 
 use crate::{
     AgentTaskRecord, Committed, Repository, StoreError,
-    agent_log::{AgentDelivery, enqueue, load_task, reload_task, set_state},
+    agent_log::{
+        AgentDelivery, MAX_UNACKED_DELIVERIES, enqueue, load_task, reload_task, set_state,
+    },
     agents::load_agent,
     repository::increment_revision,
     service_exposures::current_revision,
@@ -202,6 +204,17 @@ impl Repository {
         });
         let mut assigned = Vec::new();
         if let Some((generation, max_tasks)) = instance {
+            // An instance that does not read what it is sent is given nothing more.
+            let unacked: u32 = transaction.query_row(
+                "SELECT COUNT(*) FROM agent_outbox WHERE agent_id = ?1 AND generation = ?2",
+                params![agent.as_str(), generation],
+                |row| row.get(0),
+            )?;
+            let max_tasks = if unacked >= MAX_UNACKED_DELIVERIES {
+                0
+            } else {
+                max_tasks
+            };
             let busy: u32 = transaction.query_row(
                 "SELECT COUNT(*) FROM agent_tasks WHERE agent_id = ?1 AND generation = ?2
                  AND state IN (1, 2)",

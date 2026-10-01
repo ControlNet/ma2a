@@ -15,6 +15,8 @@ use crate::{
 pub const MAX_PROGRESS_EVENTS: u32 = 64;
 /// Most state, message, and artifact events one task may record; the next fails it.
 pub const MAX_DURABLE_EVENTS: u32 = 256;
+/// Most deliveries an instance may leave unacknowledged before it is assigned no more tasks.
+pub const MAX_UNACKED_DELIVERIES: u32 = 256;
 
 /// What one outbox delivery carries.
 #[expect(

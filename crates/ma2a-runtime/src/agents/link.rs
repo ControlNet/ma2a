@@ -200,9 +200,10 @@ impl AgentManager {
         loop {
             changes.mark_unchanged();
             let id = agent.clone();
+            // Only deliveries not yet written are read and rendered again.
             let pending = self
                 .store(move |repository| {
-                    let entries = repository.agent_outbox((&id, generation))?;
+                    let entries = repository.agent_outbox_after((&id, generation), written)?;
                     render::lines(repository, &entries)
                 })
                 .await;

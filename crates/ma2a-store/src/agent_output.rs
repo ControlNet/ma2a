@@ -10,7 +10,7 @@ use rusqlite::{OptionalExtension as _, Transaction, params};
 use crate::{
     AgentTaskRecord, Committed, Repository, StoreError,
     agent_actions::record_durable_event,
-    agent_log::{append_event, load_task, set_state},
+    agent_log::{MAX_DURABLE_EVENTS, append_event, durable_events, load_task, set_state},
     agent_tools::record_tool_call,
     repository::increment_revision,
     service_exposures::current_revision,
@@ -142,6 +142,13 @@ fn apply_state(
             return Ok(true);
         }
     }
+    // A state change is a durable event too: an Agent that only alternates between
+    // running and waiting reaches the same bound as one that only sends messages.
+    if !state.is_terminal() && durable_events(transaction, task)? >= MAX_DURABLE_EVENTS {
+        let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
+        set_state(transaction, (task, at_ms), limit)?;
+        return Ok(true);
+    }
     if state == AgentTaskState::Failed {
         transaction.execute(
             "UPDATE agent_tasks SET error = ?2 WHERE task_id = ?1",
@@ -180,8 +187,11 @@ fn apply_effect(
                  AND acked_seq < ?3 AND ?3 < next_seq",
                 params![output.agent.as_str(), generation, seq],
             )?;
+            // An acknowledgement of something never sent acknowledges nothing.
             transaction.execute(
-                "DELETE FROM agent_outbox WHERE agent_id = ?1 AND generation = ?2 AND seq <= ?3",
+                "DELETE FROM agent_outbox WHERE agent_id = ?1 AND generation = ?2 AND seq <= ?3
+                 AND ?3 < (SELECT next_seq FROM agent_instances
+                           WHERE agent_id = ?1 AND generation = ?2)",
                 params![output.agent.as_str(), generation, seq],
             )?;
             Ok(AgentOutputApplied::Instance)

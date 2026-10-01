@@ -202,6 +202,11 @@ impl Repository {
         if taken || count >= MAX_TASK_ARTIFACTS {
             return finish(transaction, (task, false), |_| AgentTaskChange::Refused);
         }
+        // The event comes first: a task it fails at its bound publishes nothing.
+        let body = AgentEventBody::Artifact(artifact.clone());
+        if record_durable_event(&transaction, task, (body, at_ms))?.is_none() {
+            return finish(transaction, (task, true), AgentTaskChange::Ended);
+        }
         transaction.execute(
             "INSERT INTO agent_artifacts (task_id, name, position, media_type, size, blake3)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -214,8 +219,6 @@ impl Repository {
                 artifact.blake3().as_slice(),
             ],
         )?;
-        let body = AgentEventBody::Artifact(artifact.clone());
-        record_durable_event(&transaction, task, (body, at_ms))?;
         finish(transaction, (task, true), AgentTaskChange::Changed)
     }
 }

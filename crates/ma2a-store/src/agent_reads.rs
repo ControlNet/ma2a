@@ -181,11 +181,23 @@ impl Repository {
         &self,
         (agent, generation): (&AgentId, u64),
     ) -> Result<Vec<AgentOutboxEntry>, StoreError> {
+        self.agent_outbox_after((agent, generation), 0)
+    }
+
+    /// Returns the instance's unacknowledged deliveries after sequence number `after`.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when a row is malformed.
+    pub fn agent_outbox_after(
+        &self,
+        (agent, generation): (&AgentId, u64),
+        after: u64,
+    ) -> Result<Vec<AgentOutboxEntry>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT seq, kind, task_id, ref_seq, call_id FROM agent_outbox
-             WHERE agent_id = ?1 AND generation = ?2 ORDER BY seq",
+             WHERE agent_id = ?1 AND generation = ?2 AND seq > ?3 ORDER BY seq",
         )?;
-        let rows = statement.query_map(params![agent.as_str(), generation], |row| {
+        let rows = statement.query_map(params![agent.as_str(), generation, after], |row| {
             Ok((
                 row.get::<_, u64>(0)?,
                 row.get::<_, u8>(1)?,

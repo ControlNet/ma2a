@@ -236,10 +236,17 @@ fn tool_calls_run_once_are_bounded_and_answer_their_instance() -> TestResult {
             AgentDelivery::ToolResult(task, "c0".to_owned()),
         ]
     );
-    // Acknowledging prunes every delivery up to that sequence number.
+    // Acknowledging what was never sent prunes nothing.
     apply(
         &mut repository,
         (generation, cursor + 3),
+        AgentOutputEffect::Ack(1_000),
+    )?;
+    assert_eq!(repository.agent_outbox((&agent()?, generation))?.len(), 3);
+    // Acknowledging prunes every delivery up to that sequence number.
+    apply(
+        &mut repository,
+        (generation, cursor + 4),
         AgentOutputEffect::Ack(2),
     )?;
     assert_eq!(repository.agent_outbox((&agent()?, generation))?.len(), 1);
@@ -350,5 +357,91 @@ fn a_task_over_its_durable_event_bound_fails_with_limit() -> TestResult {
     let record = repository.agent_task(task)?.ok_or("missing")?;
     assert_eq!(record.summary.state, AgentTaskState::Failed);
     assert_eq!(record.summary.reason, Some(AgentTaskReason::Limit));
+    Ok(())
+}
+
+#[test]
+fn state_changes_count_toward_the_durable_event_bound() -> TestResult {
+    let (_state, mut repository, generation, task) = running("agent-state-bound")?;
+    let bound = u64::from(ma2a_store::MAX_DURABLE_EVENTS);
+    for cursor in 0..bound {
+        let to = if cursor % 2 == 0 {
+            AgentTaskState::Waiting
+        } else {
+            AgentTaskState::Running
+        };
+        apply(&mut repository, (generation, 10 + cursor), state(task, to))?;
+    }
+    let record = repository.agent_task(task)?.ok_or("missing")?;
+    assert_eq!(record.summary.state, AgentTaskState::Failed);
+    assert_eq!(record.summary.reason, Some(AgentTaskReason::Limit));
+    assert!(record.summary.last_seq <= ma2a_store::MAX_DURABLE_EVENTS + 1);
+    Ok(())
+}
+
+#[test]
+fn an_instance_that_never_acknowledges_takes_no_more_tasks() -> TestResult {
+    let directory = TempState::new("agent-unacked")?;
+    let mut repository = Repository::open(&StoreConfig::new(directory.path()))?;
+    let generation = ready_agent(&mut repository, 2)?;
+    let mut tasks = Vec::new();
+    for seed in 1..=2 {
+        let creation = repository.create_agent_task(&new_task(seed, endpoint(1))?)?;
+        tasks.push(created(&creation.into_value())?);
+    }
+    repository.assign_agent_tasks(&agent()?, 20)?;
+    let [busy, other] = <[_; 2]>::try_from(tasks).map_err(|_| "two tasks")?;
+    let unacked = u64::from(ma2a_store::MAX_UNACKED_DELIVERIES);
+    for at_ms in 0..unacked - 2 {
+        let message = text(MessageRole::User, "more")?;
+        repository.send_agent_message(busy, (&message, 30 + at_ms))?;
+    }
+    let outbox = repository.agent_outbox((&agent()?, generation))?.len();
+    assert_eq!(u64::try_from(outbox)?, unacked);
+    // A slot frees up, but the instance has not read what it was sent.
+    apply(
+        &mut repository,
+        (generation, 2),
+        state(other, AgentTaskState::Completed),
+    )?;
+    let waiting = created(
+        &repository
+            .create_agent_task(&new_task(3, endpoint(1))?)?
+            .into_value(),
+    )?;
+    assert!(
+        repository
+            .assign_agent_tasks(&agent()?, 40)?
+            .into_value()
+            .is_empty()
+    );
+    apply(
+        &mut repository,
+        (generation, 3),
+        AgentOutputEffect::Ack(unacked),
+    )?;
+    assert_eq!(
+        repository.assign_agent_tasks(&agent()?, 41)?.into_value(),
+        [waiting]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_artifact_over_the_event_bound_is_not_published() -> TestResult {
+    let (_state, mut repository, generation, task) = running("agent-artifact-bound")?;
+    // `queued` and `running` already hold two durable events.
+    for cursor in 0..u64::from(ma2a_store::MAX_DURABLE_EVENTS) - 2 {
+        let note = AgentOutputEffect::Message(task, text(MessageRole::Agent, "note")?);
+        apply(&mut repository, (generation, 10 + cursor), note)?;
+    }
+    let published = repository
+        .add_agent_artifact(task, (&artifact("late.txt", 1)?, 900))?
+        .into_value();
+    assert!(
+        matches!(published, AgentTaskChange::Ended(_)),
+        "{published:?}"
+    );
+    assert!(repository.agent_artifacts(task)?.is_empty());
     Ok(())
 }
