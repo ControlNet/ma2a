@@ -9,9 +9,9 @@ use ma2a_core::{
     service::{ProcessId, ProcessReason, ProcessState, Termination},
 };
 use ma2a_store::{
-    ENDED_RETENTION_MS, LocalExposure, MAX_ACTIVE_PROCESSES_PER_CREATOR, NewProcess,
-    ProcessArchive, ProcessCreation, ProcessFilter, ProcessTransition, Repository, StoreConfig,
-    StoreError,
+    ENDED_RETENTION_MS, LocalExposure, MAX_ACTIVE_PROCESSES, MAX_ACTIVE_PROCESSES_PER_CREATOR,
+    MAX_RETAINED_PROCESSES_PER_CREATOR, NewProcess, ProcessArchive, ProcessCreation, ProcessFilter,
+    ProcessTransition, Repository, StoreConfig, StoreError,
 };
 use rusqlite::Connection;
 use support::{TempState, TestResult, TestResultValue as TestValue};
@@ -109,6 +109,73 @@ fn a_creator_limit_refuses_without_recording_anything() -> TestResult {
     created(
         repository
             .create_process(&new_process(99, (endpoint(1), request(99)?), 1))?
+            .value(),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn the_runtime_limit_refuses_a_creator_below_its_own_limit() -> TestResult {
+    let state = TempState::new("process-global-limit")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let per_creator = MAX_ACTIVE_PROCESSES_PER_CREATOR;
+    let creators = u8::try_from(MAX_ACTIVE_PROCESSES / per_creator)?;
+    let mut seed = 0_u8;
+    for creator in 1..=creators {
+        for _ in 0..per_creator {
+            let binding = (endpoint(creator), request(seed)?);
+            created(
+                repository
+                    .create_process(&new_process(seed, binding, 1))?
+                    .value(),
+            )?;
+            seed += 1;
+        }
+    }
+    let newcomer = (endpoint(creators + 1), request(seed)?);
+    let refused = repository.create_process(&new_process(seed, newcomer, 1))?;
+    assert_eq!(refused.value(), &ProcessCreation::LimitExceeded);
+    Ok(())
+}
+
+/// Records one Process for `creator` and ends it at once.
+fn ended_process(repository: &mut Repository, (seed, creator): (u8, EndpointId)) -> TestResult {
+    let id = created(
+        repository
+            .create_process(&new_process(seed, (creator, request(seed)?), 1))?
+            .value(),
+    )?;
+    repository.transition_process(id, step(ProcessState::Starting, 2))?;
+    repository.transition_process(
+        id,
+        ProcessTransition {
+            termination: Some(Termination::Exited(0)),
+            ..step(ProcessState::Exited, 3)
+        },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn one_creator_ended_processes_never_lock_out_another_creator() -> TestResult {
+    let state = TempState::new("process-retained")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let limit = u8::try_from(MAX_RETAINED_PROCESSES_PER_CREATOR)?;
+    for seed in 0..limit {
+        ended_process(&mut repository, (seed, endpoint(1)))?;
+    }
+    let refused = repository.create_process(&new_process(200, (endpoint(1), request(200)?), 1))?;
+    assert_eq!(refused.value(), &ProcessCreation::LimitExceeded);
+    // Another member still starts, and the first starts again once it deletes one.
+    created(
+        repository
+            .create_process(&new_process(201, (endpoint(2), request(201)?), 1))?
+            .value(),
+    )?;
+    repository.archive_process(ProcessId::from_bytes([0; 16]), 4)?;
+    created(
+        repository
+            .create_process(&new_process(200, (endpoint(1), request(200)?), 1))?
             .value(),
     )?;
     Ok(())
@@ -304,4 +371,18 @@ fn support_space(repository: &mut Repository) -> TestValue<ma2a_core::SpaceId> {
             ma2a_core::SpacePolicyV1::phase_one_default(),
         ))?
         .space_id())
+}
+
+#[test]
+fn a_record_never_prints_its_secret_or_start() -> TestResult {
+    let state = TempState::new("process-debug")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let creation = repository.create_process(&new_process(9, (endpoint(1), request(9)?), 1))?;
+    let id = created(creation.value())?;
+    let record = repository.process(id)?.ok_or("missing Process")?;
+    let printed = format!("{record:?}");
+    assert!(printed.contains("<redacted>"), "{printed}");
+    assert!(!printed.contains("90, 90"), "{printed}");
+    assert!(!printed.contains("start bytes"), "{printed}");
+    Ok(())
 }

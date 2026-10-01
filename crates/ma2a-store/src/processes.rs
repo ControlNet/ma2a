@@ -22,6 +22,12 @@ pub const MAX_ACTIVE_PROCESSES_PER_CREATOR: u32 = 8;
 pub const MAX_ACTIVE_PROCESSES: u32 = 32;
 /// Most non-archived Process records on this Runtime.
 pub const MAX_RETAINED_PROCESSES: u32 = 128;
+/// Most non-archived Process records one creator may hold, so that no member's ended
+/// Processes can fill [`MAX_RETAINED_PROCESSES`] for every other member.
+pub const MAX_RETAINED_PROCESSES_PER_CREATOR: u32 = 16;
+
+/// SQL predicate of a record that still holds its start and output.
+const RETAINED: &str = "archived_at_ms IS NULL";
 
 /// SQL predicate of a non-terminal state.
 const ACTIVE: &str = "state BETWEEN 0 AND 2";
@@ -174,7 +180,8 @@ impl Repository {
             }
         } else if count(&transaction, ACTIVE, Some(creator))? >= MAX_ACTIVE_PROCESSES_PER_CREATOR
             || count(&transaction, ACTIVE, None)? >= MAX_ACTIVE_PROCESSES
-            || count(&transaction, "archived_at_ms IS NULL", None)? >= MAX_RETAINED_PROCESSES
+            || count(&transaction, RETAINED, Some(creator))? >= MAX_RETAINED_PROCESSES_PER_CREATOR
+            || count(&transaction, RETAINED, None)? >= MAX_RETAINED_PROCESSES
         {
             ProcessCreation::LimitExceeded
         } else {

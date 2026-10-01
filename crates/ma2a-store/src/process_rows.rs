@@ -39,7 +39,7 @@ pub struct ProcessTimes {
     clippy::exhaustive_structs,
     reason = "a Store row; views and tests name every field so none can be forgotten"
 )]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProcessRecord {
     /// Process identifier.
     pub id: ProcessId,
@@ -63,6 +63,25 @@ pub struct ProcessRecord {
     pub secret: Option<[u8; 32]>,
     /// Lifecycle times.
     pub times: ProcessTimes,
+}
+
+/// Never prints the ownership secret or the start body, which holds environment values.
+impl std::fmt::Debug for ProcessRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProcessRecord")
+            .field("id", &self.id)
+            .field("creator", &self.creator)
+            .field("request_id", &self.request_id)
+            .field("start_bytes", &self.start.as_ref().map(Vec::len))
+            .field("name", &self.name)
+            .field("state", &self.state)
+            .field("reason", &self.reason)
+            .field("termination", &self.termination)
+            .field("secret", &self.secret.map(|_| "<redacted>"))
+            .field("times", &self.times)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ProcessRecord {

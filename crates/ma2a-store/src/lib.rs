@@ -72,8 +72,9 @@ pub use owned_spaces::{AdvancedOwnedSpace, CreatedSpace, OwnedSpaceUpdate, Space
 pub use process_retention::{ENDED_RETENTION_MS, MAX_TOMBSTONES, TOMBSTONE_RETENTION_MS};
 pub use process_rows::{ProcessRecord, ProcessTimes};
 pub use processes::{
-    MAX_ACTIVE_PROCESSES, MAX_ACTIVE_PROCESSES_PER_CREATOR, MAX_RETAINED_PROCESSES, NewProcess,
-    ProcessArchive, ProcessCreation, ProcessFilter, ProcessTransition,
+    MAX_ACTIVE_PROCESSES, MAX_ACTIVE_PROCESSES_PER_CREATOR, MAX_RETAINED_PROCESSES,
+    MAX_RETAINED_PROCESSES_PER_CREATOR, NewProcess, ProcessArchive, ProcessCreation, ProcessFilter,
+    ProcessTransition,
 };
 pub use relay_advertisement::{RelayAdvertisementBoundaryError, ValidatedRelayAdvertisement};
 pub use relay_config::{PersistedRelayAdvertisement, RelayAdvertisementOutcome};
