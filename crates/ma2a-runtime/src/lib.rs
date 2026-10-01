@@ -12,6 +12,7 @@ pub mod ipc;
 pub mod web;
 
 mod actor;
+mod agents;
 mod authz;
 mod clock;
 mod connections;

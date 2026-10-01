@@ -30,6 +30,7 @@ pub(crate) struct HostContext {
     pub(crate) local: EndpointId,
     pub(crate) store: StoreClient,
     pub(crate) processes: crate::processes::ProcessManager,
+    pub(crate) agents: crate::agents::AgentManager,
     pub(crate) shutdown: CancellationToken,
     pub(crate) operations: OperationsRegistry,
     pub(crate) authorizations: Authorizations,
@@ -38,10 +39,12 @@ pub(crate) struct HostContext {
 /// Serves admitted inbound streams, keeping each authorized, until the Runtime stops.
 pub(crate) async fn run(calls: mpsc::Receiver<ServiceCall>, context: HostContext) {
     let processes = crate::processes::run(context.processes.clone());
+    let agents = crate::agents::run(context.agents.clone());
     tokio::join!(
         serve(calls, context.clone()),
         reauthorize::run(context),
-        processes
+        processes,
+        agents
     );
 }
 

@@ -26,6 +26,7 @@ const SERVICE_NAME: Record<ServiceExposure["kind"], string> = {
   shell: "Shell",
   proxy: "Proxy",
   process: "Process",
+  agent: "Agent",
 }
 
 function spaceName(runtime: RuntimeViewData, id: string): string {

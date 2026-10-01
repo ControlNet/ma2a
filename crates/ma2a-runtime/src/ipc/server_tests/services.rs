@@ -15,7 +15,7 @@ fn root_exposure(request_id: &str, space: &str, path: &str) -> Value {
     json!({
         "version": 1, "operation": "service_expose", "request_id": request_id, "space_id": space,
         "kind": "files_root", "root": "docs", "path": path, "access": "read_only",
-        "host": null, "port_start": null, "port_end": null,
+        "host": null, "port_start": null, "port_end": null, "agent": null,
     })
 }
 
@@ -106,7 +106,7 @@ async fn exposures_are_canonical_bound_once_and_removed_exactly() -> TestResult 
     let proxy = call(client, json!({
         "version": 1, "operation": "service_expose", "request_id": "23232323232323232323232323232323",
         "space_id": space, "kind": "proxy", "root": null, "path": null, "access": null,
-        "host": "*", "port_start": 8000, "port_end": 8080,
+        "host": "*", "port_start": 8000, "port_end": 8080, "agent": null,
     }))
     .await?;
     assert_eq!(text(&proxy, "/result/payload/host"), Some("*"));
@@ -128,7 +128,7 @@ async fn exposures_are_canonical_bound_once_and_removed_exactly() -> TestResult 
     let unexpose = |request_id: &str| {
         json!({
             "version": 1, "operation": "service_unexpose", "request_id": request_id, "space_id": space,
-            "kind": "files_root", "root": "docs", "host": null, "port_start": null, "port_end": null,
+            "kind": "files_root", "root": "docs", "host": null, "port_start": null, "port_end": null, "agent": null,
         })
     };
     let removed = call(client, unexpose("24242424242424242424242424242424")).await?;
@@ -145,7 +145,7 @@ async fn grants_are_owner_signed_and_operations_start_empty() -> TestResult {
         json!({
             "version": 1, "operation": "space_grant", "request_id": request_id,
             "space_id": harness.space, "peer_endpoint_id": peer, "files_read": true,
-            "files_write": false, "exec": true, "shell": false, "proxy": false, "process": true,
+            "files_write": false, "exec": true, "shell": false, "proxy": false, "process": true, "agent": false,
         })
     };
     let granted = call(
@@ -220,7 +220,7 @@ async fn process_commands_answer_an_empty_host_and_process_exposure_round_trips(
         json!({
             "version": 1, "operation": operation, "request_id": request_id, "space_id": space,
             "kind": "process", "root": null, "path": null, "access": null,
-            "host": null, "port_start": null, "port_end": null,
+            "host": null, "port_start": null, "port_end": null, "agent": null,
         })
     };
     let exposed = call(

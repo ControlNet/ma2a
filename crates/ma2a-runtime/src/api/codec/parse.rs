@@ -58,6 +58,7 @@ pub(super) fn command(object: &Map<String, Value>) -> Result<Command, ApiError> 
         "service_exposure_list" => unit(object, CommandKind::ServiceExposureList)?,
         "operations_status" => unit(object, CommandKind::OperationsStatus)?,
         "stream_open" => crate::api::codec_services::stream_open(object)?,
+        operation if operation.starts_with("agent_") => crate::api::codec_agents::parse(object)?,
         "process_list" | "process_inspect" | "process_terminate" | "process_delete" => {
             crate::api::codec_processes::parse(object)?
         }

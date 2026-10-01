@@ -1,0 +1,194 @@
+//! The Agent family host: one operation per stream, the caller's own tasks only.
+
+use ma2a_core::{
+    EndpointId, RequestId,
+    service::{
+        AgentAccept, AgentCard, AgentId, AgentReply, AgentReplyOutcome, AgentRequest,
+        AgentTaskReason, FrameKind, MAX_AGENT_PAGE, MAX_TASK_PAGE, ServiceAccess, ServiceError,
+    },
+};
+use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::sync::CancellationToken;
+
+use super::AgentManager;
+
+/// Serves one decoded Agent operation for `peer`.
+pub(crate) async fn serve<R, W>(
+    manager: &AgentManager,
+    ((peer, request_id), request, stop): (
+        (EndpointId, RequestId),
+        AgentRequest,
+        &CancellationToken,
+    ),
+    (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
+) -> OperationReport
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let viewer = |agent| (Some(peer), Some(agent));
+    match request {
+        AgentRequest::Agents(after) => answer(writer, manager.discover(peer, after).await).await,
+        AgentRequest::Submit(submit) => match manager.submit((peer, request_id), &submit).await {
+            Ok((record, existing)) => {
+                let accept = AgentAccept::Submitted(record.summary.id, existing);
+                respond(writer, accept, Ok(AgentReply::Summary(record.summary))).await
+            }
+            Err(error) => refuse(writer, error).await,
+        },
+        AgentRequest::Send(agent, task, message) => {
+            let sent = manager.send(viewer(&agent), (task, message)).await;
+            answer(
+                writer,
+                sent.map(|record| AgentReply::Summary(record.summary)),
+            )
+            .await
+        }
+        AgentRequest::Get(agent, task) => {
+            let details = manager.details(viewer(&agent), task).await;
+            answer(
+                writer,
+                details.map(|details| AgentReply::Details(Box::new(details))),
+            )
+            .await
+        }
+        AgentRequest::Tasks(agent, after) => {
+            let page = MAX_TASK_PAGE + 1;
+            let listed = manager
+                .tasks(
+                    (Some(peer), Some(agent)),
+                    (after, u32::try_from(page).unwrap_or(33)),
+                )
+                .await;
+            let reply = listed.map(|(_, mut records)| {
+                let next = (records.len() > MAX_TASK_PAGE).then(|| {
+                    records.truncate(MAX_TASK_PAGE);
+                    records.last().map(|record| record.summary.id)
+                });
+                let summaries = records.into_iter().map(|record| record.summary).collect();
+                AgentReply::Page(summaries, next.flatten())
+            });
+            answer(writer, reply).await
+        }
+        AgentRequest::Watch(agent, task, after) => {
+            manager
+                .watch((viewer(&agent), stop, (task, after)), (reader, writer))
+                .await
+        }
+        AgentRequest::Cancel(agent, task) => {
+            let reason = AgentTaskReason::Requested;
+            let cancelled = manager.cancel(viewer(&agent), (task, reason)).await;
+            answer(
+                writer,
+                cancelled.map(|record| AgentReply::Summary(record.summary)),
+            )
+            .await
+        }
+        AgentRequest::Artifact(agent, task, name, offset, identity) => {
+            let operation = (viewer(&agent), (task, name), (offset, identity));
+            manager
+                .serve_artifact((operation, request_id), (reader, writer))
+                .await
+        }
+    }
+}
+
+impl AgentManager {
+    /// Returns one page of the Agents `peer` may use, in name order.
+    async fn discover(
+        &self,
+        peer: EndpointId,
+        after: Option<AgentId>,
+    ) -> Result<AgentReply, ServiceError> {
+        let (_, agents) = self.list().await?;
+        let mut cards = Vec::new();
+        let mut more = false;
+        for (record, _) in agents {
+            let id = record.definition.id.clone();
+            if after.as_ref().is_some_and(|after| id <= *after) {
+                continue;
+            }
+            let access = ServiceAccess::Agent(id.clone());
+            if self
+                .0
+                .store
+                .authorize_service((self.0.local, peer), access)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            if cards.len() == MAX_AGENT_PAGE {
+                more = true;
+                break;
+            }
+            let available = (record.enabled, record.definition.max_tasks);
+            let card = AgentCard::new(id, &record.definition.description, available)
+                .map_err(|_| ServiceError::Internal)?;
+            cards.push(card);
+        }
+        let next = more
+            .then(|| cards.last().map(|card: &AgentCard| card.id.clone()))
+            .flatten();
+        Ok(AgentReply::Cards(cards, next))
+    }
+}
+
+/// Refuses an operation before any effect.
+pub(super) async fn refuse<W: AsyncWrite + Unpin + Send>(
+    writer: &mut FrameWriter<W>,
+    error: ServiceError,
+) -> OperationReport {
+    let _sent = writer.reject(error).await;
+    OperationReport::new(OperationEnd::Rejected(error))
+}
+
+/// Sends the terminal outcome of an accepted operation.
+pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
+    writer: &mut FrameWriter<W>,
+    outcome: AgentReplyOutcome,
+) -> OperationReport {
+    let end = match &outcome {
+        Ok(_) => OperationEnd::Completed,
+        Err(error) => OperationEnd::Failed(*error),
+    };
+    let Ok(payload) = AgentReply::encode_outcome(&outcome) else {
+        return OperationReport::new(OperationEnd::Failed(ServiceError::Internal));
+    };
+    if writer.frame(FrameKind::Outcome, &payload).await.is_err() {
+        return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+    }
+    OperationReport::new(end)
+}
+
+/// Sends `accept` and the outcome.
+async fn respond<W: AsyncWrite + Unpin + Send>(
+    writer: &mut FrameWriter<W>,
+    accept: AgentAccept,
+    outcome: AgentReplyOutcome,
+) -> OperationReport {
+    let Ok(accept) = accept.encode() else {
+        return refuse(writer, ServiceError::Internal).await;
+    };
+    if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+        return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+    }
+    finish(writer, outcome).await
+}
+
+/// Answers a decided operation: its refusal, or `accept` and its outcome.
+async fn answer<W: AsyncWrite + Unpin + Send>(
+    writer: &mut FrameWriter<W>,
+    reply: Result<AgentReply, ServiceError>,
+) -> OperationReport {
+    match reply {
+        Ok(reply) => respond(writer, AgentAccept::Admitted, Ok(reply)).await,
+        // A cancellation whose end is unknown may already have had its effect.
+        Err(ServiceError::OutcomeUnknown) => {
+            let error = Err(ServiceError::OutcomeUnknown);
+            respond(writer, AgentAccept::Admitted, error).await
+        }
+        Err(error) => refuse(writer, error).await,
+    }
+}

@@ -1,4 +1,15 @@
 import type { EndpointId, SpaceId } from "./generated"
+import type {
+  AgentDefinedView,
+  AgentEventPageView,
+  AgentPageView,
+  AgentSubmittedView,
+  AgentTaskDetailsView,
+  AgentTaskPageView,
+  AgentTaskView,
+  AgentUndefinedView,
+  AgentView,
+} from "./generated-agents"
 import type { ProcessDetailsView, ProcessPageView, ProcessSummaryView } from "./generated-processes"
 import type { OperationsView, ServiceExposureView } from "./generated-services"
 
@@ -34,6 +45,7 @@ export type SpaceMemberView = {
   readonly shell: boolean
   readonly proxy: boolean
   readonly process: boolean
+  readonly agent: boolean
 }
 
 export type SnapshotSpaceView = {
@@ -225,6 +237,17 @@ export type CommandResult =
   | { readonly type: "process"; readonly payload: ProcessDetailsView }
   | { readonly type: "process_terminated"; readonly payload: ProcessSummaryView }
   | { readonly type: "process_deleted"; readonly payload: ProcessSummaryView }
+  | { readonly type: "agents"; readonly payload: AgentPageView }
+  | { readonly type: "agent_defined"; readonly payload: AgentDefinedView }
+  | { readonly type: "agent_undefined"; readonly payload: AgentUndefinedView }
+  | { readonly type: "agent_started"; readonly payload: AgentView }
+  | { readonly type: "agent_stopped"; readonly payload: AgentView }
+  | { readonly type: "agent_tasks"; readonly payload: AgentTaskPageView }
+  | { readonly type: "agent_task"; readonly payload: AgentTaskDetailsView }
+  | { readonly type: "agent_task_events"; readonly payload: AgentEventPageView }
+  | { readonly type: "agent_task_submitted"; readonly payload: AgentSubmittedView }
+  | { readonly type: "agent_task_sent"; readonly payload: AgentTaskView }
+  | { readonly type: "agent_task_cancelled"; readonly payload: AgentTaskView }
 
 /** Ordered transport frame for one frozen logical snapshot. */
 export type SnapshotFragment = {

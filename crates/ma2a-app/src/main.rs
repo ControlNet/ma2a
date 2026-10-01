@@ -199,6 +199,7 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
         cli::Command::Process(arguments) => {
             commands::remote::hosted::run(&state_dir, paths, arguments).await
         }
+        cli::Command::Agent(arguments) => commands::agents::run(&state_dir, paths, arguments).await,
         cli::Command::ProcessSupervisor => commands::supervisor::run().await,
         cli::Command::Ui { command } => commands::workflows::run_ui(&state_dir, command).await,
     }

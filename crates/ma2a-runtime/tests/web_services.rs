@@ -89,7 +89,7 @@ async fn exposures_operations_and_processes_are_readable_only_with_a_session() -
         &client,
         &json!({"version": 1, "operation": "service_expose", "request_id": "22".repeat(16),
             "space_id": space_id, "kind": "exec", "root": null, "path": null, "access": null,
-            "host": null, "port_start": null, "port_end": null}),
+            "host": null, "port_start": null, "port_end": null, "agent": null}),
     )
     .await?;
     let router = build_runtime_router(
@@ -119,7 +119,7 @@ async fn exposures_operations_and_processes_are_readable_only_with_a_session() -
     assert_eq!(
         body(exposures).await?,
         json!([{"space_id": space_id, "kind": "exec", "root": null, "path": null,
-            "access": null, "host": null, "port_start": null, "port_end": null}])
+            "access": null, "host": null, "port_start": null, "port_end": null, "agent": null}])
     );
     let operations = router
         .clone()

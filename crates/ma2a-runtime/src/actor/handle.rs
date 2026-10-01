@@ -23,6 +23,7 @@ pub struct RuntimeHandle {
     echo_metrics: ma2a_net::EchoMetrics,
     operations: crate::stream_host::OperationsRegistry,
     processes: std::sync::Arc<std::sync::OnceLock<crate::processes::ProcessManager>>,
+    agents: std::sync::Arc<std::sync::OnceLock<crate::agents::AgentManager>>,
     #[cfg(test)]
     control_schedule_events:
         std::sync::Arc<std::sync::Mutex<Vec<crate::control_sync::ControlRoundTrigger>>>,
@@ -96,6 +97,7 @@ impl RuntimeHandle {
             echo_metrics,
             operations: crate::stream_host::OperationsRegistry::new(),
             processes: std::sync::Arc::default(),
+            agents: std::sync::Arc::default(),
             #[cfg(test)]
             control_schedule_events,
             #[cfg(test)]

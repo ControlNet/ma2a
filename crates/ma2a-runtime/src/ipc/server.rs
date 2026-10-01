@@ -76,6 +76,10 @@ impl LocalApiServer {
         identity: DaemonIdentity,
     ) -> Result<Self, IpcError> {
         let listener = platform::bind(&paths)?;
+        // Agent tools reach other Endpoints through this same local API.
+        if let Some(agents) = handle.agents() {
+            agents.install_loopback(paths.clone());
+        }
         Ok(Self {
             listener,
             paths,

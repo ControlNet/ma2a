@@ -12,6 +12,7 @@ const EXPOSURE = {
   host: null,
   port_start: null,
   port_end: null,
+  agent: null,
 }
 const OPERATIONS = { active_count: 0, active: [], recent_count: 0, recent: [] }
 const PROCESS = {

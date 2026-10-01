@@ -2,24 +2,26 @@
 
 use ma2a_core::{
     RequestId,
-    service::{ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName},
+    service::{AgentId, ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName},
 };
 use serde_json::{Map, Value, json};
 
 use super::{
     ApiError,
-    codec_fields::{encode_hex, endpoint_id, exact_fields, request_id, space_id},
+    codec_fields::{encode_hex, endpoint_id, exact_fields, nullable, request_id, space_id},
     commands::{BoundedText, CommandKind},
 };
 
-/// Service grant flags in `files_read, files_write, exec, shell, proxy, process` order.
-pub(crate) const GRANT_FIELDS: [&str; 6] = [
+/// Service grant flags in `files_read, files_write, exec, shell, proxy, process, agent`
+/// order.
+pub(crate) const GRANT_FIELDS: [&str; 7] = [
     "files_read",
     "files_write",
     "exec",
     "shell",
     "proxy",
     "process",
+    "agent",
 ];
 
 /// Most bytes of an exposed root's local directory path.
@@ -37,6 +39,7 @@ pub(crate) enum ExposureSpec {
     Shell,
     Proxy(ProxyRule),
     Process,
+    Agent(AgentId),
 }
 
 pub(super) fn stream_open(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
@@ -73,7 +76,7 @@ pub(super) fn space_grant(object: &Map<String, Value>) -> Result<CommandKind, Ap
     ];
     fields.extend(GRANT_FIELDS);
     exact_fields(object, &fields)?;
-    let mut grants = [false; 6];
+    let mut grants = [false; 7];
     for (slot, field) in grants.iter_mut().zip(GRANT_FIELDS) {
         *slot = object
             .get(field)
@@ -102,6 +105,7 @@ pub(super) fn service_exposure(
         "host",
         "port_start",
         "port_end",
+        "agent",
     ];
     if expose {
         fields.extend(["path", "access"]);
@@ -123,6 +127,7 @@ fn exposure_spec(object: &Map<String, Value>, expose: bool) -> Result<ExposureSp
         .and_then(Value::as_str)
         .ok_or_else(ApiError::invalid_input)?;
     let root = nullable(object, "root")?;
+    let agent = nullable(object, "agent")?;
     let host = nullable(object, "host")?;
     let ports = (
         nullable_port(object, "port_start")?,
@@ -133,8 +138,9 @@ fn exposure_spec(object: &Map<String, Value>, expose: bool) -> Result<ExposureSp
     } else {
         (None, None)
     };
-    let root_only = host.is_none() && ports == (None, None);
-    let empty = root.is_none() && path.is_none() && access.is_none() && root_only;
+    let root_only = host.is_none() && ports == (None, None) && agent.is_none();
+    let selectors = root.is_none() && path.is_none() && access.is_none();
+    let empty = selectors && root_only;
     match kind {
         "files_root" if root_only => {
             let root =
@@ -155,7 +161,12 @@ fn exposure_spec(object: &Map<String, Value>, expose: bool) -> Result<ExposureSp
         "exec" if empty => Ok(ExposureSpec::Exec),
         "shell" if empty => Ok(ExposureSpec::Shell),
         "process" if empty => Ok(ExposureSpec::Process),
-        "proxy" if root.is_none() && path.is_none() && access.is_none() => {
+        "agent" if selectors && host.is_none() && ports == (None, None) => {
+            let agent =
+                AgentId::new(agent.ok_or_else(ApiError::invalid_input)?).map_err(ApiError::new)?;
+            Ok(ExposureSpec::Agent(agent))
+        }
+        "proxy" if selectors && agent.is_none() => {
             let host = match host.ok_or_else(ApiError::invalid_input)? {
                 "*" => ProxyHostPattern::Any,
                 exact => ProxyHostPattern::Exact(ProxyHost::new(exact).map_err(ApiError::new)?),
@@ -168,14 +179,6 @@ fn exposure_spec(object: &Map<String, Value>, expose: bool) -> Result<ExposureSp
                 .map_err(ApiError::new)
         }
         _ => Err(ApiError::invalid_input()),
-    }
-}
-
-fn nullable<'a>(object: &'a Map<String, Value>, field: &str) -> Result<Option<&'a str>, ApiError> {
-    match object.get(field) {
-        Some(Value::String(value)) => Ok(Some(value)),
-        Some(Value::Null) => Ok(None),
-        Some(_) | None => Err(ApiError::invalid_input()),
     }
 }
 
@@ -194,7 +197,7 @@ fn nullable_port(object: &Map<String, Value>, field: &str) -> Result<Option<u16>
 pub(super) fn grant_value(
     operation: &str,
     (id, space, peer): (RequestId, ma2a_core::SpaceId, ma2a_core::EndpointId),
-    grants: [bool; 6],
+    grants: [bool; 7],
 ) -> Value {
     let mut value = json!({
         "operation": operation,
@@ -232,13 +235,18 @@ pub(super) fn exposure_value(
 }
 
 /// Returns the flat nullable wire fields of one exposure.
-pub(crate) fn spec_fields(spec: &ExposureSpec) -> [(&'static str, Value); 7] {
+pub(crate) fn spec_fields(spec: &ExposureSpec) -> [(&'static str, Value); 8] {
     let (kind, root, local, proxy) = match spec {
         ExposureSpec::FilesRoot { root, local } => ("files_root", Some(root), local.as_ref(), None),
         ExposureSpec::Exec => ("exec", None, None, None),
         ExposureSpec::Shell => ("shell", None, None, None),
         ExposureSpec::Process => ("process", None, None, None),
+        ExposureSpec::Agent(_) => ("agent", None, None, None),
         ExposureSpec::Proxy(rule) => ("proxy", None, None, Some(rule)),
+    };
+    let agent = match spec {
+        ExposureSpec::Agent(agent) => Some(agent.as_str()),
+        _ => None,
     };
     [
         ("kind", json!(kind)),
@@ -248,6 +256,7 @@ pub(crate) fn spec_fields(spec: &ExposureSpec) -> [(&'static str, Value); 7] {
         ("host", json!(proxy.map(|rule| proxy_host(rule.host())))),
         ("port_start", json!(proxy.map(|rule| rule.ports().0))),
         ("port_end", json!(proxy.map(|rule| rule.ports().1))),
+        ("agent", json!(agent)),
     ]
 }
 

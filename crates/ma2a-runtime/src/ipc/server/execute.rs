@@ -11,6 +11,7 @@ use crate::{
 
 use super::{ConnectionContext, IpcError};
 
+mod agents;
 mod interaction;
 mod processes;
 mod relay;
@@ -186,6 +187,7 @@ pub(super) async fn execute(
         "process_list" | "process_inspect" | "process_terminate" | "process_delete" => {
             processes::execute(context, command).await?
         }
+        operation if operation.starts_with("agent_") => agents::execute(context, command).await?,
         _ => return Err(ProtocolError::UNAVAILABLE.into()),
     })
 }

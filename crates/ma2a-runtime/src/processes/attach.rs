@@ -62,7 +62,7 @@ impl ProcessManager {
     }
 
     /// Opens one request to the supervisor of a live Process and reads its first answer.
-    async fn open_live(
+    pub(super) async fn open_live(
         &self,
         (viewer, id): (Option<EndpointId>, ProcessId),
         request: SupervisorRequest,

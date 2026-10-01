@@ -13,6 +13,7 @@ name = "ma2a"
 path = "src/main.rs"
 
 [dependencies]
+blake3.workspace = true
 clap.workspace = true
 ma2a-core.workspace = true
 ma2a-runtime.workspace = true

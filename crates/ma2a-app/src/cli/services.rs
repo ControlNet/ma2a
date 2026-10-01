@@ -35,6 +35,9 @@ pub(crate) struct GrantArgs {
     /// Start and manage durable Processes where this Space exposes them.
     #[arg(long)]
     pub(crate) process: bool,
+    /// Discover and use the Agents this Space exposes, as this Endpoint.
+    #[arg(long)]
+    pub(crate) agent: bool,
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -93,6 +96,13 @@ pub(crate) enum ExposureArgs {
     Process {
         #[arg(value_name = "SPACE_REF")]
         space: String,
+    },
+    /// One hosted Agent, by name.
+    Agent {
+        #[arg(value_name = "SPACE_REF")]
+        space: String,
+        #[arg(value_name = "AGENT")]
+        agent: String,
     },
     /// TCP destinations: HOST is `*` or one host, PORTS is `N` or `N-M`.
     Proxy {

@@ -1,3 +1,4 @@
+pub(crate) mod agents;
 pub(crate) mod control;
 pub(crate) mod remote;
 pub(crate) mod services;

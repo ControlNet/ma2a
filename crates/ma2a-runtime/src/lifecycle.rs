@@ -234,15 +234,22 @@ fn service_host(
     (cancellation, handle): (&CancellationToken, &crate::RuntimeHandle),
 ) -> crate::stream_host::HostContext {
     let processes = crate::processes::ProcessManager::new(
-        (local, store.clone(), clock),
+        (local, store.clone(), Arc::clone(&clock)),
         (state_dir, hosting),
         cancellation.child_token(),
     );
     handle.install_processes(processes.clone());
+    let agents = crate::agents::AgentManager::new(
+        (local, store.clone(), clock),
+        (state_dir, processes.clone()),
+        cancellation.child_token(),
+    );
+    handle.install_agents(agents.clone());
     crate::stream_host::HostContext {
         local,
         store,
         processes,
+        agents,
         shutdown: cancellation.child_token(),
         operations: handle.operations().clone(),
         authorizations: crate::stream_host::Authorizations::default(),

@@ -16,6 +16,7 @@ use crate::{
     commands::workflows::{command, request_fields},
 };
 
+pub(crate) mod agent;
 pub(crate) mod files;
 pub(crate) mod hosted;
 mod hosted_stream;

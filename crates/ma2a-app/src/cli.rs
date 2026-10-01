@@ -2,6 +2,7 @@ use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
+pub(crate) mod agents;
 pub(crate) mod processes;
 mod secret_argv;
 pub(crate) mod services;
@@ -71,6 +72,8 @@ pub(crate) enum Command {
     },
     /// Durable Processes on another Endpoint, or hosted by this one.
     Process(processes::ProcessArgs),
+    /// Agents hosted by this Runtime, or another Endpoint's with --endpoint.
+    Agent(agents::AgentArgs),
     Ui {
         #[command(subcommand)]
         command: UiCommand,

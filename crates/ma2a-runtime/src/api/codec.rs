@@ -66,6 +66,7 @@ fn command_value(command: &Command) -> Value {
             json!({"operation": operation, "request_id": encode_hex(id.as_bytes()), "target_endpoint_id": encode_hex(target.as_bytes()), "service": service.name()})
         }
         CommandKind::Process(command) => command.to_value(),
+        CommandKind::Agent(command) => command.to_value(),
         CommandKind::SpaceGrant(id, space, peer, grants) => {
             super::codec_services::grant_value(operation, (*id, *space, *peer), *grants)
         }

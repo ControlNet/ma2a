@@ -176,6 +176,10 @@ async fn dispatch(
             let operation = ((peer, request_id), request, stop);
             crate::processes::serve(&context.processes, operation, (reader, writer)).await
         }
+        (OpenBody::Agent(request), None) => {
+            let operation = ((peer, request_id), request, stop);
+            crate::agents::serve(&context.agents, operation, (reader, writer)).await
+        }
         _ => {
             let _sent = writer.reject(ServiceError::Internal).await;
             OperationReport::new(OperationEnd::Rejected(ServiceError::Internal))

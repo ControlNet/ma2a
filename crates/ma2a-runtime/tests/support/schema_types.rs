@@ -69,6 +69,9 @@ pub(super) fn string(node: Node<'_>) -> Check {
         Some("lowercase_hex") => lowercase_hex(text, node.specification, node.path),
         Some("https_url_without_credentials") => https_url(text, node.path),
         Some("ip_or_hostname") => ip_or_hostname(text, node.path),
+        Some("agent_name") if ma2a_core::service::AgentId::new(text).is_ok() => Ok(()),
+        Some("absolute_path") if std::path::Path::new(text).is_absolute() => Ok(()),
+        Some("agent_name" | "absolute_path") => mismatch(node.path, "malformed name or path"),
         Some(format) => mismatch(node.path, &format!("unsupported string format {format}")),
         None => Ok(()),
     }

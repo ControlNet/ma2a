@@ -30,6 +30,7 @@ function detail(index: number, hash = "aa".repeat(32)): SpaceDetails {
         shell: false,
         proxy: false,
         process: false,
+        agent: false,
       },
     ],
   }

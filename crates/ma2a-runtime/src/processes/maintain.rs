@@ -104,7 +104,10 @@ impl ProcessManager {
                 continue;
             }
             self.follow(record.id, None);
-            if self.coordination().terminating.contains_key(&record.id) {
+            // The local Endpoint's own Processes depend on no grant.
+            if record.creator == self.0.local
+                || self.coordination().terminating.contains_key(&record.id)
+            {
                 continue;
             }
             let decision = self

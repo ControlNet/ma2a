@@ -16,7 +16,7 @@ impl Actor {
     pub(super) async fn grant_owned_space_member(
         &mut self,
         (space_id, endpoint_id): (SpaceId, EndpointId),
-        services: [bool; 6],
+        services: [bool; 7],
     ) -> crate::store::GrantResult {
         let issued_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;

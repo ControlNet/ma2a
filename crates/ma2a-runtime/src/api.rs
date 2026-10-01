@@ -1,7 +1,12 @@
 //! Exact-version, framing-independent local Runtime API.
 
+mod agent_results;
+mod agent_views;
 mod codec;
+mod codec_agent_spec;
+mod codec_agents;
 mod codec_fields;
+mod codec_messages;
 mod codec_processes;
 mod codec_relay;
 mod codec_services;
@@ -25,6 +30,13 @@ pub(crate) use codec_fields::encode_hex;
 
 use ma2a_core::{ProtocolError, RequestId};
 
+pub(crate) use agent_results::AgentResult;
+pub use agent_results::{MAX_AGENT_EVENT_PAGE, MAX_AGENT_LIST_PAGE, MAX_AGENT_TASK_PAGE};
+pub use agent_views::{
+    AgentView, details_value as agent_task_details_value, event_value as agent_event_value,
+    summary_value as agent_task_value,
+};
+pub(crate) use codec_agents::AgentCommand;
 pub(crate) use codec_processes::ProcessCommand;
 pub(crate) use codec_services::ExposureSpec;
 pub use commands::{COMMAND_NAMES, Command};

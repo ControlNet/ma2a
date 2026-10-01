@@ -27,6 +27,17 @@ pub(crate) fn bounded_text(
     BoundedText::parse(text(object, field)?, maximum)
 }
 
+pub(crate) fn nullable<'a>(
+    object: &'a Map<String, Value>,
+    field: &str,
+) -> Result<Option<&'a str>, ApiError> {
+    match object.get(field) {
+        Some(Value::String(value)) => Ok(Some(value)),
+        Some(Value::Null) => Ok(None),
+        Some(_) | None => Err(ApiError::invalid_input()),
+    }
+}
+
 pub(crate) fn number(object: &Map<String, Value>, field: &str) -> Result<u64, ApiError> {
     object
         .get(field)

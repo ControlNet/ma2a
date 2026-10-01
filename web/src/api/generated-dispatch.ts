@@ -43,6 +43,17 @@ export function commandOperation(command: LocalApiCommand): string {
     case "process_inspect":
     case "process_terminate":
     case "process_delete":
+    case "agent_define":
+    case "agent_undefine":
+    case "agent_start":
+    case "agent_stop":
+    case "agent_list":
+    case "agent_task_list":
+    case "agent_task_inspect":
+    case "agent_task_events":
+    case "agent_task_submit":
+    case "agent_task_send":
+    case "agent_task_cancel":
       return command.operation
     default:
       return assertNever(command)
@@ -87,6 +98,17 @@ export function resultType(result: CommandResult): string {
     case "process":
     case "process_terminated":
     case "process_deleted":
+    case "agents":
+    case "agent_defined":
+    case "agent_undefined":
+    case "agent_started":
+    case "agent_stopped":
+    case "agent_tasks":
+    case "agent_task":
+    case "agent_task_events":
+    case "agent_task_submitted":
+    case "agent_task_sent":
+    case "agent_task_cancelled":
       return result.type
     default:
       return assertNever(result)

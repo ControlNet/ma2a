@@ -1,3 +1,7 @@
+use ma2a_core::service::{
+    AgentEvent, AgentEventBody, AgentId, AgentMessage, AgentTaskDetails, AgentTaskId,
+    AgentTaskReason, AgentTaskState, AgentTaskSummary, ArtifactRef, MessagePart, MessageRole,
+};
 use ma2a_core::{
     EndpointId, RequestId, SpaceId,
     service::{
@@ -5,6 +9,7 @@ use ma2a_core::{
         ProcessState, ProxyHostPattern, ProxyRule, RootAccess, ServiceError, Termination,
     },
 };
+use ma2a_runtime::api::AgentView;
 use ma2a_runtime::api::{
     CapabilityFlags, ClientSnapshotState, Command, CommandResult, ConnectionObservationView,
     ConnectionView, ControlRoundView, ControlSyncView, EchoReplyView, EchoSummaryView,
@@ -19,7 +24,7 @@ use ma2a_runtime::api::{
     OperationEndView, OperationIdentity, OperationRecordView, OperationsView, ProcessDetailsView,
     ProcessView, ServiceExposureView,
 };
-use ma2a_store::{ProcessRecord, ProcessTimes};
+use ma2a_store::{AgentDefinition, AgentInstanceRecord, AgentRecord, ProcessRecord, ProcessTimes};
 
 type FixtureResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -31,6 +36,7 @@ const PROCESS_ID: &str = "f0e1d2c3b4a5968778695a4b3c2d1e0f";
 pub(crate) fn commands() -> FixtureResult<Vec<Command>> {
     command_json()
         .iter()
+        .chain(agent_requests().iter())
         .map(|request| decode_command(request.as_bytes()).map_err(Into::into))
         .collect()
 }
@@ -103,7 +109,7 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::shutting_down(),
         CommandResult::space_granted(
             SpaceMemberView::new(endpoint_id, "operator", true, false)?
-                .with_services([true, false, true, false, false, true]),
+                .with_services([true, false, true, false, false, true, false]),
         ),
         CommandResult::service_exposed(ServiceExposureView::files_root(
             space_id()?,
@@ -127,7 +133,110 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         )),
         CommandResult::process_terminated(process(false)?),
         CommandResult::process_deleted(process(true)?),
+    ]
+    .into_iter()
+    .chain(agent_results()?)
+    .collect())
+}
+
+/// One started Agent with a ready instance, and one completed task of it.
+fn agent_results() -> FixtureResult<Vec<CommandResult>> {
+    let agent = AgentId::new("reviewer")?;
+    let start = ProcessStart::new(
+        ProcessSpec::new(
+            Some("/usr/bin/reviewer".to_owned()),
+            vec!["--serve".to_owned()],
+            None,
+        )?
+        .with_env("MODE".to_owned(), "strict".to_owned())?,
+        true,
+        DEFAULT_LOG_LIMIT,
+    )?;
+    let record = AgentRecord {
+        definition: AgentDefinition {
+            id: agent.clone(),
+            description: "reviews".to_owned(),
+            start: start.to_bytes()?,
+            tools: 1 | 32,
+            max_tasks: 2,
+        },
+        enabled: true,
+        generation: 1,
+        times: (1_000, 2_000),
+        instance: Some(AgentInstanceRecord {
+            generation: 1,
+            process_id: Some(process_id()?),
+            ready: true,
+            cursor: 0,
+            next_seq: 1,
+            acked_seq: 0,
+            started_ms: 2_000,
+            ended_ms: None,
+        }),
+    };
+    let view = AgentView::new(record, 1);
+    let mut summary = AgentTaskSummary::new(
+        (AgentTaskId::parse(PROCESS_ID)?, agent),
+        (
+            EndpointId::try_from(decode(ENDPOINT_ID)?.as_slice())?,
+            RequestId::try_from(decode(REQUEST_ID)?.as_slice())?,
+        ),
+        3_000,
+    );
+    summary.state = AgentTaskState::Completed;
+    summary.times = (3_000, Some(3_100), Some(4_000));
+    summary.last_seq = 4;
+    let input = AgentMessage::new(
+        MessageRole::User,
+        vec![
+            MessagePart::Text("review".to_owned()),
+            MessagePart::Data("[1,2]".to_owned()),
+        ],
+    )?;
+    let artifact = ArtifactRef::new(("report.txt", "text/plain"), (12, [0x42; 32]))?;
+    let mut details = AgentTaskDetails::new(summary.clone(), input.clone());
+    details.result = Some(AgentMessage::text(MessageRole::Agent, "done")?);
+    details.artifacts = vec![artifact.clone()];
+    let events = vec![
+        AgentEvent::new(
+            1,
+            3_000,
+            AgentEventBody::State(AgentTaskState::Queued, None),
+        ),
+        AgentEvent::new(2, 3_050, AgentEventBody::Message(input)),
+        AgentEvent::new(3, 3_500, AgentEventBody::progress("halfway")?),
+        AgentEvent::new(4, 3_900, AgentEventBody::Artifact(artifact)),
+        AgentEvent::new(
+            5,
+            4_000,
+            AgentEventBody::State(AgentTaskState::Cancelled, Some(AgentTaskReason::Requested)),
+        ),
+    ];
+    Ok(vec![
+        CommandResult::agents(vec![view.clone()]),
+        CommandResult::agent_defined(&view, true),
+        CommandResult::agent_undefined("reviewer"),
+        CommandResult::agent_started(&view),
+        CommandResult::agent_stopped(&view),
+        CommandResult::agent_tasks(vec![summary.clone()]),
+        CommandResult::agent_task(&details),
+        CommandResult::agent_task_events(events),
+        CommandResult::agent_task_submitted(&summary, false),
+        CommandResult::agent_task_sent(&summary),
+        CommandResult::agent_task_cancelled(&summary),
     ])
+}
+
+fn decode(hex: &str) -> FixtureResult<Vec<u8>> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| {
+            Ok(u8::from_str_radix(
+                hex.get(index..index + 2).unwrap_or("zz"),
+                16,
+            )?)
+        })
+        .collect()
 }
 
 fn process_id() -> FixtureResult<ProcessId> {
@@ -336,13 +445,13 @@ fn command_json() -> Vec<String> {
         r#"{"version":1,"operation":"snapshot_stamp"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
         format!(
-            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true,"process":false}}"#
+            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true,"process":false,"agent":true}}"#
         ),
         format!(
-            r#"{{"version":1,"operation":"service_expose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"files_root","root":"docs","path":"/srv/docs","access":"read_only","host":null,"port_start":null,"port_end":null}}"#
+            r#"{{"version":1,"operation":"service_expose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"files_root","root":"docs","path":"/srv/docs","access":"read_only","host":null,"port_start":null,"port_end":null,"agent":null}}"#
         ),
         format!(
-            r#"{{"version":1,"operation":"service_unexpose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"proxy","root":null,"host":"*","port_start":8000,"port_end":8080}}"#
+            r#"{{"version":1,"operation":"service_unexpose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"proxy","root":null,"host":"*","port_start":8000,"port_end":8080,"agent":null}}"#
         ),
         r#"{"version":1,"operation":"service_exposure_list"}"#.to_owned(),
         r#"{"version":1,"operation":"operations_status"}"#.to_owned(),
@@ -356,6 +465,41 @@ fn command_json() -> Vec<String> {
         ),
         format!(
             r#"{{"version":1,"operation":"process_delete","request_id":"{REQUEST_ID}","process_id":"{PROCESS_ID}"}}"#
+        ),
+    ]
+}
+
+/// Every `agent_*` command, in inventory order.
+fn agent_requests() -> Vec<String> {
+    vec![
+        format!(
+            r#"{{"version":1,"operation":"agent_define","request_id":"{REQUEST_ID}","agent":"reviewer","description":"reviews","program":"/usr/bin/reviewer","args":["--serve"],"cwd":"/srv/reviewer","env":[{{"name":"MODE","value":"strict"}}],"tools":["files","agent"],"max_tasks":2}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_undefine","request_id":"{REQUEST_ID}","agent":"reviewer"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_start","request_id":"{REQUEST_ID}","agent":"reviewer"}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_stop","request_id":"{REQUEST_ID}","agent":"reviewer"}}"#
+        ),
+        r#"{"version":1,"operation":"agent_list","after":"planner"}"#.to_owned(),
+        format!(
+            r#"{{"version":1,"operation":"agent_task_list","agent":null,"after":"{PROCESS_ID}"}}"#
+        ),
+        format!(r#"{{"version":1,"operation":"agent_task_inspect","task_id":"{PROCESS_ID}"}}"#),
+        format!(
+            r#"{{"version":1,"operation":"agent_task_events","task_id":"{PROCESS_ID}","after":0}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_task_submit","request_id":"{REQUEST_ID}","agent":"reviewer","message":{{"role":"user","parts":[{{"kind":"text","content":"review"}},{{"kind":"data","content":"[1,2]"}}]}}}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_task_send","request_id":"{REQUEST_ID}","task_id":"{PROCESS_ID}","message":{{"role":"user","parts":[{{"kind":"text","content":"more"}}]}}}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_task_cancel","request_id":"{REQUEST_ID}","task_id":"{PROCESS_ID}"}}"#
         ),
     ]
 }

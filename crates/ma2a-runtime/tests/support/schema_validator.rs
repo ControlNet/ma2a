@@ -165,6 +165,13 @@ impl SchemaValidator {
                 return mismatch(node.path, "array exceeds bound");
             }
         }
+        if let Some(minimum) = node.specification.get("min_items").and_then(Value::as_u64) {
+            let minimum =
+                usize::try_from(minimum).map_err(|_| error(node.path, "invalid bound"))?;
+            if items.len() < minimum {
+                return mismatch(node.path, "array below bound");
+            }
+        }
         let specification = node
             .specification
             .get("items")

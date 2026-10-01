@@ -18,7 +18,14 @@ impl Command {
         }
     }
 
-    pub(crate) const fn space_grant(&self) -> Option<((SpaceId, EndpointId), [bool; 6])> {
+    pub(crate) const fn agent_command(&self) -> Option<&super::super::AgentCommand> {
+        match &self.kind {
+            CommandKind::Agent(command) => Some(command),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn space_grant(&self) -> Option<((SpaceId, EndpointId), [bool; 7])> {
         match self.kind {
             CommandKind::SpaceGrant(_, space, peer, grants) => Some(((space, peer), grants)),
             _ => None,

@@ -42,5 +42,7 @@ export function exposureScope(exposure: ServiceExposure): string {
       return "interactive terminals"
     case "process":
       return "long-running Processes"
+    case "agent":
+      return `Agent ${exposure.agent ?? "?"}`
   }
 }

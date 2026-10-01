@@ -50,6 +50,7 @@ pub(super) enum ResultKind {
     Operations(super::OperationsView),
     StreamOpened,
     Process(super::ProcessResult),
+    Agent(super::AgentResult),
 }
 
 /// One member of the exact local API v1 result set.
@@ -107,7 +108,8 @@ impl CommandResult {
             | ResultKind::ServiceExposures(_)
             | ResultKind::Operations(_)
             | ResultKind::StreamOpened
-            | ResultKind::Process(_) => None,
+            | ResultKind::Process(_)
+            | ResultKind::Agent(_) => None,
         }
     }
 

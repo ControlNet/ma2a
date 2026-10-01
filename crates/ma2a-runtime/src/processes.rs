@@ -10,6 +10,7 @@ mod attach;
 mod follow;
 mod host;
 mod launch;
+mod local;
 mod maintain;
 mod reads;
 mod start;

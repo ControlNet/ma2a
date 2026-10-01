@@ -23,6 +23,16 @@ impl RuntimeHandle {
         self.processes.get()
     }
 
+    /// Installs the manager of hosted Agents; only the first installation counts.
+    pub(crate) fn install_agents(&self, manager: crate::agents::AgentManager) {
+        let _installed = self.agents.set(manager);
+    }
+
+    /// Returns the manager of hosted Agents once the Runtime started it.
+    pub(crate) fn agents(&self) -> Option<&crate::agents::AgentManager> {
+        self.agents.get()
+    }
+
     /// Borrows the outbound client that opens one stream per remote service operation.
     ///
     /// The client is lent per operation rather than kept here: it holds the Endpoint, and a
@@ -46,7 +56,7 @@ impl RuntimeHandle {
     pub(crate) async fn grant_owned_space_member(
         &self,
         member: (SpaceId, EndpointId),
-        services: [bool; 6],
+        services: [bool; 7],
     ) -> crate::store::GrantResult {
         let (reply, response) = oneshot::channel();
         self.commands
