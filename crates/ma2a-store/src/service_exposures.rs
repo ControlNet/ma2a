@@ -2,9 +2,7 @@
 
 use ma2a_core::{
     ProtocolError, SpaceId,
-    service::{
-        AgentId, ExportedRoot, ProxyHostPattern, ProxyRule, RootAccess, RootName, SpaceExposureView,
-    },
+    service::{AgentId, ProxyHostPattern, ProxyRule, RootAccess, RootName, ServiceName},
 };
 use rusqlite::{OptionalExtension as _, params};
 
@@ -62,6 +60,8 @@ pub enum LocalExposure {
     Process,
     /// One Agent this Space's members may use.
     Agent(AgentId),
+    /// One hosted service this Space's members may call.
+    Service(ServiceName),
 }
 
 impl LocalExposure {
@@ -73,6 +73,7 @@ impl LocalExposure {
             Self::Proxy(_) => 3,
             Self::Process => 4,
             Self::Agent(_) => 5,
+            Self::Service(_) => 6,
         }
     }
 
@@ -82,6 +83,7 @@ impl LocalExposure {
             Self::FilesRoot(root) => root.name.as_str().to_owned(),
             Self::Exec | Self::Shell | Self::Process => String::new(),
             Self::Agent(agent) => agent.as_str().to_owned(),
+            Self::Service(service) => service.as_str().to_owned(),
             Self::Proxy(rule) => {
                 let host = match rule.host() {
                     ProxyHostPattern::Any => "*",
@@ -139,7 +141,8 @@ impl Repository {
             LocalExposure::Exec
             | LocalExposure::Shell
             | LocalExposure::Process
-            | LocalExposure::Agent(_) => (None, None, None),
+            | LocalExposure::Agent(_)
+            | LocalExposure::Service(_) => (None, None, None),
             LocalExposure::Proxy(rule) => (None, None, Some(rule)),
         };
         let proxy_host = proxy.map(|rule| match rule.host() {
@@ -204,40 +207,6 @@ impl Repository {
         let records = load_exposures(&transaction)?;
         transaction.commit()?;
         Ok(Committed::new(revision, records))
-    }
-
-    /// Returns the authorization view of every exposure, grouped by Space.
-    ///
-    /// # Errors
-    /// Returns [`StoreError`] when a persisted row is malformed.
-    pub fn service_exposure_views(&self) -> Result<Vec<SpaceExposureView>, StoreError> {
-        let mut views: Vec<SpaceExposureView> = Vec::new();
-        for record in load_exposures(&self.connection)? {
-            let index = if let Some(index) = views
-                .iter()
-                .position(|view| view.space_id() == Some(record.space_id))
-            {
-                index
-            } else {
-                views.push(SpaceExposureView::new(record.space_id));
-                views.len() - 1
-            };
-            let Some(view) = views.get_mut(index) else {
-                continue;
-            };
-            let current = std::mem::take(view);
-            *view = match record.exposure {
-                LocalExposure::FilesRoot(root) => {
-                    current.with_root(ExportedRoot::new(root.name, root.access))
-                }
-                LocalExposure::Exec => current.with_exec(),
-                LocalExposure::Shell => current.with_shell(),
-                LocalExposure::Proxy(rule) => current.with_proxy_rule(rule),
-                LocalExposure::Process => current.with_process(),
-                LocalExposure::Agent(agent) => current.with_agent(agent),
-            };
-        }
-        Ok(views)
     }
 }
 

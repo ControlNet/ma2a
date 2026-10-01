@@ -65,6 +65,7 @@ fn current_schema_is_idempotent_configured_and_contains_only_key_references() ->
         "local_mutation_replay",
         "ui_credentials",
         "sessions",
+        "hosted_services",
     ] {
         assert!(
             names.iter().any(|name| name == required),
@@ -266,4 +267,78 @@ fn key_columns(
         }
     }
     Ok(found)
+}
+
+#[test]
+fn version_nine_exposures_migrate_unchanged_and_admit_hosted_services() -> TestResult {
+    // Given a schema 9 store with an Agent exposure.
+    let state = TempState::new("v9-exposures")?;
+    let config = StoreConfig::new(state.path());
+    let connection = Connection::open(config.database_path())?;
+    for migration in [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_web_auth.sql"),
+        include_str!("../migrations/0003_relay_persistence.sql"),
+        include_str!("../migrations/0004_local_mutation_replay.sql"),
+        include_str!("../migrations/0005_relay_advertisement_activity.sql"),
+        include_str!("../migrations/0006_mutation_fences.sql"),
+        include_str!("../migrations/0007_service_exposures.sql"),
+        include_str!("../migrations/0008_processes.sql"),
+        include_str!("../migrations/0009_agents.sql"),
+    ] {
+        connection.execute_batch(migration)?;
+    }
+    connection.execute(
+        "INSERT INTO service_exposures(space_id, kind, exposure_selector) VALUES (?1, 5, 'helper')",
+        [[0x41_u8; 32].as_slice()],
+    )?;
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO service_exposures(space_id, kind, exposure_selector)
+                 VALUES (?1, 6, 'example')",
+                [[0x41_u8; 32].as_slice()],
+            )
+            .is_err(),
+        "schema 9 refuses kind 6"
+    );
+    connection.pragma_update(None, "user_version", 9_u32)?;
+    drop(connection);
+    #[cfg(unix)]
+    {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+        fs::set_permissions(config.database_path(), fs::Permissions::from_mode(0o600))?;
+    }
+
+    // When
+    drop(Repository::open(&config)?);
+
+    // Then the row survives and kind 6 is accepted.
+    let connection = Connection::open(config.database_path())?;
+    assert_eq!(
+        connection.query_row(
+            "SELECT exposure_selector FROM service_exposures WHERE kind = 5",
+            [],
+            |row| row.get::<_, String>(0)
+        )?,
+        "helper"
+    );
+    connection.execute(
+        "INSERT INTO service_exposures(space_id, kind, exposure_selector) VALUES (?1, 6, 'example')",
+        [[0x41_u8; 32].as_slice()],
+    )?;
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO service_exposures(space_id, kind, exposure_selector) VALUES (?1, 6, '')",
+                [[0x41_u8; 32].as_slice()],
+            )
+            .is_err(),
+        "a service exposure names one service"
+    );
+    assert_eq!(
+        connection.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))?,
+        SCHEMA_VERSION
+    );
+    Ok(())
 }

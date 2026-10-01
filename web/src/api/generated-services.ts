@@ -10,6 +10,7 @@ type ExposureSelector = {
   readonly port_start: number | null
   readonly port_end: number | null
   readonly agent: string | null
+  readonly service: string | null
 }
 
 /** Phase 2 service grant, exposure, and operation status commands. */
@@ -25,6 +26,7 @@ export type ServiceCommand =
       readonly proxy: boolean
       readonly process: boolean
       readonly agent: boolean
+      readonly service: boolean
     })
   | (Mutation &
       ExposureSelector & {
@@ -41,7 +43,14 @@ export type ServiceCommand =
       readonly service: OperationService
     })
 
-export type ExposureKind = "files_root" | "exec" | "shell" | "proxy" | "process" | "agent"
+export type ExposureKind =
+  | "files_root"
+  | "exec"
+  | "shell"
+  | "proxy"
+  | "process"
+  | "agent"
+  | "service"
 export type RootAccess = "read_only" | "read_write"
 
 /** One thing this Runtime serves inside one Space; inapplicable fields are null. */
@@ -55,6 +64,7 @@ export type ServiceExposureView = {
   readonly port_start: number | null
   readonly port_end: number | null
   readonly agent: string | null
+  readonly service: string | null
 }
 
 export type OperationService =
@@ -65,6 +75,7 @@ export type OperationService =
   | "proxy"
   | "process"
   | "agent"
+  | "service"
 export type OperationName =
   | "stat"
   | "list"
@@ -95,6 +106,8 @@ export type OperationName =
   | "agent_watch"
   | "agent_cancel"
   | "agent_artifact"
+  | "service_describe"
+  | "service_call"
 export type ServiceErrorName =
   | "version_mismatch"
   | "invalid_input"
@@ -134,6 +147,7 @@ export type ServiceErrorName =
   | "agent_unavailable"
   | "task_ended"
   | "unknown_artifact"
+  | "unknown_service"
 
 /** Content-free identity of one streaming operation. */
 type OperationIdentityView = {

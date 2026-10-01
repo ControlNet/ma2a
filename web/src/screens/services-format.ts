@@ -44,5 +44,7 @@ export function exposureScope(exposure: ServiceExposure): string {
       return "long-running Processes"
     case "agent":
       return `Agent ${exposure.agent ?? "?"}`
+    case "service":
+      return `service ${exposure.service ?? "?"}`
   }
 }

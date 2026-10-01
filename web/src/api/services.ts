@@ -6,7 +6,16 @@ import { RuntimeApiPayloadError } from "./codec"
 const HexId = (bytes: number) => z.string().regex(new RegExp(`^[0-9a-f]{${bytes * 2}}$`))
 const Port = z.number().int().min(1).max(65_535)
 const U64 = z.number().int().nonnegative()
-const Service = z.enum(["files", "transfer", "exec", "shell", "proxy", "process", "agent"])
+const Service = z.enum([
+  "files",
+  "transfer",
+  "exec",
+  "shell",
+  "proxy",
+  "process",
+  "agent",
+  "service",
+])
 const Operation = z.enum([
   "stat",
   "list",
@@ -37,6 +46,8 @@ const Operation = z.enum([
   "agent_watch",
   "agent_cancel",
   "agent_artifact",
+  "service_describe",
+  "service_call",
 ])
 const ServiceError = z.enum([
   "version_mismatch",
@@ -77,11 +88,12 @@ const ServiceError = z.enum([
   "agent_unavailable",
   "task_ended",
   "unknown_artifact",
+  "unknown_service",
 ])
 
 const ExposureSchema = z.strictObject({
   space_id: HexId(32),
-  kind: z.enum(["files_root", "exec", "shell", "proxy", "process", "agent"]),
+  kind: z.enum(["files_root", "exec", "shell", "proxy", "process", "agent", "service"]),
   root: z.string().min(1).max(64).nullable(),
   path: z.string().min(1).max(4096).nullable(),
   access: z.enum(["read_only", "read_write"]).nullable(),
@@ -89,6 +101,7 @@ const ExposureSchema = z.strictObject({
   port_start: Port.nullable(),
   port_end: Port.nullable(),
   agent: z.string().min(1).max(63).nullable(),
+  service: z.string().min(1).max(63).nullable(),
 })
 const Identity = {
   request_id: HexId(16),

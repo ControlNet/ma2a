@@ -109,7 +109,7 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
         CommandResult::shutting_down(),
         CommandResult::space_granted(
             SpaceMemberView::new(endpoint_id, "operator", true, false)?
-                .with_services([true, false, true, false, false, true, false]),
+                .with_services([true, false, true, false, false, true, false, false]),
         ),
         CommandResult::service_exposed(ServiceExposureView::files_root(
             space_id()?,
@@ -447,13 +447,13 @@ fn command_json() -> Vec<String> {
         r#"{"version":1,"operation":"snapshot_stamp"}"#.to_owned(),
         format!(r#"{{"version":1,"operation":"graceful_shutdown","request_id":"{REQUEST_ID}"}}"#),
         format!(
-            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true,"process":false,"agent":true}}"#
+            r#"{{"version":1,"operation":"space_grant","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","peer_endpoint_id":"{ENDPOINT_ID}","files_read":true,"files_write":false,"exec":true,"shell":false,"proxy":true,"process":false,"agent":true,"service":true}}"#
         ),
         format!(
-            r#"{{"version":1,"operation":"service_expose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"files_root","root":"docs","path":"/srv/docs","access":"read_only","host":null,"port_start":null,"port_end":null,"agent":null}}"#
+            r#"{{"version":1,"operation":"service_expose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"files_root","root":"docs","path":"/srv/docs","access":"read_only","host":null,"port_start":null,"port_end":null,"agent":null,"service":null}}"#
         ),
         format!(
-            r#"{{"version":1,"operation":"service_unexpose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"proxy","root":null,"host":"*","port_start":8000,"port_end":8080,"agent":null}}"#
+            r#"{{"version":1,"operation":"service_unexpose","request_id":"{REQUEST_ID}","space_id":"{SPACE_ID}","kind":"proxy","root":null,"host":"*","port_start":8000,"port_end":8080,"agent":null,"service":null}}"#
         ),
         r#"{"version":1,"operation":"service_exposure_list"}"#.to_owned(),
         r#"{"version":1,"operation":"operations_status"}"#.to_owned(),

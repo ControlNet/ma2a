@@ -24,6 +24,7 @@ mod control_batch;
 mod control_state;
 mod enrollment;
 mod enrollment_projection;
+mod hosted_services;
 pub use enrollment_projection::EnrollmentProjection;
 mod enrollment_models;
 mod error;
@@ -82,6 +83,7 @@ pub use enrollment_models::{
     AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption,
 };
 pub use error::StoreError;
+pub use hosted_services::{HostedServiceRecord, ServiceRegistration};
 pub use key_store::{KeyKind, KeyMaterial, KeyReference, KeyStore, ProtectedSecret};
 pub use migrations::SCHEMA_VERSION;
 pub use mutation_replay::{

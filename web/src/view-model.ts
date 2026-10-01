@@ -19,6 +19,7 @@ export type ServiceGrant =
   | "proxy"
   | "process"
   | "agent"
+  | "service"
 
 export type SpaceMemberView = {
   readonly endpointId: string

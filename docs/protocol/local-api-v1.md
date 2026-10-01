@@ -18,7 +18,7 @@ Unknown fields, duplicate JSON object members, and unknown operations are reject
 
 ## Commands And Results
 
-The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `1fa0e0bbc6352172a2b9b961e84cb43a34cc79a3e36b293a306f2ba8dadf531a`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 48 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
+The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `5b15b3c225a6ea9735a1149d518d041aa6985827828ed526eb61c7c36c49b4da`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 48 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
 
 Successful responses contain required `version`, nullable `request_id`, `revision`, and discriminated `result` fields. Error responses contain required `version`, `error`, and nullable `remediation` fields. TypeScript exposes `LocalApiSuccessResponse`, `LocalApiErrorResponse`, and their `LocalApiResponse` union.
 
@@ -38,23 +38,26 @@ Space and reporting the pre-departure count would present stale state as current
 ### Service grants, exposure, and operation status (Phase 2)
 
 `space_member` carries the signed service grants `files_read`, `files_write`, `exec`, `shell`,
-`proxy`, (since Phase 3) `process`, and (since Phase 4) `agent` beside `echo` and `relay_provider`. These are what a member may ask other members for. They
+`proxy`, (since Phase 3) `process`, (since Phase 4) `agent`, and (since Phase 5) `service` beside
+`echo` and `relay_provider`. These are what a member may ask other members for. They
 never make any Runtime serve anything by themselves.
 
-- **`space_grant`** carries a request ID, `space_id`, `peer_endpoint_id`, and all seven grant
-  booleans. It replaces exactly those seven bits of the member and returns `space_granted` with the
+- **`space_grant`** carries a request ID, `space_id`, `peer_endpoint_id`, and all eight grant
+  booleans. It replaces exactly those eight bits of the member and returns `space_granted` with the
   signed `space_member`. Only the Space owner can sign it; any other Runtime gets `unauthorized`,
   and an unknown Space or member gets `not_found`. Neither refusal has any effect. An unchanged
   grant succeeds without signing a new generation. Grant changes reach peers through ordinary
   control sync.
 - **`service_expose`** carries a request ID, `space_id`, and one exposure in flat nullable form:
-  - `kind` is `files_root`, `exec`, `shell`, `proxy`, `process`, or `agent`;
+  - `kind` is `files_root`, `exec`, `shell`, `proxy`, `process`, `agent`, or `service`;
   - `root`, `path`, and `access` (`read_only` or `read_write`) are required exactly for
     `files_root`;
   - `host` (`*` or a canonical host) and the inclusive `port_start`–`port_end` range are required
     exactly for `proxy`;
   - `agent` (an `AgentId`) is required exactly for `agent`, and is consent for that Space's
     members to use that one Agent;
+  - `service` (a hosted service name) is required exactly for `service`, and is consent for that
+    Space's members to call that one hosted service;
   - every inapplicable field is `null`.
 
   The result is `service_exposed`. A root path must be an existing absolute directory; it is stored
@@ -86,7 +89,7 @@ Grants and consent
 session cannot make this Runtime serve anything.
 
 `stream_open` carries a request ID, `target_endpoint_id`, and `service` (`files`, `transfer`,
-`exec`, `shell`, `proxy`, `process`, or `agent`). It upgrades one IPC connection to the stream plane:
+`exec`, `shell`, `proxy`, `process`, `agent`, or `service`). It upgrades one IPC connection to the stream plane:
 
 1. After the `stream_opened` response, the connection carries Services v1 frames
    (`docs/protocol/services-v1.md`) verbatim in both directions and no further local API frames.

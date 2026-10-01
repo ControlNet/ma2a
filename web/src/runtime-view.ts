@@ -20,6 +20,7 @@ const GRANTS: readonly (readonly [ServiceGrant, (member: SignedMember) => boolea
   ["proxy", (member) => member.proxy],
   ["process", (member) => member.process],
   ["agent", (member) => member.agent],
+  ["service", (member) => member.service],
 ]
 
 function memberGrants(member: SignedMember): ServiceGrant[] {

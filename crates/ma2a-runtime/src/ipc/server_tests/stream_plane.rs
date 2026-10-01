@@ -57,7 +57,7 @@ impl Pair {
             .handle()
             .grant_owned_space_member(
                 (space, caller_id),
-                [true, true, false, false, false, false, false],
+                [true, true, false, false, false, false, false, false],
             )
             .await?;
         assert!(granted.is_ok());

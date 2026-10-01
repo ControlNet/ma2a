@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Service capabilities a grant sets; every other capability bit is left as it was.
-pub(crate) const SERVICE_CAPABILITIES: [Capability; 7] = [
+pub(crate) const SERVICE_CAPABILITIES: [Capability; 8] = [
     Capability::FILES_READ,
     Capability::FILES_WRITE,
     Capability::EXEC,
@@ -21,6 +21,7 @@ pub(crate) const SERVICE_CAPABILITIES: [Capability; 7] = [
     Capability::PROXY,
     Capability::PROCESS,
     Capability::AGENT,
+    Capability::SERVICE,
 ];
 
 /// One requested grant change, applied by the Space owner.
@@ -29,7 +30,7 @@ pub(crate) struct OwnedMemberGrant {
     pub(crate) space_id: SpaceId,
     pub(crate) endpoint_id: EndpointId,
     /// Service grants in [`SERVICE_CAPABILITIES`] order.
-    pub(crate) services: [bool; 7],
+    pub(crate) services: [bool; 8],
     pub(crate) issued_at_ms: u64,
     pub(crate) local_endpoint_id: EndpointId,
 }
@@ -113,7 +114,7 @@ impl StoreBackend {
 }
 
 /// Replaces exactly the service capability bits of `current`.
-pub(crate) fn granted(current: MemberCapabilities, services: [bool; 7]) -> MemberCapabilities {
+pub(crate) fn granted(current: MemberCapabilities, services: [bool; 8]) -> MemberCapabilities {
     SERVICE_CAPABILITIES.into_iter().zip(services).fold(
         current,
         |capabilities, (capability, enabled)| {
@@ -135,7 +136,7 @@ mod tests {
     #[test]
     fn a_grant_replaces_service_bits_and_keeps_echo_and_relay() {
         let current = MemberCapabilities::new(true, true).with(Capability::SHELL);
-        let next = granted(current, [true, false, true, false, false, true, true]);
+        let next = granted(current, [true, false, true, false, false, true, true, true]);
         assert!(next.allows(Capability::ECHO));
         assert!(next.allows(Capability::PRIVATE_RELAY_PROVIDER));
         assert!(next.allows(Capability::FILES_READ));
@@ -145,5 +146,6 @@ mod tests {
         assert!(!next.allows(Capability::PROXY));
         assert!(next.allows(Capability::PROCESS));
         assert!(next.allows(Capability::AGENT));
+        assert!(next.allows(Capability::SERVICE));
     }
 }

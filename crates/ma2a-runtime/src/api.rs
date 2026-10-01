@@ -5,6 +5,7 @@ mod agent_views;
 mod codec;
 mod codec_agent_spec;
 mod codec_agents;
+mod codec_exposure;
 mod codec_fields;
 mod codec_messages;
 mod codec_processes;

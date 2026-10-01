@@ -216,6 +216,7 @@ async fn local_exposure(spec: &ExposureSpec) -> Result<LocalExposure, ApiError> 
         ExposureSpec::Shell => LocalExposure::Shell,
         ExposureSpec::Process => LocalExposure::Process,
         ExposureSpec::Agent(agent) => LocalExposure::Agent(agent.clone()),
+        ExposureSpec::Service(service) => LocalExposure::Service(service.clone()),
         ExposureSpec::Proxy(rule) => LocalExposure::Proxy(rule.clone()),
     })
 }
@@ -231,6 +232,7 @@ fn same_exposure(exposure: &LocalExposure, spec: &ExposureSpec) -> bool {
         | (LocalExposure::Process, ExposureSpec::Process) => true,
         (LocalExposure::Proxy(stored), ExposureSpec::Proxy(rule)) => stored == rule,
         (LocalExposure::Agent(stored), ExposureSpec::Agent(agent)) => stored == agent,
+        (LocalExposure::Service(stored), ExposureSpec::Service(service)) => stored == service,
         _ => false,
     }
 }
@@ -250,6 +252,7 @@ fn exposure_view(
         LocalExposure::Process => ServiceExposureView::process(space_id),
         LocalExposure::Proxy(rule) => ServiceExposureView::proxy(space_id, rule.clone()),
         LocalExposure::Agent(agent) => ServiceExposureView::agent(space_id, agent.clone()),
+        LocalExposure::Service(service) => ServiceExposureView::service(space_id, service.clone()),
     })
 }
 

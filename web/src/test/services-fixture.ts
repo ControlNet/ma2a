@@ -13,6 +13,7 @@ export const SERVICES_FIXTURE: ServicesData = {
       port_start: null,
       port_end: null,
       agent: null,
+      service: null,
     },
     {
       space_id: "test-space-laboratory",
@@ -24,6 +25,7 @@ export const SERVICES_FIXTURE: ServicesData = {
       port_start: 8000,
       port_end: 8080,
       agent: null,
+      service: null,
     },
     {
       space_id: "ab".repeat(32),
@@ -35,6 +37,7 @@ export const SERVICES_FIXTURE: ServicesData = {
       port_start: null,
       port_end: null,
       agent: null,
+      service: null,
     },
   ],
   operations: {

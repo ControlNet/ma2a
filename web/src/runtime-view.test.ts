@@ -75,6 +75,7 @@ test("projects only authoritative snapshot state into the console view", () => {
             proxy: false,
             process: false,
             agent: false,
+            service: false,
           },
           {
             endpoint_id: "cd".repeat(32),
@@ -88,6 +89,7 @@ test("projects only authoritative snapshot state into the console view", () => {
             proxy: false,
             process: true,
             agent: false,
+            service: false,
           },
         ],
       },

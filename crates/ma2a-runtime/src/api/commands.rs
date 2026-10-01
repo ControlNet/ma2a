@@ -156,7 +156,7 @@ pub(crate) enum CommandKind {
     SpaceDetailsFetch(SpaceId),
     SnapshotStamp,
     GracefulShutdown(RequestId),
-    SpaceGrant(RequestId, SpaceId, EndpointId, [bool; 7]),
+    SpaceGrant(RequestId, SpaceId, EndpointId, [bool; 8]),
     ServiceExpose(RequestId, SpaceId, super::codec_services::ExposureSpec),
     ServiceUnexpose(RequestId, SpaceId, super::codec_services::ExposureSpec),
     ServiceExposureList,

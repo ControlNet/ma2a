@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-/// The six service grants an owner can give one Space member.
+/// The service grants an owner can give one Space member.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "one independent command-line switch per service grant"
@@ -38,6 +38,9 @@ pub(crate) struct GrantArgs {
     /// Discover and use the Agents this Space exposes, as this Endpoint.
     #[arg(long)]
     pub(crate) agent: bool,
+    /// Call the hosted services this Space exposes.
+    #[arg(long)]
+    pub(crate) service: bool,
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -103,6 +106,13 @@ pub(crate) enum ExposureArgs {
         space: String,
         #[arg(value_name = "AGENT")]
         agent: String,
+    },
+    /// One hosted service, by name.
+    Service {
+        #[arg(value_name = "SPACE_REF")]
+        space: String,
+        #[arg(value_name = "SERVICE")]
+        service: String,
     },
     /// TCP destinations: HOST is `*` or one host, PORTS is `N` or `N-M`.
     Proxy {

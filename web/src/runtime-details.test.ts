@@ -31,6 +31,7 @@ function detail(index: number, hash = "aa".repeat(32)): SpaceDetails {
         proxy: false,
         process: false,
         agent: false,
+        service: false,
       },
     ],
   }

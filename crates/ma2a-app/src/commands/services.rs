@@ -31,6 +31,7 @@ pub(crate) async fn grant(
         ("proxy", arguments.proxy),
         ("process", arguments.process),
         ("agent", arguments.agent),
+        ("service", arguments.service),
     ] {
         fields.insert(name.to_owned(), Value::Bool(granted));
     }
@@ -67,6 +68,7 @@ pub(crate) async fn run(
         | ExposureArgs::Shell { space }
         | ExposureArgs::Process { space }
         | ExposureArgs::Agent { space, .. }
+        | ExposureArgs::Service { space, .. }
         | ExposureArgs::Proxy { space, .. } => space,
     };
     fields.insert(
@@ -87,9 +89,10 @@ pub(crate) async fn operations(
 
 /// Flat nullable exposure fields; `unexpose` names the selector without path and access.
 fn selector(exposure: ExposureArgs, expose: bool) -> Result<Map<String, Value>, AppError> {
-    let agent = match &exposure {
-        ExposureArgs::Agent { agent, .. } => Some(agent.clone()),
-        _ => None,
+    let (agent, service) = match &exposure {
+        ExposureArgs::Agent { agent, .. } => (Some(agent.clone()), None),
+        ExposureArgs::Service { service, .. } => (None, Some(service.clone())),
+        _ => (None, None),
     };
     let (kind, root, local, host, ports) = match exposure {
         ExposureArgs::Files {
@@ -109,6 +112,7 @@ fn selector(exposure: ExposureArgs, expose: bool) -> Result<Map<String, Value>, 
         ExposureArgs::Shell { .. } => ("shell", None, None, None, None),
         ExposureArgs::Process { .. } => ("process", None, None, None, None),
         ExposureArgs::Agent { .. } => ("agent", None, None, None, None),
+        ExposureArgs::Service { .. } => ("service", None, None, None, None),
         ExposureArgs::Proxy { host, ports, .. } => {
             ("proxy", None, None, Some(host), Some(port_range(&ports)?))
         }
@@ -123,6 +127,7 @@ fn selector(exposure: ExposureArgs, expose: bool) -> Result<Map<String, Value>, 
     );
     fields.insert("port_end".to_owned(), json!(ports.map(|(_, end)| end)));
     fields.insert("agent".to_owned(), json!(agent));
+    fields.insert("service".to_owned(), json!(service));
     if expose {
         let access = local.as_ref().map(|(_, read_only)| {
             if *read_only {

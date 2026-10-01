@@ -56,7 +56,7 @@ impl RuntimeHandle {
     pub(crate) async fn grant_owned_space_member(
         &self,
         member: (SpaceId, EndpointId),
-        services: [bool; 7],
+        services: [bool; 8],
     ) -> crate::store::GrantResult {
         let (reply, response) = oneshot::channel();
         self.commands

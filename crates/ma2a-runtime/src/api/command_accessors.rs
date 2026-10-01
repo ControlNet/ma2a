@@ -25,7 +25,7 @@ impl Command {
         }
     }
 
-    pub(crate) const fn space_grant(&self) -> Option<((SpaceId, EndpointId), [bool; 7])> {
+    pub(crate) const fn space_grant(&self) -> Option<((SpaceId, EndpointId), [bool; 8])> {
         match self.kind {
             CommandKind::SpaceGrant(_, space, peer, grants) => Some(((space, peer), grants)),
             _ => None,

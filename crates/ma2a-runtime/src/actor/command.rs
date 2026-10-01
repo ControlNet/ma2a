@@ -33,7 +33,7 @@ pub(crate) enum Command {
     ServiceClient(oneshot::Sender<ma2a_net::ServiceClient>),
     GrantOwnedSpaceMember {
         member: (SpaceId, EndpointId),
-        services: [bool; 7],
+        services: [bool; 8],
         reply: oneshot::Sender<crate::store::GrantResult>,
     },
     LeaveSpace {

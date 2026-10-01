@@ -80,6 +80,14 @@ impl ServiceExposureView {
         }
     }
 
+    /// One hosted service this Space's members may call.
+    pub const fn service(space_id: SpaceId, service: ma2a_core::service::ServiceName) -> Self {
+        Self {
+            space_id,
+            spec: ExposureSpec::Service(service),
+        }
+    }
+
     /// One allowed proxy destination rule in this Space.
     pub const fn proxy(space_id: SpaceId, rule: ProxyRule) -> Self {
         Self {

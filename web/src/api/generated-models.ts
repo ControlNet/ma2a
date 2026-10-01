@@ -47,6 +47,7 @@ export type SpaceMemberView = {
   readonly proxy: boolean
   readonly process: boolean
   readonly agent: boolean
+  readonly service: boolean
 }
 
 export type SnapshotSpaceView = {

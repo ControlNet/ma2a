@@ -2,7 +2,10 @@
 
 use ma2a_core::{
     SpaceId,
-    service::{AgentId, ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName},
+    service::{
+        AgentId, ExportedRoot, ProxyHost, ProxyHostPattern, ProxyRule, RootAccess, RootName,
+        ServiceName, SpaceExposureView,
+    },
 };
 
 use rusqlite::OptionalExtension as _;
@@ -64,6 +67,9 @@ fn decode_row(row: ExposureRow) -> Result<ExposureRecord, StoreError> {
         (5, None, None, None, None, None, None) => {
             LocalExposure::Agent(AgentId::new(&selector).map_err(|_| MALFORMED)?)
         }
+        (6, None, None, None, None, None, None) => {
+            LocalExposure::Service(ServiceName::new(&selector).map_err(|_| MALFORMED)?)
+        }
         (3, None, None, None, Some(host), Some(start), Some(end)) => {
             let pattern = if host == "*" {
                 ProxyHostPattern::Any
@@ -78,6 +84,41 @@ fn decode_row(row: ExposureRow) -> Result<ExposureRecord, StoreError> {
 }
 
 impl Repository {
+    /// Returns the authorization view of every exposure, grouped by Space.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when a persisted row is malformed.
+    pub fn service_exposure_views(&self) -> Result<Vec<SpaceExposureView>, StoreError> {
+        let mut views: Vec<SpaceExposureView> = Vec::new();
+        for record in load_exposures(&self.connection)? {
+            let index = if let Some(index) = views
+                .iter()
+                .position(|view| view.space_id() == Some(record.space_id))
+            {
+                index
+            } else {
+                views.push(SpaceExposureView::new(record.space_id));
+                views.len() - 1
+            };
+            let Some(view) = views.get_mut(index) else {
+                continue;
+            };
+            let current = std::mem::take(view);
+            *view = match record.exposure {
+                LocalExposure::FilesRoot(root) => {
+                    current.with_root(ExportedRoot::new(root.name().clone(), root.access()))
+                }
+                LocalExposure::Exec => current.with_exec(),
+                LocalExposure::Shell => current.with_shell(),
+                LocalExposure::Proxy(rule) => current.with_proxy_rule(rule),
+                LocalExposure::Process => current.with_process(),
+                LocalExposure::Agent(agent) => current.with_agent(agent),
+                LocalExposure::Service(service) => current.with_service(service),
+            };
+        }
+        Ok(views)
+    }
+
     /// Returns the local directory bound to an exported root name, if any.
     ///
     /// # Errors
