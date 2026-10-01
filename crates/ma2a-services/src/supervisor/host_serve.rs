@@ -43,7 +43,6 @@ pub(super) async fn serve(listener: Listener, shared: Arc<Shared>, stop: Cancell
 }
 
 async fn connection(stream: Stream, shared: &Shared) {
-    #[cfg(unix)]
     if super::address::same_user(&stream).is_err() {
         return;
     }

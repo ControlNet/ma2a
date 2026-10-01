@@ -60,7 +60,7 @@ const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 8] = [
         ),
     ),
     (
-        "crates/ma2a-runtime/src/ipc/windows_security.rs",
+        "crates/ma2a-services/src/windows_security.rs",
         concat!(
             "allow(unsafe",
             "_code, reason = \"audited Windows token FFI boundary\")"

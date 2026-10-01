@@ -47,13 +47,26 @@ impl SupervisorAddress {
 
     /// Binds the listener; an existing endpoint is never reclaimed.
     ///
+    /// On Windows the pipe admits only Local System and this user, as private IPC does; on
+    /// Unix the socket lives in an owner-only directory.
+    ///
     /// # Errors
     /// Returns an I/O error when the address is taken or cannot be bound.
     pub fn bind(&self) -> io::Result<Listener> {
-        ListenerOptions::new()
+        let options = ListenerOptions::new()
             .name(self.name()?)
-            .reclaim_name(false)
-            .create_tokio()
+            .reclaim_name(false);
+        #[cfg(windows)]
+        let options = {
+            use interprocess::os::windows::{
+                local_socket::ListenerOptionsExt as _, security_descriptor::SecurityDescriptor,
+            };
+            let sddl = crate::windows_security::current_process_user_sid()?.private_pipe_sddl()?;
+            let sddl = widestring::U16CString::from_str(sddl)
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+            options.security_descriptor(SecurityDescriptor::deserialize(&sddl)?)
+        };
+        options.create_tokio()
     }
 
     /// Connects and completes the mutual ownership proof.
@@ -91,8 +104,6 @@ impl SupervisorAddress {
 
 /// Refuses a peer running as another user.
 ///
-/// Windows has no peer credentials here and relies on the ownership proof alone.
-///
 /// # Errors
 /// Returns [`ServiceError::Unauthorized`] for a peer with another effective user.
 #[cfg(unix)]
@@ -101,6 +112,23 @@ pub(super) fn same_user(stream: &Stream) -> Result<(), ServiceError> {
         .peer_creds()
         .map_err(|_| ServiceError::Unauthorized)?;
     if credentials.euid() == Some(rustix::process::geteuid().as_raw()) {
+        Ok(())
+    } else {
+        Err(ServiceError::Unauthorized)
+    }
+}
+
+/// Refuses a pipe client running as another user (supervisor side only: a client cannot
+/// impersonate the server).
+///
+/// # Errors
+/// Returns [`ServiceError::Unauthorized`] for a client with another user SID.
+#[cfg(windows)]
+pub(super) fn same_user(stream: &Stream) -> Result<(), ServiceError> {
+    use crate::windows_security::{current_process_user_sid, impersonated_client_user_sid};
+    let ours = current_process_user_sid().map_err(|_| ServiceError::Unauthorized)?;
+    let theirs = impersonated_client_user_sid(stream).map_err(|_| ServiceError::Unauthorized)?;
+    if ours == theirs {
         Ok(())
     } else {
         Err(ServiceError::Unauthorized)

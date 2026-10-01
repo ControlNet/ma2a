@@ -9,10 +9,9 @@ use interprocess::{
 };
 use widestring::U16CString;
 
-use super::{
-    IpcError, IpcPaths,
-    windows_security::{current_process_user_sid, impersonated_client_user_sid},
-};
+use ma2a_services::windows_security::{current_process_user_sid, impersonated_client_user_sid};
+
+use super::{IpcError, IpcPaths};
 
 pub(crate) type PlatformListener = Listener;
 pub(crate) type PlatformStream = Stream;

@@ -2155,6 +2155,7 @@ dependencies = [
  "rustix",
  "tokio",
  "tokio-util",
+ "widestring",
  "windows-sys 0.61.2",
 ]
 

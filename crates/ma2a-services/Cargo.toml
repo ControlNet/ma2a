@@ -19,9 +19,14 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "proce
 rustix = { workspace = true, features = ["process", "termios"] }
 
 [target.'cfg(windows)'.dependencies]
+widestring.workspace = true
 windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

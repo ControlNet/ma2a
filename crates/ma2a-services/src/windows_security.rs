@@ -1,3 +1,6 @@
+//! The current Windows user's SID, the owner-only pipe DACL built from it, and the SID of
+//! a connected named-pipe client. Private IPC and Process supervisors share these.
+
 #![cfg_attr(
     windows,
     allow(unsafe_code, reason = "audited Windows token FFI boundary")
@@ -5,11 +8,16 @@
 
 use std::{fmt::Write as _, io};
 
+/// One binary Windows security identifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct UserSid(Vec<u8>);
+pub struct UserSid(Vec<u8>);
 
 impl UserSid {
-    pub(super) fn to_sddl(&self) -> io::Result<String> {
+    /// Formats this SID in its canonical `S-R-A-…` form.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` for a malformed binary SID.
+    pub fn to_sddl(&self) -> io::Result<String> {
         let revision = self.0.first().copied().ok_or_else(invalid_sid)?;
         let count = self.0.get(1).copied().ok_or_else(invalid_sid)?;
         let expected = 8_usize
@@ -31,7 +39,11 @@ impl UserSid {
         Ok(encoded)
     }
 
-    pub(super) fn private_pipe_sddl(&self) -> io::Result<String> {
+    /// The protected DACL that grants only Local System and this user.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` for a malformed binary SID.
+    pub fn private_pipe_sddl(&self) -> io::Result<String> {
         Ok(format!("D:P(A;;GA;;;SY)(A;;GA;;;{})", self.to_sddl()?))
     }
 }
@@ -113,20 +125,28 @@ mod ffi {
         }
     }
 
-    pub(in super::super) fn current_process_user_sid() -> io::Result<UserSid> {
+    /// Returns the user SID of this process's token.
+    ///
+    /// # Errors
+    /// Returns the operating-system error when the token cannot be read.
+    pub fn current_process_user_sid() -> io::Result<UserSid> {
         // SAFETY: [Category 8 - FFI boundary] GetCurrentProcess has no pointer arguments and returns
         // a process pseudo-handle that remains valid for this process.
         let process = unsafe { GetCurrentProcess() };
         let mut token = ptr::null_mut();
         // SAFETY: [Category 8 - FFI boundary] `token` is writable HANDLE storage and `process` is
         // the current-process pseudo-handle guaranteed by Windows.
-        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        token_user_sid(OwnedHandle(token))
+        token_user_sid(&OwnedHandle(token))
     }
 
-    pub(in super::super) fn impersonated_client_user_sid(stream: &Stream) -> io::Result<UserSid> {
+    /// Returns the user SID of the client connected to this server-side pipe.
+    ///
+    /// # Errors
+    /// Returns the operating-system error when the client cannot be impersonated.
+    pub fn impersonated_client_user_sid(stream: &Stream) -> io::Result<UserSid> {
         let pipe = match stream {
             Stream::NamedPipe(pipe) => pipe.as_handle().as_raw_handle(),
         };
@@ -143,18 +163,18 @@ mod ffi {
         let mut token = ptr::null_mut();
         // SAFETY: [Category 8 - FFI boundary] `token` is writable HANDLE storage; the current thread
         // is impersonating the connected pipe client and Windows validates TOKEN_QUERY access.
-        if unsafe { OpenThreadToken(thread, TOKEN_QUERY, 0, &mut token) } == 0 {
+        if unsafe { OpenThreadToken(thread, TOKEN_QUERY, 0, &raw mut token) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        token_user_sid(OwnedHandle(token))
+        token_user_sid(&OwnedHandle(token))
     }
 
-    fn token_user_sid(token: OwnedHandle) -> io::Result<UserSid> {
+    fn token_user_sid(token: &OwnedHandle) -> io::Result<UserSid> {
         let mut required = 0_u32;
         // SAFETY: [Category 8 - FFI boundary] a null buffer and zero length are the documented size
         // query form, and `required` is initialized writable storage.
         unsafe {
-            GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &mut required);
+            GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &raw mut required);
         }
         if required == 0 {
             return Err(io::Error::last_os_error());
@@ -174,7 +194,7 @@ mod ffi {
                 TokenUser,
                 storage.as_mut_ptr().cast::<c_void>(),
                 required,
-                &mut required,
+                &raw mut required,
             )
         } == 0
         {
@@ -198,7 +218,7 @@ mod ffi {
 }
 
 #[cfg(windows)]
-pub(super) use ffi::{current_process_user_sid, impersonated_client_user_sid};
+pub use ffi::{current_process_user_sid, impersonated_client_user_sid};
 
 #[cfg(test)]
 mod tests {

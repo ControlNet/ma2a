@@ -19,6 +19,7 @@ pub mod report;
 pub mod shell;
 pub mod supervisor;
 pub mod transfer;
+pub mod windows_security;
 
 pub use exec::serve_exec;
 pub use files::serve_files;

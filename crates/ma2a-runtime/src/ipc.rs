@@ -13,8 +13,6 @@ mod server;
 mod unix;
 #[cfg(windows)]
 mod windows;
-#[cfg(any(windows, test))]
-mod windows_security;
 
 pub use client::{LocalApiClient, LocalStream, StreamUpgrade};
 pub use lifecycle::{

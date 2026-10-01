@@ -9,7 +9,7 @@
 
 ## Windows IPC compilation
 
-- Functions defined in the nested `windows_security::ffi` module and re-exported to the `ipc` ancestor require `pub(in super::super)`, not `pub(super)`.
+- Functions defined in the nested `windows_security::ffi` module and re-exported to the `ipc` ancestor require `pub(in super::super)`, not `pub(super)`. Since Phase 3 the module is `ma2a_services::windows_security`, and its items are `pub`. It is shared by private IPC and the Process supervisor pipe.
 - `interprocess` Tokio named-pipe streams expose a borrowed Windows handle through `AsHandle`; obtain the raw handle with `pipe.as_handle().as_raw_handle()` and import both `AsHandle` and `AsRawHandle`.
 - Native Windows compilation remains the authoritative verification because Linux cross-checking the MSVC target requires tools such as `ml64.exe`.
 
