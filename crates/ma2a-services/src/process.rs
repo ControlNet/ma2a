@@ -58,6 +58,12 @@ impl Spawned {
         }
     }
 
+    /// Returns the process-group ID captured at spawn (Unix).
+    #[cfg(unix)]
+    pub(crate) const fn group(&self) -> Option<u32> {
+        self.group
+    }
+
     /// Kills the child and, on Unix, every process left in its process group.
     ///
     /// The group ID is captured at spawn because the child's own ID is unavailable once it

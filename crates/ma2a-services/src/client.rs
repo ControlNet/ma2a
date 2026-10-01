@@ -12,6 +12,7 @@ use tokio::io::AsyncRead;
 use crate::{Frame, FrameReader};
 
 pub mod files;
+pub mod hosted;
 pub mod process;
 pub mod proxy;
 pub mod resume;

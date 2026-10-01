@@ -17,6 +17,7 @@ pub mod proxy;
 mod reply;
 pub mod report;
 pub mod shell;
+pub mod supervisor;
 pub mod transfer;
 
 pub use exec::serve_exec;
