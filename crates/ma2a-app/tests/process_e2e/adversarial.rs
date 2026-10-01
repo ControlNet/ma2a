@@ -128,6 +128,19 @@ fn strangers_see_nothing_limits_hold_and_withdrawn_consent_ends_processes() -> T
         refused(&lab.remote_from(&stranger, &operation)?, "unknown_process")?;
     }
 
+    // Revoking one member's grant ends that member's Process only.
+    let started = lab.remote_from(&stranger, &["start", "--", "sleep", "30"])?;
+    succeed(&started)?;
+    let theirs = text(&serde_json::from_slice(&started.stdout)?, "/process_id");
+    lab.owner
+        .run_ok(&["space", "grant", &lab.space, stranger.id()])?;
+    let revoked = lab.wait_local_state(&theirs, "terminated")?;
+    assert_eq!(text(&revoked, "/process/reason"), "unauthorized");
+    assert_eq!(
+        text(&lab.json(&["inspect", &first])?, "/process/state"),
+        "running"
+    );
+
     // Withdrawing consent ends every Process it allowed.
     lab.owner
         .run_ok(&["service", "unexpose", "process", &lab.space])?;
