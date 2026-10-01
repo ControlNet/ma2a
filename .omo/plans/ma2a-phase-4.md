@@ -309,3 +309,63 @@ Unit tests drive the same windows in process.
 - The A2A adapter: an A2A JSON-RPC client sends, streams, gets and cancels against local and remote Agents.
 
 Phase 1, 2 and 3 E2E remain green.
+
+## Freeze record (as built)
+
+Phase 4 is frozen on local `master`. The commits after the Phase 3 freeze (`59258db`) are:
+
+- `docs`: the Phase 2–5 roadmap and this plan;
+- `feat(core)`, `feat(agent)`, `feat(store)`, `feat(runtime)`, `feat(agent)` (bounded local
+  artifact reads), `feat(a2a)`, `feat(web)`: Phase 4 itself;
+- `fix(control)`: a pull returns a member's first address record, found by the E2E lab;
+- `test(agent)` ×2: the acceptance, recovery, and adversarial E2E;
+- `fix(a2a)`, `fix(process)`, `fix(agent)` ×4, `fix(app)`: fixes from E2E work and the freeze
+  audit;
+- `docs(protocol)` ×2, `docs(agent)`, and this documentation commit.
+
+**Audit fixes.** The fresh audit found 2 blockers and 10 should-fix issues. Both blockers and every
+should-fix issue are fixed:
+
+- (blocker) a `tool` line with a bad name or args over 16 KiB, or a tool answer over 64 KiB, broke
+  a Store `CHECK`, so the line was retried forever or the call stayed pending forever;
+- (blocker) ended Agent instances filled the local Endpoint's 16 retained Processes, so after 16
+  instance lifetimes no Agent could start;
+- `agent_stop` left the instance live, and a launch racing a stop left its Process running;
+- a redefined Agent reused its predecessor's instance-start RequestIds;
+- a workspace FIFO could hang a tool call and daemon shutdown;
+- publishing stored content replaced the blob, changing the identity a resumed download relies on;
+- proxy listeners of tasks ended by a stop or a bound were never released;
+- alternating non-terminal states escaped the durable-event bound;
+- unread deliveries were unbounded, and an `ack` beyond the last delivery pruned the outbox;
+- an artifact whose event would exceed the bound was still published;
+- the A2A adapter: `CancelTask` on an ended task, a streamed continuation closing on the stale
+  `waiting` state, an unbounded stop, local error codes, and `ListTasks` paging;
+- `ma2a agent artifact --output` shared one partial file between `x.txt` and `x.bin` and could
+  remove one it did not create.
+
+One nit is left open: the A2A adapter's per-stream event channel is unbounded; it is drained by
+the SSE writer and closed with the client.
+
+**Documentation.** `docs/protocol/agent-v1.md` (the Agent service, adapter protocol, tool bridge,
+limits, and every deviation from this plan), `docs/protocol/a2a-adapter.md`, and the Phase 4
+sections of `docs/protocol/local-api-v1.md`.
+
+**Test-only items.** `MA2A_TEST_AGENT_FAULT` (debug builds only), the deterministic reference
+Agent `ma2a-example-agent` (not a language model), the E2E lab's Agents, the test HTTP client
+`crates/ma2a-app/tests/agent_e2e/http_client.rs`, `#[cfg(test)] Lines::cursor`, `mkfifo` in a
+workspace unit test, and the Agents data in `web/src/test/services-fixture.ts`.
+
+**Verification at freeze**, on Linux x86_64:
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | clean |
+| `cargo xtask check-loc` | clean |
+| `cargo deny check` | clean |
+| `cargo machete` | clean |
+| `cargo test --workspace --no-fail-fast` | 868 passed, 0 failed |
+| `cargo test -p ma2a-app --test agent_e2e`, three runs | 12/12 each, no leftover Agent or adapter process |
+| `--test process_e2e --test services_e2e --test e2e`, run again | 91/91 passed |
+| `ma2a-core`, `ma2a-services` (`--features blake3/pure`) and `ma2a-agent` clippy for `aarch64-apple-darwin` and `aarch64-pc-windows-msvc` | clean |
+| web: `biome check`, `tsc --noEmit`, `bun test` | clean, 144 tests passed |
