@@ -16,7 +16,7 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 - **Token.** Every route requires `Authorization: Bearer TOKEN`, including the Agent Cards.
   - The token is 32 random bytes as 64 lowercase hex characters, new for every run.
   - It is written to `STATE_DIR/a2a-token`, or to `--token-file`, with mode `0600`: staged, then renamed into place.
-  - It is never printed or logged, and the file is removed when the adapter stops (Ctrl-C or `SIGTERM`).
+  - It is never printed or logged, and the file is removed when the adapter stops (Ctrl-C or `SIGTERM`). A stop lets open requests and streams finish for at most 5 s, then closes them.
   - It is compared in constant time. A missing or wrong token answers `401` with `WWW-Authenticate: Bearer`.
 - **Ready line.** Once listening, the adapter prints one JSON line to stdout and nothing else:
 
@@ -74,7 +74,7 @@ A card is served for a defined local Agent, found through `agent_list`, even whi
 | Method | Behaviour |
 | --- | --- |
 | `SendMessage` | Creates a task, or continues the task the message names. By default it waits until the task ended or waits for input, then answers `{task}`. `configuration.returnImmediately: true` answers at once. `configuration.historyLength` limits the history returned. |
-| `SendStreamingMessage` | Same delivery as `SendMessage`, answered as Server-Sent Events: first `{task}`, then one `statusUpdate` or `artifactUpdate` per new event. The stream closes once the task ended or waits for input. |
+| `SendStreamingMessage` | Same delivery as `SendMessage`, answered as Server-Sent Events: first `{task}`, then one `statusUpdate` or `artifactUpdate` per new event. The stream closes once the task ended or waits for input. A message that continues a waiting task is followed from the moment it was sent, so the stream closes only once the task waits again or ends. |
 | `GetTask` | `{id, historyLength?}`: the task with its artifacts and history. |
 | `ListTasks` | The route's tasks visible to the caller. See [ListTasks](#listtasks). |
 | `CancelTask` | `{id}`: requests cancellation, waits up to 30 s for the task to end, then answers the task as it is. |
@@ -165,7 +165,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - `statusTimestampAfter`: ISO 8601 UTC.
 - **Paging.**
   - `pageSize` is 1–100, default 50.
-  - `pageToken` is the last task ID of the previous page; a token from another listing answers `-32602`.
+  - `pageToken` is the last task ID of the previous page. Tasks are listed in task ID order, so the next page starts after that ID even if that task no longer matches. A token that is not a task ID answers `-32602`.
   - `totalSize` counts every match.
 - **Detail.** Artifacts are included only with `includeArtifacts: true`. History is included only when `historyLength` is greater than 0. Without either, no task's details are read.
 
@@ -177,14 +177,14 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 | `-32600` | The JSON-RPC envelope is wrong. |
 | `-32601` | Unknown method. |
 | `-32602` | Invalid parameters, or the Runtime refused a parameter (`invalid_input`). |
-| `-32001` `TaskNotFound` | No such task for this caller and Agent (`unknown_task`, or `not_found` on a task method). |
+| `-32001` `TaskNotFound` | No such task for this caller and Agent, including a message whose `taskId` names none. |
 | `-32002` `TaskNotCancelable` | `CancelTask` on a task that has already ended. |
 | `-32003` | Push notification methods. |
 | `-32004` `UnsupportedOperation` | A message to, or a subscription on, a task that has already ended. |
 | `-32005` | A file part in a request. |
 | `-32007` | `GetExtendedAgentCard`. |
 | `-32009` | Missing or unsupported `A2A-Version`. |
-| `-32603` | Any other refusal. Its `ErrorInfo.reason` is the Runtime's error name in upper case, for example `UNKNOWN_AGENT`, `UNAUTHORIZED`, `AGENT_UNAVAILABLE`, `CONCURRENCY_EXCEEDED`, `CONFLICT`, or `UNAVAILABLE`. |
+| `-32603` | Any other refusal. Its `ErrorInfo.reason` is the Runtime's error name in upper case, for example `UNKNOWN_AGENT`, `UNAUTHORIZED`, `AGENT_UNAVAILABLE` (the Agent is stopped), `CONCURRENCY_EXCEEDED`, `CONFLICT` (a `messageId` reused for another message), or `UNAVAILABLE`. |
 
 ## Mismatches with A2A v1.0
 

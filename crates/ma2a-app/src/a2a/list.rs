@@ -82,12 +82,20 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
     };
     let all = all(served).await.map_err(refused)?;
     let matching: Vec<&Value> = all.iter().filter(|task| filter.keeps(task)).collect();
+    // Tasks are listed in task ID order, so a page continues after its last ID even when
+    // that task no longer matches.
     let start = match wanted("pageToken") {
-        Some(token) => matching
-            .iter()
-            .position(|task| task_id(task) == token)
-            .map(|index| index + 1)
-            .ok_or_else(|| RpcError::invalid_params("`pageToken` is not from this listing"))?,
+        Some(token) if token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+            matching
+                .iter()
+                .position(|task| task_id(task).as_str() > token)
+                .unwrap_or(matching.len())
+        }
+        Some(_) => {
+            return Err(RpcError::invalid_params(
+                "`pageToken` is not from this listing",
+            ));
+        }
         None => 0,
     };
     let page: Vec<&Value> = matching

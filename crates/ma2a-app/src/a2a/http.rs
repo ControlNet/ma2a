@@ -25,8 +25,8 @@ use super::{
 /// Largest JSON-RPC request body; one message is at most 12 KiB of content.
 const MAX_REQUEST: usize = 65_536;
 
-/// What every route shares.
-#[derive(Clone, Debug)]
+/// What every route shares; deliberately not `Debug`, so the token is never formatted.
+#[derive(Clone)]
 pub(super) struct Shared {
     pub(super) backend: Backend,
     /// The bearer token every request presents.
@@ -161,7 +161,7 @@ async fn dispatch(shared: Shared, route: Route, request: Request) -> Response {
         _ => None,
     };
     let answer = match streamed {
-        Some(Ok((method, task, until_waiting))) => {
+        Some(Ok((method, task, (until_waiting, sent_at)))) => {
             let owned = Owned {
                 backend: shared.backend.clone(),
                 route: route.clone(),
@@ -172,6 +172,7 @@ async fn dispatch(shared: Shared, route: Route, request: Request) -> Response {
                 method,
                 task,
                 until_waiting,
+                sent_at,
             };
             return stream::respond(owned, lifecycle);
         }
@@ -185,7 +186,9 @@ async fn dispatch(shared: Shared, route: Route, request: Request) -> Response {
     json_response(StatusCode::OK, &response)
 }
 
-type Started = Result<(&'static str, String, bool), rpc::RpcError>;
+/// The method, the task, and how its stream closes: once the task waits as well as when it
+/// ends, and the sequence number a continuing message was sent at.
+type Started = Result<(&'static str, String, (bool, Option<u32>)), rpc::RpcError>;
 
 /// Delivers a streamed message; the stream then follows its task until it settles.
 async fn start_streaming(served: Served<'_>, params: &Value) -> Started {
@@ -197,7 +200,11 @@ async fn start_streaming(served: Served<'_>, params: &Value) -> Started {
         .get("task_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    Ok(("SendStreamingMessage", task.to_owned(), true))
+    let sent_at = inbound
+        .task
+        .is_some()
+        .then(|| super::view::last_seq(&summary));
+    Ok(("SendStreamingMessage", task.to_owned(), (true, sent_at)))
 }
 
 /// Checks a subscription names a task that has not ended; the stream follows it until it
@@ -216,7 +223,7 @@ async fn start_subscription(served: Served<'_>, params: &Value) -> Started {
     if super::backend::ended(state) {
         return Err(rpc::RpcError::unsupported("the task has already ended"));
     }
-    Ok(("SubscribeToTask", task.to_owned(), false))
+    Ok(("SubscribeToTask", task.to_owned(), (false, None)))
 }
 
 async fn local_artifact(

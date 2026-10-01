@@ -31,6 +31,9 @@ mod stream;
 mod time;
 mod view;
 
+/// How long a stop waits for open requests and streams to finish.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Writes `token` to `path`, readable only by this user, replacing any earlier file.
 fn write_private(path: &Path, token: &str) -> io::Result<()> {
     let staging = path.with_extension("ma2a-partial");
@@ -93,9 +96,20 @@ pub(crate) async fn serve(
         token: Arc::from(token),
         origin: Arc::from(origin),
     };
-    let served = axum::serve(listener, http::router(shared))
-        .with_graceful_shutdown(stopped())
-        .await;
+    // Open streams may last as long as their tasks, so a stop waits for them only briefly.
+    let stopping = tokio_util::sync::CancellationToken::new();
+    let signalled = stopping.clone();
+    let serving = axum::serve(listener, http::router(shared)).with_graceful_shutdown(async move {
+        stopped().await;
+        signalled.cancel();
+    });
+    let outcome = tokio::select! {
+        finished = serving => finished,
+        () = async {
+            stopping.cancelled().await;
+            tokio::time::sleep(STOP_GRACE).await;
+        } => Ok(()),
+    };
     let _removed = std::fs::remove_file(&token_file);
-    Ok(served?)
+    Ok(outcome?)
 }

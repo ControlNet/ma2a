@@ -175,6 +175,14 @@ fn send_replay_and_continue(adapter: &Adapter, lead: &str) -> TestResult {
     let late = continuing("m-late", "echo late", &text(&sent, "/task/id"));
     let late = adapter.call(sending, &late)?;
     assert_eq!(error_code(&late)?, -32_004, "{:?}", late.json());
+    let ended = adapter.call(
+        (lead, "CancelTask"),
+        &json!({"id": text(&sent, "/task/id")}),
+    )?;
+    assert_eq!(error_code(&ended)?, -32_002, "{:?}", ended.json());
+    let unknown = continuing("m-unknown", "hello", &"00".repeat(16));
+    let unknown = adapter.call(sending, &unknown)?;
+    assert_eq!(error_code(&unknown)?, -32_001, "{:?}", unknown.json());
 
     let asked = adapter.result(sending, &message("m-ask", "ask colour?"))?;
     assert_eq!(
@@ -195,6 +203,32 @@ fn send_replay_and_continue(adapter: &Adapter, lead: &str) -> TestResult {
         .and_then(Value::as_array)
         .map(Vec::len);
     assert!(history >= Some(3), "{answered}");
+
+    // A streamed answer follows the task past its wait until it waits again or ends.
+    let asked = adapter.result(sending, &message("m-ask-2", "ask shape?"))?;
+    let reply = continuing("m-round", "round", &text(&asked, "/task/id"));
+    let streamed = adapter
+        .call((lead, "SendStreamingMessage"), &reply)?
+        .events()?;
+    let end = streamed.last().ok_or("empty stream")?;
+    assert_eq!(
+        text(end, "/result/statusUpdate/status/state"),
+        "TASK_STATE_COMPLETED",
+        "{streamed:?}"
+    );
+    Ok(())
+}
+
+/// A stopped local Agent is unavailable, not a conflict.
+fn stopped_agent(adapter: &Adapter, lab: &AgentLab, lead: &str) -> TestResult {
+    lab.a.run_ok(&["agent", "stop", "lead"])?;
+    let refused = adapter.call((lead, "SendMessage"), &message("m-stopped", "echo x"))?;
+    let document = refused.json()?;
+    assert_eq!(
+        document.pointer("/error/data/0/reason"),
+        Some(&json!("AGENT_UNAVAILABLE")),
+        "{document}"
+    );
     Ok(())
 }
 
@@ -312,6 +346,7 @@ fn a2a_clients_use_local_and_remote_agents() -> TestResult {
     stream_get_and_list(&adapter, &lab, routes)?;
     local_artifact(&adapter, &lab, routes.0)?;
     subscribe_and_cancel(&adapter, routes)?;
+    stopped_agent(&adapter, &lab, routes.0)?;
     adapter.stop()?;
     lab.shutdown()
 }

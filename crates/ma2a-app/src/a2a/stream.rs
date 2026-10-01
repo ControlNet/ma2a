@@ -30,6 +30,9 @@ pub(super) struct Lifecycle {
     pub(super) task: String,
     /// Close once the task waits for input, not only once it ended.
     pub(super) until_waiting: bool,
+    /// For a message to a waiting task: follow from the sequence number it was sent at,
+    /// and close only on a state the task reaches after it.
+    pub(super) sent_at: Option<u32>,
 }
 
 /// Everything a stream producer owns.
@@ -144,13 +147,15 @@ async fn produce(
         }
     };
     let mut current = text(&details, "/task/state").to_owned();
-    if !send(frames, &success(id, &json!({"task": first}))).await || finishes(&current) {
+    let settled_now = lifecycle.sent_at.is_none() && finishes(&current);
+    if !send(frames, &success(id, &json!({"task": first}))).await || settled_now {
         return Some(());
     }
+    let after = lifecycle
+        .sent_at
+        .unwrap_or_else(|| view::last_seq(&details));
     let (events, mut received) = mpsc::unbounded_channel();
-    let following = owned
-        .backend
-        .follow((&owned.route, (task, view::last_seq(&details))), &events);
+    let following = owned.backend.follow((&owned.route, (task, after)), &events);
     tokio::pin!(following);
     let mut forward = |event: Value| {
         if text(&event, "/kind") == "state" {

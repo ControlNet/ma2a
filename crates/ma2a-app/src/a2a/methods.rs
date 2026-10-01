@@ -86,6 +86,10 @@ pub(super) async fn deliver(served: Served<'_>, inbound: &Inbound) -> Result<Val
     if let Some(task) = &inbound.task {
         let sent = (task.as_str(), &inbound.message, request_id.as_str());
         let refusal = match served.backend.send(served.route, sent).await {
+            // The local API answers a task it does not know as `not_found`.
+            Err(refusal) if refusal.0 == "not_found" => {
+                return Err(Refusal::named("unknown_task"));
+            }
             Err(refusal) if refusal.0 == "conflict" => refusal,
             other => return other,
         };
@@ -98,7 +102,17 @@ pub(super) async fn deliver(served: Served<'_>, inbound: &Inbound) -> Result<Val
         Err(refusal)
     } else {
         let submitted = (&inbound.message, request_id.as_str());
-        served.backend.submit(served.route, submitted).await
+        match served.backend.submit(served.route, submitted).await {
+            // The local API answers a stopped Agent as a conflict, like a reused messageId.
+            Err(refusal) if refusal.0 == "conflict" => {
+                let started = served.backend.card(served.route).await;
+                if started.is_ok_and(|(_, started)| !started) {
+                    return Err(Refusal::named("agent_unavailable"));
+                }
+                Err(refusal)
+            }
+            other => other,
+        }
     }
 }
 
@@ -153,6 +167,15 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
         }
         "CancelTask" => {
             let id = required(params, "id")?;
+            let current = served
+                .backend
+                .details(served.route, id)
+                .await
+                .map_err(refused)?;
+            let state = current.pointer("/task/state").and_then(Value::as_str);
+            if state.is_some_and(ended) {
+                return Err(RpcError::not_cancelable());
+            }
             let summary = served
                 .backend
                 .cancel(served.route, id)
