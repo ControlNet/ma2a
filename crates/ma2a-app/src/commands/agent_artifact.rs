@@ -52,6 +52,14 @@ fn decode(chunk: &Value) -> Option<Chunk> {
     })
 }
 
+/// The sibling a download of `output` is written to first: its whole name plus
+/// `.ma2a-partial`, so two outputs never share one.
+pub(crate) fn partial_of(output: &Path) -> std::path::PathBuf {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".ma2a-partial");
+    output.with_file_name(name)
+}
+
 /// Downloads one artifact into a new file, verified against its hash, and prints where.
 ///
 /// The bytes go to a sibling `.ma2a-partial` file first; only a complete, verified copy is
@@ -61,7 +69,7 @@ pub(crate) async fn save(
     (task, name): (&str, &str),
     output: &Path,
 ) -> Result<(), AppError> {
-    let partial = output.with_extension("ma2a-partial");
+    let partial = partial_of(output);
     let mut file = tokio::fs::File::create_new(&partial).await?;
     let copied = async {
         let (mut offset, mut hasher, mut expected) = (0_u64, blake3::Hasher::new(), None);
@@ -99,4 +107,23 @@ pub(crate) async fn save(
     let (size, hash) = copied?;
     let saved = json!({"output": output.display().to_string(), "size": size, "blake3": hash});
     super::agents::print(&saved)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::partial_of;
+
+    #[test]
+    fn a_partial_download_keeps_the_whole_output_name() {
+        assert_eq!(
+            partial_of(Path::new("/tmp/out/report.txt")),
+            Path::new("/tmp/out/report.txt.ma2a-partial")
+        );
+        assert_ne!(
+            partial_of(Path::new("report.txt")),
+            partial_of(Path::new("report.bin"))
+        );
+    }
 }

@@ -228,12 +228,14 @@ async fn artifact(
     ((agent, task), name): ((AgentId, AgentTaskId), String),
     output: &Path,
 ) -> Result<(), AppError> {
-    let partial = output.with_extension("ma2a-partial");
+    let partial = crate::commands::agent_artifact::partial_of(output);
     let request = AgentRequest::Artifact(agent, task, name, 0, None);
     let (mut reader, _writer) = open(target.0, target.1, OpenBody::Agent(request)).await?;
+    let mut created = false;
     let downloaded = async {
         client::transfer::download_accepted(&mut reader).await?;
         let mut file = tokio::fs::File::create_new(&partial).await?;
+        created = true;
         let mut hasher = blake3::Hasher::new();
         let result =
             client::transfer::download_content(&mut reader, (&mut file, &mut hasher)).await?;
@@ -244,7 +246,10 @@ async fn artifact(
         Ok::<_, AppError>(result)
     }
     .await;
-    let _removed = tokio::fs::remove_file(&partial).await;
+    // Only a partial file this download created is removed, never one already there.
+    if created {
+        let _removed = tokio::fs::remove_file(&partial).await;
+    }
     let result = downloaded?;
     print(&json!({
         "output": output.display().to_string(),
