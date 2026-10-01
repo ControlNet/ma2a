@@ -15,7 +15,7 @@ mod workspace;
 use std::path::PathBuf;
 
 use ma2a_agent::{
-    protocol::ToolError,
+    protocol::{MAX_TOOL_RESULT_LEN, ToolError},
     tools::{Tool, ToolFamily},
 };
 use ma2a_core::{
@@ -76,6 +76,18 @@ fn stored(outcome: &Outcome) -> Vec<u8> {
     serde_json::to_vec(&value).unwrap_or_default()
 }
 
+/// Encodes one answer within [`MAX_TOOL_RESULT_LEN`]; a larger one is `too_large`.
+fn answer(outcome: &Outcome) -> Vec<u8> {
+    let bytes = stored(outcome);
+    if bytes.len() <= MAX_TOOL_RESULT_LEN {
+        return bytes;
+    }
+    stored(&Err(ToolError::new(
+        "too_large",
+        "the tool result exceeds 64 KiB",
+    )))
+}
+
 /// The stored answer of a call refused because its task has too many open.
 pub(super) fn rejection() -> Vec<u8> {
     stored(&Err(status(ServiceError::ConcurrencyExceeded)))
@@ -100,7 +112,7 @@ impl AgentManager {
         self.0.tasks.spawn(async move {
             if let Some(outcome) = manager.execute((task, &call)).await {
                 fault("before_tool_result");
-                let (bytes, at_ms) = (stored(&outcome), manager.now_ms());
+                let (bytes, at_ms) = (answer(&outcome), manager.now_ms());
                 let id = call.clone();
                 let _recorded = manager
                     .commit(move |repository| {
@@ -177,5 +189,23 @@ impl Call<'_> {
             Tool::AgentCancel => self.agent_cancel(Self::args(args)?).await,
             Tool::AgentArtifact => self.agent_artifact(Self::args(args)?).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_agent::protocol::MAX_TOOL_RESULT_LEN;
+    use serde_json::json;
+
+    use super::answer;
+
+    #[test]
+    fn an_answer_over_the_stored_bound_becomes_too_large() {
+        let small = answer(&Ok(json!({"size": 3})));
+        assert_eq!(small, br#"{"ok":{"size":3}}"#);
+        let huge = answer(&Ok(json!({"text": "x".repeat(MAX_TOOL_RESULT_LEN)})));
+        assert!(huge.len() <= MAX_TOOL_RESULT_LEN);
+        let decoded: serde_json::Value = serde_json::from_slice(&huge).unwrap_or_default();
+        assert_eq!(decoded.pointer("/error/code"), Some(&json!("too_large")));
     }
 }

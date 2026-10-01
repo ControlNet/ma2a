@@ -96,6 +96,13 @@ async fn handle(mut task: Task) {
             Ok(value) => task.complete(Some(Message::agent_text(value.to_string()))),
             Err(error) => task.fail(&error.code),
         },
+        "huge-tool" => {
+            let args = json!({"text": "x".repeat(ma2a_agent::protocol::MAX_TOOL_ARGS_LEN)});
+            match task.call(Tool::FilesStat, &args).await {
+                Ok(_) => task.complete(None),
+                Err(error) => task.fail(&error.code),
+            }
+        }
         "cancel-me" => task.cancelled().await,
         _ => {}
     }
@@ -210,5 +217,20 @@ async fn cancellation_and_a_dropped_handle_both_end_the_task() -> TestResult {
     };
     runtime.send(&cancel).await?;
     runtime.until(ended("a", ReportedState::Cancelled)).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_tool_call_over_the_argument_bound_fails_at_once() -> TestResult {
+    let mut runtime = Runtime::start();
+    runtime.next().await?;
+    runtime.send(&task(1, "a", "huge-tool")).await?;
+    let before = runtime.until(ended("a", ReportedState::Failed)).await?;
+    assert!(
+        before
+            .iter()
+            .all(|line| !matches!(line, AgentToRuntime::Tool { .. })),
+        "{before:?}"
+    );
     Ok(())
 }

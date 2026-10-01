@@ -9,7 +9,7 @@ use crate::protocol::Message;
 /// Longest `agent.wait` in milliseconds.
 pub const MAX_AGENT_WAIT_MS: u64 = 300_000;
 /// Most bytes of stdout, and of stderr, an `exec.run` result carries.
-pub const MAX_EXEC_CAPTURE: usize = 1_048_576;
+pub const MAX_EXEC_CAPTURE: usize = 65_536;
 
 /// `files.stat`, `files.list`: one path in one exported root.
 #[expect(clippy::exhaustive_structs, reason = "a closed wire record")]

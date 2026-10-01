@@ -14,6 +14,13 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_AGENT_LINE_LEN: usize = 65_536;
 /// Longest Runtime line in bytes, without its newline.
 pub const MAX_RUNTIME_LINE_LEN: usize = 16 * 1_048_576;
+/// Longest tool name in bytes; a call naming a longer (or empty) one is ignored.
+pub const MAX_TOOL_NAME_LEN: usize = 64;
+/// Longest tool `args` in bytes, as compact JSON; a call with longer ones is ignored.
+pub const MAX_TOOL_ARGS_LEN: usize = 16_384;
+/// Longest tool answer in bytes, as the compact JSON `{"ok": …}` or `{"error": …}`; a
+/// longer answer is replaced by a `too_large` error.
+pub const MAX_TOOL_RESULT_LEN: usize = 65_536;
 
 /// Who wrote a message.
 #[expect(

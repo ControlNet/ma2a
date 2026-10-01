@@ -246,6 +246,42 @@ fn tool_calls_run_once_are_bounded_and_answer_their_instance() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn output_breaking_a_durable_bound_only_moves_the_cursor() -> TestResult {
+    let (_state, mut repository, generation, task) = running("agent-unbound")?;
+    let oversized = AgentOutputEffect::ToolCall {
+        task,
+        call: "big".to_owned(),
+        name: "agent.submit".to_owned(),
+        request: vec![b'x'; 16_385],
+        rejection: b"{\"error\":\"concurrency_exceeded\"}".to_vec(),
+    };
+    let unnamed = AgentOutputEffect::ToolCall {
+        task,
+        call: "unnamed".to_owned(),
+        name: String::new(),
+        request: b"{}".to_vec(),
+        rejection: b"{\"error\":\"concurrency_exceeded\"}".to_vec(),
+    };
+    for (cursor, effect) in [(11, oversized), (12, unnamed)] {
+        assert_eq!(
+            apply(&mut repository, (generation, cursor), effect)?,
+            AgentOutputApplied::Ignored
+        );
+    }
+    // The cursor moved past both, and the next line applies.
+    assert_eq!(
+        apply(&mut repository, (generation, 12), tool(task, "late"))?,
+        AgentOutputApplied::Stale
+    );
+    assert_eq!(
+        apply(&mut repository, (generation, 13), tool(task, "next"))?,
+        AgentOutputApplied::ToolCall(task, "next".to_owned())
+    );
+    assert!(repository.tool_call((task, "big"))?.is_none());
+    Ok(())
+}
+
 fn artifact(name: &str, byte: u8) -> TestValue<ArtifactRef> {
     Ok(ArtifactRef::new((name, "text/plain"), (3, [byte; 32]))?)
 }

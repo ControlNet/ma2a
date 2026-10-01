@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use super::Shared;
 use crate::{
-    protocol::{AgentToRuntime, Message, Origin, ReportedState, ToolError},
+    protocol::{AgentToRuntime, MAX_TOOL_ARGS_LEN, Message, Origin, ReportedState, ToolError},
     tools::Tool,
 };
 
@@ -125,6 +125,12 @@ impl Task {
     ) -> Result<Value, ToolError> {
         let args = serde_json::to_value(args)
             .map_err(|error| ToolError::new("invalid_tool", error.to_string()))?;
+        if args.to_string().len() > MAX_TOOL_ARGS_LEN {
+            return Err(ToolError::new(
+                "too_large",
+                "the tool arguments exceed 16 KiB",
+            ));
+        }
         let call = format!("c{}", self.next_call.fetch_add(1, Ordering::Relaxed));
         let (answer, answered) = oneshot::channel();
         match self.shared.tasks().get_mut(&self.id) {

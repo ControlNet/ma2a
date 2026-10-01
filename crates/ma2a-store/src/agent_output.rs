@@ -239,11 +239,28 @@ impl Repository {
     /// Applies one adapter message and advances its instance's output cursor with it.
     ///
     /// A message at or before the stored cursor, or from an instance that is no longer the
-    /// live one, changes nothing.
+    /// live one, changes nothing. A message whose effect would break a durable bound is
+    /// ignored: only the cursor moves, so one such line can never stop every later one.
     ///
     /// # Errors
     /// Returns [`StoreError`] when the change cannot be committed.
     pub fn apply_agent_output(
+        &mut self,
+        output: &AgentOutput,
+        effect: AgentOutputEffect,
+    ) -> Result<Committed<AgentOutputApplied>, StoreError> {
+        match self.apply_output_once(output, effect) {
+            // A constraint fails the same way on every retry; the change rolled back.
+            Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _)))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                self.apply_output_once(output, AgentOutputEffect::Ignore)
+            }
+            applied => applied,
+        }
+    }
+
+    fn apply_output_once(
         &mut self,
         output: &AgentOutput,
         effect: AgentOutputEffect,

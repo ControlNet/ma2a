@@ -1,7 +1,8 @@
 //! Splitting an instance's output into adapter lines and decoding each into its effect.
 
 use ma2a_agent::protocol::{
-    AgentToRuntime, MAX_AGENT_LINE_LEN, PROTOCOL_VERSION, ReportedState, decode_line, is_call_id,
+    AgentToRuntime, MAX_AGENT_LINE_LEN, MAX_TOOL_ARGS_LEN, MAX_TOOL_NAME_LEN, PROTOCOL_VERSION,
+    ReportedState, decode_line, is_call_id,
 };
 use ma2a_core::service::{AgentTaskId, AgentTaskState, MAX_TASK_NOTE_LEN};
 use ma2a_store::AgentOutputEffect;
@@ -140,9 +141,13 @@ fn decoded(message: AgentToRuntime) -> Option<AgentOutputEffect> {
         } => AgentOutputEffect::ToolCall {
             task: task(&id)?,
             rejection: rejection(),
-            request: serde_json::to_vec(&args).ok()?,
+            request: serde_json::to_vec(&args)
+                .ok()
+                .filter(|request| request.len() <= MAX_TOOL_ARGS_LEN)?,
             call: is_call_id(&call).then_some(call)?,
-            name,
+            name: (1..=MAX_TOOL_NAME_LEN)
+                .contains(&name.len())
+                .then_some(name)?,
         },
     })
 }
@@ -181,9 +186,16 @@ mod tests {
             br#"{"t":"ready","protocol":2}"#,
             br#"{"t":"progress","task":"not-hex","text":"x"}"#,
             br#"{"t":"tool","task":"00000000000000000000000000000001","call":"bad id","name":"x","args":{}}"#,
+            br#"{"t":"tool","task":"00000000000000000000000000000001","call":"c1","name":"","args":{}}"#,
         ] {
             assert_eq!(effect(Some(line)), AgentOutputEffect::Ignore);
         }
+        // Arguments over the tool bound are a violation, however short the line.
+        let text = "x".repeat(ma2a_agent::protocol::MAX_TOOL_ARGS_LEN);
+        let huge = format!(
+            r#"{{"t":"tool","task":"00000000000000000000000000000001","call":"c1","name":"files.stat","args":{{"text":"{text}"}}}}"#
+        );
+        assert_eq!(effect(Some(huge.as_bytes())), AgentOutputEffect::Ignore);
         assert_eq!(
             effect(Some(br#"{"t":"ready","protocol":1}"#)),
             AgentOutputEffect::Ready

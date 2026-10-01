@@ -7,7 +7,7 @@ use std::{
 };
 
 use ma2a_agent::{
-    protocol::ToolError,
+    protocol::{MAX_TOOL_RESULT_LEN, ToolError},
     tools::{
         ExecOutput, ExecRun, MAX_EXEC_CAPTURE, ProcessInfo, ProcessStartArgs, ProcessTarget,
         ProcessTerminate,
@@ -62,6 +62,31 @@ impl AsyncWrite for Capture {
     ) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
+}
+
+/// Halves `text` at a character boundary.
+fn halve(text: &mut String) {
+    let mut end = text.len() / 2;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+}
+
+/// Cuts the longer stream in half until the whole answer fits one stored result.
+fn fitted(mut output: ExecOutput) -> ExecOutput {
+    let fits = |output: &ExecOutput| {
+        serde_json::json!({ "ok": output }).to_string().len() <= MAX_TOOL_RESULT_LEN
+    };
+    while !fits(&output) && (!output.stdout.is_empty() || !output.stderr.is_empty()) {
+        output.truncated = true;
+        if output.stdout.len() >= output.stderr.len() {
+            halve(&mut output.stdout);
+        } else {
+            halve(&mut output.stderr);
+        }
+    }
+    output
 }
 
 fn invalid(what: &str) -> ToolError {
@@ -121,14 +146,14 @@ impl Call<'_> {
             Termination::Signaled(signal) => (None, Some(signal)),
             Termination::Unknown => (None, None),
         };
-        ok(&ExecOutput {
+        ok(&fitted(ExecOutput {
             exit_code,
             signal,
             reason: result.reason.name().to_owned(),
             stdout: String::from_utf8_lossy(&output.bytes).into_owned(),
             stderr: String::from_utf8_lossy(&error.bytes).into_owned(),
             truncated: output.dropped || error.dropped,
-        })
+        }))
     }
 
     async fn process(&self, (endpoint, request): (&str, ProcessRequest)) -> Outcome {
@@ -169,5 +194,44 @@ impl Call<'_> {
         let grace = args.grace_ms.unwrap_or(DEFAULT_GRACE_MS);
         let request = ProcessRequest::Terminate(process_id(&args.id)?, grace);
         self.process((&args.endpoint, request)).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_agent::{protocol::MAX_TOOL_RESULT_LEN, tools::ExecOutput};
+
+    use super::fitted;
+
+    fn output(stdout: String, stderr: String) -> ExecOutput {
+        ExecOutput {
+            exit_code: Some(0),
+            signal: None,
+            reason: "exited".to_owned(),
+            stdout,
+            stderr,
+            truncated: false,
+        }
+    }
+
+    fn stored_len(output: &ExecOutput) -> usize {
+        serde_json::json!({ "ok": output }).to_string().len()
+    }
+
+    #[test]
+    fn exec_output_is_cut_to_fit_one_stored_result() {
+        // Control characters expand sixfold when encoded.
+        let cut = fitted(output("\u{1}".repeat(60_000), "é".repeat(30_000)));
+        assert!(cut.truncated);
+        assert!(
+            stored_len(&cut) <= MAX_TOOL_RESULT_LEN,
+            "{}",
+            stored_len(&cut)
+        );
+        assert!(!cut.stdout.is_empty() && !cut.stderr.is_empty());
+
+        let small = fitted(output("hello".to_owned(), String::new()));
+        assert!(!small.truncated);
+        assert_eq!(small.stdout, "hello");
     }
 }
