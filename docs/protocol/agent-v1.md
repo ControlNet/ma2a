@@ -319,8 +319,9 @@ it is the `input` of Details. When the Agent reports a state together with a mes
 is recorded as its own `message` event, immediately before the `state` event.
 
 - **Durable events.** `state`, `message`, and `artifact` events are never pruned. A task holds at
-  most 256 of them: a `message` or `artifact` event that would exceed this fails the task with
-  reason `limit` instead.
+  most 256 of them: a `message`, `artifact`, or non-terminal `state` event that would exceed this
+  fails the task with reason `limit` instead. A terminal `state` event is always recorded, so the
+  end of a task is never lost. An artifact whose event would exceed the bound is not published.
 - **Progress.** Only the newest 64 `progress` events of a task are retained; older ones are
   deleted when a new one is recorded. The newest progress text is also kept in Details.
 
@@ -346,7 +347,7 @@ pruned in between, so the first event delivered may have a `seq` above `next`.
 **Publication.** An Agent publishes a file from its workspace with the `artifact.publish` tool. The
 daemon:
 
-1. resolves the path inside the workspace and requires a regular file;
+1. resolves the path inside the workspace and requires a regular file, opened without blocking;
 2. copies it into a staging file in the content-addressed store `<state>/agents-v1/blobs/` (mode
    `0700`), hashing it with BLAKE3 as it goes;
 3. fsyncs the copy and renames it to `<blake3 hex>`, so identical content is stored once;
@@ -379,8 +380,9 @@ verifies BLAKE3 over its final file.
 standard base64, with the reference and `eof`. A reader verifies the whole content against the
 returned hash. The local API reports an unknown task or artifact as `not_found`.
 `ma2a agent artifact … --output FILE` uses these chunks for a local task and the `artifact`
-operation for a remote one. It writes a sibling file with the extension `.ma2a-partial`, verifies
-it, and hard-links it to `FILE`, so an existing `FILE` is never overwritten.
+operation for a remote one. It writes the sibling file `FILE.ma2a-partial`, verifies it, and
+hard-links it to `FILE`, so an existing `FILE` is never overwritten. A partial file it did not
+create, such as one left by a concurrent download, is never removed.
 
 **Publication.** `artifact.publish` copies the file to a staging file in the blob directory while
 hashing it. A blob of that hash that is already stored is kept untouched, and the copy is
@@ -407,8 +409,10 @@ A new Agent starts stopped. A definition can be replaced or removed only while t
 stopped. Removing it keeps its finished tasks until they expire.
 
 **Start and stop.** `agent_start` enables the Agent, and its first instance starts at once.
-`agent_stop` disables it: every unfinished task fails with `agent_stopped`, and its instance
-Process is terminated with a 5 s grace period.
+`agent_stop` disables it in one transaction: every unfinished task fails with `agent_stopped`,
+the live instance ends, and its outbox is dropped. The instance Process is then terminated with a
+5 s grace period. A launch that races a stop finds its instance ended when it binds the Process,
+and terminates that Process the same way.
 
 **Instance.** An instance is one incarnation of a started Agent: a Phase 3 Process that the local
 Endpoint creates for itself, with a generation number that counts the instances ever started. An
@@ -421,8 +425,10 @@ Agent has at most one live instance.
 - Its environment is the definition's plus `MA2A_AGENT_ID`, `MA2A_AGENT_WORKSPACE`, and
   `MA2A_AGENT_PROTOCOL=1`.
 - The start's RequestId is the first 16 bytes of BLAKE3 `derive_key("ma2a agent instance start
-  v1")` over `agent ‖ 0x00 ‖ generation` (u64 BE). A crash between the Process commit and the
-  instance commit therefore never starts a second Process for one generation.
+  v1")` over `agent ‖ 0x00 ‖ defined_at_ms ‖ generation` (both u64 BE), where `defined_at_ms` is
+  the creation time of the definition. A crash between the Process commit and the instance commit
+  therefore never starts a second Process for one generation, and an Agent removed and defined
+  again never replays its predecessor's start.
 - The local Endpoint's own Processes are exempt from Process withdrawal convergence, and remote
   callers never see them, because no remote peer can be the local Endpoint.
 
@@ -488,7 +494,10 @@ like CBOR messages.
 - `error` and progress `text` are cut to 1,024 bytes at a character boundary.
 - `call` is 1–64 bytes of `[A-Za-z0-9._-]`, unique per task. A repeated `call` is ignored and
   never runs twice.
-- `ack` only moves forward, and acknowledged deliveries leave the outbox.
+- A `tool` line whose `name` is not 1–64 bytes, or whose `args` encode to more than 16,384 bytes,
+  is ignored. The SDK refuses such a call itself with `too_large`, without writing it.
+- `ack` only moves forward, and acknowledged deliveries leave the outbox. An `ack` of a `seq` that
+  was never delivered is ignored.
 
 **Exactly-once application.** The link cuts stdout into lines by content-byte cursor over the
 Process log. Each complete line is applied in one Store transaction together with the advance of
@@ -500,6 +509,8 @@ retention dropped output before the link read it, the line that was cut is dropp
 **Protocol violations.** A line over 65,536 bytes (without its newline), a malformed line, an
 unknown tag, a bad task ID or call ID, and a line naming a task the instance does not hold only
 advance the cursor. A trailing carriage return is accepted. A violation never fails another task.
+A line that would break a Store bound (a length or count `CHECK`) is applied as a violation: its
+transaction is rolled back and only the cursor advances, so no Agent line can stall the link.
 
 ### Runtime → Agent
 
@@ -517,6 +528,8 @@ re-sent line is byte-for-byte the first. The link writes a line as `data` frames
 each; a Runtime line is at most 16 MiB. On every new connection to the instance, the link first
 writes an empty line, which ends any line a lost connection cut short, then re-sends every
 unacknowledged delivery in order. A delivery whose task or call no longer exists is skipped.
+While an instance holds 256 unacknowledged deliveries, no task is assigned to it; deliveries for
+tasks it already holds are still added.
 
 **Deduplication.** The Agent processes each `seq` once: it ignores any `seq` at or below the
 highest it has processed, and acknowledges in order. Delivery is at least once and the effect
@@ -592,8 +605,9 @@ An Agent asks for a tool with a `tool` line. The daemon:
   is a directory is refused. Downloads (`transfer.get`, `agent.artifact`) go to a hidden staging
   sibling, are verified, and are then renamed over the destination, replacing an existing file.
 - **`exec.run`.** Stdin is empty, and nothing is interpreted by a shell. `timeout_ms` defaults to
-  60 s and is at most 24 hours. `stdout` and `stderr` each carry the first 1 MiB as lossy UTF-8,
-  and `truncated` says that either stream produced more. Shell is not offered as a tool; an Agent
+  60 s and is at most 24 hours. `stdout` and `stderr` each carry at most the first 64 KiB as lossy
+  UTF-8; when the whole answer would exceed the 64 KiB result bound, the longer stream is halved
+  at a character boundary until it fits. `truncated` says that output was dropped. Shell is not offered as a tool; an Agent
   that needs a command uses `exec.run` or `process.*`.
 - **`process.start`** starts a Process with stdin set to null and the default 4 MiB log limit.
   `process.terminate`'s `grace_ms` defaults to 5,000.
@@ -622,6 +636,9 @@ completed operation's terminal frame, or `outcome_unknown` when the earlier stre
 never acts twice. A call that is already executing in this daemon is not started again, and a
 completed call keeps its first result.
 
+**Result bound.** A stored result, `{"ok": …}` or `{"error": …}`, is at most 65,536 bytes; a
+larger one is replaced by the error `too_large`.
+
 **Concurrency.** A task may make at most 256 tool calls; the next one fails the task with `limit`.
 At most 8 calls of one task may be open at once; a call made while 8 are open is answered at once
 with `concurrency_exceeded`. A result is delivered only while the task is live and its instance
@@ -634,7 +651,8 @@ from `artifact.publish`), or one of:
 | Code | Meaning |
 | --- | --- |
 | `tool_denied` | the definition does not allow the tool's family |
-| `invalid_tool` | an unknown tool, arguments that do not match it, a workspace path that escapes, a directory destination, or an unexpected answer |
+| `invalid_tool` | an unknown tool, arguments that do not match it, a workspace path that escapes, a source that is not a regular file, a directory destination, or an unexpected answer |
+| `too_large` | the result exceeds 64 KiB, or (from the SDK) the arguments exceed 16 KiB |
 | `local_io` | a local file or caller-side I/O failure; local `not_found` and `permission_denied` keep those names |
 | `concurrency_exceeded` | 8 calls of the task were already open |
 | `outcome_unknown` | the effect of a re-executed mutation is unknown |
@@ -663,6 +681,8 @@ Agent confirms or the 10 s grace period passes.
 | retained progress events per task | 64 | older progress events are pruned |
 | tool calls per task | 256 | the task fails with `limit` |
 | open tool calls per task | 8 | the call is answered `concurrency_exceeded` |
+| tool name / arguments / result | 64 B / 16 KiB / 64 KiB | the line is ignored / the line is ignored / `too_large` |
+| unacknowledged deliveries per instance | 256 | no new task is assigned to the instance |
 | artifacts per task | 16 | `artifact.publish` answers `conflict` |
 | artifact size | 256 MiB | `artifact.publish` answers `too_large` |
 
@@ -776,11 +796,13 @@ plan as follows.
   task that ended without a cancellation, report, or lost instance closes within about 1 s rather
   than at once (see [Known limitations](#known-limitations)).
 - **Tool additions.** `files.list` takes `after` for paging. `exec.run` takes `timeout_ms`
-  (default 60 s) and reports `reason` and `truncated`; its capture is 1 MiB per stream, as planned.
+  (default 60 s) and reports `reason` and `truncated`; its capture is 64 KiB per stream, cut to fit
+  the 64 KiB result bound, instead of the planned 1 MiB.
   `process.terminate` defaults `grace_ms` to 5,000.
 - **Tool error names.** Besides the Services v1 names, `tool_denied`, `invalid_tool`, and
   `outcome_unknown`, tools also report `local_io`.
-- **Protocol violations** are ignored and only advance the cursor; they are not counted.
+- **Protocol violations** are ignored and only advance the cursor; they are not counted. A line
+  that would break a Store bound is treated as one.
 - **Delivery framing.** A Runtime line is written as `data` frames of at most 64 KiB each, not as
   one frame, and may be up to 16 MiB.
 - **Artifact output.** `ma2a agent artifact --output FILE` never overwrites an existing file. The

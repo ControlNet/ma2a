@@ -52,3 +52,12 @@
   - `state-v1.sqlite3` table `address_state` holds the records each node has.
 - Previous E2E tests reached only the owner, whose record arrives in the join bootstrap,
   so they never exposed this.
+
+Audit lessons from the Phase 4 freeze (agent runtime):
+
+- **Every Agent-controlled byte needs a bound below the Store `CHECK`.** A line whose apply hits a `CHECK` would otherwise fail its transaction, never advance the cursor, and stall the link forever. Bound at the decoder, and as a last resort reapply a `ConstraintViolation` as an ignored line.
+- **Non-terminal states count toward the durable-event bound;** a terminal state is always recorded.
+- **Stop must end the instance in the same transaction that disables the Agent,** and a launch that binds after that must terminate its own Process.
+- **Derived start RequestIds must include the definition's creation time,** or a redefined Agent replays its predecessor's start.
+- **Open workspace files with `O_NONBLOCK` and check `is_file`:** a FIFO blocks the reader forever.
+- **Never remove a `.ma2a-partial` you did not create.**
