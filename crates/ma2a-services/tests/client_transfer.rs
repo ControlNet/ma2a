@@ -149,11 +149,60 @@ async fn an_interrupted_download_resumes_to_the_verified_full_content() -> TestR
     assert_eq!(std::fs::read(&destination)?, source);
     assert!(!local.path().join("big.ma2a-part").exists());
     assert!(!local.path().join("big.ma2a-part.meta").exists());
+    assert!(!local.path().join("big.ma2a-part.lock").exists());
 
     // A partial file of a different source never continues.
     let fresh = Partial::open(&local.path().join("other"), "peer docs:/big", true).await?;
     assert_eq!((fresh.offset(), fresh.identity()), (0, None));
     fresh.discard().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_second_download_to_one_destination_is_refused_while_the_first_holds_it() -> TestResult {
+    // Given: one download holds its destination, even across a restart from zero.
+    let local = TempRoot::new("client-download-lease")?;
+    let destination = local.path().join("file");
+    let mut first = Partial::open(&destination, "peer docs:/file", true).await?;
+    first.restart().await?;
+
+    // When
+    let second = Partial::open(&destination, "peer docs:/file", true).await;
+
+    // Then: the second never touches the partial file the first is writing.
+    assert_eq!(
+        second.map(|_| ()).map_err(|error| error.kind()),
+        Err(std::io::ErrorKind::WouldBlock)
+    );
+    first.discard().await?;
+    let third = Partial::open(&destination, "peer docs:/file", true).await?;
+    third.discard().await?;
+    assert!(!local.path().join("file.ma2a-part.lock").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_download_never_replaces_a_destination_created_meanwhile_without_replace() -> TestResult {
+    // Given: a complete partial download and a destination another writer created.
+    let local = TempRoot::new("client-download-no-clobber")?;
+    let destination = local.path().join("file");
+    let mut partial = Partial::open(&destination, "peer docs:/file", false).await?;
+    partial.sink().0.write_all(b"downloaded").await?;
+    std::fs::write(&destination, b"theirs")?;
+
+    // When
+    let finished = partial.finish(false).await;
+
+    // Then: their file stays and the downloaded content is still there to resume.
+    assert_eq!(
+        finished.map_err(|error| error.kind()),
+        Err(std::io::ErrorKind::AlreadyExists)
+    );
+    assert_eq!(std::fs::read(&destination)?, b"theirs");
+    assert_eq!(
+        std::fs::read(local.path().join("file.ma2a-part"))?,
+        b"downloaded"
+    );
     Ok(())
 }
 

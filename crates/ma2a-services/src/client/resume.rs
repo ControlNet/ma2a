@@ -2,7 +2,8 @@
 //!
 //! The sidecar is written durably before the first content byte, so a download interrupted
 //! at any point, including by a daemon or machine restart, resumes only against the exact
-//! source identity it started from.
+//! source identity it started from. A lock file leases the destination to one download at
+//! a time, so two downloads never write one partial file.
 
 use std::{
     io,
@@ -10,7 +11,11 @@ use std::{
 };
 
 use ma2a_core::service::{ContentIdentity, MAX_DATA_CHUNK_LEN};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
+
+mod lease;
+
+use lease::Lease;
 
 const SIDECAR_MAGIC: &str = "ma2a-download v1";
 
@@ -20,6 +25,7 @@ pub struct Partial {
     destination: PathBuf,
     part: PathBuf,
     sidecar: PathBuf,
+    lease: Lease,
     source: String,
     file: tokio::fs::File,
     offset: u64,
@@ -34,8 +40,10 @@ impl Partial {
     /// length; anything else starts over from an empty partial file.
     ///
     /// # Errors
-    /// Returns a local file error.
+    /// Returns [`io::ErrorKind::WouldBlock`] while another download holds `destination`, or
+    /// another local file error.
     pub async fn open(destination: &Path, source: &str, resume: bool) -> io::Result<Self> {
+        let lease = Lease::acquire(suffixed(destination, ".ma2a-part.lock")?).await?;
         let part = suffixed(destination, ".ma2a-part")?;
         let sidecar = suffixed(destination, ".ma2a-part.meta")?;
         let continued = if resume {
@@ -54,6 +62,7 @@ impl Partial {
             destination: destination.to_path_buf(),
             part,
             sidecar,
+            lease,
             source: source.to_owned(),
             file,
             offset,
@@ -100,7 +109,26 @@ impl Partial {
         (&mut self.file, &mut self.hasher)
     }
 
+    /// Empties the partial file and forgets its sidecar while keeping the destination's lease,
+    /// for a source that changed since the partial download began.
+    ///
+    /// # Errors
+    /// Returns a local file error.
+    pub async fn restart(&mut self) -> io::Result<()> {
+        remove_if_present(&self.sidecar).await?;
+        self.file.set_len(0).await?;
+        self.file.seek(io::SeekFrom::Start(0)).await?;
+        self.offset = 0;
+        self.identity = None;
+        self.hasher = blake3::Hasher::new();
+        Ok(())
+    }
+
     /// Publishes the verified partial file as the destination and forgets the sidecar.
+    ///
+    /// Without `replace`, the destination is created by a hard link, which fails rather than
+    /// replace a file that appeared meanwhile; a file system without hard links falls back to
+    /// a check before the rename.
     ///
     /// # Errors
     /// Returns [`io::ErrorKind::AlreadyExists`] when the destination exists and `replace` is
@@ -108,11 +136,22 @@ impl Partial {
     pub async fn finish(mut self, replace: bool) -> io::Result<()> {
         self.file.flush().await?;
         self.file.sync_all().await?;
-        if !replace && tokio::fs::try_exists(&self.destination).await? {
-            return Err(io::ErrorKind::AlreadyExists.into());
+        drop(self.file);
+        if replace {
+            tokio::fs::rename(&self.part, &self.destination).await?;
+        } else {
+            match tokio::fs::hard_link(&self.part, &self.destination).await {
+                Ok(()) => tokio::fs::remove_file(&self.part).await?,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(error),
+                Err(_) if tokio::fs::try_exists(&self.destination).await? => {
+                    return Err(io::ErrorKind::AlreadyExists.into());
+                }
+                Err(_) => tokio::fs::rename(&self.part, &self.destination).await?,
+            }
         }
-        tokio::fs::rename(&self.part, &self.destination).await?;
-        remove_if_present(&self.sidecar).await
+        remove_if_present(&self.sidecar).await?;
+        self.lease.release().await;
+        Ok(())
     }
 
     /// Removes the partial file and its sidecar, for a source that no longer matches.
@@ -122,7 +161,9 @@ impl Partial {
     pub async fn discard(self) -> io::Result<()> {
         drop(self.file);
         remove_if_present(&self.part).await?;
-        remove_if_present(&self.sidecar).await
+        remove_if_present(&self.sidecar).await?;
+        self.lease.release().await;
+        Ok(())
     }
 }
 

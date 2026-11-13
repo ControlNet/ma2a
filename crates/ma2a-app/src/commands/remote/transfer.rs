@@ -25,12 +25,20 @@ pub(super) async fn get(
     crate::daemon_control::require(target.0).await?;
     // The sidecar binds a partial file to the exact target Endpoint and remote path.
     let source = format!("{} {path}", target.1);
-    let mut partial = Partial::open(local, &source, resume).await?;
+    let mut partial = Partial::open(local, &source, resume)
+        .await
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                AppError::Invalid("another download to this local file is in progress".to_owned())
+            } else {
+                error.into()
+            }
+        })?;
     match attempt(target, &resource, &mut partial).await? {
         Err(ClientError::Rejected(ServiceError::PreconditionFailed)) if partial.offset() > 0 => {
-            // The source changed since the partial download began: start over once.
-            partial.discard().await?;
-            partial = Partial::open(local, &source, false).await?;
+            // The source changed since the partial download began: start over once, still
+            // holding the destination.
+            partial.restart().await?;
             if let Err(error) = attempt(target, &resource, &mut partial).await? {
                 return Err(abandon(partial, error).await);
             }
