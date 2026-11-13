@@ -203,6 +203,28 @@ impl Repository {
         Ok(())
     }
 
+    /// Frees the bounded slots of reservations that no live process can settle anymore.
+    ///
+    /// Only the Runtime that owns this state directory may call this, at start, before it
+    /// admits anything. The permanent fence of each request stays, so the same request is
+    /// still answered as pending and can never become executable again.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when `SQLite` rejects the deletion.
+    pub fn reclaim_abandoned_mutation_replays(&mut self) -> Result<usize, StoreError> {
+        let transaction = self.immediate()?;
+        let reclaimed = transaction.execute(
+            "DELETE FROM local_mutation_replay WHERE response IS NULL AND EXISTS (
+                SELECT 1 FROM local_mutation_fences AS fence
+                WHERE fence.request_id = local_mutation_replay.request_id
+                AND fence.fingerprint = local_mutation_replay.fingerprint
+            )",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(reclaimed)
+    }
+
     /// Stores one decision and evicts oldest rows until both retention budgets hold.
     ///
     /// # Errors

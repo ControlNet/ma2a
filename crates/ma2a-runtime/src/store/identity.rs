@@ -71,6 +71,9 @@ impl StoreBackend {
             self.repository
                 .set_endpoint(&EndpointRecord::new(endpoint_id, reference))?;
         }
+        // This Runtime owns the state directory and admits nothing yet, so no live process can
+        // still settle an earlier reservation. Their fences keep them answered as pending.
+        let _reclaimed = self.repository.reclaim_abandoned_mutation_replays()?;
         let memberships = self.repository.memberships_for(endpoint_id)?;
         let bind_port = self.repository.endpoint_bind_port()?;
         Ok(Identity {

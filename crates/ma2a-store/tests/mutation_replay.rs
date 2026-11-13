@@ -154,6 +154,41 @@ fn pending_replay_survives_reopen_without_a_success_result() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn reclaiming_abandoned_reservations_frees_capacity_but_keeps_their_fences() -> TestResult {
+    // Given: a full table of reservations that no process will ever settle.
+    let state = TempState::new("mutation-replay-reclaim")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let limit = u16::try_from(LOCAL_MUTATION_REPLAY_MAX_ENTRIES)?;
+    for value in 0..limit {
+        repository.reserve_mutation_replay(request_id(value)?, [3; 32])?;
+    }
+    assert!(
+        repository
+            .reserve_mutation_replay(request_id(limit)?, [4; 32])
+            .is_err()
+    );
+    repository.record_mutation_replay(&record(3, vec![1])?)?;
+
+    // When
+    let reclaimed = repository.reclaim_abandoned_mutation_replays()?;
+
+    // Then: capacity is back, and every abandoned request still answers as pending.
+    assert_eq!(reclaimed, LOCAL_MUTATION_REPLAY_MAX_ENTRIES - 1);
+    assert_eq!(replay_count(&config)?, 1);
+    repository.reserve_mutation_replay(request_id(limit)?, [4; 32])?;
+    assert_eq!(
+        repository.mutation_replay(request_id(5)?)?,
+        Some(ma2a_store::MutationReplayState::Pending([3; 32]))
+    );
+    assert!(matches!(
+        repository.mutation_replay(request_id(3)?)?,
+        Some(ma2a_store::MutationReplayState::Completed(_))
+    ));
+    Ok(())
+}
+
 fn replay_count(config: &StoreConfig) -> Result<usize, rusqlite::Error> {
     Connection::open(config.database_path())?.query_row(
         "SELECT COUNT(*) FROM local_mutation_replay",
