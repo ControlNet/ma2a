@@ -133,7 +133,9 @@ impl Repository {
         ))
     }
 
-    /// Removes a stopped Agent's definition; its finished tasks stay until they expire.
+    /// Removes a stopped Agent's definition and, in the same commit, every exposure that names
+    /// it, so an Agent defined later under that name starts without this one's consent; its
+    /// finished tasks stay until they expire. Replacing a definition keeps its exposures.
     ///
     /// # Errors
     /// Returns [`StoreError`] when the change cannot be committed.
@@ -147,6 +149,10 @@ impl Repository {
             Some(record) if record.enabled => AgentDefine::Active,
             Some(record) => {
                 transaction.execute("DELETE FROM agents WHERE agent_id = ?1", [agent.as_str()])?;
+                transaction.execute(
+                    "DELETE FROM service_exposures WHERE kind = 5 AND exposure_selector = ?1",
+                    [agent.as_str()],
+                )?;
                 AgentDefine::Defined(Box::new(record), false)
             }
         };

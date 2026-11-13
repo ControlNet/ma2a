@@ -148,3 +148,47 @@ fn a_service_exposure_is_its_own_kind_and_reaches_the_authorization_view() -> Te
     );
     Ok(())
 }
+
+#[test]
+fn retiring_a_service_or_an_agent_withdraws_the_consent_that_named_it() -> TestResult {
+    // Given: a stopped service and a stopped Agent, both exposed, and another service's
+    // exposure that must stay.
+    let (_state, mut repository) = open("retire-exposure")?;
+    let space = create_space(&mut repository)?;
+    let name = example()?;
+    repository.register_service((&name, &manifest("An example.", 2)?), 10)?;
+    let agent = ma2a_core::service::AgentId::new("example")?;
+    repository.define_agent(
+        &ma2a_store::AgentDefinition {
+            id: agent.clone(),
+            description: "Answers questions.".to_owned(),
+            start: b"canonical start".to_vec(),
+            tools: 0,
+            max_tasks: 1,
+        },
+        11,
+    )?;
+    let other = LocalExposure::Service(ServiceName::new("other")?);
+    for exposure in [
+        LocalExposure::Service(name.clone()),
+        LocalExposure::Agent(agent.clone()),
+        other.clone(),
+    ] {
+        repository.expose_service(space, &exposure)?;
+    }
+
+    // When: both are removed, so a later registration of the same name may be another
+    // program entirely.
+    repository.unregister_service(&name)?;
+    repository.undefine_agent(&agent)?;
+
+    // Then
+    let left: Vec<LocalExposure> = repository
+        .service_exposures()?
+        .into_value()
+        .into_iter()
+        .map(|record| record.exposure)
+        .collect();
+    assert_eq!(left, [other]);
+    Ok(())
+}

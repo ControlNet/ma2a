@@ -187,6 +187,8 @@ Definitions and instances:
   It returns `agent_defined` with the Agent and `created`. A new Agent starts stopped. Redefining
   an existing Agent replaces its definition, and needs it stopped.
 - **`agent_undefine`** removes a stopped Agent's definition and returns `agent_undefined`.
+  Every exposure naming it is withdrawn in the same commit, so an Agent defined later under that
+  name needs fresh consent; replacing a definition keeps them.
 - **`agent_start`** enables an Agent and starts its first instance at once. **`agent_stop`**
   disables it: its unfinished tasks fail with `agent_stopped`, and its instance is terminated. Both
   return the Agent (`agent_started` and `agent_stopped`).
@@ -281,7 +283,8 @@ Registrations:
   It returns `service_registered` with the service and `created`. A new service starts stopped;
   replacing a registration needs the service stopped. At most 64 services are registered.
 - **`service_unregister`** removes a stopped service's registration and returns
-  `service_unregistered`. Exposures naming it stay as consent and serve nothing.
+  `service_unregistered`. Every exposure naming it is withdrawn in the same commit, so a service
+  registered later under that name needs fresh consent; replacing a registration keeps them.
 - **`service_start`** enables a service and **`service_stop`** disables it; both return the
   service (`service_started` and `service_stopped`). A stop tells the attached process to stop,
   withdraws calls it has not accepted, and cancels running ones.

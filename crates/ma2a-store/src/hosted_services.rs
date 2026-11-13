@@ -118,7 +118,9 @@ impl Repository {
         ))
     }
 
-    /// Removes a stopped service's registration; exposures naming it stay and serve nothing.
+    /// Removes a stopped service's registration and, in the same commit, every exposure that
+    /// names it: a service registered later under that name may be another program, and
+    /// consent given to this one must not carry over. Replacing a registration keeps them.
     ///
     /// # Errors
     /// Returns [`StoreError`] when the change cannot be committed.
@@ -133,6 +135,10 @@ impl Repository {
             Some(record) => {
                 transaction.execute(
                     "DELETE FROM hosted_services WHERE service = ?1",
+                    [name.as_str()],
+                )?;
+                transaction.execute(
+                    "DELETE FROM service_exposures WHERE kind = 6 AND exposure_selector = ?1",
                     [name.as_str()],
                 )?;
                 ServiceRegistration::Registered(Box::new(record), false)
