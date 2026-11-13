@@ -11,13 +11,17 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 use super::super::{CallIo, fault};
-use crate::stream_plane::relay::{CANCEL_GRACE, Relayed, Terminal, relay};
+use crate::stream_plane::relay::{CANCEL_GRACE, ClientWrite, Relayed, Terminal, relay};
 
 /// Bytes buffered between the caller's frames and the relay.
 const PUMP_BUFFER: usize = 128 * 1024;
 /// How long a call may take to end once it is being cancelled, even if its service stopped
 /// reading: one second past the relay's own grace, so the relay ends every other call first.
 const STUCK_GRACE: Duration = CANCEL_GRACE.saturating_add(Duration::from_secs(1));
+/// How long one caller frame may wait for the service to take it. A caller's `cancel` queued
+/// behind input the service never reads would otherwise never be seen, so a service that
+/// takes no input for this long is treated as a cancelled call.
+pub(crate) const INPUT_STALL: Duration = Duration::from_secs(30);
 
 /// What the pump learned about how the call is ending.
 #[derive(Default)]
@@ -48,6 +52,7 @@ where
     let (pipe_in, pipe_out) = tokio::io::duplex(PUMP_BUFFER);
     let mut client = FrameReader::new(pipe_out);
     let ending = Ending::default();
+    let writing = ClientWrite::default();
     let pump = pump(
         reader,
         FrameWriter::new(pipe_in),
@@ -56,7 +61,7 @@ where
     let relaying = relay(
         (&mut client, writer),
         (&mut target.0, &mut target.1),
-        before_outcome,
+        (before_outcome, &writing),
     );
     let cancelled = async {
         tokio::select! {
@@ -78,11 +83,13 @@ where
                 grace.as_mut().reset(tokio::time::Instant::now() + STUCK_GRACE);
             }
             () = &mut grace, if cancelling => {
+                // Dropping the relay may cut a frame toward the caller short; then nothing
+                // may follow it on that stream.
                 return Relayed {
                     terminal: Terminal::Lost,
                     to_target: 0,
                     from_target: 0,
-                    client_present: !ending.left.load(Ordering::Relaxed),
+                    client_present: !ending.left.load(Ordering::Relaxed) && !writing.torn(),
                 };
             }
         }
@@ -128,7 +135,17 @@ async fn pump<R: AsyncRead + Unpin>(
             pipe.frame(frame.kind(), frame.payload()).await?;
             pipe.flush().await
         };
-        if forwarded.await.is_err() {
+        let stalled = tokio::time::sleep(INPUT_STALL);
+        tokio::pin!(forwarded, stalled);
+        let forwarded = tokio::select! {
+            biased;
+            forwarded = &mut forwarded => forwarded,
+            () = &mut stalled => {
+                ending.cancelling.cancel();
+                forwarded.await
+            }
+        };
+        if forwarded.is_err() {
             return;
         }
     }

@@ -19,7 +19,7 @@ use crate::{
     stream_host::operations::{Direction, OperationKey, operation_name},
     stream_plane::{
         fingerprint,
-        relay::{Relayed, Terminal, relay},
+        relay::{ClientWrite, Relayed, Terminal, bounded, relay},
     },
 };
 
@@ -156,8 +156,8 @@ fn reject_frame(error: ServiceError) -> Vec<u8> {
 /// Writes one exact terminal frame and half-closes; the client may already be gone.
 async fn send_terminal<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>, terminal: &[u8]) {
     let inner = writer.get_mut();
-    let _written = inner.write_all(terminal).await;
-    let _closed = inner.shutdown().await;
+    let _written = bounded(inner.write_all(terminal)).await;
+    let _closed = bounded(inner.shutdown()).await;
 }
 
 async fn run<R, W>(
@@ -193,7 +193,7 @@ async fn run<R, W>(
         relay(
             (client_reader, client_writer),
             (&mut target.0, &mut target.1),
-            || (),
+            (|| (), &ClientWrite::default()),
         )
         .await
     } else {
@@ -231,6 +231,6 @@ async fn run<R, W>(
             OperationEnd::Failed(ServiceError::OutcomeUnknown)
         }
     };
-    let _closed = client_writer.shutdown().await;
+    let _closed = bounded(client_writer.shutdown()).await;
     guard.finish(OperationReport::new(end).with_bytes(relayed.to_target, relayed.from_target));
 }

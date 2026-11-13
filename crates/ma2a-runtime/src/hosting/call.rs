@@ -27,7 +27,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{Accepted, CallDetails, HostedServices, Notice, Pending, fault};
-use crate::stream_plane::relay::Terminal;
+use crate::stream_plane::relay::{Terminal, bounded};
 
 /// Longest wait for a service to accept a call it was told about.
 const ACCEPT_DEADLINE: Duration = Duration::from_secs(10);
@@ -99,7 +99,7 @@ where
         }
         Terminal::Lost => lost(writer, relayed.client_present).await,
     };
-    let _closed = writer.shutdown().await;
+    let _closed = bounded(writer.shutdown()).await;
     report.with_bytes(relayed.to_target, relayed.from_target)
 }
 
@@ -179,8 +179,8 @@ async fn refuse<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     error: ServiceError,
 ) -> OperationReport {
-    let _sent = writer.reject(error).await;
-    let _closed = writer.shutdown().await;
+    let _sent = bounded(writer.reject(error)).await;
+    let _closed = bounded(writer.shutdown()).await;
     OperationReport::new(OperationEnd::Rejected(error))
 }
 
@@ -190,10 +190,10 @@ async fn lost<W: AsyncWrite + Unpin + Send>(
     caller_present: bool,
 ) -> OperationReport {
     if caller_present && let Ok(outcome) = encode_call_outcome(Err(ServiceError::OutcomeUnknown)) {
-        let _sent = async {
+        let _sent = bounded(async {
             writer.frame(FrameKind::Outcome, &outcome).await?;
             writer.flush().await
-        }
+        })
         .await;
     }
     OperationReport::new(OperationEnd::Failed(ServiceError::OutcomeUnknown))

@@ -17,6 +17,28 @@ use tokio::{
 
 /// How long a cancelled target may take to report its terminal before it counts as lost.
 pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// How long the last frame and the shutdown toward a client may take; a client that stopped
+/// reading must not hold an ended operation open.
+pub(crate) const FINAL_WRITE_GRACE: Duration = Duration::from_secs(5);
+
+/// Whether a frame toward the client is being written right now.
+///
+/// A relay dropped while this is set may have left the client's stream inside a frame, so
+/// nothing may be appended to that stream afterwards.
+#[derive(Debug, Default)]
+pub(crate) struct ClientWrite(AtomicBool);
+
+impl ClientWrite {
+    /// Returns whether the client's stream may end inside a frame.
+    pub(crate) fn torn(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// Runs the last write or shutdown toward a client within [`FINAL_WRITE_GRACE`].
+pub(crate) async fn bounded<T>(write: impl Future<Output = T>) -> Option<T> {
+    tokio::time::timeout(FINAL_WRITE_GRACE, write).await.ok()
+}
 
 /// How the target ended the operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,11 +126,12 @@ impl Shared {
 ///
 /// The two directions run independently, so neither side blocking on a full stream can
 /// stall the other, and a full-duplex operation can never deadlock inside the relay.
-/// `before_terminal` runs once the target's terminal is read and before it is forwarded.
+/// `before_terminal` runs once the target's terminal is read and before it is forwarded, and
+/// `writing` tells an owner that drops this future whether a client frame was cut short.
 pub(crate) async fn relay<CR, CW, TR, TW>(
     (client_reader, client_writer): (&mut FrameReader<CR>, &mut FrameWriter<CW>),
     (target_reader, target_writer): (&mut FrameReader<TR>, &mut FrameWriter<TW>),
-    before_terminal: fn(),
+    (before_terminal, writing): (fn(), &ClientWrite),
 ) -> Relayed
 where
     CR: AsyncRead + Unpin,
@@ -117,7 +140,10 @@ where
     TW: AsyncWrite + Unpin,
 {
     let shared = Shared::default();
-    let downstream = downstream((target_reader, client_writer), (&shared, before_terminal));
+    let downstream = downstream(
+        (target_reader, client_writer),
+        (&shared, before_terminal, writing),
+    );
     let upstream = upstream((client_reader, target_writer), &shared);
     let grace = tokio::time::sleep(Duration::MAX);
     tokio::pin!(downstream, upstream, grace);
@@ -137,7 +163,7 @@ where
         terminal,
         to_target: shared.to_target.load(Ordering::Relaxed),
         from_target: shared.from_target.load(Ordering::Relaxed),
-        client_present: !shared.client_gone.load(Ordering::Relaxed),
+        client_present: !shared.client_gone.load(Ordering::Relaxed) && !writing.torn(),
     }
 }
 
@@ -185,7 +211,7 @@ async fn upstream<CR, TW>(
 /// Target → client until the target's terminal; a malformed or missing one is a loss.
 async fn downstream<TR, CW>(
     (target_reader, client_writer): (&mut FrameReader<TR>, &mut FrameWriter<CW>),
-    (shared, before_terminal): (&Shared, fn()),
+    (shared, before_terminal, writing): (&Shared, fn(), &ClientWrite),
 ) -> Terminal
 where
     TR: AsyncRead + Unpin,
@@ -224,11 +250,14 @@ where
         if terminal.is_some() {
             before_terminal();
         }
-        if !shared.client_gone.load(Ordering::Relaxed)
-            && forward(client_writer, &frame).await.is_err()
-        {
-            shared.client_gone.store(true, Ordering::Relaxed);
-            shared.client_lost.notify_one();
+        if !shared.client_gone.load(Ordering::Relaxed) {
+            writing.0.store(true, Ordering::Relaxed);
+            let forwarded = forward(client_writer, &frame).await;
+            writing.0.store(false, Ordering::Relaxed);
+            if forwarded.is_err() {
+                shared.client_gone.store(true, Ordering::Relaxed);
+                shared.client_lost.notify_one();
+            }
         }
         if let Some(terminal) = terminal {
             return terminal;

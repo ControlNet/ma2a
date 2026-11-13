@@ -35,7 +35,7 @@ fn start_with(capacity: usize) -> Started {
         relay(
             (&mut client_reader, &mut client_writer),
             (&mut target_reader, &mut target_writer),
-            || (),
+            (|| (), &super::ClientWrite::default()),
         )
         .await
     });

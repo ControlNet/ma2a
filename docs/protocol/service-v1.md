@@ -156,7 +156,15 @@ yet accepted, and cancels running ones, which get the 5 s cancel grace.
 **Bounded cancellation.** A call that is being cancelled ends within 6 s, whether the caller
 cancelled or left, the service was stopped, or the authorization was withdrawn. That holds even
 when the service stopped reading its call and the relay cannot forward the `cancel`. A call ended
-this way is `outcome_unknown`, and its audit record has no byte counts.
+this way is `outcome_unknown`, and its audit record has no byte counts. The Runtime never writes
+past a frame toward the caller that was cut short; the caller's stream then just ends, which the
+caller's Runtime also reports as `outcome_unknown`. The last frame and shutdown toward a caller
+that stopped reading are bounded to 5 s.
+
+**Input stall.** A service must keep reading its call's input. When one caller frame cannot be
+handed to the service for 30 s, the call counts as cancelled and ends `outcome_unknown` within the
+6 s above. Without this, a caller's `cancel` queued behind input the service never reads could
+never be seen.
 
 **Restart.** After a Runtime restart every started service is `unavailable` until its process
 attaches again. A service process restart is the same: the old link's end, then a new attach. The
@@ -237,7 +245,8 @@ again after the restart.
   are the service's own responsibility.
 - **Backpressure reaches the caller.** A service that stops reading its input stops the caller's
   input too. The caller's own `cancel` then waits behind the input it already sent, so such a call
-  ends only when the service reads or exits, on a stop, or on a withdrawn authorization.
+  ends when the service reads or exits, on a stop or a withdrawn authorization, or at the latest
+  after the 30 s input stall plus the 6 s bound.
 - **Payload bounds are the caller's to check.** The Runtime relays a service's `accept` and
   `outcome` verbatim within the frame bounds. A non-SDK service that exceeds the 8 KiB header or
   the 60,000-byte result reaches the caller as a malformed frame, and a replay of such a call may
