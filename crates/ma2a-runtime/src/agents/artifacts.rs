@@ -217,8 +217,6 @@ impl AgentManager {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::MetadataExt as _;
-
     use super::{hex, place_blob, stage_blob};
 
     #[test]
@@ -242,10 +240,12 @@ mod tests {
 
         // A resumed download names the blob by size and modification time.
         assert_eq!((size, again), (16, hash));
-        assert_eq!(
-            (first.ino(), first.mtime_nsec(), first.mtime()),
-            (second.ino(), second.mtime_nsec(), second.mtime())
-        );
+        assert_eq!(first.modified()?, second.modified()?);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(first.ino(), second.ino());
+        }
         assert!(!staging.exists(), "the second copy is discarded");
         assert_eq!(std::fs::read_dir(&blobs)?.count(), 1);
         std::fs::remove_dir_all(&dir)?;
