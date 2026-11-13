@@ -101,6 +101,34 @@ pub(crate) async fn open_as(
     Ok((reader, writer))
 }
 
+/// Ends the process with `outcome`, reported as `main` reports it.
+///
+/// A command that read stdin ends this way: a pending read of stdin cannot be cancelled and
+/// would hold the runtime open after `main` returned.
+pub(crate) fn exit_reading_stdin(outcome: Result<(), AppError>) -> ! {
+    let code = match outcome {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("{error}");
+            i32::from(error.exit_code())
+        }
+    };
+    let _flushed = io::Write::flush(&mut io::stdout().lock());
+    let _flushed = io::Write::flush(&mut io::stderr().lock());
+    std::process::exit(code)
+}
+
+/// Passes `result` on, except that an error while stdin is being read ends the process.
+pub(crate) fn unless_reading_stdin<T>(
+    reading: bool,
+    result: Result<T, AppError>,
+) -> Result<T, AppError> {
+    match result {
+        Err(error) if reading => exit_reading_stdin(Err(error)),
+        other => other,
+    }
+}
+
 /// Parses a `ROOT:/dir/file` remote path.
 pub(crate) fn remote_path(text: &str) -> Result<RemotePath, AppError> {
     RemotePath::parse(text).map_err(|_| {

@@ -37,6 +37,24 @@ enum AppError {
     Usage(&'static str),
 }
 
+impl AppError {
+    /// The status the CLI exits with for this error.
+    const fn exit_code(&self) -> u8 {
+        match self {
+            Self::Invalid(_) | Self::Usage(_) => 2,
+            Self::Command(_)
+            | Self::CurrentUser(_)
+            | Self::Daemon(_)
+            | Self::DaemonStopped
+            | Self::Io(_)
+            | Self::Ipc(_)
+            | Self::NotFound(_)
+            | Self::Protocol(_)
+            | Self::Runtime(_) => 1,
+        }
+    }
+}
+
 impl fmt::Debug for AppError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, formatter)
@@ -120,18 +138,7 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
-            match error {
-                AppError::Invalid(_) | AppError::Usage(_) => ExitCode::from(2),
-                AppError::Command(_)
-                | AppError::CurrentUser(_)
-                | AppError::Daemon(_)
-                | AppError::DaemonStopped
-                | AppError::Io(_)
-                | AppError::Ipc(_)
-                | AppError::NotFound(_)
-                | AppError::Protocol(_)
-                | AppError::Runtime(_) => ExitCode::FAILURE,
-            }
+            ExitCode::from(error.exit_code())
         }
     }
 }

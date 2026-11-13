@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::{
     daemon_fixture::TestResult,
     harness::{Node, content, join, refused, succeed, text},
-    lab::{EcoLab, SERVICE, hosted, interrupt, wait_running},
+    lab::{EcoLab, SERVICE, exited, hosted, interrupt, wait_running},
 };
 
 const REQUEST_ID: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
@@ -181,6 +181,14 @@ fn cancellation_saturation_and_denial_are_exact() -> TestResult {
         lines.starts_with("1\n") && !lines.contains("1000\n"),
         "{lines}"
     );
+    wait_running(&lab.a, 0)?;
+
+    // A cancelled call ends even while the stdin it reads stays open.
+    let mut piping = lab.spawn_call_reading(&[SERVICE, "pipe", "--stdin"])?;
+    wait_running(&lab.a, 1)?;
+    interrupt(&piping)?;
+    let status = exited(&mut piping, Duration::from_secs(30))?;
+    assert!(!status.success(), "{status}");
     wait_running(&lab.a, 0)?;
 
     // A service this Endpoint may not use answers exactly like one that does not exist.

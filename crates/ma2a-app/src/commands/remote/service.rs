@@ -129,14 +129,13 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
     };
     let called = service::call((&mut reader, &mut writer), local, interrupted()).await;
     drop((reader, writer));
-    let called = called?;
-    let mut stdout = std::io::stdout().lock();
-    stdout.write_all(&called.result)?;
-    stdout.flush()?;
-    drop(stdout);
+    let printed = called.map_err(AppError::from).and_then(|called| {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&called.result)?;
+        Ok(stdout.flush()?)
+    });
     if arguments.stdin {
-        // A pending read of stdin cannot be cancelled and would hold the runtime open.
-        std::process::exit(0);
+        super::exit_reading_stdin(printed);
     }
-    Ok(())
+    printed
 }

@@ -46,16 +46,7 @@ impl Program {
 
     /// Waits for the program to exit by itself; its exit status.
     pub(crate) fn exited(&mut self, deadline: Duration) -> TestValue<std::process::ExitStatus> {
-        let until = Instant::now() + deadline;
-        loop {
-            if let Some(status) = self.0.try_wait()? {
-                return Ok(status);
-            }
-            if Instant::now() > until {
-                return Err("the service program did not exit".into());
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        exited(&mut self.0, deadline)
     }
 }
 
@@ -124,6 +115,19 @@ impl EcoLab {
             .spawn()?)
     }
 
+    /// Starts one call from `b` in the background whose stdin stays open until the returned
+    /// child is dropped.
+    pub(crate) fn spawn_call_reading(&self, rest: &[&str]) -> TestValue<Child> {
+        let arguments = call_arguments(self.a.id(), rest);
+        Ok(self
+            .b
+            .command(&arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?)
+    }
+
     /// `b`'s discovery of `a`.
     pub(crate) fn discover(&self) -> TestValue<Value> {
         let output = self
@@ -187,6 +191,20 @@ fn wait_for(node: &Node, done: impl Fn(&Value) -> bool) -> TestResult {
             return Err(format!("{SERVICE} never reached the expected state: {view}").into());
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Waits for `child` to exit by itself; its exit status.
+pub(crate) fn exited(child: &mut Child, deadline: Duration) -> TestValue<std::process::ExitStatus> {
+    let until = Instant::now() + deadline;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() > until {
+            return Err("the program did not exit".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

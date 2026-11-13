@@ -96,8 +96,10 @@ pub(super) async fn attach(
         output: tokio::io::stdout(),
         error: Some(tokio::io::stderr()),
     };
-    let attached = hosted::attach((&mut reader, &mut writer), local, interrupted()).await?;
-    finish(&attached, stdin)
+    let attached = hosted::attach((&mut reader, &mut writer), local, interrupted())
+        .await
+        .map_err(AppError::from);
+    finish(&super::unless_reading_stdin(stdin, attached)?, stdin)
 }
 
 /// Writes this command's stdin to the Process until EOF.
