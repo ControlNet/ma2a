@@ -137,3 +137,45 @@ async fn a_lost_link_makes_the_service_unavailable_and_frees_it_for_a_new_proces
     assert_eq!(text(&refused, "/error"), Some("not_found"));
     harness.stop().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replaced_registration_starts_its_call_counts_afresh() -> TestResult {
+    // Given: version 2 of the first registration served a call.
+    let harness = Harness::start("hosted-recount").await?;
+    let client = &harness.client;
+    call(client, register(&"51".repeat(16))?).await?;
+    let name = ma2a_core::service::ServiceName::new("example")?;
+    harness.hosted()?.count_call(&name, 2);
+    let list = json!({"version": 1, "operation": "service_hosted_list", "after": null});
+    let counted = call(client, list.clone()).await?;
+    assert_eq!(
+        counted.pointer("/result/payload/services/0/calls"),
+        Some(&json!([{"version": 2, "count": 1}]))
+    );
+
+    // When: the stopped service is registered again with only version 1.
+    let mut replacement = register(&"52".repeat(16))?;
+    if let Some(versions) = replacement
+        .pointer_mut("/manifest/versions")
+        .and_then(Value::as_array_mut)
+    {
+        versions.truncate(1);
+    }
+    let replaced = call(client, replacement).await?;
+
+    // Then: no count of the old registration remains.
+    assert_eq!(
+        replaced.pointer("/result/payload/created"),
+        Some(&json!(false))
+    );
+    assert_eq!(
+        replaced.pointer("/result/payload/service/calls"),
+        Some(&json!([]))
+    );
+    let listed = call(client, list).await?;
+    assert_eq!(
+        listed.pointer("/result/payload/services/0/calls"),
+        Some(&json!([]))
+    );
+    harness.stop().await
+}

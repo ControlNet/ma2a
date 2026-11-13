@@ -289,7 +289,7 @@ Registrations:
   services in name order, and a nullable `next`. A hosted service view carries:
   - `service`, the `manifest`, and `enabled`;
   - `state`: `stopped`, `unavailable` (started without a ready process), or `ready`;
-  - `running_calls`, and `calls`, the calls per version since this Runtime started;
+  - `running_calls`, and `calls`, the calls per version since this Runtime started or the service was last registered;
   - `created_at_ms` and `updated_at_ms`.
 
 Process upgrades (no request ID; never replayed):

@@ -8,7 +8,8 @@ use super::{HostedServices, MAX_HOSTED_SERVICES, Notice};
 use crate::api::HostedServiceView;
 
 impl HostedServices {
-    /// Registers a new service, stopped, or replaces a stopped one; `true` when it is new.
+    /// Registers a new service, stopped, or replaces a stopped one and its call counts;
+    /// `true` when it is new.
     ///
     /// A started service is a conflict, and a new one beyond [`MAX_HOSTED_SERVICES`] is
     /// `concurrency_exceeded`.
@@ -38,6 +39,11 @@ impl HostedServices {
         match registered {
             None => Err(ServiceError::ConcurrencyExceeded),
             Some(ServiceRegistration::Registered(record, created)) => {
+                // Counts belong to one registration: a replaced manifest may no longer
+                // list the versions they were counted for.
+                if let Some(live) = self.state().services.get_mut(&record.name) {
+                    live.calls.clear();
+                }
                 Ok((self.observe(*record), created))
             }
             Some(ServiceRegistration::Active) => Err(ServiceError::Conflict),

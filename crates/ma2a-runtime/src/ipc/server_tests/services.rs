@@ -58,6 +58,16 @@ impl Harness {
         })
     }
 
+    /// Borrows the Runtime's hosted services.
+    pub(super) fn hosted(&self) -> TestResult<crate::hosting::HostedServices> {
+        Ok(self
+            .runtime
+            .handle()
+            .hosted()
+            .ok_or("hosted services are not running")?
+            .clone())
+    }
+
     pub(super) async fn stop(self) -> TestResult {
         assert_eq!(self.live_server.cancel().await?, ServerExit::Cancelled);
         self.runtime.shutdown().await?;

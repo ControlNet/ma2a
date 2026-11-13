@@ -178,6 +178,19 @@ impl HostedServices {
             .await
     }
 
+    /// Counts one call of `version`, as an admitted call does.
+    #[cfg(test)]
+    pub(crate) fn count_call(&self, name: &ServiceName, version: u16) {
+        *self
+            .state()
+            .services
+            .entry(name.clone())
+            .or_default()
+            .calls
+            .entry(version)
+            .or_default() += 1;
+    }
+
     /// Returns one registration with what runs now.
     fn observe(&self, record: HostedServiceRecord) -> HostedServiceView {
         let state = self.state();
