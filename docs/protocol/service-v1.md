@@ -151,7 +151,8 @@ service stops, is withdrawn and answered `reject(unavailable)` with no possible 
 call whose service connection is lost ends with `outcome(outcome_unknown)`.
 
 **Stop.** `service_stop` disables the service, sends `{"t":"stop"}` on the link, withdraws calls not
-yet accepted, and cancels running ones, which get the 5 s cancel grace.
+yet accepted, and cancels running ones, which get the 5 s cancel grace. The stop goes out ahead
+of any call notice still buffered for the link, and the link ends after it.
 
 **Bounded cancellation.** A call that is being cancelled ends within 6 s, whether the caller
 cancelled or left, the service was stopped, or the authorization was withdrawn. That holds even

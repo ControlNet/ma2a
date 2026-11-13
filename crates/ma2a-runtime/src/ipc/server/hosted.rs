@@ -122,9 +122,9 @@ async fn answer(
 async fn serve_link(
     stream: PlatformStream,
     (hosted, name): (&HostedServices, &ServiceName),
-    (correlation, link): (u64, LinkHandle),
+    (correlation, mut link): (u64, LinkHandle),
 ) {
-    let LinkHandle { id, mut notices } = link;
+    let id = link.id;
     let (mut read, mut write) = tokio::io::split(stream);
     let reading = async {
         while let Ok(frame) = read_reply(&mut read, MAX_LINK_MESSAGE_BYTES).await {
@@ -135,7 +135,7 @@ async fn serve_link(
         }
     };
     let writing = async {
-        while let Some(notice) = notices.recv().await {
+        while let Some(notice) = link.next().await {
             let message = match notice {
                 Notice::Call(call) => json!({"t": "call", "call": api::encode_hex(&call)}),
                 Notice::Stop => json!({"t": "stop"}),

@@ -2,6 +2,7 @@
 
 use ma2a_core::service::{ServiceError, ServiceManifest, ServiceName};
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use super::{Accepted, CallDetails, HostedServices, Link, NOTICE_BUFFER, Notice};
 
@@ -9,7 +10,23 @@ use super::{Accepted, CallDetails, HostedServices, Link, NOTICE_BUFFER, Notice};
 #[derive(Debug)]
 pub(crate) struct LinkHandle {
     pub(crate) id: u64,
-    pub(crate) notices: mpsc::Receiver<Notice>,
+    notices: mpsc::Receiver<Notice>,
+    /// Cancelled when the operator stops the service; never lost behind buffered notices.
+    stop: CancellationToken,
+}
+
+impl LinkHandle {
+    /// The next notice for the service; `None` once the link has nothing more to say.
+    ///
+    /// A stop comes before anything still buffered: every call not yet accepted was
+    /// withdrawn with it, so those notices no longer matter.
+    pub(crate) async fn next(&mut self) -> Option<Notice> {
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => Some(Notice::Stop),
+            notice = self.notices.recv() => notice,
+        }
+    }
 }
 
 impl HostedServices {
@@ -42,8 +59,9 @@ impl HostedServices {
             ready: false,
             notices: sender,
         });
+        let stop = live.stop.clone();
         drop(state);
-        Ok((LinkHandle { id, notices }, record.manifest))
+        Ok((LinkHandle { id, notices, stop }, record.manifest))
     }
 
     /// Records what the service reports on link `id`: whether it accepts calls now.

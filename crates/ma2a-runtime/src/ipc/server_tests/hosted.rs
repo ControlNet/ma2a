@@ -179,3 +179,28 @@ async fn a_replaced_registration_starts_its_call_counts_afresh() -> TestResult {
     );
     harness.stop().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_reaches_a_link_whose_notices_are_full() -> TestResult {
+    // Given: a link whose buffer is full of notices of calls that were since withdrawn.
+    let harness = Harness::start("hosted-full-stop").await?;
+    let client = &harness.client;
+    call(client, register(&"61".repeat(16))?).await?;
+    call(client, named("service_start", &"62".repeat(16))).await?;
+    let hosted = harness.hosted()?;
+    let name = ma2a_core::service::ServiceName::new("example")?;
+    let (mut link, _manifest) = hosted.attach(&name).await?;
+    let mut stale = 0_u8;
+    while hosted.stale_notice(&name, [stale; 16]) {
+        stale = stale
+            .checked_add(1)
+            .ok_or("the notice buffer never filled")?;
+    }
+
+    // When
+    call(client, named("service_stop", &"63".repeat(16))).await?;
+
+    // Then: the service hears the stop before anything stale, and the link ends after it.
+    assert_eq!(link.next().await, Some(crate::hosting::Notice::Stop));
+    harness.stop().await
+}

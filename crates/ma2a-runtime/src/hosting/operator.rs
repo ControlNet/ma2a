@@ -4,7 +4,7 @@ use ma2a_core::service::{ServiceError, ServiceManifest, ServiceName};
 use ma2a_store::ServiceRegistration;
 use tokio_util::sync::CancellationToken;
 
-use super::{HostedServices, MAX_HOSTED_SERVICES, Notice};
+use super::{HostedServices, MAX_HOSTED_SERVICES};
 use crate::api::HostedServiceView;
 
 impl HostedServices {
@@ -92,10 +92,9 @@ impl HostedServices {
         let record = self.set_enabled(name, false).await?;
         let mut state = self.state();
         if let Some(live) = state.services.get_mut(name) {
+            // The link hears the stop through the cancelled token, ahead of its buffer.
             live.stop.cancel();
-            if let Some(link) = live.link.take() {
-                let _told = link.notices.try_send(Notice::Stop);
-            }
+            live.link = None;
         }
         state.pending.retain(|_, pending| pending.service != *name);
         drop(state);

@@ -42,7 +42,7 @@ use crate::{
 
 /// Most services one Runtime registers.
 pub(crate) const MAX_HOSTED_SERVICES: usize = 64;
-/// Most notices one link buffers: one per running call, and the stop.
+/// Most notices one link buffers: one per running call, and one to spare.
 const NOTICE_BUFFER: usize = MAX_SERVICE_CALLS as usize + 1;
 
 /// One accepted call's connection.
@@ -189,6 +189,17 @@ impl HostedServices {
             .calls
             .entry(version)
             .or_default() += 1;
+    }
+
+    /// Sends a call notice down the link of `name` without admitting a call, as a call
+    /// withdrawn before the service read its notice leaves; `false` once the buffer is full.
+    #[cfg(test)]
+    pub(crate) fn stale_notice(&self, name: &ServiceName, call: [u8; 16]) -> bool {
+        self.state()
+            .services
+            .get(name)
+            .and_then(|live| live.link.as_ref())
+            .is_some_and(|link| link.notices.try_send(Notice::Call(call)).is_ok())
     }
 
     /// Returns one registration with what runs now.
