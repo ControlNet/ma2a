@@ -415,8 +415,12 @@ the live instance ends, and its outbox is dropped. The instance Process is then 
 and terminates that Process the same way.
 
 **Instance.** An instance is one incarnation of a started Agent: a Phase 3 Process that the local
-Endpoint creates for itself, with a generation number that counts the instances ever started. An
-Agent has at most one live instance.
+Endpoint creates for itself, with a generation number. Each start takes the next generation, and
+a definition created anew (also after its name was removed) counts on from the Store's current
+revision. A generation is therefore never reused for one Agent name, and a late callback of a
+removed definition's instance can never act on its successor. Generations of different Agents may
+be equal, so every task-affecting adapter line is also checked against the task's Agent. An Agent
+has at most one live instance.
 
 - It is started with stdin as a pipe, a 16 MiB log limit, and the label `ma2a.agent` set to the
   `AgentId`.

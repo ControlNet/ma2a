@@ -97,14 +97,17 @@ pub enum AgentOutputApplied {
     ToolRejected(AgentTaskId, String),
 }
 
-/// Returns the task when the instance generation still holds it.
+/// Returns the task when it belongs to the emitting Agent and its instance still holds it.
+///
+/// Generations of different Agents can be equal, so the Agent is part of the ownership check.
 fn held(
     transaction: &Transaction<'_>,
     task: AgentTaskId,
-    generation: u64,
+    output: &AgentOutput,
 ) -> Result<Option<AgentTaskRecord>, StoreError> {
     Ok(load_task(transaction, task)?.filter(|record| {
-        record.generation == Some(generation)
+        record.summary.agent == output.agent
+            && record.generation == Some(output.generation)
             && matches!(
                 record.summary.state,
                 AgentTaskState::Running | AgentTaskState::Waiting
@@ -201,7 +204,7 @@ fn apply_effect(
             state,
             message,
             error,
-        } => match held(transaction, task, generation)? {
+        } => match held(transaction, task, output)? {
             Some(record)
                 if apply_state(transaction, (&record, at_ms), (state, message, error))? =>
             {
@@ -210,9 +213,7 @@ fn apply_effect(
             _ => Ok(AgentOutputApplied::Ignored),
         },
         AgentOutputEffect::Message(task, message) => {
-            if message.role() != MessageRole::Agent
-                || held(transaction, task, generation)?.is_none()
-            {
+            if message.role() != MessageRole::Agent || held(transaction, task, output)?.is_none() {
                 return Ok(AgentOutputApplied::Ignored);
             }
             let body = AgentEventBody::Message(message);
@@ -220,7 +221,7 @@ fn apply_effect(
             changed(task)
         }
         AgentOutputEffect::Progress(task, text) => {
-            if held(transaction, task, generation)?.is_none() {
+            if held(transaction, task, output)?.is_none() {
                 return Ok(AgentOutputApplied::Ignored);
             }
             transaction.execute(
@@ -236,12 +237,10 @@ fn apply_effect(
             name,
             request,
             rejection,
-        } => {
-            held(transaction, task, generation)?.map_or(Ok(AgentOutputApplied::Ignored), |record| {
-                let call = (call, name, request, rejection);
-                record_tool_call(transaction, (&record, at_ms), call)
-            })
-        }
+        } => held(transaction, task, output)?.map_or(Ok(AgentOutputApplied::Ignored), |record| {
+            let call = (call, name, request, rejection);
+            record_tool_call(transaction, (&record, at_ms), call)
+        }),
     }
 }
 

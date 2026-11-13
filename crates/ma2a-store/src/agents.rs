@@ -106,9 +106,13 @@ impl Repository {
             transaction.commit()?;
             return Ok(Committed::new(revision, AgentDefine::Active));
         }
+        // A new definition counts its instances on from the current revision, which every
+        // start and removal advances. A recreated name therefore never reuses a generation,
+        // so a late callback of a removed definition's instance cannot match a new instance.
         transaction.execute(
             "INSERT INTO agents (agent_id, description, start, tools, max_tasks, enabled,
-             generation, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6, ?6)
+             generation, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, 0,
+             (SELECT revision FROM runtime_metadata WHERE singleton = 1), ?6, ?6)
              ON CONFLICT (agent_id) DO UPDATE SET description = ?2, start = ?3, tools = ?4,
              max_tasks = ?5, updated_at_ms = ?6",
             params![
