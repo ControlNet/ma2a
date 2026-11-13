@@ -76,10 +76,22 @@ async fn agents_are_content_free(
         .oneshot(web_read("/api/v1/agents", Some(cookie))?)
         .await?;
     assert_eq!(agents.status(), StatusCode::OK);
+    let mut listed = body(agents).await?;
+    // A definition's generations continue from the Store revision, so its value varies.
+    let generation = listed
+        .pointer_mut("/agents/0/generation")
+        .map(serde_json::Value::take);
+    assert!(
+        generation
+            .as_ref()
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "{generation:?}"
+    );
     assert_eq!(
-        body(agents).await?,
+        listed,
         json!({"agents": [{"agent": "helper", "description": "answers questions",
-            "tools": ["files"], "max_tasks": 2, "enabled": false, "generation": 0,
+            "tools": ["files"], "max_tasks": 2, "enabled": false, "generation": null,
             "live_tasks": 0, "instance": null}], "more_agents": false,
             "tasks": [], "more_tasks": false})
     );
