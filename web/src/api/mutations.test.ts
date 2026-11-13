@@ -1,3 +1,4 @@
+import ky from "ky"
 import { afterEach, expect, test, vi } from "vitest"
 
 import { createRuntimeMutationClient } from "./mutations"
@@ -20,6 +21,7 @@ test("posts a typed Space creation with same-origin CSRF and returns its result"
       },
     })
   })
+  const create = vi.spyOn(ky, "create")
   const client = createRuntimeMutationClient({
     csrfToken: "cd".repeat(32),
     requestId: () => "01".repeat(16),
@@ -30,7 +32,8 @@ test("posts a typed Space creation with same-origin CSRF and returns its result"
   expect(result).toEqual({ space_id: "ab".repeat(32), name: "Operations", member_count: 1 })
   expect(requests).toHaveLength(1)
   expect(new URL(requests[0]?.url ?? "https://invalid/").pathname).toBe("/api/v1/spaces/create")
-  expect(requests[0]?.credentials).toBe("include")
+  // Checked as configured: Bun's Request ignores the option and reports "include".
+  expect(create.mock.calls[0]?.[0]?.credentials).toBe("same-origin")
   expect(requests[0]?.headers.get("x-csrf-token")).toBe("cd".repeat(32))
   await expect(requests[0]?.json()).resolves.toEqual({
     version: 1,

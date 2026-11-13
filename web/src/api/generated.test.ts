@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import {
   ERROR_CODES,
@@ -18,11 +19,14 @@ type ContractMutation = {
   readonly replacement: string
 }
 
+// This module's directory under both Bun and Vitest; `import.meta.dir` exists only in Bun.
+const HERE = dirname(fileURLToPath(import.meta.url))
+
 function expectContractMutationRejected(mutation: ContractMutation): void {
   const directory = mkdtempSync(join(tmpdir(), "ma2a-schema-type-"))
   try {
     for (const file of ["generated.ts", "generated-models.ts"] as const) {
-      const source = readFileSync(`${import.meta.dir}/${file}`, "utf8")
+      const source = readFileSync(`${HERE}/${file}`, "utf8")
       const mutated =
         file === mutation.file ? source.replace(mutation.original, mutation.replacement) : source
       expect(file !== mutation.file || mutated !== source).toBe(true)
@@ -70,7 +74,7 @@ test("machine schema describes nested commands, envelopes, results, and events",
 })
 
 test("generated TypeScript wire types recursively match the machine schema", () => {
-  assertGeneratedTypesMatchSchema(LOCAL_API_SCHEMA_JSON, `${import.meta.dir}/generated.ts`)
+  assertGeneratedTypesMatchSchema(LOCAL_API_SCHEMA_JSON, `${HERE}/generated.ts`)
 })
 
 test("rejects a cross-brand array item when the schema references space_id", () => {
