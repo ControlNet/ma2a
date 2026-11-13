@@ -80,7 +80,7 @@ Do not copy a live SQLite file. The repository backup API uses SQLite online bac
 checked database copy, but the CLI does not yet expose a complete backup/export workflow. The
 database contains opaque key references; protected Endpoint and Space-authority key files require a
 separate explicit secure export. Losing an Endpoint key loses that persistent Endpoint identity.
-Losing a Space authority key prevents future authority-signed Space changes. Phase 1 has no recovery
+Losing a Space authority key prevents future authority-signed Space changes. MA2A has no recovery
 wizard, cloud escrow, or automatic key replication.
 
 ## Troubleshooting

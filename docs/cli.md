@@ -98,7 +98,7 @@ ma2a --state-dir "$STATE_A" space invite lab | ma2a --state-dir "$STATE_B" space
 `ma2a space leave SPACE_REF` is a membership operation, not a local deletion. The leaving Endpoint
 asks the Space authority to sign the next manifest generation removing it, and persists only that
 authority-signed state. If the authority cannot be reached the command fails and local membership
-is unchanged. A Space's own owner cannot leave its Space; Phase 1 has no authority transfer.
+is unchanged. A Space's own owner cannot leave its Space; MA2A has no authority transfer.
 
 `ma2a space member remove SPACE_REF ENDPOINT_ID` is the owner-side operation and remains a
 cryptographic Space revocation. A removed Endpoint can rejoin later through a fresh valid invite.
