@@ -288,3 +288,30 @@ fn private_relay_requires_an_explicit_tls_mode() -> TestResult {
     assert!(stderr.contains("--tls-cert") && stderr.contains("--external-tls"));
     Ok(())
 }
+
+#[test]
+fn a_service_call_retried_by_request_id_names_its_version() -> TestResult {
+    // Given: without --version the CLI would choose one by discovery, which may differ on
+    // a retry and needs the target to be reachable.
+    let mut command = ma2a();
+
+    // When
+    let output = command
+        .args([
+            "service",
+            "call",
+            "--endpoint",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "example",
+            "echo",
+            "--request-id",
+            "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+        ])
+        .output()?;
+
+    // Then
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("--version"), "{stderr}");
+    Ok(())
+}

@@ -79,6 +79,7 @@ pub(crate) struct CallArgs {
     #[arg(short = 'i', long)]
     pub(crate) stdin: bool,
     /// Request ID (32 hex characters): retrying the same call with it never acts twice.
-    #[arg(long, value_name = "REQUEST_ID")]
+    /// Needs --version, so a retry speaks the same version without discovering it again.
+    #[arg(long, value_name = "REQUEST_ID", requires = "version")]
     pub(crate) request_id: Option<String>,
 }

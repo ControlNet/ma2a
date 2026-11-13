@@ -196,7 +196,9 @@ printf 'bytes' | ma2a service call --endpoint HOST_ENDPOINT_ID example pipe --st
 
 `call` writes the service's output channel to stdout followed by the result, and its error channel
 to stderr. Ctrl-C cancels the call, and `--request-id` (32 hex characters) makes a retry replay
-instead of calling twice. A failure prints its status name first, for example `unknown_service:`.
+instead of calling twice. `--request-id` needs `--version`: a retry must be the identical call,
+and choosing the version by discovery could pick another one and would need the target to be
+reachable, while a retry of a recorded call is answered locally. A failure prints its status name first, for example `unknown_service:`.
 
 To retire the service: `ma2a service stop example` (the SDK's `serve` then returns), and
 `ma2a service unregister example`.

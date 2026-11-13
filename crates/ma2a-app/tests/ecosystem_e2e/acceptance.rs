@@ -107,6 +107,8 @@ fn discovery_versions_interactions_and_replay_share_one_framework() -> TestResul
     let once = lab.call(&[
         SERVICE,
         "echo",
+        "--version",
+        "2",
         "--request-id",
         REQUEST_ID,
         "--body",
@@ -117,6 +119,8 @@ fn discovery_versions_interactions_and_replay_share_one_framework() -> TestResul
     let again = lab.call(&[
         SERVICE,
         "echo",
+        "--version",
+        "2",
         "--request-id",
         REQUEST_ID,
         "--body",
@@ -133,6 +137,8 @@ fn discovery_versions_interactions_and_replay_share_one_framework() -> TestResul
         &lab.call(&[
             SERVICE,
             "echo",
+            "--version",
+            "2",
             "--request-id",
             REQUEST_ID,
             "--body",
