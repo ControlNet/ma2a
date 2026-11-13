@@ -11,7 +11,7 @@ use std::{
 };
 
 use ma2a_core::service::{ContentIdentity, MAX_DATA_CHUNK_LEN};
-use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 mod lease;
 
@@ -116,8 +116,8 @@ impl Partial {
     /// Returns a local file error.
     pub async fn restart(&mut self) -> io::Result<()> {
         remove_if_present(&self.sidecar).await?;
-        self.file.set_len(0).await?;
-        self.file.seek(io::SeekFrom::Start(0)).await?;
+        // A resumed partial file is open for appending, which may not allow truncation.
+        self.file = tokio::fs::File::create(&self.part).await?;
         self.offset = 0;
         self.identity = None;
         self.hasher = blake3::Hasher::new();

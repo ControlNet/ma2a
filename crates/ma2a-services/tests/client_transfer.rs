@@ -182,6 +182,37 @@ async fn a_second_download_to_one_destination_is_refused_while_the_first_holds_i
 }
 
 #[tokio::test]
+async fn a_resumed_download_whose_source_changed_restarts_from_zero() -> TestResult {
+    // Given: a resumed partial download holding a prefix of the old content.
+    let local = TempRoot::new("client-download-restart")?;
+    let destination = local.path().join("file");
+    let mut first = Partial::open(&destination, "peer docs:/file", true).await?;
+    first
+        .begin(ma2a_core::service::ContentIdentity::new(100, 1))
+        .await?;
+    let (file, hasher) = first.sink();
+    file.write_all(b"old prefix").await?;
+    hasher.update(b"old prefix");
+    file.flush().await?;
+    drop(first);
+    let mut resumed = Partial::open(&destination, "peer docs:/file", true).await?;
+    assert_eq!(resumed.offset(), 10);
+
+    // When: the source changed, so the download starts over under the same lease.
+    resumed.restart().await?;
+    assert_eq!((resumed.offset(), resumed.identity()), (0, None));
+    let (file, hasher) = resumed.sink();
+    file.write_all(b"new").await?;
+    hasher.update(b"new");
+    resumed.finish(false).await?;
+
+    // Then: only the new content is published.
+    assert_eq!(std::fs::read(&destination)?, b"new");
+    assert!(!local.path().join("file.ma2a-part.meta").exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_download_never_replaces_a_destination_created_meanwhile_without_replace() -> TestResult {
     // Given: a complete partial download and a destination another writer created.
     let local = TempRoot::new("client-download-no-clobber")?;
