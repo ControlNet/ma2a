@@ -128,6 +128,20 @@ impl ProcessLab {
         Ok(self.member.command(&command).stdin(Stdio::null()).spawn()?)
     }
 
+    /// Spawns a remote command on the member whose stdin stays open until the returned child
+    /// is dropped.
+    pub(crate) fn spawn_reading(&self, arguments: &[&str]) -> TestValue<Child> {
+        let mut command = vec!["process", "--endpoint", self.owner.id()];
+        command.extend(arguments);
+        Ok(self
+            .member
+            .command(&command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?)
+    }
+
     /// Terminates every Process the owner still hosts, then stops both daemons.
     pub(crate) fn shutdown(self) -> TestResult {
         let listed = self.owner.run_ok(&["process", "list"])?;

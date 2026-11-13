@@ -109,8 +109,17 @@ pub(super) async fn stdin(
 ) -> Result<(), AppError> {
     let request = ProcessRequest::Stdin(id, close);
     let (mut reader, mut writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
-    let (written, closed) = hosted::stdin((&mut reader, &mut writer), tokio::io::stdin()).await?;
-    super::hosted::print(&serde_json::json!({"written": written, "stdin_closed": closed}))
+    let written = hosted::stdin((&mut reader, &mut writer), tokio::io::stdin()).await;
+    // The Process may end while stdin is still being read, so every outcome exits here.
+    super::exit_reading_stdin(
+        written
+            .map_err(AppError::from)
+            .and_then(|(written, closed)| {
+                super::hosted::print(
+                    &serde_json::json!({"written": written, "stdin_closed": closed}),
+                )
+            }),
+    )
 }
 
 async fn open_attach(

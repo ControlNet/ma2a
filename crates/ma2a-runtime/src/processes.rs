@@ -14,6 +14,7 @@ mod local;
 mod maintain;
 mod reads;
 mod start;
+mod stdin;
 
 use std::{
     collections::{HashMap, HashSet},

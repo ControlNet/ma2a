@@ -106,8 +106,17 @@ pub(super) async fn stdin(
     // A child that stops reading closes its stdin; the rest of the input is drained so the
     // daemon still reaches `end` and learns why.
     let mut failure = None;
+    let mut changes = shared.status.subscribe();
+    let mut child_ended = false;
     loop {
-        let frame = reader.expect().await?;
+        let frame = tokio::select! {
+            frame = reader.expect() => frame?,
+            // Nothing more can reach the stdin of a child that ended, so the write ends too.
+            () = ended(&mut changes) => {
+                child_ended = true;
+                break;
+            }
+        };
         match frame.kind() {
             FrameKind::Data => {
                 let (Channel::Input, bytes) = frame.data()? else {
@@ -131,7 +140,7 @@ pub(super) async fn stdin(
         shared.stdin.lock().await.take();
         true
     } else {
-        shared.stdin.lock().await.is_none()
+        child_ended || shared.stdin.lock().await.is_none()
     };
     writer
         .frame(FrameKind::Outcome, &encode_written(written, closed))
@@ -226,6 +235,15 @@ async fn follow(writer: &mut Writer, shared: &Shared, mut cursor: u64) -> Result
         tokio::select! {
             changed = output.changed() => changed.map_err(|_| ServiceError::Unavailable)?,
             changed = status.changed() => changed.map_err(|_| ServiceError::Unavailable)?,
+        }
+    }
+}
+
+/// Completes once the child has ended; never, while its status cannot change any more.
+async fn ended(changes: &mut tokio::sync::watch::Receiver<SupervisorStatus>) {
+    while !changes.borrow_and_update().is_final() {
+        if changes.changed().await.is_err() {
+            std::future::pending::<()>().await;
         }
     }
 }

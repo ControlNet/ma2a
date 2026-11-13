@@ -228,6 +228,8 @@ At most 8 readers are attached to one Process at a time. The ninth is
 
 - With `close = true`, the Process stdin is then closed permanently.
 - The outcome is Written, with the bytes delivered and whether the Process stdin is now closed.
+- If the Process ends before the caller's `end`, the outcome comes at once, Written with
+  `closed = true`; the caller need not end its input first.
 - `cancel` or stream loss ends the operation with outcome `cancelled`. Bytes already delivered
   stay delivered.
 

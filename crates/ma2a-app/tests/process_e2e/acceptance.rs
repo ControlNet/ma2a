@@ -148,5 +148,19 @@ fn stdin_reaches_the_process_through_attach_and_stdin() -> TestResult {
     assert_eq!(logs.stdout, b"abc");
     // Its stdin is closed for good now.
     refused(&lab.member.piped(&write, b"more")?, "not_running")?;
+
+    // A Process that exits while the caller's stdin stays open still ends `stdin`.
+    let id = lab.start_process(&["--stdin", "--", "sh", "-c", "sleep 1"])?;
+    lab.wait_state(&id, "running")?;
+    let mut writing = lab.spawn_reading(&["stdin", &id])?;
+    lab.wait_state(&id, "exited")?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while writing.try_wait()?.is_none() {
+        if std::time::Instant::now() > deadline {
+            writing.kill()?;
+            return Err("process stdin did not exit after its Process ended".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     lab.shutdown()
 }

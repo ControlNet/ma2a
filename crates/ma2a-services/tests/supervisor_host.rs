@@ -203,6 +203,29 @@ async fn stdin_writes_report_their_count_and_closing() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stdin_write_ends_when_the_child_does() -> TestResult {
+    // Given: a writer that never ends its input to a child that exits on its own.
+    let harness = host("sup-stdin-exit", start("read line; exit 0", true)?)?;
+    // A watcher keeps the supervisor reachable after the end, as the Runtime's follower does.
+    let mut watch = harness.open(SupervisorRequest::Watch).await?;
+    assert_eq!(watch.0.expect().await?.kind(), FrameKind::Accept);
+    harness.ask(SupervisorRequest::Go).await?;
+    let (mut reader, mut writer) = harness.open(SupervisorRequest::Stdin(false)).await?;
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+
+    // When
+    writer.data(DataChannel::Input, b"line\n").await?;
+
+    // Then: the write reports what reached the child, and that its stdin is gone.
+    let outcome = tokio::time::timeout(Duration::from_secs(10), reader.expect()).await??;
+    assert_eq!(outcome.kind(), FrameKind::Outcome);
+    assert_eq!(decode_written(outcome.payload())?, (5, true));
+    drop((reader, writer, watch));
+    harness.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_signal_reaches_the_child_group() -> TestResult {
     let harness = host("sup-signal", start("sleep 60 & wait", false)?)?;
     // A watcher keeps the supervisor reachable until it has read the end.

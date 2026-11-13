@@ -1,4 +1,4 @@
-//! Attachments and stdin writes, relayed to the authenticated supervisor.
+//! Attachments, relayed to the authenticated supervisor.
 //!
 //! The supervisor enforces the single stdin writer; this Runtime bounds attached readers
 //! per Process. Detaching never affects the Process: the caller's `cancel` or loss only
@@ -13,10 +13,7 @@ use ma2a_core::{
 };
 use ma2a_services::{
     FrameReader, FrameWriter, OperationEnd, OperationReport,
-    supervisor::{
-        Channel, SupervisorRequest, SupervisorStatus,
-        protocol::{decode_reading, decode_written},
-    },
+    supervisor::{Channel, SupervisorRequest, SupervisorStatus, protocol::decode_reading},
 };
 use ma2a_store::ProcessRecord;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -30,9 +27,9 @@ use super::{
 /// Most readers attached to one Process at a time.
 const MAX_READERS: usize = 8;
 
-type Caller<'a, R, W> = (&'a mut FrameReader<R>, &'a mut FrameWriter<W>);
+pub(super) type Caller<'a, R, W> = (&'a mut FrameReader<R>, &'a mut FrameWriter<W>);
 /// Who asks (`None` is the local operator) and what ends the operation early.
-type Scope<'a> = (Option<EndpointId>, &'a CancellationToken);
+pub(super) type Scope<'a> = (Option<EndpointId>, &'a CancellationToken);
 
 /// Holds one reader slot of a Process until dropped.
 struct ReaderSlot(ProcessManager, ProcessId);
@@ -143,65 +140,6 @@ impl ProcessManager {
         finish(writer, Ok(detached))
             .await
             .with_bytes(bytes.0, bytes.1)
-    }
-
-    /// Writes the caller's channel 0 to the Process stdin; `close` ends it afterwards.
-    pub(super) async fn stdin<R, W>(
-        &self,
-        ((viewer, stop), (id, close)): (Scope<'_>, (ProcessId, bool)),
-        (reader, writer): Caller<'_, R, W>,
-    ) -> OperationReport
-    where
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send,
-    {
-        let request = SupervisorRequest::Stdin(close);
-        let (_, (mut from_supervisor, mut to_supervisor), _) =
-            match self.open_live((viewer, id), request).await {
-                Ok(opened) => opened,
-                Err(error) => return refuse(writer, error).await,
-            };
-        let Ok(accept) = ProcessAccept::Admitted.encode() else {
-            return refuse(writer, ServiceError::Internal).await;
-        };
-        if writer.frame(FrameKind::Accept, &accept).await.is_err() {
-            return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
-        }
-        let written = async {
-            loop {
-                let frame = reader.next().await?.ok_or(ServiceError::Cancelled)?;
-                match frame.kind() {
-                    FrameKind::Data => {
-                        let (DataChannel::Input, bytes) = frame.data()? else {
-                            return Err(ServiceError::InvalidInput);
-                        };
-                        to_supervisor.data(DataChannel::Input, bytes).await?;
-                    }
-                    FrameKind::End if frame.end()? == DataChannel::Input => break,
-                    FrameKind::Cancel => return Err(ServiceError::Cancelled),
-                    _ => return Err(ServiceError::InvalidInput),
-                }
-            }
-            to_supervisor.end(DataChannel::Input).await?;
-            let outcome = from_supervisor.expect().await?;
-            match outcome.kind() {
-                FrameKind::Outcome => decode_written(outcome.payload()),
-                FrameKind::Reject => Err(outcome.rejection()?),
-                _ => Err(ServiceError::Unavailable),
-            }
-        };
-        let written = tokio::select! {
-            written = written => written,
-            // The stream host reports a withdrawn authorization as such; the wire says only
-            // that this Runtime no longer serves the operation.
-            () = stop.cancelled() => Err(ServiceError::Unavailable),
-        };
-        match written {
-            Ok((bytes, closed)) => finish(writer, Ok(ProcessReply::Written(bytes, closed)))
-                .await
-                .with_bytes(bytes, 0),
-            Err(error) => finish(writer, Err(error)).await,
-        }
     }
 }
 
