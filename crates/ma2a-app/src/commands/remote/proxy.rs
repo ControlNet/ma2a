@@ -20,9 +20,8 @@ pub(crate) async fn run(paths: IpcPaths, command: ProxyCommand) -> Result<(), Ap
             let (mut reader, mut writer) =
                 open(&paths, &destination.endpoint, OpenBody::Proxy(request)).await?;
             let local = (tokio::io::stdin(), tokio::io::stdout());
-            client::proxy::run((&mut reader, &mut writer), local).await?;
-            // A pending read of stdin cannot be cancelled and would hold the runtime open.
-            std::process::exit(0)
+            let relayed = client::proxy::run((&mut reader, &mut writer), local).await;
+            super::exit_reading_stdin(relayed.map(drop).map_err(AppError::from))
         }
         ProxyCommand::Forward {
             listen,
