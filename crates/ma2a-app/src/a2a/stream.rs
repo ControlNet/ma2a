@@ -3,7 +3,7 @@
 //! A stream begins with the task, then carries a status or artifact update for each new
 //! event, and closes once the task ended (or, after a message, once it waits for input).
 
-use std::convert::Infallible;
+use std::{convert::Infallible, pin::Pin};
 
 use axum::response::{
     IntoResponse as _, Response,
@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
-    backend::{Backend, Route, ended},
+    backend::{Backend, Refusal, Route, ended},
     mapping::{self, Detail},
     rpc::{RpcError, success},
     view::{self, Served, settled},
@@ -115,6 +115,28 @@ async fn send(frames: &mpsc::Sender<Result<Event, Infallible>>, response: &Value
         .is_ok()
 }
 
+/// What a followed stream does next.
+enum Next {
+    Event(Value),
+    Followed(Result<(), Refusal>),
+    /// The client disconnected.
+    Gone,
+}
+
+/// Waits for the next event, the end of the follow, or the client's disconnect, whichever
+/// comes first: a quiet task must not keep a disconnected client's follow alive.
+async fn next<F: Future<Output = Result<(), Refusal>>>(
+    received: &mut mpsc::UnboundedReceiver<Value>,
+    following: Pin<&mut F>,
+    frames: &mpsc::Sender<Result<Event, Infallible>>,
+) -> Next {
+    tokio::select! {
+        Some(event) = received.recv() => Next::Event(event),
+        outcome = following => Next::Followed(outcome),
+        () = frames.closed() => Next::Gone,
+    }
+}
+
 async fn produce(
     owned: &Owned,
     lifecycle: &Lifecycle,
@@ -165,9 +187,11 @@ async fn produce(
         (update(&event, (task, &current, &owned.base)), last)
     };
     let followed = loop {
-        let event = tokio::select! {
-            Some(event) = received.recv() => event,
-            outcome = &mut following => break outcome,
+        let event = match next(&mut received, following.as_mut(), frames).await {
+            Next::Event(event) => event,
+            Next::Followed(outcome) => break outcome,
+            // Ending here drops the follow, which ends a remote watch with it.
+            Next::Gone => return None,
         };
         let (update, last) = forward(event);
         if let Some(update) = update {
@@ -191,4 +215,33 @@ async fn produce(
         send(frames, &refused(refusal)).await;
     }
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{convert::Infallible, time::Duration};
+
+    use axum::response::sse::Event;
+    use tokio::sync::mpsc;
+
+    use super::{Next, next};
+
+    #[tokio::test]
+    async fn a_disconnected_client_ends_the_follow_of_a_quiet_task() {
+        // Given: a follow that never ends and no event to forward.
+        let (frames, client) = mpsc::channel::<Result<Event, Infallible>>(1);
+        let (_events, mut received) = mpsc::unbounded_channel();
+        let following = std::pin::pin!(std::future::pending());
+
+        // When
+        drop(client);
+        let next = tokio::time::timeout(
+            Duration::from_secs(5),
+            next(&mut received, following, &frames),
+        )
+        .await;
+
+        // Then
+        assert!(matches!(next, Ok(Next::Gone)));
+    }
 }
