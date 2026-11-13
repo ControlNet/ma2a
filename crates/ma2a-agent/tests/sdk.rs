@@ -104,6 +104,17 @@ async fn handle(mut task: Task) {
             }
         }
         "cancel-me" => task.cancelled().await,
+        "huge-result" => {
+            let text = "x".repeat(ma2a_agent::protocol::MAX_MESSAGE_BYTES + 1);
+            task.complete(Some(Message::agent_text(text)));
+        }
+        "nul-result" => task.complete(Some(Message::agent_text("a\0b"))),
+        "huge-question" => {
+            let text = "x".repeat(ma2a_agent::protocol::MAX_MESSAGE_BYTES + 1);
+            let answer = task.ask(Message::agent_text(text)).await;
+            assert!(answer.is_none());
+            task.complete(Some(Message::agent_text("too late")));
+        }
         _ => {}
     }
 }
@@ -230,6 +241,47 @@ async fn a_tool_call_over_the_argument_bound_fails_at_once() -> TestResult {
         before
             .iter()
             .all(|line| !matches!(line, AgentToRuntime::Tool { .. })),
+        "{before:?}"
+    );
+    Ok(())
+}
+
+/// The Runtime ignores a whole state report whose message is out of bounds, so the SDK must
+/// never send one: a task it released would then stay running forever.
+#[tokio::test]
+async fn an_out_of_bounds_result_or_question_fails_the_task_instead_of_vanishing() -> TestResult {
+    let mut runtime = Runtime::start();
+    runtime.next().await?;
+    for (seq, id, text) in [
+        (1, "a", "huge-result"),
+        (2, "b", "nul-result"),
+        (3, "c", "huge-question"),
+    ] {
+        runtime.send(&task(seq, id, text)).await?;
+        let mut reported = None;
+        runtime
+            .until(|line| match line {
+                AgentToRuntime::State {
+                    task,
+                    state,
+                    message,
+                    error,
+                } if task == id => {
+                    reported = Some((*state, message.is_some(), error.is_some()));
+                    true
+                }
+                _ => false,
+            })
+            .await?;
+        assert_eq!(reported, Some((ReportedState::Failed, false, true)), "{id}");
+    }
+    // The question's task ended there: its later completion sends nothing more.
+    runtime.send(&task(4, "d", "echo")).await?;
+    let before = runtime.until(ended("d", ReportedState::Completed)).await?;
+    assert!(
+        !before
+            .iter()
+            .any(|line| matches!(line, AgentToRuntime::State { task, .. } if task == "c")),
         "{before:?}"
     );
     Ok(())

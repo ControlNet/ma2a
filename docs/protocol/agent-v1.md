@@ -543,6 +543,10 @@ exactly once.
 skips empty and malformed lines, deduplicates by `seq`, acknowledges, and gives each task a handle
 with progress, messages, `ask`, cancellation, and tool calls as futures (call IDs `c0`, `c1`, …). A
 handle dropped without an end reports `failed`, or `cancelled` after a cancellation request.
+The SDK checks every message against the Runtime's message bounds (`Message::is_within_bounds`:
+1–16 parts, 12,288 content bytes, no NUL) before sending it, because the Runtime ignores a whole
+line that carries an out-of-bounds message. An out-of-bounds result or `ask` question fails the
+task instead, and `message` returns `false` without sending.
 `ma2a-example-agent` is a deterministic command interpreter built on it, not a language model. The
 first word of a task's text is the command:
 

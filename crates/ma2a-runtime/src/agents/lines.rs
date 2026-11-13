@@ -158,6 +158,60 @@ mod tests {
     use ma2a_store::AgentOutputEffect;
 
     #[test]
+    fn the_sdk_and_the_runtime_bound_messages_alike() {
+        use ma2a_core::service::{MAX_MESSAGE_BYTES, MAX_MESSAGE_PARTS};
+        assert_eq!(ma2a_agent::protocol::MAX_MESSAGE_BYTES, MAX_MESSAGE_BYTES);
+        assert_eq!(ma2a_agent::protocol::MAX_MESSAGE_PARTS, MAX_MESSAGE_PARTS);
+    }
+
+    #[tokio::test]
+    async fn an_sdk_result_beyond_the_message_bound_still_ends_its_task()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use ma2a_agent::{
+            protocol::{AgentToRuntime, Message, Origin, RuntimeToAgent, decode_line, encode_line},
+            sdk,
+        };
+        use ma2a_core::service::{AgentTaskId, AgentTaskState};
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+        let (mut input, sdk_input) = tokio::io::duplex(1 << 16);
+        let (sdk_output, output) = tokio::io::duplex(1 << 16);
+        let serving = tokio::spawn(sdk::serve_on((sdk_input, sdk_output), |task| async move {
+            let text = "x".repeat(ma2a_core::service::MAX_MESSAGE_BYTES + 1);
+            task.complete(Some(Message::agent_text(text)));
+        }));
+        let id = AgentTaskId::from_bytes([2; 16]);
+        let task = RuntimeToAgent::Task {
+            seq: 1,
+            task: id.to_string(),
+            from: Origin {
+                endpoint: "creator".to_owned(),
+                agent: None,
+            },
+            message: Message::user_text("produce an inline result"),
+        };
+        input.write_all(&encode_line(&task)?).await?;
+        let mut output = BufReader::new(output);
+        let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let mut line = String::new();
+                output.read_line(&mut line).await?;
+                let line = line.trim_end().as_bytes();
+                if let Ok(AgentToRuntime::State { .. }) = decode_line::<AgentToRuntime>(line) {
+                    return Ok::<_, std::io::Error>(effect(Some(line)));
+                }
+            }
+        })
+        .await??;
+        serving.abort();
+        assert!(
+            matches!(terminal, AgentOutputEffect::State { task, state: AgentTaskState::Failed, .. } if task == id),
+            "{terminal:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn lines_know_the_cursor_past_each_newline_across_chunks_and_channels() {
         let mut lines = Lines::new(10);
         assert!(lines.output(b"{\"t\":").is_empty());

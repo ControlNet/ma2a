@@ -17,6 +17,8 @@ use crate::{
 
 /// Longest progress text the Runtime retains, in bytes.
 const MAX_PROGRESS_LEN: usize = 1_024;
+/// The error a task reports instead of a message the Runtime would ignore.
+const OUT_OF_BOUNDS: &str = "the message exceeds the adapter message bounds";
 
 /// One task this Agent works on.
 ///
@@ -79,12 +81,15 @@ impl Task {
         });
     }
 
-    /// Adds one Agent message to the conversation.
-    pub fn message(&self, message: Message) {
-        self.shared.emit(&AgentToRuntime::Message {
-            task: self.id.clone(),
-            message,
-        });
+    /// Adds one Agent message to the conversation; returns whether it was sent.
+    ///
+    /// A message outside [`Message::is_within_bounds`] is not sent.
+    pub fn message(&self, message: Message) -> bool {
+        message.is_within_bounds()
+            && self.shared.emit(&AgentToRuntime::Message {
+                task: self.id.clone(),
+                message,
+            })
     }
 
     /// Returns whether the creator asked to cancel.
@@ -100,8 +105,17 @@ impl Task {
 
     /// Asks the creator for input: the task waits until their next message arrives.
     ///
-    /// Returns `None` when the task was cancelled instead.
+    /// Returns `None` when the task was cancelled instead. A question outside
+    /// [`Message::is_within_bounds`] fails the task and also returns `None`; the task has
+    /// then ended, and later reports for it send nothing.
     pub async fn ask(&mut self, question: Message) -> Option<Message> {
+        if !question.is_within_bounds() {
+            self.report(
+                ReportedState::Failed,
+                (None, Some(OUT_OF_BOUNDS.to_owned())),
+            );
+            return None;
+        }
         self.report(ReportedState::Waiting, (Some(question), None));
         let mut cancelled = self.cancelled.clone();
         let answer = tokio::select! {
@@ -180,6 +194,20 @@ impl Task {
         state: ReportedState,
         (message, error): (Option<Message>, Option<String>),
     ) {
+        if self.ended {
+            return;
+        }
+        // The Runtime ignores a whole report whose message is out of bounds, which would
+        // leave a released task running forever.
+        if message
+            .as_ref()
+            .is_some_and(|message| !message.is_within_bounds())
+        {
+            return self.report(
+                ReportedState::Failed,
+                (None, Some(OUT_OF_BOUNDS.to_owned())),
+            );
+        }
         let terminal = matches!(
             state,
             ReportedState::Completed | ReportedState::Failed | ReportedState::Cancelled

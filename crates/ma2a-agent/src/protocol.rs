@@ -21,6 +21,10 @@ pub const MAX_TOOL_ARGS_LEN: usize = 16_384;
 /// Longest tool answer in bytes, as the compact JSON `{"ok": …}` or `{"error": …}`; a
 /// longer answer is replaced by a `too_large` error.
 pub const MAX_TOOL_RESULT_LEN: usize = 65_536;
+/// Most parts one message may have.
+pub const MAX_MESSAGE_PARTS: usize = 16;
+/// Most content bytes one message may carry: text parts plus data parts as compact JSON.
+pub const MAX_MESSAGE_BYTES: usize = 12_288;
 
 /// Who wrote a message.
 #[expect(
@@ -98,6 +102,25 @@ impl Message {
             })
             .collect();
         texts.join("\n")
+    }
+
+    /// Returns whether the Runtime accepts this message: 1 to [`MAX_MESSAGE_PARTS`] parts,
+    /// at most [`MAX_MESSAGE_BYTES`] of content, and no NUL character.
+    ///
+    /// The Runtime ignores a whole line that carries a message out of these bounds.
+    pub fn is_within_bounds(&self) -> bool {
+        let mut total = 0_usize;
+        for part in &self.parts {
+            let content = match part {
+                Part::Text { text } => text.clone(),
+                Part::Data { data } => data.to_string(),
+            };
+            if content.contains('\0') {
+                return false;
+            }
+            total = total.saturating_add(content.len());
+        }
+        (1..=MAX_MESSAGE_PARTS).contains(&self.parts.len()) && total <= MAX_MESSAGE_BYTES
     }
 }
 
