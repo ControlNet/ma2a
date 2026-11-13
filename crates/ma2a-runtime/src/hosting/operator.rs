@@ -9,7 +9,7 @@ use crate::api::HostedServiceView;
 
 impl HostedServices {
     /// Registers a new service, stopped, or replaces a stopped one and its call counts;
-    /// `true` when it is new.
+    /// `true` when it is new, with the revision of the commit.
     ///
     /// A started service is a conflict, and a new one beyond [`MAX_HOSTED_SERVICES`] is
     /// `concurrency_exceeded`.
@@ -17,7 +17,7 @@ impl HostedServices {
         &self,
         name: &ServiceName,
         manifest: ServiceManifest,
-    ) -> Result<(HostedServiceView, bool), ServiceError> {
+    ) -> Result<((HostedServiceView, bool), u64), ServiceError> {
         let _lifecycle = self.0.lifecycle.lock().await;
         let (at_ms, name) = (self.now_ms(), name.clone());
         let limit = u32::try_from(MAX_HOSTED_SERVICES).unwrap_or(u32::MAX);
@@ -33,36 +33,40 @@ impl HostedServices {
                     return Ok(None);
                 }
                 let registered = repository.register_service((&name, &manifest), at_ms)?;
-                Ok(Some(registered.into_value()))
+                let revision = registered.revision();
+                Ok(Some((registered.into_value(), revision)))
             })
             .await?;
+        let Some((registered, revision)) = registered else {
+            return Err(ServiceError::ConcurrencyExceeded);
+        };
         match registered {
-            None => Err(ServiceError::ConcurrencyExceeded),
-            Some(ServiceRegistration::Registered(record, created)) => {
+            ServiceRegistration::Registered(record, created) => {
                 // Counts belong to one registration: a replaced manifest may no longer
                 // list the versions they were counted for.
                 if let Some(live) = self.state().services.get_mut(&record.name) {
                     live.calls.clear();
                 }
-                Ok((self.observe(*record), created))
+                Ok(((self.observe(*record), created), revision))
             }
-            Some(ServiceRegistration::Active) => Err(ServiceError::Conflict),
-            Some(ServiceRegistration::Missing) => Err(ServiceError::Internal),
+            ServiceRegistration::Active => Err(ServiceError::Conflict),
+            ServiceRegistration::Missing => Err(ServiceError::Internal),
         }
     }
 
-    /// Removes a stopped service's registration and forgets its counters.
-    pub(crate) async fn unregister(&self, name: &ServiceName) -> Result<(), ServiceError> {
+    /// Removes a stopped service's registration and forgets its counters; the revision of
+    /// the commit.
+    pub(crate) async fn unregister(&self, name: &ServiceName) -> Result<u64, ServiceError> {
         let _lifecycle = self.0.lifecycle.lock().await;
         let job_name = name.clone();
         let removed = self
             .store(move |repository| repository.unregister_service(&job_name))
-            .await?
-            .into_value();
-        match removed {
+            .await?;
+        let revision = removed.revision();
+        match removed.into_value() {
             ServiceRegistration::Registered(..) => {
                 self.state().services.remove(name);
-                Ok(())
+                Ok(revision)
             }
             ServiceRegistration::Active => Err(ServiceError::Conflict),
             ServiceRegistration::Missing => Err(ServiceError::UnknownService),
@@ -73,23 +77,26 @@ impl HostedServices {
     pub(crate) async fn start(
         &self,
         name: &ServiceName,
-    ) -> Result<HostedServiceView, ServiceError> {
+    ) -> Result<(HostedServiceView, u64), ServiceError> {
         let _lifecycle = self.0.lifecycle.lock().await;
-        let record = self.set_enabled(name, true).await?;
+        let (record, revision) = self.set_enabled(name, true).await?;
         let mut state = self.state();
         let live = state.services.entry(name.clone()).or_default();
         if live.stop.is_cancelled() {
             live.stop = CancellationToken::new();
         }
         drop(state);
-        Ok(self.observe(record))
+        Ok((self.observe(record), revision))
     }
 
     /// Stops a service: its link is told to stop and ends, calls it has not accepted are
     /// withdrawn, and running calls are cancelled.
-    pub(crate) async fn stop(&self, name: &ServiceName) -> Result<HostedServiceView, ServiceError> {
+    pub(crate) async fn stop(
+        &self,
+        name: &ServiceName,
+    ) -> Result<(HostedServiceView, u64), ServiceError> {
         let _lifecycle = self.0.lifecycle.lock().await;
-        let record = self.set_enabled(name, false).await?;
+        let (record, revision) = self.set_enabled(name, false).await?;
         let mut state = self.state();
         if let Some(live) = state.services.get_mut(name) {
             // The link hears the stop through the cancelled token, ahead of its buffer.
@@ -98,19 +105,22 @@ impl HostedServices {
         }
         state.pending.retain(|_, pending| pending.service != *name);
         drop(state);
-        Ok(self.observe(record))
+        Ok((self.observe(record), revision))
     }
 
+    /// Sets whether a service runs; its record and the revision that state is current at.
     async fn set_enabled(
         &self,
         name: &ServiceName,
         enabled: bool,
-    ) -> Result<ma2a_store::HostedServiceRecord, ServiceError> {
+    ) -> Result<(ma2a_store::HostedServiceRecord, u64), ServiceError> {
         let (at_ms, name) = (self.now_ms(), name.clone());
-        self.store(move |repository| repository.set_service_enabled(&name, (enabled, at_ms)))
-            .await?
-            .into_value()
-            .ok_or(ServiceError::UnknownService)
+        let committed = self
+            .store(move |repository| repository.set_service_enabled(&name, (enabled, at_ms)))
+            .await?;
+        let revision = committed.revision();
+        let record = committed.into_value().ok_or(ServiceError::UnknownService)?;
+        Ok((record, revision))
     }
 
     /// Returns the revision of the read and at most `limit` registrations after `after`.
@@ -130,10 +140,5 @@ impl HostedServices {
                 .map(|record| self.observe(record))
                 .collect(),
         ))
-    }
-
-    /// Returns the Store revision, which every committed operator change has reached.
-    pub(crate) async fn revision(&self) -> Result<u64, ServiceError> {
-        self.store(|repository| repository.revision()).await
     }
 }

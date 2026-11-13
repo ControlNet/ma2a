@@ -20,35 +20,40 @@ pub(super) async fn execute(
         )
         .without_effects()
     })?;
-    let result = match command {
+    // Each answer carries the revision of its own commit, never a later one.
+    let (result, revision) = match command {
         HostedCommand::Register(_, name, manifest) => {
-            let (service, created) = hosted
+            let ((service, created), revision) = hosted
                 .register(name, (**manifest).clone())
                 .await
                 .map_err(refusal)?;
-            CommandResult::service_registered(&service, created)
+            (
+                CommandResult::service_registered(&service, created),
+                revision,
+            )
         }
         HostedCommand::Unregister(_, name) => {
-            hosted.unregister(name).await.map_err(refusal)?;
-            CommandResult::service_unregistered(name)
+            let revision = hosted.unregister(name).await.map_err(refusal)?;
+            (CommandResult::service_unregistered(name), revision)
         }
         HostedCommand::Start(_, name) => {
-            CommandResult::service_started(&hosted.start(name).await.map_err(refusal)?)
+            let (service, revision) = hosted.start(name).await.map_err(refusal)?;
+            (CommandResult::service_started(&service), revision)
         }
         HostedCommand::Stop(_, name) => {
-            CommandResult::service_stopped(&hosted.stop(name).await.map_err(refusal)?)
+            let (service, revision) = hosted.stop(name).await.map_err(refusal)?;
+            (CommandResult::service_stopped(&service), revision)
         }
         HostedCommand::List(after) => {
             let limit = u32::try_from(MAX_HOSTED_LIST_PAGE + 1).unwrap_or(u32::MAX);
             let (revision, services) =
                 hosted.list((after.clone(), limit)).await.map_err(refusal)?;
-            return Ok(CommandResult::hosted_services(services).at_revision(revision));
+            (CommandResult::hosted_services(services), revision)
         }
         HostedCommand::Attach(_) | HostedCommand::Accept(..) => {
             return Err(ApiError::invalid_input());
         }
     };
-    let revision = hosted.revision().await.map_err(refusal)?;
     Ok(result.at_revision(revision))
 }
 
