@@ -119,8 +119,10 @@ async fn answer(
 async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>, bool), IpcError> {
     let command = api::decode_command(input)?;
     // Volatile lifecycle instructions execute on every call and never enter durable replay.
-    // They must not hold the mutation lock while closing HTTP requests using this IPC.
-    let _replay = if command.is_ui_lifecycle() {
+    // They must not hold the mutation lock while closing HTTP requests using this IPC. Nor
+    // may the handshake, which changes nothing and precedes every command and upgrade: a
+    // slow mutation must not delay a stream or a hosted service accepting its call.
+    let _replay = if command.is_ui_lifecycle() || command.operation() == "handshake" {
         None
     } else {
         Some(context.replay.lock().await)

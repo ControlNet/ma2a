@@ -164,7 +164,9 @@ daemon's standard error is captured in an owner-private file in the runtime dire
 each run, and a start that fails reports what the daemon itself recorded rather than only that a
 deadline elapsed.
 
-Business clients perform an exact API-version handshake before every non-handshake command.
+Business clients perform an exact API-version handshake before every non-handshake command and
+stream upgrade. The handshake changes nothing and does not wait for the mutation-replay lock, so a
+slow mutation never delays it, nor the stream or hosted-service upgrade that follows.
 Only explicit `start`, `stop`, and `restart` may recover from a version mismatch. A daemon that
 answers the lifecycle plane is stopped through it whatever business API version it reports, because
 that envelope never changes shape; its business version only decides whether business commands may

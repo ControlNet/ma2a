@@ -34,6 +34,13 @@ struct Wedged {
     slots: Arc<Semaphore>,
 }
 
+/// A business read, which queues behind the held mutation lock as any command but the
+/// handshake does.
+async fn stuck_read(client: &LocalApiClient) -> Result<Vec<u8>, crate::ipc::IpcError> {
+    let status = crate::api::decode_command(br#"{"version":1,"operation":"status"}"#)?;
+    client.call(&status).await
+}
+
 async fn wedged(name: &str) -> Result<Wedged, Box<dyn std::error::Error + Send + Sync>> {
     let state = TempState::new_named(name)?;
     let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
@@ -75,7 +82,7 @@ async fn a_lifecycle_call_is_answered_while_the_business_plane_is_blocked() -> T
     let wedged = wedged("blocked-plane").await?;
     let stalled = tokio::spawn({
         let client = wedged.client.clone();
-        async move { client.probe().await }
+        async move { stuck_read(&client).await }
     });
 
     // When
@@ -103,7 +110,7 @@ async fn a_lifecycle_call_is_answered_when_every_business_slot_is_taken() -> Tes
     let stalled = (0..BUSINESS_CONNECTION_LIMIT)
         .map(|_| {
             let client = wedged.client.clone();
-            tokio::spawn(async move { client.probe().await })
+            tokio::spawn(async move { stuck_read(&client).await })
         })
         .collect::<Vec<_>>();
     // Waiting for the slots themselves, rather than for a duration that might be
@@ -133,7 +140,7 @@ async fn a_lifecycle_stop_is_accepted_while_the_business_plane_is_blocked() -> T
     let wedged = wedged("stop-while-blocked").await?;
     let stalled = tokio::spawn({
         let client = wedged.client.clone();
-        async move { client.probe().await }
+        async move { stuck_read(&client).await }
     });
 
     // When
