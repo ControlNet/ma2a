@@ -1,6 +1,6 @@
 # Storage
 
-MA2A Phase 1 uses one bundled SQLite database in each current-user state directory. The
+MA2A uses one bundled SQLite database in each current-user state directory. The
 `ma2a-store` API is intentionally synchronous: a Runtime must own it from a dedicated blocking
 actor or call it through an explicit blocking boundary. It must not run database or protected-key
 filesystem work directly on an async worker.
@@ -14,15 +14,16 @@ filesystem work directly on an async worker.
    modes on Unix. Symlinks and unexpected file types are rejected.
 3. Require protected Windows DACLs with exactly the current user and SYSTEM holding explicit full
    control. Inherited, broad, or remote access is rejected.
-4. Reject `PRAGMA user_version` values newer than schema version 1 before changing journal mode or
-   running a migration.
+4. Reject `PRAGMA user_version` values newer than schema version 10 before changing journal mode
+   or running a migration.
 5. Configure a five-second busy timeout, foreign-key enforcement, WAL, and `synchronous=FULL`.
-6. Apply migration 1 in `BEGIN IMMEDIATE`, validate its migration record, and run `quick_check`.
+6. Apply every missing migration, 1 through 10 in order, in one `BEGIN IMMEDIATE` transaction,
+   validate the migration records, and run `quick_check`.
 7. Resolve every Endpoint and Space-authority key reference and validate its protected file.
 
 The store never performs an implicit downgrade or upgrades an unknown future schema.
 
-## Schema Version 1
+## Schema Version 10
 
 Migration `0001_init.sql` stores:
 
@@ -36,6 +37,23 @@ Migration `0001_init.sql` stores:
   Endpoint, including expiry and signed bytes.
 - Desired relay configuration and expiring observed relay state.
 - The Argon2id password verifier and revocable sessions identified only by bearer-token hashes.
+
+Later migrations add:
+
+| Migration | Adds |
+| --- | --- |
+| `0002_web_auth.sql` | an authentication epoch for the Web password and the rebuilt session table |
+| `0003_relay_persistence.sql` | Private Relay serving configuration, public fallback URLs, and served Spaces |
+| `0004_local_mutation_replay.sql` | local mutation replay records, keyed by RequestId |
+| `0005_relay_advertisement_activity.sql` | whether each stored Private Relay advertisement is active |
+| `0006_mutation_fences.sql` | permanent RequestId fingerprints of admitted mutations (no command bodies) |
+| `0007_service_exposures.sql` | file roots, per-Space service exposures, and Transfer staging records |
+| `0008_processes.sql` | durable Processes and the Process exposure kind |
+| `0009_agents.sql` | Agent definitions, instances, outbox, tasks, events, artifacts, tool calls, and the Agent exposure kind |
+| `0010_hosted_services.sql` | hosted service registrations and the hosted-service exposure kind |
+
+The protocol documents under [protocol/](protocol/) describe what each family stores and when it
+is retained or removed.
 
 Foreign keys, strict tables, checks, unique constraints, partial expiry indexes, and manifest
 generation/hash indexes enforce the storage boundary. Contiguity and monotonic sequence decisions
@@ -71,7 +89,7 @@ It does not copy a live database file. The destination must not already exist, r
 file permissions, and must pass `PRAGMA integrity_check = 'ok'` before the call succeeds.
 
 The backup contains only SQLite state and opaque key references. Protected-key files require a
-separate explicit secure export process; Phase 1 does not implement automatic key replication or a
+separate explicit secure export process; MA2A does not implement automatic key replication or a
 recovery wizard.
 
 ## Verification

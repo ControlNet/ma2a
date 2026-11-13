@@ -1,6 +1,6 @@
 # Architecture
 
-MA2A Phase 1 is endpoint-centric. One current-user Runtime owns one persistent Iroh Endpoint
+MA2A is endpoint-centric. One current-user Runtime owns one persistent Iroh Endpoint
 identity and belongs to zero or more independently authorized Spaces. Space state authorizes
 operations; network reachability never grants authorization.
 
@@ -44,6 +44,26 @@ one complete independently authorizing shared Space.
 Departure uses the same bounded bootstrap path in reverse: a member asks the Space authority to
 sign the next generation removing it, and persists only that authority-signed state. Membership is
 therefore only ever changed by the Space authority, never by local deletion.
+
+## Services
+
+Every remote operation is one QUIC stream to the target Endpoint, opened by the caller's Runtime
+on behalf of a same-user local client and admitted by the target only when one shared Space holds
+both the caller's signed grant and the target's exposure. The families are specified in
+[protocol/](protocol/):
+
+- **Services v1** ([services-v1](protocol/services-v1.md)): remote Files and resumable,
+  BLAKE3-verified Transfer; Exec with typed argv; interactive Shell; TCP Proxy.
+- **Process v1** ([process-v1](protocol/process-v1.md)): durable Processes, each run by its own
+  supervisor so it outlives the caller, the network, and a Runtime restart, with retained output.
+- **Agent v1** ([agent-v1](protocol/agent-v1.md)): operator-defined Agents run as Processes that
+  speak a line protocol; tasks, events, artifacts, and tool calls are durable. The
+  [A2A adapter](protocol/a2a-adapter.md) serves them to A2A v1.0 clients.
+- **Hosted services v1** ([service-v1](protocol/service-v1.md)): third-party programs built on the
+  `ma2a-service` SDK attach to the local Runtime, which keeps identity, authorization, and framing.
+
+Local mutations carry a RequestId; the Runtime records each admitted one so that a retry replays
+its outcome instead of acting twice ([local-api-v1](protocol/local-api-v1.md)).
 
 ## Release Boundary
 

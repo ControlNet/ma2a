@@ -177,6 +177,42 @@ use the node's reachable IP or hostname in a remote browser.
 WebUI. The old top-level `init`, `ui password set/reset`, `ui sessions revoke-all`, and `ui open`
 commands are removed.
 
+## Grants, Exposures, and Remote Services
+
+A remote operation needs two things in **one** Space both Endpoints belong to: the Space owner's
+signed grant for the caller, and the serving Endpoint's own exposure (its consent). Neither alone
+serves anything, and grants and exposures from different Spaces never combine.
+
+```sh
+ma2a space grant SPACE_REF ENDPOINT_ID [--files-read] [--files-write] [--exec] [--shell] \
+  [--proxy] [--process] [--agent] [--service]
+ma2a service expose SPACE_REF files|exec|shell|process|agent|service|proxy ...
+ma2a service unexpose SPACE_REF files|exec|shell|process|agent|service|proxy ...
+ma2a service list
+ma2a ops
+```
+
+`space grant` sets exactly the listed bits. `ops` shows active and recent remote operations.
+Each family's commands, bounds, and status codes are specified in its protocol document:
+
+| Commands | What they do | Specification |
+| --- | --- | --- |
+| `file --endpoint ID stat\|ls\|mkdir\|rm\|mv\|cat\|write\|get\|put` | remote Files and verified, resumable transfers | [services-v1](protocol/services-v1.md) |
+| `exec --endpoint ID [--stdin] -- PROGRAM ARGS…` | one program with typed argv; exits with its status | [services-v1](protocol/services-v1.md) |
+| `shell --endpoint ID` | an interactive terminal | [services-v1](protocol/services-v1.md) |
+| `proxy connect\|forward --endpoint ID …` | TCP destinations reached from the target | [services-v1](protocol/services-v1.md) |
+| `process [--endpoint ID] start\|list\|inspect\|logs\|attach\|stdin\|signal\|terminate\|delete` | durable Processes that outlive the caller | [process-v1](protocol/process-v1.md) |
+| `agent define\|undefine\|start\|stop\|list\|discover\|submit\|tasks\|task\|watch\|send\|cancel\|artifact` | Agents hosted here, or another Endpoint's with `--endpoint` | [agent-v1](protocol/agent-v1.md) |
+| `a2a serve` | this Runtime's and remote Agents to A2A v1.0 clients | [a2a-adapter](protocol/a2a-adapter.md) |
+| `service register\|unregister\|start\|stop\|hosted` | third-party services this Runtime hosts | [service-v1](protocol/service-v1.md) |
+| `service discover\|call --endpoint ID …` | another Endpoint's built-in and hosted services | [service-v1](protocol/service-v1.md) |
+
+`process start`, `agent submit`, `agent send`, and `service call` take `--request-id` (32 hex
+characters); a retry with the same request ID replays the recorded outcome instead of acting
+twice, and `service call` then also needs `--version`. Commands that forward stdin
+(`exec --stdin`, `shell`, `process attach --stdin`, `process stdin`, `proxy connect`,
+`service call --stdin`) exit on every outcome, even while stdin is still open.
+
 ## Output and Errors
 
 Commands with `--json` write the exact local API v1 envelope to standard output, except UI lifecycle
