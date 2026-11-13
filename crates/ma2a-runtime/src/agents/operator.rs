@@ -65,31 +65,32 @@ impl AgentSpec {
 }
 
 impl AgentManager {
-    /// Stores a new definition, or replaces a stopped Agent's; `true` when it is new.
+    /// Stores a new definition, or replaces a stopped Agent's; `true` when it is new, with
+    /// the revision of the commit.
     pub(crate) async fn define(
         &self,
         spec: AgentSpec,
-    ) -> Result<(AgentRecord, bool), ServiceError> {
+    ) -> Result<((AgentRecord, bool), u64), ServiceError> {
         let definition = spec.definition()?;
         let at_ms = self.now_ms();
-        match self
-            .commit(move |repository| repository.define_agent(&definition, at_ms))
-            .await?
-        {
-            AgentDefine::Defined(record, new) => Ok((*record, new)),
+        let (defined, revision) = self
+            .commit_at(move |repository| repository.define_agent(&definition, at_ms))
+            .await?;
+        match defined {
+            AgentDefine::Defined(record, new) => Ok(((*record, new), revision)),
             AgentDefine::Active => Err(ServiceError::Conflict),
             AgentDefine::Missing => Err(ServiceError::UnknownAgent),
         }
     }
 
-    /// Removes a stopped Agent's definition.
-    pub(crate) async fn undefine(&self, agent: &AgentId) -> Result<(), ServiceError> {
+    /// Removes a stopped Agent's definition; the revision of the commit.
+    pub(crate) async fn undefine(&self, agent: &AgentId) -> Result<u64, ServiceError> {
         let id = agent.clone();
-        match self
-            .commit(move |repository| repository.undefine_agent(&id))
-            .await?
-        {
-            AgentDefine::Defined(..) => Ok(()),
+        let (undefined, revision) = self
+            .commit_at(move |repository| repository.undefine_agent(&id))
+            .await?;
+        match undefined {
+            AgentDefine::Defined(..) => Ok(revision),
             AgentDefine::Active => Err(ServiceError::Conflict),
             AgentDefine::Missing => Err(ServiceError::UnknownAgent),
         }

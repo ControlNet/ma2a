@@ -36,12 +36,17 @@ pub(super) async fn execute(
     })?;
     let result = match command {
         AgentCommand::Define(_, spec) => {
-            let (record, created) = manager.define((**spec).clone()).await.map_err(active)?;
-            CommandResult::agent_defined(&AgentView::new(record, 0), created)
+            // Answered at the revision of its own commit, never a later one.
+            let ((record, created), revision) =
+                manager.define((**spec).clone()).await.map_err(active)?;
+            return Ok(
+                CommandResult::agent_defined(&AgentView::new(record, 0), created)
+                    .at_revision(revision),
+            );
         }
         AgentCommand::Undefine(_, agent) => {
-            manager.undefine(agent).await.map_err(active)?;
-            CommandResult::agent_undefined(agent.as_str())
+            let revision = manager.undefine(agent).await.map_err(active)?;
+            return Ok(CommandResult::agent_undefined(agent.as_str()).at_revision(revision));
         }
         AgentCommand::Start(_, agent) => {
             let record = manager.start(agent).await.map_err(refusal)?;

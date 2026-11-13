@@ -152,9 +152,20 @@ impl AgentManager {
         + Send
         + 'static,
     ) -> Result<T, ServiceError> {
-        let value = self.store(job).await?.into_value();
+        Ok(self.commit_at(job).await?.0)
+    }
+
+    /// Runs one committing job, as [`Self::commit`], and also returns its commit's revision.
+    async fn commit_at<T: Send + 'static>(
+        &self,
+        job: impl FnOnce(&mut Repository) -> Result<ma2a_store::Committed<T>, ma2a_store::StoreError>
+        + Send
+        + 'static,
+    ) -> Result<(T, u64), ServiceError> {
+        let committed = self.store(job).await?;
+        let revision = committed.revision();
         self.changed();
-        Ok(value)
+        Ok((committed.into_value(), revision))
     }
 
     /// Returns the Store revision, which every committed operator change has reached.
