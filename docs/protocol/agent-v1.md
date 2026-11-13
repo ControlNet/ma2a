@@ -641,7 +641,8 @@ random RequestId, and so does each proxy connection.
 **Re-execution.** At Runtime start, every pending call of a `running` or `waiting` task runs again.
 A mutation re-opened under its derived RequestId is answered by the caller-side replay table: the
 completed operation's terminal frame, or `outcome_unknown` when the earlier stream was lost. It
-never acts twice. A call that is already executing in this daemon is not started again, and a
+never acts twice. A replay carries only the terminal, never streamed output, so a replayed
+`exec.run` answers `output_unavailable` instead of an empty result. A call that is already executing in this daemon is not started again, and a
 completed call keeps its first result.
 
 **Result bound.** A stored result, `{"ok": …}` or `{"error": …}`, is at most 65,536 bytes; a
@@ -664,6 +665,7 @@ from `artifact.publish`), or one of:
 | `local_io` | a local file or caller-side I/O failure; local `not_found` and `permission_denied` keep those names |
 | `concurrency_exceeded` | 8 calls of the task were already open |
 | `outcome_unknown` | the effect of a re-executed mutation is unknown |
+| `output_unavailable` | a re-executed `exec.run` was answered from replay: the command already ran, and the message names how it ended, but its output was not retained |
 
 ## Withdrawn authorization
 

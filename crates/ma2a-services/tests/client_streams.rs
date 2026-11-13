@@ -181,3 +181,57 @@ async fn a_proxied_connection_is_byte_exact_in_both_directions() -> TestResult {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_replayed_outcome_is_told_apart_from_a_run_that_streamed() -> TestResult {
+    // Given: a real run, and the same terminal answered alone, as caller-side replay does.
+    let request = ExecRequest::new(script("printf durable-output")?, false, 60_000)?;
+    let ((mut reader, mut writer), (mut host_reader, mut host_writer)) = pipe_with(1 << 16);
+    let shutdown = CancellationToken::new();
+    let host = serve_exec(request, &shutdown, (&mut host_reader, &mut host_writer));
+    let mut output = Vec::new();
+    let local = ProcessIo {
+        input: None::<tokio::io::Empty>,
+        output: &mut output,
+        error: None::<tokio::io::Sink>,
+    };
+    let control = ProcessControl {
+        resizes: None,
+        cancel: std::future::pending(),
+    };
+    let caller = client::process::run_streamed((&mut reader, &mut writer), local, control);
+    let (ran, _report) = within(async { tokio::join!(caller, host) }).await?;
+    let ran = ran?;
+    let ((mut reader, mut writer), (_host_reader, mut host_writer)) = pipe_with(1 << 16);
+    let payload = ma2a_core::service::ProcessResult::encode_outcome(&Ok(ran.result))?;
+    host_writer
+        .frame(ma2a_core::service::FrameKind::Outcome, &payload)
+        .await?;
+    host_writer.flush().await?;
+    let mut replayed_output = Vec::new();
+    let local = ProcessIo {
+        input: None::<tokio::io::Empty>,
+        output: &mut replayed_output,
+        error: None::<tokio::io::Sink>,
+    };
+    let control = ProcessControl {
+        resizes: None,
+        cancel: std::future::pending(),
+    };
+
+    // When
+    let replayed = within(client::process::run_streamed(
+        (&mut reader, &mut writer),
+        local,
+        control,
+    ))
+    .await??;
+
+    // Then
+    assert_eq!(output, b"durable-output");
+    assert!(!ran.replayed);
+    assert!(replayed.replayed);
+    assert!(replayed_output.is_empty());
+    assert_eq!(replayed.result, ran.result);
+    Ok(())
+}

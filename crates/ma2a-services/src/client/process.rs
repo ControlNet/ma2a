@@ -41,6 +41,20 @@ pub struct ProcessControl<C> {
     pub cancel: C,
 }
 
+/// How one remote process ended, and whether its output reached the caller.
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a plain pair a caller destructures"
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Streamed {
+    /// The terminal summary.
+    pub result: ProcessResult,
+    /// Whether the outcome arrived without the run: a replay of an earlier request answers
+    /// only its terminal, so none of the process's output was received.
+    pub replayed: bool,
+}
+
 /// Relays one admitted remote process until its terminal outcome.
 ///
 /// Input and output run independently, so a process that echoes a large input can never
@@ -50,7 +64,7 @@ pub struct ProcessControl<C> {
 /// Returns the refusal (`spawn_failed` when the program cannot start), the failed outcome,
 /// or the stream failure.
 pub async fn run<R, W, I, O, E, C>(
-    (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
+    streams: (&mut FrameReader<R>, &mut FrameWriter<W>),
     local: ProcessIo<I, O, E>,
     control: ProcessControl<C>,
 ) -> Result<ProcessResult, ClientError>
@@ -62,8 +76,33 @@ where
     E: AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
+    Ok(run_streamed(streams, local, control).await?.result)
+}
+
+/// Like [`run`], and also tells whether the outcome was only replayed, without its output.
+///
+/// # Errors
+/// As [`run`].
+pub async fn run_streamed<R, W, I, O, E, C>(
+    (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
+    local: ProcessIo<I, O, E>,
+    control: ProcessControl<C>,
+) -> Result<Streamed, ClientError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    I: AsyncRead + Unpin,
+    O: AsyncWrite + Unpin,
+    E: AsyncWrite + Unpin,
+    C: Future<Output = ()>,
+{
+    // A running process is always accepted first; an outcome without that is a replay.
     if let First::Finished(frame) = first(reader).await? {
-        return decoded(ProcessResult::decode_outcome(frame.payload()));
+        let result = decoded(ProcessResult::decode_outcome(frame.payload()))?;
+        return Ok(Streamed {
+            result,
+            replayed: true,
+        });
     }
     let ProcessIo {
         input,
@@ -74,11 +113,15 @@ where
     let outbound = outbound(reader, (output, error), &lost);
     let inbound = inbound(writer, (input, control), &lost);
     tokio::pin!(outbound, inbound);
-    tokio::select! {
+    let result = tokio::select! {
         biased;
         result = &mut outbound => result,
         () = &mut inbound => outbound.await,
-    }
+    }?;
+    Ok(Streamed {
+        result,
+        replayed: false,
+    })
 }
 
 /// Caller → target: input, resizes, and at most one `cancel`, until nothing is left to send.

@@ -138,9 +138,22 @@ impl Call<'_> {
             resizes: None,
             cancel: std::future::pending::<()>(),
         };
-        let result = client::process::run((&mut reader, &mut writer), local, control)
+        let streamed = client::process::run_streamed((&mut reader, &mut writer), local, control)
             .await
             .map_err(|error| failed(&error))?;
+        if streamed.replayed {
+            // A call re-run after a restart is answered from replay: the command already ran,
+            // but its output was never retained. Empty output would read as a real result.
+            return Err(ToolError::new(
+                "output_unavailable",
+                format!(
+                    "the command already ran ({}, reason {}), but its output was not retained",
+                    termination(streamed.result.termination),
+                    streamed.result.reason.name()
+                ),
+            ));
+        }
+        let result = streamed.result;
         let (exit_code, signal) = match result.termination {
             Termination::Exited(code) => (Some(code), None),
             Termination::Signaled(signal) => (None, Some(signal)),
@@ -233,5 +246,13 @@ mod tests {
         let small = fitted(output("hello".to_owned(), String::new()));
         assert!(!small.truncated);
         assert_eq!(small.stdout, "hello");
+    }
+}
+
+fn termination(termination: Termination) -> String {
+    match termination {
+        Termination::Exited(code) => format!("exit code {code}"),
+        Termination::Signaled(signal) => format!("signal {signal}"),
+        Termination::Unknown => "unknown termination".to_owned(),
     }
 }

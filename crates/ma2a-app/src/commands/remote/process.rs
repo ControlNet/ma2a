@@ -42,8 +42,14 @@ pub(crate) async fn exec(paths: IpcPaths, arguments: ExecArgs) -> Result<(), App
         resizes: None,
         cancel: interrupted(),
     };
-    let result = client::process::run((&mut reader, &mut writer), local, control).await?;
-    exit_with(&result)
+    let streamed =
+        client::process::run_streamed((&mut reader, &mut writer), local, control).await?;
+    if streamed.replayed {
+        eprintln!(
+            "note: this request already ran; its outcome was replayed, and its output was not retained"
+        );
+    }
+    exit_with(&streamed.result)
 }
 
 pub(crate) async fn shell(paths: IpcPaths, arguments: ShellArgs) -> Result<(), AppError> {
