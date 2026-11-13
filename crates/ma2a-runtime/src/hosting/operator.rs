@@ -20,15 +20,11 @@ impl HostedServices {
     ) -> Result<((HostedServiceView, bool), u64), ServiceError> {
         let _lifecycle = self.0.lifecycle.lock().await;
         let (at_ms, name) = (self.now_ms(), name.clone());
-        let limit = u32::try_from(MAX_HOSTED_SERVICES).unwrap_or(u32::MAX);
+        let limit = u64::try_from(MAX_HOSTED_SERVICES).unwrap_or(u64::MAX);
         let registered = self
             .store(move |repository| {
                 let full = repository.hosted_service(&name)?.is_none()
-                    && repository
-                        .hosted_services((None, limit))?
-                        .into_value()
-                        .len()
-                        >= MAX_HOSTED_SERVICES;
+                    && repository.hosted_service_count()? >= limit;
                 if full {
                     return Ok(None);
                 }

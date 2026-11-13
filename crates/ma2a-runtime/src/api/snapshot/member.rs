@@ -43,7 +43,7 @@ impl SpaceMemberView {
     }
 
     /// Returns this record with its signed service grants, in `files_read`, `files_write`,
-    /// `exec`, `shell`, `proxy`, `process` order.
+    /// `exec`, `shell`, `proxy`, `process`, `agent`, `service` order.
     #[must_use]
     pub const fn with_services(mut self, services: [bool; 8]) -> Self {
         self.services = services;

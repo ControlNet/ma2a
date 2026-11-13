@@ -189,6 +189,16 @@ impl Repository {
         load(&self.connection, name)
     }
 
+    /// Returns how many services are registered.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the count cannot be read.
+    pub fn hosted_service_count(&self) -> Result<u64, StoreError> {
+        Ok(self
+            .connection
+            .query_row("SELECT count(*) FROM hosted_services", [], |row| row.get(0))?)
+    }
+
     /// Returns at most `limit` registrations after `after`, by name.
     ///
     /// # Errors

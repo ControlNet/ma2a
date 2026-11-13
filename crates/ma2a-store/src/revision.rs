@@ -49,7 +49,7 @@ impl SnapshotMember {
     }
 
     /// Returns the signed service grants: files read, files write, exec, shell, proxy,
-    /// process, agent.
+    /// process, agent, service.
     pub const fn services(&self) -> [bool; 8] {
         self.services
     }

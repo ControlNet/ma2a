@@ -82,10 +82,12 @@ fn a_registration_changes_only_while_its_service_is_stopped() -> TestResult {
         ServiceRegistration::Active
     );
     repository.set_service_enabled(&name, (false, 50))?;
+    assert_eq!(repository.hosted_service_count()?, 1);
     assert!(matches!(
         repository.unregister_service(&name)?.into_value(),
         ServiceRegistration::Registered(_, false)
     ));
+    assert_eq!(repository.hosted_service_count()?, 0);
     assert_eq!(
         repository.unregister_service(&name)?.into_value(),
         ServiceRegistration::Missing

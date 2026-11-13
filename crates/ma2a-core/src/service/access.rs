@@ -124,6 +124,7 @@ fn permits(request: &ServiceAuthorizationRequest<'_>, space: &SpaceAuthorization
         ServiceAccess::Agent(agent) => {
             granted(Capability::AGENT) && exposure.agents().contains(agent)
         }
+        // Answered above, before an exposure is needed; kept so the match stays exhaustive.
         ServiceAccess::Discover => true,
         ServiceAccess::Hosted(service) => {
             granted(Capability::SERVICE) && exposure.services().contains(service)
