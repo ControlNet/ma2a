@@ -61,7 +61,7 @@ pub use address_records::{
     AddressRecordBoundaryError, AddressRecordOutcome, AddressRecordTarget, AddressRecordValidation,
     ValidatedAddressRecord,
 };
-pub use agent_actions::AgentTaskChange;
+pub use agent_actions::{AgentTaskChange, ToolAnswer};
 pub use agent_log::{
     AgentDelivery, MAX_DURABLE_EVENTS, MAX_PROGRESS_EVENTS, MAX_UNACKED_DELIVERIES,
 };

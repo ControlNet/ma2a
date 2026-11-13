@@ -36,6 +36,8 @@ type Outcome = Result<Value, ToolError>;
 struct Call<'a> {
     manager: &'a AgentManager,
     task: AgentTaskId,
+    /// The Agent's identifier of this call.
+    id: &'a str,
     agent: AgentId,
     workspace: PathBuf,
     request_id: RequestId,
@@ -86,6 +88,11 @@ fn answer(outcome: &Outcome) -> Vec<u8> {
         "too_large",
         "the tool result exceeds 64 KiB",
     )))
+}
+
+/// The stored answer of an `artifact.publish` call that published `artifact`.
+pub(super) fn published(artifact: &ma2a_core::service::ArtifactRef) -> Vec<u8> {
+    answer(&ok(&super::convert::artifact(artifact)))
 }
 
 /// The stored answer of a call refused because its task has too many open.
@@ -161,6 +168,7 @@ impl AgentManager {
         let context = Call {
             manager: self,
             task,
+            id: call,
             workspace: self.workspace(&agent),
             agent,
             request_id: call_request(task, call).ok()?,

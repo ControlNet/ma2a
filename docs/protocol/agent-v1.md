@@ -351,7 +351,9 @@ daemon:
 2. copies it into a staging file in the content-addressed store `<state>/agents-v1/blobs/` (mode
    `0700`), hashing it with BLAKE3 as it goes;
 3. fsyncs the copy and renames it to `<blake3 hex>`, so identical content is stored once;
-4. records the artifact reference and an `artifact` event, while the task is not terminal.
+4. records the artifact reference and an `artifact` event, while the task is not terminal, and
+   the tool call's answer in the same commit, so a restart never runs a recorded publication
+   again (which would find its own name taken).
 
 | Bound or failure | Result |
 | --- | --- |

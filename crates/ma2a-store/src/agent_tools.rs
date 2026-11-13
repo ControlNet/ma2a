@@ -127,18 +127,8 @@ impl Repository {
         (result, at_ms): (&[u8], u64),
     ) -> Result<Committed<bool>, StoreError> {
         let transaction = self.immediate()?;
-        let completed = transaction.execute(
-            "UPDATE agent_tool_calls SET result = ?3, completed_at_ms = max(?4, created_at_ms)
-             WHERE task_id = ?1 AND call_id = ?2 AND result IS NULL",
-            params![task.as_bytes().as_slice(), call, result, at_ms],
-        )? > 0;
+        let completed = complete_call(&transaction, (task, call), (result, at_ms))?;
         let revision = if completed {
-            if let Some(record) =
-                load_task(&transaction, task)?.filter(|record| !record.summary.state.is_terminal())
-            {
-                let delivery = AgentDelivery::ToolResult(task, call.to_owned());
-                deliver_to_holder(&transaction, &record, &delivery)?;
-            }
             increment_revision(&transaction)?
         } else {
             current_revision(&transaction)?
@@ -180,4 +170,26 @@ impl Repository {
         let rows = statement.query_map([], read)?;
         rows.map(|row| decode(row?)).collect()
     }
+}
+
+/// Records the result of one pending call and delivers it while its task is live; returns
+/// whether this completed it.
+pub(crate) fn complete_call(
+    transaction: &Transaction<'_>,
+    (task, call): (AgentTaskId, &str),
+    (result, at_ms): (&[u8], u64),
+) -> Result<bool, StoreError> {
+    let completed = transaction.execute(
+        "UPDATE agent_tool_calls SET result = ?3, completed_at_ms = max(?4, created_at_ms)
+         WHERE task_id = ?1 AND call_id = ?2 AND result IS NULL",
+        params![task.as_bytes().as_slice(), call, result, at_ms],
+    )? > 0;
+    if completed
+        && let Some(record) =
+            load_task(transaction, task)?.filter(|record| !record.summary.state.is_terminal())
+    {
+        let delivery = AgentDelivery::ToolResult(task, call.to_owned());
+        deliver_to_holder(transaction, &record, &delivery)?;
+    }
+    Ok(completed)
 }

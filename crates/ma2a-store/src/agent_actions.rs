@@ -185,40 +185,70 @@ impl Repository {
         task: AgentTaskId,
         (artifact, at_ms): (&ArtifactRef, u64),
     ) -> Result<Committed<AgentTaskChange>, StoreError> {
-        let transaction = self.immediate()?;
-        let Some(record) = load_task(&transaction, task)? else {
-            let revision = current_revision(&transaction)?;
-            return Ok(Committed::new(revision, AgentTaskChange::Missing));
-        };
-        if record.summary.state.is_terminal() {
-            return finish(transaction, (task, false), AgentTaskChange::Ended);
-        }
-        let (count, taken): (usize, bool) = transaction.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(name = ?2), 0) > 0 FROM agent_artifacts
-             WHERE task_id = ?1",
-            params![task.as_bytes().as_slice(), artifact.name()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        if taken || count >= MAX_TASK_ARTIFACTS {
-            return finish(transaction, (task, false), |_| AgentTaskChange::Refused);
-        }
-        // The event comes first: a task it fails at its bound publishes nothing.
-        let body = AgentEventBody::Artifact(artifact.clone());
-        if record_durable_event(&transaction, task, (body, at_ms))?.is_none() {
-            return finish(transaction, (task, true), AgentTaskChange::Ended);
-        }
-        transaction.execute(
-            "INSERT INTO agent_artifacts (task_id, name, position, media_type, size, blake3)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                task.as_bytes().as_slice(),
-                artifact.name(),
-                count,
-                artifact.media_type(),
-                artifact.size(),
-                artifact.blake3().as_slice(),
-            ],
-        )?;
-        finish(transaction, (task, true), AgentTaskChange::Changed)
+        add_artifact(self.immediate()?, (task, None), (artifact, at_ms))
     }
+
+    /// Adds one artifact for a tool call, and records that call's answer in the same commit
+    /// when the artifact is added.
+    ///
+    /// A crash can then never separate the publication from its answer: a published artifact
+    /// is never published again by the same call after a restart. A refused publication
+    /// leaves the call pending for its runner to answer.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the change cannot be committed.
+    pub fn publish_agent_artifact(
+        &mut self,
+        (task, call): (AgentTaskId, ToolAnswer<'_>),
+        (artifact, at_ms): (&ArtifactRef, u64),
+    ) -> Result<Committed<AgentTaskChange>, StoreError> {
+        add_artifact(self.immediate()?, (task, Some(call)), (artifact, at_ms))
+    }
+}
+
+/// One tool call's identifier and the answer to record for it.
+pub type ToolAnswer<'a> = (&'a str, &'a [u8]);
+
+fn add_artifact(
+    transaction: Transaction<'_>,
+    (task, call): (AgentTaskId, Option<ToolAnswer<'_>>),
+    (artifact, at_ms): (&ArtifactRef, u64),
+) -> Result<Committed<AgentTaskChange>, StoreError> {
+    let Some(record) = load_task(&transaction, task)? else {
+        let revision = current_revision(&transaction)?;
+        return Ok(Committed::new(revision, AgentTaskChange::Missing));
+    };
+    if record.summary.state.is_terminal() {
+        return finish(transaction, (task, false), AgentTaskChange::Ended);
+    }
+    let (count, taken): (usize, bool) = transaction.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(name = ?2), 0) > 0 FROM agent_artifacts
+         WHERE task_id = ?1",
+        params![task.as_bytes().as_slice(), artifact.name()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if taken || count >= MAX_TASK_ARTIFACTS {
+        return finish(transaction, (task, false), |_| AgentTaskChange::Refused);
+    }
+    // The event comes first: a task it fails at its bound publishes nothing.
+    let body = AgentEventBody::Artifact(artifact.clone());
+    if record_durable_event(&transaction, task, (body, at_ms))?.is_none() {
+        return finish(transaction, (task, true), AgentTaskChange::Ended);
+    }
+    transaction.execute(
+        "INSERT INTO agent_artifacts (task_id, name, position, media_type, size, blake3)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            task.as_bytes().as_slice(),
+            artifact.name(),
+            count,
+            artifact.media_type(),
+            artifact.size(),
+            artifact.blake3().as_slice(),
+        ],
+    )?;
+    if let Some((call, result)) = call {
+        crate::agent_tools::complete_call(&transaction, (task, call), (result, at_ms))?;
+    }
+    finish(transaction, (task, true), AgentTaskChange::Changed)
 }

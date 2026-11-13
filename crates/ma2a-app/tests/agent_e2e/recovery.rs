@@ -125,3 +125,35 @@ fn a_crash_after_a_tool_call_is_recorded_runs_it_once() -> TestResult {
 fn a_crash_before_a_tool_result_is_stored_answers_it_once() -> TestResult {
     crash_at(("f-result", "before_tool_result"))
 }
+
+#[test]
+fn a_crash_after_an_artifact_is_published_still_completes_its_task() -> TestResult {
+    let mut lab = AgentLab::start("pub-crash")?;
+    let source = lab
+        .b
+        .state_dir()
+        .join("agents-v1/worker/workspace/report.txt");
+    // Test input only: the content of the workspace file the Agent publishes.
+    std::fs::write(&source, b"recovered artifact content")?;
+    lab.b
+        .restart_with(&[("MA2A_TEST_AGENT_FAULT", "before_tool_result")])?;
+    wait_ready(&lab.b, "worker")?;
+    let instruction = "tool artifact.publish {\"name\":\"report.txt\",\"path\":\"report.txt\"}";
+    let submitted = last(
+        &lab.b
+            .run_ok(&["agent", "submit", "worker", "--text", instruction])?,
+    )?;
+    let task = text(&submitted, "/task/task_id");
+    lab.b.recover_from_fault()?;
+    let ended = lab.wait_ended_on_b(&task)?;
+    assert_eq!(
+        ended
+            .get("artifacts")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{ended}"
+    );
+    assert_eq!(text(&ended, "/task/state"), "completed", "{ended}");
+    lab.shutdown()
+}

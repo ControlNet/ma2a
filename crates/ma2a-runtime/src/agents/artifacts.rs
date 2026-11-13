@@ -108,10 +108,13 @@ fn place_blob(staging: &Path, blobs: &Path, hash: &[u8; 32]) -> io::Result<()> {
 }
 
 impl AgentManager {
-    /// Publishes one workspace file as an artifact of a live task.
+    /// Publishes one workspace file as an artifact of a live task for the tool call `call`.
+    ///
+    /// The artifact and the call's answer commit together, so a restart never runs the same
+    /// publication again and finds its own name taken.
     pub(super) async fn publish(
         &self,
-        task: AgentTaskId,
+        (task, call): (AgentTaskId, &str),
         (name, source, media_type): (&str, PathBuf, &str),
     ) -> Result<ArtifactRef, ServiceError> {
         let blobs = self.blobs();
@@ -137,8 +140,11 @@ impl AgentManager {
             .map_err(|_| ServiceError::Internal)?
             .map_err(|_| ServiceError::Internal)?;
         let (recorded, at_ms) = (artifact.clone(), self.now_ms());
+        let (call, answer) = (call.to_owned(), super::tools::published(&artifact));
         match self
-            .commit(move |repository| repository.add_agent_artifact(task, (&recorded, at_ms)))
+            .commit(move |repository| {
+                repository.publish_agent_artifact((task, (&call, &answer)), (&recorded, at_ms))
+            })
             .await?
         {
             AgentTaskChange::Changed(_) => Ok(artifact),

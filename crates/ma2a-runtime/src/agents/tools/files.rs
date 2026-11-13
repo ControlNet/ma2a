@@ -128,7 +128,7 @@ impl Call<'_> {
         let media_type = args.media_type.as_deref().unwrap_or(DEFAULT_MEDIA_TYPE);
         let published = self
             .manager
-            .publish(self.task, (&args.name, source, media_type))
+            .publish((self.task, self.id), (&args.name, source, media_type))
             .await
             .map_err(status)?;
         ok(&artifact(&published))

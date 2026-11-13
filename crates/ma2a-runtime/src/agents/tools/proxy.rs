@@ -39,6 +39,8 @@ impl Call<'_> {
         let (endpoint, port, task) = (args.endpoint, args.port, self.task);
         let workspace = self.workspace.clone();
         let agent = self.agent.clone();
+        // Each accepted connection is opened on behalf of the `proxy.open` call.
+        let opened_by = self.id.to_owned();
         self.manager.0.tasks.spawn(async move {
             loop {
                 let accepted = tokio::select! {
@@ -55,6 +57,7 @@ impl Call<'_> {
                 let call = Call {
                     manager: &manager,
                     task,
+                    id: &opened_by,
                     agent: agent.clone(),
                     workspace: workspace.clone(),
                     request_id,

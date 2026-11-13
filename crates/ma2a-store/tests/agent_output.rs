@@ -445,3 +445,59 @@ fn an_artifact_over_the_event_bound_is_not_published() -> TestResult {
     assert!(repository.agent_artifacts(task)?.is_empty());
     Ok(())
 }
+
+/// A publication and the tool call's answer commit together, so a crash between them can
+/// never leave a published artifact whose call runs again and conflicts with itself.
+#[test]
+fn an_artifact_publication_answers_its_tool_call_in_the_same_commit() -> TestResult {
+    // Given
+    let (_state, mut repository, generation, task) = running("agent-publish")?;
+    assert_eq!(
+        apply(&mut repository, (generation, 10), tool(task, "c0"))?,
+        AgentOutputApplied::ToolCall(task, "c0".to_owned())
+    );
+    let report = artifact("report.txt", 1)?;
+
+    // When
+    let published = repository
+        .publish_agent_artifact((task, ("c0", b"{\"ok\":\"published\"}")), (&report, 30))?
+        .into_value();
+
+    // Then
+    assert!(matches!(published, AgentTaskChange::Changed(_)));
+    let call = repository.tool_call((task, "c0"))?.ok_or("missing call")?;
+    assert_eq!(
+        call.result.as_deref(),
+        Some(b"{\"ok\":\"published\"}".as_slice())
+    );
+    assert!(repository.pending_tool_calls()?.is_empty());
+    assert!(
+        repository
+            .agent_outbox((&agent()?, generation))?
+            .iter()
+            .any(|entry| entry.delivery == AgentDelivery::ToolResult(task, "c0".to_owned()))
+    );
+    // The runner's own answer afterwards changes nothing.
+    assert!(
+        !repository
+            .complete_tool_call((task, "c0"), (b"{\"ok\":2}", 31))?
+            .into_value()
+    );
+    // A refused publication leaves the call for the runner to answer.
+    assert_eq!(
+        apply(&mut repository, (generation, 11), tool(task, "c1"))?,
+        AgentOutputApplied::ToolCall(task, "c1".to_owned())
+    );
+    let refused = repository
+        .publish_agent_artifact((task, ("c1", b"{}")), (&artifact("report.txt", 2)?, 32))?
+        .into_value();
+    assert_eq!(refused, AgentTaskChange::Refused);
+    assert!(
+        repository
+            .tool_call((task, "c1"))?
+            .ok_or("missing call")?
+            .result
+            .is_none()
+    );
+    Ok(())
+}
