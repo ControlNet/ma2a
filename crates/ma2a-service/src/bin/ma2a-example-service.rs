@@ -18,6 +18,7 @@
 
 use std::{process::ExitCode, time::Duration};
 
+use ma2a_core::service::MAX_SERVICE_CALLS;
 use ma2a_runtime::ipc::IpcPaths;
 use ma2a_service::{
     Call, CallInput, CallOutput, Channel, Ended, Error, Input, ServiceError, ServiceHost,
@@ -45,6 +46,14 @@ fn manifest(max_calls: u8) -> serde_json::Value {
             {"version": 2, "operations": second},
         ],
     })
+}
+
+/// Parses `MAX_CALLS`, which a manifest bounds to `1..=MAX_SERVICE_CALLS`.
+fn max_calls(text: &str) -> Result<u8, String> {
+    text.parse::<u8>()
+        .ok()
+        .filter(|calls| (1..=MAX_SERVICE_CALLS).contains(calls))
+        .ok_or_else(|| format!("MAX_CALLS must be 1-{MAX_SERVICE_CALLS}"))
 }
 
 fn print_manifest(max_calls: u8) {
@@ -156,10 +165,7 @@ async fn main() -> ExitCode {
             print_manifest(4);
             Ok(())
         }
-        ["manifest", calls] => calls
-            .parse::<u8>()
-            .map(print_manifest)
-            .map_err(|_| "MAX_CALLS must be 1-64".to_owned()),
+        ["manifest", calls] => max_calls(calls).map(print_manifest),
         ["serve", state_dir] => serve(state_dir, "example").await,
         ["serve", state_dir, name] => serve(state_dir, name).await,
         _ => Err(
@@ -171,6 +177,20 @@ async fn main() -> ExitCode {
         Err(error) => {
             eprintln!("ma2a-example-service: {error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::max_calls;
+
+    #[test]
+    fn max_calls_accepts_only_what_a_manifest_can_hold() {
+        assert_eq!(max_calls("1"), Ok(1));
+        assert_eq!(max_calls("64"), Ok(64));
+        for refused in ["0", "65", "100", "-1", "four"] {
+            assert!(max_calls(refused).is_err(), "{refused}");
         }
     }
 }
