@@ -210,6 +210,14 @@ impl Call<'_> {
     }
 }
 
+fn termination(termination: Termination) -> String {
+    match termination {
+        Termination::Exited(code) => format!("exit code {code}"),
+        Termination::Signaled(signal) => format!("signal {signal}"),
+        Termination::Unknown => "unknown termination".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ma2a_agent::{protocol::MAX_TOOL_RESULT_LEN, tools::ExecOutput};
@@ -246,13 +254,5 @@ mod tests {
         let small = fitted(output("hello".to_owned(), String::new()));
         assert!(!small.truncated);
         assert_eq!(small.stdout, "hello");
-    }
-}
-
-fn termination(termination: Termination) -> String {
-    match termination {
-        Termination::Exited(code) => format!("exit code {code}"),
-        Termination::Signaled(signal) => format!("signal {signal}"),
-        Termination::Unknown => "unknown termination".to_owned(),
     }
 }
