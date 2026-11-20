@@ -140,6 +140,7 @@ pub(super) async fn list(context: &ConnectionContext) -> Result<CommandResult, A
              }| exposure_view(*space_id, exposure),
         )
         .collect::<Result<Vec<_>, _>>()?;
+    super::exposure_bound::ensure_answerable(&views)?;
     Ok(CommandResult::service_exposures(views).at_revision(revision))
 }
 

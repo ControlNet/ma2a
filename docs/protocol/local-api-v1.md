@@ -67,7 +67,10 @@ never make any Runtime serve anything by themselves.
   `service_exposure_list` answer would no longer fit one 65,536-byte response.
 - **`service_unexpose`** names an exposure by the same selector without `path` and `access`. It
   returns `service_unexposed` with the removed exposure, or `not_found` without effect.
-- **`service_exposure_list`** returns `service_exposures`, an array of `service_exposure`.
+- **`service_exposure_list`** returns `service_exposures`, an array of `service_exposure`. A
+  database written before that size check may hold exposures that no longer fit one response;
+  the list then answers `conflict` with a remediation, and each exposure can still be removed
+  with `service_unexpose` until the list fits again.
 - **`operations_status`** returns `operations`: `active_count` and at most 64 `active` operations
   with `elapsed_ms`, plus `recent_count` and at most 64 of the most recent completed operations,
   newest first, with `result`, nullable `error`, byte counts, and `duration_ms`. Operations carry a

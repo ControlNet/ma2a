@@ -9,8 +9,8 @@ use ma2a_core::{ProtocolError, RequestId};
 
 use crate::api::{self, ApiError, ApiResponse, CommandResult, ServiceExposureView};
 
-/// Refuses an exposure list whose largest possible response would not fit one frame.
-pub(super) fn ensure_listable(views: Vec<ServiceExposureView>) -> Result<(), ApiError> {
+/// Whether the largest possible response listing `views` fits one frame.
+fn fits(views: Vec<ServiceExposureView>) -> Result<bool, ApiError> {
     // The widest envelope: a request identifier and the largest revision.
     let request_id = RequestId::try_from([0xff; 16].as_slice())?;
     let response = ApiResponse::new(
@@ -18,20 +18,41 @@ pub(super) fn ensure_listable(views: Vec<ServiceExposureView>) -> Result<(), Api
         u64::MAX,
         CommandResult::service_exposures(views),
     );
-    api::encode_response(&response).map(drop).map_err(|_| {
-        ApiError::with_remediation(
-            ProtocolError::INVALID_INPUT,
-            "the exposure list would exceed one response; remove an exposure or use a shorter path",
-        )
-        .without_effects()
-    })
+    Ok(api::encode_response(&response).is_ok())
+}
+
+/// Refuses an exposure list whose largest possible response would not fit one frame.
+pub(super) fn ensure_listable(views: Vec<ServiceExposureView>) -> Result<(), ApiError> {
+    if fits(views)? {
+        return Ok(());
+    }
+    Err(ApiError::with_remediation(
+        ProtocolError::INVALID_INPUT,
+        "the exposure list would exceed one response; remove an exposure or use a shorter path",
+    )
+    .without_effects())
+}
+
+/// Answers a list too large for one response with how to shrink it, not a dropped connection.
+///
+/// Only a database written before [`ensure_listable`] guarded every change can hold one; each
+/// exposure in it can still be removed by name.
+pub(super) fn ensure_answerable(views: &[ServiceExposureView]) -> Result<(), ApiError> {
+    if fits(views.to_vec())? {
+        return Ok(());
+    }
+    Err(ApiError::with_remediation(
+        ProtocolError::CONFLICT,
+        "the exposures no longer fit one list response; remove some by name with `ma2a service unexpose`",
+    )
+    .without_effects())
 }
 
 #[cfg(test)]
 mod tests {
     use ma2a_core::{ProtocolError, SpaceId, service::RootAccess};
 
-    use super::ensure_listable;
+    use super::{ensure_answerable, ensure_listable};
     use crate::api::ServiceExposureView;
 
     fn roots(count: usize, path_bytes: usize) -> Result<Vec<ServiceExposureView>, ProtocolError> {
@@ -62,6 +83,23 @@ mod tests {
         assert_eq!(
             refused.map(crate::api::ApiError::code),
             Some(ProtocolError::INVALID_INPUT)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stored_list_too_large_for_one_response_is_answered_with_a_remedy()
+    -> Result<(), ProtocolError> {
+        assert!(ensure_answerable(&roots(256, 16)?).is_ok());
+        let refused = ensure_answerable(&roots(128, 512)?).err();
+        assert_eq!(
+            refused.as_ref().map(|error| error.code()),
+            Some(ProtocolError::CONFLICT)
+        );
+        assert!(
+            refused
+                .and_then(|error| error.remediation().map(str::to_owned))
+                .is_some_and(|remedy| remedy.contains("unexpose"))
         );
         Ok(())
     }
