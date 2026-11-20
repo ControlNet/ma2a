@@ -177,7 +177,8 @@ pub(crate) enum StoreCommand {
         reply: oneshot::Sender<Result<(), crate::control_sync::ControlFailure>>,
     },
     ApplyControlResponse {
-        input: ControlExchangeInput,
+        /// The response, and the Spaces the request it answers asked about.
+        input: (ControlExchangeInput, Vec<ma2a_core::SpaceId>),
         reply: oneshot::Sender<Result<ControlApplyOutcome, crate::control_sync::ControlFailure>>,
     },
     AuthorizeEcho {

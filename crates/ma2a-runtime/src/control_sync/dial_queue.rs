@@ -76,6 +76,7 @@ mod tests {
         let request = |peer| PreparedControlPeer {
             peer,
             request: Vec::new(),
+            spaces: Vec::new(),
         };
         let mut queue =
             DialQueue::new([request(busy), request(busy), request(busy), request(other)]);

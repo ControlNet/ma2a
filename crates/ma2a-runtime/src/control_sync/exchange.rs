@@ -110,9 +110,14 @@ fn authorize_shared(
     Ok(())
 }
 
+/// Applies a peer's response to a request that asked about the Spaces `requested`.
+///
+/// A response may answer only those: one carrying a page for any other Space, even one the two
+/// share, answers another request, and is refused before anything is applied.
 pub(crate) fn apply_response(
     repository: &mut Repository,
     input: &ControlExchangeInput,
+    requested: &[ma2a_core::SpaceId],
 ) -> Result<ControlApplyOutcome, ControlFailure> {
     let shared =
         repository.control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)?;
@@ -123,6 +128,13 @@ pub(crate) fn apply_response(
         ControlResponseV1::decode(&input.payload).map_err(|_| ControlRejection::Invalid)?;
     pages::validate_page_spaces(&shared, response.pages())
         .map_err(|_| ControlRejection::Invalid)?;
+    if response
+        .pages()
+        .iter()
+        .any(|page| !requested.contains(&page.space_id()))
+    {
+        return Err(ControlRejection::Invalid.into());
+    }
     let changes = pages::apply_pages(
         repository,
         pages::PageApplication::new(&shared, response.pages(), input.now_ms),

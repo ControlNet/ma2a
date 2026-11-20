@@ -11,7 +11,7 @@ mod scope;
 use std::collections::BTreeMap;
 
 use ma2a_core::{
-    ControlRequestV1, EndpointId, MAX_CONTROL_SPACES_PER_REQUEST, SpaceAuthorizationView,
+    ControlRequestV1, EndpointId, MAX_CONTROL_SPACES_PER_REQUEST, SpaceAuthorizationView, SpaceId,
 };
 use ma2a_net::{
     AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator, SpaceAddressLookup,
@@ -31,6 +31,8 @@ pub(crate) struct ControlLookupState {
 pub(crate) struct PreparedControlPeer {
     pub(crate) peer: EndpointId,
     pub(crate) request: Vec<u8>,
+    /// The Spaces the request asks about; a response may answer only these.
+    pub(crate) spaces: Vec<SpaceId>,
 }
 
 #[derive(Debug)]
@@ -207,5 +209,13 @@ fn peer_request(
         .and_then(|request| request.with_push_pages(push_pages))
         .and_then(|request| request.encode())
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-    Ok(PreparedControlPeer { peer, request })
+    let spaces = shared
+        .iter()
+        .map(|state| state.chain().space_id())
+        .collect();
+    Ok(PreparedControlPeer {
+        peer,
+        request,
+        spaces,
+    })
 }

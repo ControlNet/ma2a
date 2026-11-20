@@ -229,9 +229,9 @@ impl StoreBackend {
             StoreCommand::AuthorizeControl { input, reply } => {
                 local_control::authorize(&self.repository, &input, reply);
             }
-            StoreCommand::ApplyControlResponse { input, reply } => drop(reply.send(
-                crate::control_sync::apply_response(&mut self.repository, &input),
-            )),
+            StoreCommand::ApplyControlResponse { input, reply } => {
+                local_control::apply(&mut self.repository, &input, reply);
+            }
             StoreCommand::AuthorizeEcho {
                 local_endpoint_id,
                 peer_endpoint_id,

@@ -176,3 +176,56 @@ fn a_requester_ahead_of_this_chain_gets_an_empty_page_not_a_rejection() -> TestR
     assert!(rejected.is_err());
     Ok(())
 }
+
+#[test]
+fn a_response_answering_another_requests_spaces_is_refused() -> TestResult {
+    // Given: one peer whose shared Spaces take two requests.
+    let state = TempState::new("shards")?;
+    let mut repository = Repository::open(&StoreConfig::new(&state.0))?;
+    let local_id = EndpointId::from(SecretKey::from_bytes(&[0x11; 32]).public());
+    let local = member(local_id, "local")?;
+    let peer = SecretKey::from_bytes(&[0x22; 32]);
+    for _space in 0..=MAX_CONTROL_SPACES_PER_REQUEST {
+        share_space(&mut repository, &local, &peer)?;
+    }
+    let round = prepare_round(
+        &repository,
+        &ControlRoundRequest {
+            local_endpoint_id: local_id,
+            rotation: 0,
+            now_ms: 50,
+            scope: ControlRoundScope::all(),
+        },
+    )?;
+    let [first, second] = round.as_slice() else {
+        return Err(format!("expected two requests, got {}", round.len()).into());
+    };
+    // A legitimate answer to the first request: one page, with no change, per Space it asked.
+    let pages = first
+        .spaces
+        .iter()
+        .map(|space| ma2a_core::ControlPageV1::new(*space, false, Vec::new()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let payload = ma2a_core::ControlResponseV1::new(pages)?.encode()?;
+    let input = super::ControlExchangeInput {
+        local_endpoint_id: local_id,
+        remote_endpoint_id: EndpointId::from(peer.public()),
+        payload,
+        now_ms: 50,
+    };
+
+    // When / Then: as the answer to the second request it is refused, and changes nothing.
+    let revision = repository.revision()?;
+    let refused = super::apply_response(&mut repository, &input, &second.spaces);
+    assert!(matches!(
+        refused,
+        Err(super::ControlFailure::Rejected(
+            ma2a_net::ControlRejection::Invalid
+        ))
+    ));
+    assert_eq!(repository.revision()?, revision);
+    // As the answer to the first request, the same pages complete a round with no change.
+    super::apply_response(&mut repository, &input, &first.spaces)
+        .map_err(|failure| failure.to_string())?;
+    Ok(())
+}

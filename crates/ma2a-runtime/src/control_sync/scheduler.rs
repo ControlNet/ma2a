@@ -55,23 +55,37 @@ impl ControlRoundRunner {
             let Some(joined) = dials.join_next().await else {
                 break;
             };
-            let (peer, response) = joined.map_err(RuntimeError::from)?;
-            pending.finished(peer, response.is_ok());
+            let (peer, spaces, response) = joined.map_err(RuntimeError::from)?;
             let Ok(response) = response else {
+                pending.finished(peer, false);
                 continue;
             };
+            let applied = self
+                .store
+                .apply_control_response(
+                    ControlExchangeInput {
+                        local_endpoint_id,
+                        remote_endpoint_id: peer,
+                        payload: response,
+                        now_ms,
+                    },
+                    spaces,
+                )
+                .await;
+            // A response this peer got wrong, such as one answering another request's Spaces,
+            // fails that request only; a local failure still ends the round.
             let ControlApplyOutcome {
                 revision,
                 changes: applied,
-            } = self
-                .store
-                .apply_control_response(ControlExchangeInput {
-                    local_endpoint_id,
-                    remote_endpoint_id: peer,
-                    payload: response,
-                    now_ms,
-                })
-                .await?;
+            } = match applied {
+                Ok(outcome) => outcome,
+                Err(ControlFailure::Rejected(_)) => {
+                    pending.finished(peer, false);
+                    continue;
+                }
+                Err(failure) => return Err(failure),
+            };
+            pending.finished(peer, true);
             synchronized_peers.insert(peer);
             changes.merge(applied);
             latest = Some(revision);
@@ -100,7 +114,11 @@ async fn with_control_deadline<Output>(
         .map_err(|_| ma2a_net::ControlRejection::Unavailable.into())
 }
 
-type DialOutcome<DialError> = (ma2a_core::EndpointId, Result<Vec<u8>, DialError>);
+type DialOutcome<DialError> = (
+    ma2a_core::EndpointId,
+    Vec<ma2a_core::SpaceId>,
+    Result<Vec<u8>, DialError>,
+);
 
 fn spawn_control_dials<Dial, DialFuture, DialError>(
     pending: &mut DialQueue,
@@ -112,11 +130,16 @@ fn spawn_control_dials<Dial, DialFuture, DialError>(
     DialError: Send + 'static,
 {
     while dials.len() < CONTROL_DIAL_CONCURRENCY {
-        let Some(PreparedControlPeer { peer, request }) = pending.next() else {
+        let Some(PreparedControlPeer {
+            peer,
+            request,
+            spaces,
+        }) = pending.next()
+        else {
             break;
         };
         let dial = dial.clone();
-        dials.spawn(async move { (peer, dial(peer, request).await) });
+        dials.spawn(async move { (peer, spaces, dial(peer, request).await) });
     }
 }
 
@@ -144,6 +167,7 @@ mod tests {
         Ok(PreparedControlPeer {
             peer,
             request: vec![seed],
+            spaces: Vec::new(),
         })
     }
 
@@ -212,7 +236,7 @@ mod tests {
         gate.add_permits(CONTROL_DIAL_CONCURRENCY + 1);
         let mut completed = 0;
         while let Some(joined) = dials.join_next().await {
-            let (peer, response) = joined?;
+            let (peer, _spaces, response) = joined?;
             response?;
             queue.finished(peer, true);
             completed += 1;

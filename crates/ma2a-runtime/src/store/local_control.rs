@@ -89,6 +89,20 @@ pub(super) fn respond(
     let _unsent = reply.send(result);
 }
 
+pub(super) fn apply(
+    repository: &mut ma2a_store::Repository,
+    (input, requested): &(
+        crate::control_sync::ControlExchangeInput,
+        Vec<ma2a_core::SpaceId>,
+    ),
+    reply: tokio::sync::oneshot::Sender<
+        Result<crate::control_sync::ControlApplyOutcome, crate::control_sync::ControlFailure>,
+    >,
+) {
+    let result = crate::control_sync::apply_response(repository, input, requested);
+    let _unsent = reply.send(result);
+}
+
 impl StoreBackend {
     pub(super) fn reconcile_relay_activity(
         &mut self,

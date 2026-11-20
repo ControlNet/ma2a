@@ -45,10 +45,14 @@ impl StoreClient {
     pub(crate) async fn apply_control_response(
         &self,
         input: ControlExchangeInput,
+        requested: Vec<ma2a_core::SpaceId>,
     ) -> Result<ControlApplyOutcome, ControlFailure> {
         let (reply, response) = oneshot::channel();
         self.sender
-            .send(StoreCommand::ApplyControlResponse { input, reply })
+            .send(StoreCommand::ApplyControlResponse {
+                input: (input, requested),
+                reply,
+            })
             .await
             .map_err(channel_error)?;
         response.await.map_err(channel_error)?
