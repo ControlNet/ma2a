@@ -199,3 +199,46 @@ fn a_member_is_refused_once_no_revocation_entry_is_left_to_remove_it() -> TestRe
     assert_eq!(repository.revision()?, revision);
     Ok(())
 }
+
+#[test]
+fn only_a_change_that_keeps_some_of_the_members_counts_as_a_removal() -> TestResult {
+    // Given: two members beside the owner, and ordinary changes up to generation 239.
+    let state = TempState::new("space-history-swap")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let owner = member(OWNER, "owner")?;
+    let created = repository.create_owned_space(&SpaceCreation::new(
+        1_000,
+        owner.clone(),
+        SpacePolicyV1::phase_one_default(),
+    ))?;
+    let space_id = created.space_id();
+    let members = [numbered(1)?, numbered(2)?];
+    for generation in 1..=239_u64 {
+        let mut renamed = members.clone();
+        renamed[0] = SpaceMemberV1::new(
+            renamed[0].endpoint_id(),
+            format!("renamed-{}", generation % 2),
+            MemberCapabilities::new(true, false),
+        )?;
+        repository.advance_owned_space(&update(space_id, (&owner, &renamed), (generation, &[])))?;
+    }
+    let revision = repository.revision()?;
+
+    // When / Then: revoking one member while admitting another, at the same count, is refused.
+    let revoked = [SpaceRevocationV1::new(members[0].endpoint_id())];
+    let swapped = [members[1].clone(), numbered(3)?];
+    assert!(matches!(
+        repository.advance_owned_space(&update(space_id, (&owner, &swapped), (500, &revoked))),
+        Err(StoreError::SpaceHistoryFull)
+    ));
+    assert_eq!(repository.revision()?, revision);
+
+    // When / Then: removing both members in one generation is a removal, so it fits.
+    let both = [
+        SpaceRevocationV1::new(members[0].endpoint_id()),
+        SpaceRevocationV1::new(members[1].endpoint_id()),
+    ];
+    let removed = repository.advance_owned_space(&update(space_id, (&owner, &[]), (600, &both)))?;
+    assert_eq!(removed.chain().latest_generation(), 240);
+    Ok(())
+}

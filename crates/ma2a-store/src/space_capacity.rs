@@ -7,8 +7,10 @@
 //!
 //! Beyond that reserve, every change but a removal must leave each member removable on its
 //! own: one generation and one revocation entry per non-owner member must still be free. A
-//! removal frees as much as it uses, so it keeps that true, and it stays allowed for a history
-//! signed before this rule that already broke it.
+//! removal revokes and keeps only some of the members it had, adding none, so it frees as much
+//! as it uses; it stays allowed for a history signed before this rule that already broke it.
+
+use std::collections::BTreeSet;
 
 use ma2a_core::{EnrollmentPage, MAX_SPACE_MEMBERS, SpaceChain, SpaceManifestMembership};
 
@@ -40,15 +42,18 @@ pub(crate) fn admit(
     let others = |members: &[ma2a_core::SpaceMemberV1]| {
         members
             .iter()
-            .filter(|member| member.endpoint_id() != owner)
-            .count()
+            .map(ma2a_core::SpaceMemberV1::endpoint_id)
+            .filter(|endpoint| *endpoint != owner)
+            .collect::<BTreeSet<_>>()
     };
+    let (before, after) = (others(chain.members()), others(membership.members()));
+    // Comparing sets, not counts: a change that swaps one member for another is no removal.
     let removal =
-        revokes(chain, membership) && others(membership.members()) <= others(chain.members());
+        revokes(chain, membership) && after.len() < before.len() && after.is_subset(&before);
     fits(
         generation,
         removal,
-        (others(membership.members()), membership.revocations().len()),
+        (after.len(), membership.revocations().len()),
     )
 }
 

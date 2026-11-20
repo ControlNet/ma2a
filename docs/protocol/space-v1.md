@@ -150,7 +150,7 @@ working by creating a new Space.
 Every change other than a removal must also leave each non-owner member removable on its own: the
 generations left after it (255 minus its generation) must be at least its non-owner member count,
 and its revocations plus its non-owner members must not exceed 64, the most revocations one
-manifest carries. A removal (a manifest that revokes an Endpoint and adds no member) uses one
+manifest carries. A removal (a manifest that revokes an Endpoint and whose non-owner members are a strict subset of the previous ones, so swapping one member for another is not a removal) uses one
 generation and one revocation for each member it frees, so it keeps this true, and it is still
 signed for a history from before this rule that already broke it. A change that would break the
 rule, including an enrollment, fails with `SpaceHistoryFull` and commits nothing.
