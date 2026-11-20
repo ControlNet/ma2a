@@ -1,4 +1,7 @@
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use ma2a_store::{
     PasswordReset, PasswordTransition, Repository, SessionAdmission, SessionCreate, SessionDigests,
@@ -24,6 +27,9 @@ pub struct WebAuthService {
 
 struct WebAuthInner {
     store: StoreConfig,
+    /// The connection opened and verified at start, kept for the session checks every request
+    /// makes: reopening runs the full startup verification, whose cost grows with history.
+    sessions: Arc<Mutex<Repository>>,
     clock: Arc<dyn Clock>,
     config: WebAuthConfig,
 }
@@ -44,13 +50,14 @@ impl WebAuthService {
         config: WebAuthConfig,
     ) -> Result<Self, AuthFailure> {
         let open_config = store.clone();
-        tokio::task::spawn_blocking(move || Repository::open(&open_config))
+        let sessions = tokio::task::spawn_blocking(move || Repository::open(&open_config))
             .await
             .map_err(|_| AuthFailure::Internal)?
             .map_err(|_| AuthFailure::Internal)?;
         Ok(Self {
             inner: Arc::new(WebAuthInner {
                 store,
+                sessions: Arc::new(Mutex::new(sessions)),
                 clock,
                 config,
             }),
@@ -167,10 +174,12 @@ impl WebAuthService {
 
     pub(super) async fn validate(&self, bearer: &str) -> Result<AuthenticatedSession, AuthFailure> {
         let digest = csrf::bearer_digest(bearer)?;
-        let config = self.inner.store.clone();
+        let sessions = Arc::clone(&self.inner.sessions);
         let now_ms = self.inner.clock.now_ms();
         tokio::task::spawn_blocking(move || {
-            Repository::open(&config)?
+            sessions
+                .lock()
+                .map_err(|_| AuthFailure::Internal)?
                 .validate_session(&digest, now_ms)?
                 .ok_or(AuthFailure::Unauthorized)?;
             Ok(AuthenticatedSession {
@@ -196,10 +205,10 @@ impl WebAuthService {
         csrf_digest: Option<[u8; 32]>,
     ) -> Result<AuthenticatedSession, AuthFailure> {
         let digest = csrf::bearer_digest(bearer)?;
-        let config = self.inner.store.clone();
+        let sessions = Arc::clone(&self.inner.sessions);
         let now_ms = self.inner.clock.now_ms();
         tokio::task::spawn_blocking(move || {
-            let mut repository = Repository::open(&config)?;
+            let mut repository = sessions.lock().map_err(|_| AuthFailure::Internal)?;
             let session = match csrf_digest {
                 Some(csrf_digest) => repository.authenticate_and_touch_session_with_csrf(
                     &SessionDigests::new(digest, csrf_digest),
@@ -211,6 +220,7 @@ impl WebAuthService {
                 )?,
             }
             .ok_or(AuthFailure::Unauthorized)?;
+            drop(repository);
             if !bool::from(session.bearer_digest().ct_eq(&digest)) {
                 return Err(AuthFailure::Unauthorized);
             }

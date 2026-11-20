@@ -156,3 +156,31 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
             .windows(needle.len())
             .any(|window| window == needle)
 }
+
+/// Session checks run on every request and twice a second for each event stream, so they
+/// reuse the connection verified at start instead of repeating the startup verification.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_checks_reuse_the_connection_verified_at_start() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // Given: a signed-in session, then a state directory that a fresh open would refuse.
+    let state = TempState::new("session-connection")?;
+    let config = StoreConfig::new(state.path());
+    let auth =
+        WebAuthService::open(config.clone(), clock(20_000), WebAuthConfig::default()).await?;
+    auth.change_password(PasswordAction::Set, password())
+        .await?;
+    let session = auth.login(password()).await?;
+    std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o750))?;
+
+    // When
+    let checked = auth.authenticate(session.bearer()).await;
+    let reopened = ma2a_store::Repository::open(&config).map(drop);
+
+    // Then: the check succeeds without a fresh open, which would have failed.
+    std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700))?;
+    assert!(checked.is_ok(), "{checked:?}");
+    assert!(reopened.is_err());
+    Ok(())
+}
