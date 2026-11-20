@@ -184,13 +184,13 @@ fn assert_owner_only(path: &std::path::Path, expected: u32) -> TestResult {
 fn assert_owner_only(path: &std::path::Path, _expected: u32) -> TestResult {
     let output = std::process::Command::new("powershell.exe")
         .env_remove("PSModulePath")
+        .env("MA2A_ACL_PATH", path)
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "$a=Get-Acl -LiteralPath $args[0]; if(!$a.AreAccessRulesProtected){exit 2}; $a.Access.IdentityReference.Value",
+            "$a=Get-Acl -LiteralPath $env:MA2A_ACL_PATH; if(!$a.AreAccessRulesProtected){exit 2}; $a.Access.IdentityReference.Value",
         ])
-        .arg(path)
         .output()?;
     assert!(output.status.success());
     Ok(())

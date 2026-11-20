@@ -145,19 +145,22 @@ fn apply_windows_acl(path: &Path, kind: PathKind) -> Result<(), StoreError> {
     run_powershell(
         path,
         &format!(
-            "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$s=New-Object Security.Principal.SecurityIdentifier('S-1-5-18');$a=New-Object Security.AccessControl.{acl_type};$a.SetAccessRuleProtection($true,$false);$i=[Security.AccessControl.InheritanceFlags]'{inheritance}';$p=[Security.AccessControl.PropagationFlags]::None;$t=[Security.AccessControl.AccessControlType]::Allow;$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($u,'FullControl',$i,$p,$t)));$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl',$i,$p,$t)));Set-Acl -LiteralPath $args[0] -AclObject $a"
+            "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$s=New-Object Security.Principal.SecurityIdentifier('S-1-5-18');$a=New-Object Security.AccessControl.{acl_type};$a.SetAccessRuleProtection($true,$false);$i=[Security.AccessControl.InheritanceFlags]'{inheritance}';$p=[Security.AccessControl.PropagationFlags]::None;$t=[Security.AccessControl.AccessControlType]::Allow;$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($u,'FullControl',$i,$p,$t)));$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl',$i,$p,$t)));$a.SetOwner($u);Set-Acl -LiteralPath $env:MA2A_ACL_PATH -AclObject $a"
         ),
         "application",
     )
 }
 
 /// Accepts exactly two explicit Allow rules, one for the current user and one for SYSTEM,
-/// each granting every FullControl right, under a DACL that inherits nothing.
+/// each granting every FullControl right, under a DACL that inherits nothing, on an object
+/// owned by the current user, SYSTEM, or the Administrators group. Any other owner could
+/// rewrite the DACL; Administrators can take ownership anyway, and elevated sessions may make
+/// it the default owner of new objects.
 #[cfg(windows)]
 fn validate_windows_acl(path: &Path) -> Result<(), StoreError> {
     run_powershell(
         path,
-        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$f=[Security.AccessControl.FileSystemRights]::FullControl;$a=Get-Acl -LiteralPath $args[0];if(!$a.AreAccessRulesProtected){exit 2};$r=@($a.Access|Where-Object {!$_.IsInherited});if($r.Count-ne 2){exit 3};$seen=@{};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};if($seen.ContainsKey($sid)){exit 6};$seen[$sid]=$true;if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band $f)-ne $f)){exit 5}}",
+        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$f=[Security.AccessControl.FileSystemRights]::FullControl;$a=Get-Acl -LiteralPath $env:MA2A_ACL_PATH;if(!$a.AreAccessRulesProtected){exit 2};$o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;if(($o-ne $u)-and($o-ne $s)-and($o-ne 'S-1-5-32-544')){exit 7};$r=@($a.Access|Where-Object {!$_.IsInherited});if($r.Count-ne 2){exit 3};$seen=@{};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};if($seen.ContainsKey($sid)){exit 6};$seen[$sid]=$true;if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band $f)-ne $f)){exit 5}}",
         "validation",
     )
 }
@@ -165,11 +168,13 @@ fn validate_windows_acl(path: &Path) -> Result<(), StoreError> {
 #[cfg(windows)]
 fn run_powershell(path: &Path, script: &str, operation: &'static str) -> Result<(), StoreError> {
     // Windows PowerShell 5.1 must find its own modules: a PSModulePath inherited from a
-    // PowerShell 7 parent points it at modules it cannot load, Set-Acl among them.
+    // PowerShell 7 parent points it at modules it cannot load, Set-Acl among them. The path
+    // travels in the environment: `-Command` joins every later argument into the script
+    // text, so `$args` would be empty, and no quoting is needed this way.
     let status = std::process::Command::new("powershell.exe")
         .env_remove("PSModulePath")
+        .env("MA2A_ACL_PATH", path)
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .arg(path)
         .status()?;
     if !status.success() {
         return Err(StoreError::WindowsAcl { operation });
@@ -220,7 +225,7 @@ mod windows_acl_tests {
         run_powershell(
             path,
             &format!(
-                "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$s=New-Object Security.Principal.SecurityIdentifier('S-1-5-18');$a=New-Object Security.AccessControl.FileSecurity;$a.SetAccessRuleProtection($true,$false);$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($u,'{rights}','Allow')));{system}Set-Acl -LiteralPath $args[0] -AclObject $a"
+                "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$s=New-Object Security.Principal.SecurityIdentifier('S-1-5-18');$a=New-Object Security.AccessControl.FileSecurity;$a.SetAccessRuleProtection($true,$false);$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($u,'{rights}','Allow')));{system}Set-Acl -LiteralPath $env:MA2A_ACL_PATH -AclObject $a"
             ),
             "test fixture",
         )
