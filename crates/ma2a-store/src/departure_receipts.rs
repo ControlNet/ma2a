@@ -96,4 +96,49 @@ impl Repository {
             })
             .transpose()
     }
+
+    /// Records `generation` of `space_id`, already committed, as the answer to `request`.
+    ///
+    /// A departure that reaches the authority after its sender was already removed, by the
+    /// owner or before receipts were kept, is answered with that earlier removal. Binding the
+    /// request to it means a retry after the sender joined again gets the same answer instead
+    /// of removing the new membership. The binding is refused unless that generation removed
+    /// and revoked the sender; it changes no Space state, so the revision stays.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::SpaceNotFound`] without the Space, [`StoreError::SchemaMismatch`]
+    /// when the generation does not remove the sender, and [`StoreError`] when the row cannot
+    /// be written, including when the request already has a receipt.
+    pub fn bind_departure_receipt(
+        &mut self,
+        (space_id, generation): (SpaceId, u64),
+        request: DepartureRequest,
+    ) -> Result<(), StoreError> {
+        let transaction = self.immediate()?;
+        let chain = crate::space_rows::load_chain(&transaction, space_id)?
+            .ok_or(StoreError::SpaceNotFound)?;
+        let removed = cut_at(&chain, generation)
+            .is_some_and(|(previous, cut)| removes(Some(&previous), &cut, request));
+        if !removed {
+            return Err(StoreError::SchemaMismatch {
+                detail: "a departure receipt must name the member its generation removes",
+            });
+        }
+        record(&transaction, (space_id, generation), request)?;
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+/// Returns `chain` just before and at `generation`, or `None` when it holds no such manifest.
+fn cut_at(chain: &SpaceChain, generation: u64) -> Option<(SpaceChain, SpaceChain)> {
+    let mut prefix = SpaceChain::from_genesis(chain.genesis().clone()).ok()?;
+    for manifest in chain.manifests() {
+        let previous = prefix.clone();
+        prefix.apply(manifest).ok()?;
+        if prefix.latest_generation() == generation {
+            return Some((previous, prefix));
+        }
+    }
+    None
 }

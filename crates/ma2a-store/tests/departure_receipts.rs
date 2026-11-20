@@ -119,3 +119,63 @@ fn a_receipt_is_refused_for_a_generation_that_does_not_remove_its_sender() -> Te
     assert_eq!(repository.departure_receipt(space_id, request)?, None);
     Ok(())
 }
+
+#[test]
+fn a_late_departure_is_bound_only_to_a_generation_that_removed_its_sender() -> TestResult {
+    // Given: the owner admitted the peer (generation 1) and then removed it (generation 2).
+    let state = TempState::new("departure-receipts-bound")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let (owner, peer) = (member(1, true)?, member(2, false)?);
+    let space_id = repository
+        .create_owned_space(&SpaceCreation::new(
+            1_000,
+            owner.clone(),
+            SpacePolicyV1::phase_one_default(),
+        ))?
+        .space_id();
+    let joined = SpaceManifestMembership::new(sorted(vec![owner.clone(), peer.clone()]), vec![]);
+    let admitted = repository
+        .advance_owned_space(&OwnedSpaceUpdate::new(space_id, 2_000, joined))?
+        .chain()
+        .latest_generation();
+    let removal = SpaceManifestMembership::new(
+        vec![owner],
+        vec![SpaceRevocationV1::new(peer.endpoint_id())],
+    );
+    let removed = repository
+        .advance_owned_space(&OwnedSpaceUpdate::new(space_id, 3_000, removal))?
+        .chain()
+        .latest_generation();
+    let request = DepartureRequest::new(
+        peer.endpoint_id(),
+        RequestId::try_from([0x54; 16].as_slice())?,
+    );
+    let revision = repository.revision()?;
+
+    // When / Then: the admitting generation, or one the chain does not hold, is refused.
+    assert!(
+        repository
+            .bind_departure_receipt((space_id, admitted), request)
+            .is_err()
+    );
+    assert!(
+        repository
+            .bind_departure_receipt((space_id, removed + 1), request)
+            .is_err()
+    );
+    assert_eq!(repository.departure_receipt(space_id, request)?, None);
+
+    // And: the removing generation is bound, once, without changing the revision.
+    repository.bind_departure_receipt((space_id, removed), request)?;
+    assert_eq!(
+        repository.departure_receipt(space_id, request)?,
+        Some(removed)
+    );
+    assert!(
+        repository
+            .bind_departure_receipt((space_id, removed), request)
+            .is_err()
+    );
+    assert_eq!(repository.revision()?, revision);
+    Ok(())
+}

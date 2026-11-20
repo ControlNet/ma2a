@@ -58,10 +58,18 @@ impl StoreBackend {
             .members()
             .binary_search_by_key(&request.endpoint_id, ma2a_core::SpaceMemberV1::endpoint_id)
         else {
-            // A departure from before receipts were kept converges on the chain that already
-            // removed its sender, and learns nothing signed after that removal.
+            // A departure whose sender was already removed, by the owner or before receipts
+            // were kept, converges on the chain that removed it, and learns nothing signed
+            // after that removal. The request is bound to that removal now, so a retry after
+            // the sender joined again gets this same answer rather than removing it again.
             let answer = departure
                 .and_then(|_| crate::departure::through_removal(&chain, request.endpoint_id));
+            if let (Some(departure), Some(answer)) = (departure, answer.as_ref()) {
+                self.repository.bind_departure_receipt(
+                    (request.space_id, answer.latest_generation()),
+                    departure,
+                )?;
+            }
             return self.replay(request.local_endpoint_id, answer);
         };
         let mut members = chain.members().to_vec();

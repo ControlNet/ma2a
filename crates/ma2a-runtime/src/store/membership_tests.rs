@@ -191,3 +191,77 @@ fn each_departure_of_a_member_who_left_twice_gets_its_own_answer() -> TestResult
     assert_eq!(backend.repository.revision()?, revision);
     Ok(())
 }
+
+#[test]
+fn a_late_departure_answered_with_the_owners_removal_never_removes_a_later_membership() -> TestResult
+{
+    // Given: a Space this Runtime owns; the peer joined, and the owner removed it.
+    let state = State::new()?;
+    let mut backend = StoreBackend::open(&StoreConfig::new(&state.0))?;
+    let local = backend.initialize()?.endpoint_id;
+    let owner = SpaceMemberV1::new(
+        local,
+        "owner".to_owned(),
+        MemberCapabilities::new(true, false),
+    )?;
+    let peer_key = SpaceAuthoritySecret::from_bytes([0x44; 32]).public_key();
+    let peer = EndpointId::try_from(peer_key.as_bytes().as_slice())?;
+    let space_id = backend
+        .repository
+        .create_owned_space(&SpaceCreation::new(
+            1_000,
+            owner.clone(),
+            SpacePolicyV1::phase_one_default(),
+        ))?
+        .space_id();
+    let mut members = vec![
+        owner,
+        SpaceMemberV1::new(
+            peer,
+            "peer".to_owned(),
+            MemberCapabilities::new(true, false),
+        )?,
+    ];
+    members.sort_by_key(SpaceMemberV1::endpoint_id);
+    let joined = SpaceManifestMembership::new(members, Vec::new());
+    backend
+        .repository
+        .advance_owned_space(&OwnedSpaceUpdate::new(space_id, 2_000, joined.clone()))?;
+    let departure = OwnedMemberRevocation {
+        space_id,
+        endpoint_id: peer,
+        issued_at_ms: 3_000,
+        local_endpoint_id: local,
+        request_id: Some(RequestId::try_from([0x71; 16].as_slice())?),
+    };
+    let removed = backend.revoke_owned_space_member(OwnedMemberRevocation {
+        request_id: None,
+        ..departure
+    })?;
+
+    // When: the peer's departure, sent before it learned of the removal, arrives late, and
+    // the peer then joins again through a new invitation.
+    let late = backend.revoke_owned_space_member(departure)?;
+    assert!(late.replayed);
+    assert_eq!(late.chain, removed.chain);
+    backend
+        .repository
+        .advance_owned_space(&OwnedSpaceUpdate::new(space_id, 4_000, joined))?;
+    let rejoined = backend
+        .repository
+        .load_space_chain(space_id)?
+        .ok_or("the Space is gone")?;
+    let revision = backend.repository.revision()?;
+
+    // Then: a retry of that departure gets the same answer, and the new membership stays.
+    let retried = backend.revoke_owned_space_member(departure)?;
+    assert!(retried.replayed);
+    assert_eq!(retried.chain, removed.chain);
+    let after = backend
+        .repository
+        .load_space_chain(space_id)?
+        .ok_or("the Space is gone")?;
+    assert_eq!(after, rejoined);
+    assert_eq!(backend.repository.revision()?, revision);
+    Ok(())
+}
