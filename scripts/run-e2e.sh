@@ -13,16 +13,25 @@ case "$runs" in
   ''|*[!0-9]*|0) printf 'MA2A_E2E_RUNS must be a positive integer\n' >&2; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 2; }
-# The output directory is replaced only when it is empty or was written by this script, so a
-# mistyped MA2A_E2E_OUTPUT can never empty a directory holding anything else.
+# An existing output directory is reused only when it is empty, or carries this script's marker
+# and holds nothing but files this script writes. Only those files are removed, so a mistyped
+# MA2A_E2E_OUTPUT, or a file someone added to an evidence directory, is never deleted.
 marker=.ma2a-e2e-evidence
+foreign_entry() {
+  find "$output" -mindepth 1 -maxdepth 1 \( ! -type f -o ! \( -name "$marker" \
+    -o -name inventory.json -o -name inventory.txt -o -name inventory.txt.unsorted \
+    -o -name summary.txt -o -name provenance.txt -o -name 'run-[0-9]*.log' \
+    -o -name 'run-[0-9]*.jsonl' -o -name 'run-[0-9]*.junit.xml' \
+    -o -name 'run-[0-9]*.tests.txt' -o -name 'run-[0-9]*.sha256' \) \) -print -quit
+}
 if [ -e "$output" ] || [ -L "$output" ]; then
   if [ -d "$output" ] && [ ! -L "$output" ] && {
-    [ -f "$output/$marker" ] || [ -f "$output/provenance.txt" ] || [ -z "$(ls -A "$output")" ]
+    [ -z "$(ls -A "$output")" ] || { [ -f "$output/$marker" ] && [ -z "$(foreign_entry)" ]; }
   }; then
-    rm -rf "$output"
+    find "$output" -mindepth 1 -maxdepth 1 -type f -delete
   else
-    printf '%s is not an E2E evidence directory; refusing to replace it\n' "$output" >&2
+    printf '%s is not an E2E evidence directory written by this script; refusing to reuse it\n' \
+      "$output" >&2
     exit 2
   fi
 fi
