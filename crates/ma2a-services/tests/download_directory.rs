@@ -80,20 +80,100 @@ async fn destinations_differing_only_in_case_keep_their_own_progress() -> TestRe
     Ok(())
 }
 
+/// Whether the file system holding `directory` names one file by two spellings that differ
+/// only in ASCII case.
+fn case_insensitive(directory: &std::path::Path) -> std::io::Result<bool> {
+    std::fs::write(directory.join("case-probe"), b"")?;
+    let insensitive = directory.join("CASE-PROBE").exists();
+    std::fs::remove_file(directory.join("case-probe"))?;
+    Ok(insensitive)
+}
+
 #[tokio::test]
-async fn destinations_differing_only_in_case_never_have_two_writers() -> TestResult {
+async fn one_destination_has_one_writer_by_any_spelling_the_volume_accepts() -> TestResult {
     // Given: a download to `report` in progress.
     let local = TempRoot::new("download-case-lease")?;
     let held = Partial::open(&local.path().join("report"), "peer docs:/report", false).await?;
 
-    // When: another spelling, which a case-insensitive volume resolves to the same file, starts.
+    // When: another spelling starts.
     let other = Partial::open(&local.path().join("Report"), "peer docs:/report", false).await;
 
-    // Then: it waits for the first rather than writing alongside it.
-    assert_eq!(
-        other.err().map(|error| error.kind()),
-        Some(ErrorKind::WouldBlock)
-    );
+    // Then: where the volume names one file by both, it waits for the first; where they are
+    // two files, it is a download of its own.
+    if case_insensitive(local.path())? {
+        assert_eq!(
+            other.err().map(|error| error.kind()),
+            Some(ErrorKind::WouldBlock)
+        );
+    } else {
+        other?.discard().await?;
+    }
     held.discard().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_private_directory_an_operator_made_is_kept() -> TestResult {
+    // Given: the operator's own private directory, made before any download.
+    let local = TempRoot::new("download-operator-directory")?;
+    let directory = local.path().join(PRIVATE_DIRECTORY);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+        .create(&directory)?;
+    #[cfg(not(unix))]
+    std::fs::create_dir(&directory)?;
+
+    // When: one download completes and another is abandoned.
+    let mut done = Partial::open(&local.path().join("done"), "peer docs:/done", false).await?;
+    done.sink().0.write_all(b"done").await?;
+    done.finish(false).await?;
+    let abandoned = Partial::open(&local.path().join("gone"), "peer docs:/gone", false).await?;
+    abandoned.discard().await?;
+
+    // Then: the directory stays, empty, while one a download made goes when it ends.
+    assert_eq!(std::fs::read_dir(&directory)?.count(), 0);
+    let other = TempRoot::new("download-own-directory")?;
+    let mut own = Partial::open(&other.path().join("done"), "peer docs:/done", false).await?;
+    own.sink().0.write_all(b"done").await?;
+    own.finish(false).await?;
+    assert!(!other.path().join(PRIVATE_DIRECTORY).exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_download_whose_directory_was_swapped_publishes_nothing_and_keeps_both() -> TestResult {
+    // Given: two downloads to `report`, one in `a` and one in `b`, each holding a prefix.
+    let local = TempRoot::new("download-rotation")?;
+    let (a, b) = (local.path().join("a"), local.path().join("b"));
+    std::fs::create_dir(&a)?;
+    std::fs::create_dir(&b)?;
+    let mut first = Partial::open(&a.join("report"), "peer docs:/first", false).await?;
+    first.sink().0.write_all(b"first").await?;
+    let mut second = Partial::open(&b.join("report"), "peer docs:/second", false).await?;
+    second.begin(ContentIdentity::new(100, 1)).await?;
+    second.sink().0.write_all(b"second").await?;
+    second.sink().0.flush().await?;
+
+    // When: `a` is moved away and `b` takes its place, then the first download publishes.
+    let moved = local.path().join("a2");
+    std::fs::rename(&a, &moved)?;
+    std::fs::rename(&b, &a)?;
+    let published = first.finish(false).await;
+
+    // Then: nothing is published anywhere, the first keeps its progress where its directory
+    // went, and the second's files are exactly as they were.
+    assert!(published.is_err());
+    assert!(!a.join("report").exists());
+    assert!(!moved.join("report").exists());
+    assert_eq!(
+        std::fs::read(partial_path(&moved.join("report"))?)?,
+        b"first"
+    );
+    assert_eq!(std::fs::read(partial_path(&a.join("report"))?)?, b"second");
+    drop(second);
+    let resumed = Partial::open(&a.join("report"), "peer docs:/second", true).await?;
+    assert_eq!(resumed.offset(), 6);
+    resumed.discard().await?;
     Ok(())
 }

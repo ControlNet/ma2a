@@ -1,15 +1,17 @@
-//! The exclusive lease one download holds on its destination: an OS lock on a lock file.
+//! The exclusive lease one download holds on its destination: an OS lock on its lock file.
 //!
 //! The lock file is removed when the download ends. On Unix it is removed while still
-//! locked, so a download that locks the removed file afterwards sees that the path names
-//! another file and opens again. On Windows it is opened without delete sharing, so it
+//! locked, so a download that locks the removed file afterwards sees that the name now refers
+//! to another file and opens again. On Windows it is opened without delete sharing, so it
 //! cannot be removed while any download still has it open.
 
 use std::{
-    fs::{File, OpenOptions, TryLockError},
+    ffi::{OsStr, OsString},
+    fs::{File, TryLockError},
     io,
-    path::PathBuf,
 };
+
+use super::anchor::{Anchor, Open};
 
 /// How often a lock on a file that was removed meanwhile is retried.
 const ATTEMPTS: usize = 4;
@@ -17,113 +19,57 @@ const ATTEMPTS: usize = 4;
 /// One held lease; dropping it without [`Lease::release`] keeps the lock file on disk.
 #[derive(Debug)]
 pub(super) struct Lease {
-    path: PathBuf,
+    name: OsString,
     file: File,
 }
 
 impl Lease {
-    /// Takes the lease at `path` without waiting.
+    /// Takes the lease on the lock file `name` in `locks` without waiting.
     ///
     /// # Errors
     /// Returns [`io::ErrorKind::WouldBlock`] while another download holds it, or another
     /// local file error.
-    pub(super) async fn acquire(path: PathBuf) -> io::Result<Self> {
-        tokio::task::spawn_blocking(move || {
-            for _ in 0..ATTEMPTS {
-                if let Some(file) = locked(&path)? {
-                    return Ok(Self { path, file });
-                }
+    pub(super) fn acquire(locks: &Anchor, name: &OsStr) -> io::Result<Self> {
+        for _ in 0..ATTEMPTS {
+            let file = locks.open_file(name, Open::Create)?;
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => return Err(in_progress()),
+                Err(TryLockError::Error(error)) => return Err(error),
             }
-            Err(in_progress())
-        })
-        .await
-        .map_err(io::Error::other)?
-    }
-
-    /// Ends the lease and removes its lock file.
-    pub(super) async fn release(self) {
-        let Self { path, file } = self;
-        let _released = tokio::task::spawn_blocking(move || {
-            if cfg!(windows) {
-                drop(file);
-                let _removed = std::fs::remove_file(&path);
-            } else {
-                let _removed = std::fs::remove_file(&path);
-                drop(file);
+            // A lock file without delete sharing cannot be removed while open, so on Windows
+            // the locked file is always the one the name refers to.
+            #[cfg(unix)]
+            if !locks.names_file(name, &file)? {
+                continue;
             }
-        })
-        .await;
-    }
-}
-
-/// Opens and locks the lock file; `None` means it, or its directory, was removed before the
-/// lock was taken.
-fn locked(path: &std::path::Path) -> io::Result<Option<File>> {
-    let file = match open(path) {
-        Ok(file) => file,
-        // A download that just ended may have removed the private directory; make it again.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            super::place::prepare(path)?;
-            return Ok(None);
+            // Checked under the lock and once the name is known to refer to the locked file,
+            // so a foreign file is refused before release could remove it.
+            super::claim::ensure_lock_ours(&file)?;
+            return Ok(Self {
+                name: name.to_os_string(),
+                file,
+            });
         }
-        Err(error) => return Err(error),
-    };
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Err(in_progress()),
-        Err(TryLockError::Error(error)) => return Err(error),
+        Err(in_progress())
     }
-    // A lock file without delete sharing cannot be removed while open, so on Windows the
-    // locked file is always the one the path names.
-    #[cfg(unix)]
-    if !still_named(&file, path)? {
-        return Ok(None);
+
+    /// Ends the lease and removes its lock file from `locks`.
+    pub(super) fn release(self, locks: &Anchor) {
+        let Self { name, file } = self;
+        if cfg!(windows) {
+            drop(file);
+            let _removed = locks.remove_file(&name);
+        } else {
+            let _removed = locks.remove_file(&name);
+            drop(file);
+        }
     }
-    // Checked under the lock and once the path is known to name the locked file, so a foreign
-    // file is refused before release could remove it.
-    super::claim::ensure_lock_ours(&file, path)?;
-    Ok(Some(file))
 }
 
-fn in_progress() -> io::Error {
+pub(super) fn in_progress() -> io::Error {
     io::Error::new(
         io::ErrorKind::WouldBlock,
         "another download to this destination is in progress",
     )
-}
-
-#[cfg(unix)]
-fn open(path: &std::path::Path) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-}
-
-#[cfg(windows)]
-fn open(path: &std::path::Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    const FILE_SHARE_READ: u32 = 0x1;
-    const FILE_SHARE_WRITE: u32 = 0x2;
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .open(path)
-}
-
-/// Returns whether `path` still names the locked `file`, not a file created after removal.
-#[cfg(unix)]
-fn still_named(file: &File, path: &std::path::Path) -> io::Result<bool> {
-    use std::os::unix::fs::MetadataExt as _;
-    let held = file.metadata()?;
-    match std::fs::metadata(path) {
-        Ok(named) => Ok(named.dev() == held.dev() && named.ino() == held.ino()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
 }

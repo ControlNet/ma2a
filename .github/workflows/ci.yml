@@ -43,6 +43,9 @@ jobs:
       - name: Check Files tree removal natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-services --test files_host
+      - name: Check resumable downloads natively
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p ma2a-services --test download_directory --test download_sidecars --test client_transfer
 
   quality:
     runs-on: ubuntu-latest

@@ -6,68 +6,68 @@
 //! with the MA2A header, a partial file next to such a sidecar or still empty, and an empty
 //! lock file. Anything else is refused and left exactly as it was.
 
-use std::{io, path::Path};
+use std::{ffi::OsStr, io, io::Read as _};
 
-use tokio::io::AsyncReadExt as _;
-
-use super::SIDECAR_MAGIC;
+use super::{
+    SIDECAR_MAGIC,
+    anchor::{Anchor, Open},
+};
 
 /// Refuses a sidecar, its staging file, or a partial file this download cannot show it wrote.
-pub(super) async fn ensure_ours(part: &Path, sidecar: &Path, staged: &Path) -> io::Result<()> {
+pub(super) fn ensure_ours(
+    directory: &Anchor,
+    (part, sidecar, staged): (&OsStr, &OsStr, &OsStr),
+) -> io::Result<()> {
     // A staged sidecar is interrupted mid-write when a download stops before its rename, so any
     // prefix of the header, including none, is this download's own.
-    has_header(staged, true).await?;
-    let sidecar_ours = has_header(sidecar, false).await?;
-    match tokio::fs::symlink_metadata(part).await {
-        Ok(metadata) if !metadata.is_file() || (!sidecar_ours && metadata.len() > 0) => {
-            Err(foreign(part))
-        }
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+    has_header(directory, staged, true)?;
+    let sidecar_ours = has_header(directory, sidecar, false)?;
+    match directory.file_kind(part)? {
+        Some((regular, len)) if !regular || (!sidecar_ours && len > 0) => Err(foreign(part)),
         _ => Ok(()),
     }
 }
 
-/// Returns whether `path` is a regular file that starts with the sidecar header, or with a
+/// Returns whether `name` is a regular file that starts with the sidecar header, or with a
 /// prefix of it when `partial`, `false` when it is absent, and refuses anything else.
-async fn has_header(path: &Path, partial: bool) -> io::Result<bool> {
-    match tokio::fs::symlink_metadata(path).await {
-        Ok(metadata) if !metadata.is_file() => Err(foreign(path)),
-        Ok(_) => {
+fn has_header(directory: &Anchor, name: &OsStr, partial: bool) -> io::Result<bool> {
+    match directory.file_kind(name)? {
+        None => Ok(false),
+        Some((false, _)) => Err(foreign(name)),
+        Some((true, _)) => {
             let mut head = Vec::new();
-            tokio::fs::File::open(path)
-                .await?
+            directory
+                .open_file(name, Open::Read)?
                 .take(u64::try_from(SIDECAR_MAGIC.len()).unwrap_or(u64::MAX))
-                .read_to_end(&mut head)
-                .await?;
+                .read_to_end(&mut head)?;
             let magic = SIDECAR_MAGIC.as_bytes();
             if head == magic || (partial && magic.starts_with(&head)) {
                 Ok(true)
             } else {
-                Err(foreign(path))
+                Err(foreign(name))
             }
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
     }
 }
 
-/// Refuses a lock file that is not an empty regular file: every lock file a download creates
-/// stays empty.
-pub(super) fn ensure_lock_ours(file: &std::fs::File, path: &Path) -> io::Result<()> {
-    let named = std::fs::symlink_metadata(path)?;
-    if named.is_file() && file.metadata()?.len() == 0 {
+/// Refuses a lock file that is not empty: every lock file a download creates stays empty.
+pub(super) fn ensure_lock_ours(file: &std::fs::File) -> io::Result<()> {
+    if file.metadata()?.len() == 0 {
         Ok(())
     } else {
-        Err(foreign(path))
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a lock file was not written by an MA2A download; move it away and retry",
+        ))
     }
 }
 
-fn foreign(path: &Path) -> io::Error {
-    let name = path
-        .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+fn foreign(name: &OsStr) -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
-        format!("`{name}` was not written by an MA2A download; move it away and retry"),
+        format!(
+            "`{}` was not written by an MA2A download; move it away and retry",
+            name.to_string_lossy()
+        ),
     )
 }

@@ -14,7 +14,7 @@ mod platform;
 #[path = "files/dir_windows.rs"]
 mod platform;
 #[cfg(windows)]
-mod rename_windows;
+pub(crate) mod rename_windows;
 mod resolve;
 
 use std::path::PathBuf;

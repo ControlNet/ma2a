@@ -285,17 +285,19 @@ The `ma2a` CLI drives every family this way:
 | `proxy forward --endpoint ID --listen ADDR HOST PORT` | Proxy | one stream per accepted local connection |
 
 **Resumable downloads.** A download keeps its helper files in `.ma2a-downloads/`, a directory
-beside `LOCAL` that is owner-only on Unix and removed once no download uses it. On Unix an
-existing `.ma2a-downloads` is used only when the current account owns it and its mode grants
-nothing to group or others; otherwise the download fails with `AlreadyExists` and leaves it as
-it was. A `LOCAL` named `.ma2a-downloads`, in any letter case, is refused with `InvalidInput`
-before anything is created. The partial file is `HASH.ma2a-part`, where `HASH` is 32 hex
-characters of BLAKE3 over `LOCAL`'s exact file name, so no helper file shares a name with an
-ordinary file or another download's destination, and two destinations a case-sensitive file
-system keeps apart (`report`, `REPORT`) keep their own progress. The lock file is
-`FOLDED.ma2a-lock`, where `FOLDED` hashes the name in ASCII lowercase: a case-insensitive file
-system names one destination by every spelling, so it still has one writer, and on a
-case-sensitive one two such destinations wait for each other.
+beside `LOCAL` that is owner-only on Unix. On Unix an existing `.ma2a-downloads` is used only when
+the current account owns it and its mode grants nothing to group or others; otherwise the download
+fails with `AlreadyExists` and leaves it as it was. A `LOCAL` named `.ma2a-downloads`, in any letter
+case, is refused with `InvalidInput` before anything is created. A download that makes the
+directory marks it with an empty `created` file, and the last download to end in it removes it;
+one without that mark, such as one the operator made, is kept, empty, when downloads end.
+The partial file is `HASH.ma2a-part`, where `HASH` is 32 hex characters of BLAKE3 over `LOCAL`'s
+exact file name, so no helper file shares a name with an ordinary file or another download's
+destination, and two destinations a case-sensitive file system keeps apart (`report`, `REPORT`)
+keep their own progress. The lock file is `locks/NAME`, carrying `LOCAL`'s own file name, so the
+file system itself decides which spellings name one destination: whatever the volume's case or
+normalization rules, one destination has one writer, and two destinations the volume keeps apart
+never wait for each other.
 Before the first content byte, the download durably records the source (target Endpoint and
 remote path) and the content identity in `HASH.ma2a-part.meta`. `--resume` continues only a
 partial file whose sidecar names the same source, and it re-hashes the local prefix so
@@ -304,15 +306,30 @@ source changed), the download restarts once from zero. A partial file whose cont
 failed verification is removed. While a download runs, it holds an OS lock on its lock file,
 so a second download to the same `LOCAL` fails at once instead of writing alongside it; the
 lock file is removed when the download ends.
+A download opens `LOCAL`'s directory, the private directory, and its lock directory once, when it
+starts, and reaches every helper file through them (on Unix by `*at` calls; on Windows each is
+held open without delete sharing, so it cannot be renamed or removed meanwhile). On Unix,
+publishing first checks that `LOCAL`'s directory path still names the directory the download
+started in, and that the partial file is still the one it hashed. If the directory was moved or
+replaced, nothing is published, the download fails, and its progress stays in the private
+directory where the original directory now is, for `--resume` there. The verified partial file is
+then renamed into place, so the published file is the one whose content was verified.
 Even inside that directory, a download takes over only helper files it can show it wrote: a
 sidecar, or its staging file `HASH.ma2a-part.meta.tmp`, that starts with the MA2A header, a
 partial file next to such a sidecar or still empty, and an empty lock file. Any other file or
 link that carries one of these names, or a `.ma2a-downloads` that is not a directory, fails the
 download with `AlreadyExists` before anything is written, and keeps its content. Helper files
 that earlier builds kept directly beside `LOCAL` (`LOCAL.ma2a-part` and its suffixes) are never
-read, resumed, or removed.
-Without `--force`, `LOCAL` is published by a hard link, so a file that appeared meanwhile is
-never replaced. A file system without hard links falls back to a check before the rename.
+read, resumed, or removed. Neither are the lock files of builds before this layout
+(`HASH.ma2a-lock`, `HASH.ma2a-part.lock`), nor a partial file that a build before `b1c8d13` named
+by the lowercased name of a `LOCAL` with uppercase letters: such a download starts over, and the
+old files can be removed by hand once no older client runs. Stop older clients before using a
+newer one on the same destination; the two take different locks.
+Without `--force`, `LOCAL` is published by a rename that never replaces an existing file
+(`renameat2` with `RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS, `MoveFileExW` without
+replacement on Windows, and a hard link elsewhere or where the file system lacks such a rename).
+On a file system with neither, publishing fails rather than risk replacing a file that appeared
+meanwhile.
 
 **Consent and grants.** The Space owner sets a member's grants with
 `space grant SPACE_REF ENDPOINT_ID [--files-read] [--files-write] [--exec] [--shell] [--proxy]

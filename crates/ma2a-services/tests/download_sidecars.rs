@@ -22,7 +22,8 @@ async fn refusal(destination: &Path) -> Option<ErrorKind> {
     }
 }
 
-/// Creates the private directory beside `local` the way a download does: owner-only.
+/// Creates the private directory beside `local` as an operator might: owner-only, but without
+/// the marker of one a download made, so downloads keep it.
 fn private_directory(local: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
@@ -183,9 +184,10 @@ async fn a_staged_sidecar_cut_short_by_an_interruption_is_reclaimed() -> TestRes
         std::fs::write(staged, written)?;
 
         // When / Then: the next download starts instead of refusing its own file, and takes
-        // the staged file with it when it ends.
+        // the staged file with it when it ends, leaving the directory it did not make empty.
         assert_eq!(refusal(&destination).await, None, "{name}");
-        assert!(!local.path().join(PRIVATE_DIRECTORY).exists(), "{name}");
+        let left = std::fs::read_dir(local.path().join(PRIVATE_DIRECTORY))?.count();
+        assert_eq!(left, 0, "{name}");
     }
     Ok(())
 }

@@ -7,6 +7,12 @@ use ma2a_core::service::ServiceError;
 
 /// Renames `from` to `to`, failing with `already_exists` instead of replacing `to`.
 pub(crate) fn no_clobber(from: &Path, to: &Path) -> Result<(), ServiceError> {
+    no_clobber_io(from, to).map_err(|error| crate::fs_error::service_error(&error))
+}
+
+/// Renames `from` to `to`, failing with [`std::io::ErrorKind::AlreadyExists`] instead of
+/// replacing `to`.
+pub(crate) fn no_clobber_io(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
 
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
@@ -22,9 +28,7 @@ pub(crate) fn no_clobber(from: &Path, to: &Path) -> Result<(), ServiceError> {
     // requests a plain move that fails when the destination exists.
     let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) };
     if moved == 0 {
-        Err(crate::fs_error::service_error(
-            &std::io::Error::last_os_error(),
-        ))
+        Err(std::io::Error::last_os_error())
     } else {
         Ok(())
     }
