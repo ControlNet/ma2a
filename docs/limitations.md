@@ -52,23 +52,35 @@ on restart until the new process observes current state.
   `ma2a space sync now --endpoint` for it fails. Dialing control with an expired record as a hint
   is not implemented, because it would have to decide which of the record's relays are still
   authorized.
-- **A pushed history catches up one page per round.** A member that is ahead pushes the
-  oldest manifests its peer lacks, as many as fit in one page budget. The peer accepts them but
-  does not answer with how far it got, so another push in the same direction starts from the
-  same point. The peer catches up through its own rounds, which pull from the member ahead once
-  it holds a fresh address for it.
+- **A push always re-sends the same prefix.** A member that is ahead pushes its own history
+  from the first manifest, as many manifests as fit in one page budget. It does not know how far
+  the peer is, and the peer does not answer with how far it got, so every push in the same
+  direction sends that same prefix. Once the peer holds the whole first page, a push, manual or
+  periodic, moves it no further: two pushes in a row both succeed and leave its generation
+  where it was. The peer catches up through its own rounds, which pull from the generation it
+  already holds, once it has a fresh address for the member ahead.
 - **An interrupted upload can leave its staging file behind.** An upload stages its content as
   `.ma2a-upload-<request id>.part` beside the destination, and the Runtime records that path so
   it can remove the file after a restart. If the destination's directory is renamed while the
-  upload runs and the Runtime then stops, the recorded path no longer exists and the staged file
-  stays where the directory now is. Files callers can never address that name, so it is only
-  disk use; it can be removed by hand.
+  upload runs and the Runtime then stops, the staged file stays where the directory now is, and
+  the sweep at the next start removes whatever the recorded path then names. When nothing is
+  there, only the moved file is left behind, as disk use; it can be removed by hand. When a
+  directory restored at the old place holds an entry of that name, the sweep removes that entry
+  instead. It cannot be anyone else's file: Files callers can never create or address the
+  `.ma2a-upload-` prefix, and the request id in the name is random, so the entry is a copy of
+  this upload's own incomplete staging file.
 - **A stopped Agent's unbound Process is released with a bounded retry.** When an Agent is
   stopped while its Process is starting, the Runtime terminates the Process that could not be
   bound to it, retrying four times. If the Store fails all four times, or fails the binding
-  itself, the Process keeps running until the Runtime stops; it is not recorded for a later
-  retry.
+  itself, the Process keeps running, and it is not recorded for a later retry. Stopping or
+  restarting the Runtime does not end it either: a Process outlives the daemon and is adopted
+  again at the next start. Find it with `ma2a process list` and `ma2a process inspect
+  PROCESS_ID`, which shows the Agent's command line, and end it with
+  `ma2a process terminate PROCESS_ID`.
 - **An oversized exposure list cannot be paged.** A Runtime that holds more Service exposures
   than one local API response can carry answers `ma2a service list` with `conflict` and a
   remedy, `ma2a service unexpose`. Paging the list would change the exact-version local API.
-  Only an unreleased source build could create that many exposures.
+  `ma2a service expose` refuses an exposure that would make the list too large, so such a state
+  comes only from an unreleased source build, or from a tool that writes through the Store
+  library directly (`Repository::expose_service` has no such limit). Each exposure is then
+  removed by name with `ma2a service unexpose`, which needs no listing.
