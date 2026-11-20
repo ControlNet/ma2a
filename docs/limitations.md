@@ -52,3 +52,23 @@ on restart until the new process observes current state.
   `ma2a space sync now --endpoint` for it fails. Dialing control with an expired record as a hint
   is not implemented, because it would have to decide which of the record's relays are still
   authorized.
+- **A pushed history catches up one page per round.** A member that is ahead pushes the
+  oldest manifests its peer lacks, as many as fit in one page budget. The peer accepts them but
+  does not answer with how far it got, so another push in the same direction starts from the
+  same point. The peer catches up through its own rounds, which pull from the member ahead once
+  it holds a fresh address for it.
+- **An interrupted upload can leave its staging file behind.** An upload stages its content as
+  `.ma2a-upload-<request id>.part` beside the destination, and the Runtime records that path so
+  it can remove the file after a restart. If the destination's directory is renamed while the
+  upload runs and the Runtime then stops, the recorded path no longer exists and the staged file
+  stays where the directory now is. Files callers can never address that name, so it is only
+  disk use; it can be removed by hand.
+- **A stopped Agent's unbound Process is released with a bounded retry.** When an Agent is
+  stopped while its Process is starting, the Runtime terminates the Process that could not be
+  bound to it, retrying four times. If the Store fails all four times, or fails the binding
+  itself, the Process keeps running until the Runtime stops; it is not recorded for a later
+  retry.
+- **An oversized exposure list cannot be paged.** A Runtime that holds more Service exposures
+  than one local API response can carry answers `ma2a service list` with `conflict` and a
+  remedy, `ma2a service unexpose`. Paging the list would change the exact-version local API.
+  Only an unreleased source build could create that many exposures.
