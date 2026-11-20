@@ -305,3 +305,43 @@ async fn small_writes_are_atomic_and_leave_no_temporary_files() -> TestResult {
     assert_eq!(rejection(&frames)?, ServiceError::NotADirectory);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_recursive_removal_keeps_a_downloads_progress() -> TestResult {
+    // Given: a directory holding an ordinary file, and a paused download's private directory.
+    let root = TempRoot::new("files-keep-download")?;
+    fs::create_dir_all(root.path().join("a/b"))?;
+    fs::write(root.path().join("a/b/plain"), b"x")?;
+    fs::write(root.path().join("a/top"), b"y")?;
+    let helpers = root.path().join("a/b/.ma2a-downloads");
+    fs::create_dir(&helpers)?;
+    fs::write(helpers.join("0123.ma2a-part"), b"progress")?;
+
+    // When
+    let (frames, _) = serve(
+        root.path(),
+        FilesRequest::Remove(path("docs:/a")?, true),
+        None,
+    )
+    .await?;
+
+    // Then: everything else is gone, the download keeps its progress, and the removal reports
+    // that it could not finish.
+    assert_eq!(outcome(&frames)?, Err(ServiceError::NotEmpty));
+    assert!(!root.path().join("a/top").exists());
+    assert!(!root.path().join("a/b/plain").exists());
+    assert_eq!(fs::read(helpers.join("0123.ma2a-part"))?, b"progress");
+
+    // And: a tree without one is still removed whole.
+    fs::create_dir_all(root.path().join("c/d"))?;
+    fs::write(root.path().join("c/d/plain"), b"z")?;
+    let (frames, _) = serve(
+        root.path(),
+        FilesRequest::Remove(path("docs:/c")?, true),
+        None,
+    )
+    .await?;
+    assert_eq!(outcome(&frames)?, Ok(FilesResult::Done));
+    assert!(!root.path().join("c").exists());
+    Ok(())
+}

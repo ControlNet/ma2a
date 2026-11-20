@@ -21,7 +21,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use super::entry::Entry;
-use crate::fs_error;
+use crate::{client::resume::is_private_directory, fs_error};
 
 /// One pinned directory inside an exported root.
 #[derive(Clone, Debug)]
@@ -131,15 +131,40 @@ impl Directory {
         fs::remove_dir(self.at(name))
     }
 
-    /// Removes a directory tree; the standard library never follows reparse points inside it.
+    /// Removes a directory tree one entry at a time; a reparse point inside it, such as a
+    /// junction or a directory link, is removed itself and never entered.
+    ///
+    /// A download's private directory inside the tree is kept with everything in it, so its
+    /// progress survives; the directories above it then stay too, and the removal ends with
+    /// `not_empty` after removing everything else.
     pub(crate) fn remove_tree(&self, name: &str) -> Result<(), ServiceError> {
-        if self
-            .entry(name)?
-            .is_some_and(|entry| entry.kind == FileKind::Symlink)
-        {
-            return Err(ServiceError::SymlinkRefused);
+        // Refuses a reparse point, and pins the directory while its entries are removed.
+        let directory = self.child(name)?;
+        for child in fs_error::map(fs::read_dir(&directory.path))? {
+            let child = fs_error::map(child)?.file_name();
+            // A name that is not valid Unicode cannot be addressed remotely; it keeps the
+            // directory non-empty, as on Unix.
+            let Some(child) = child.to_str() else {
+                continue;
+            };
+            if is_private_directory(std::ffi::OsStr::new(child)) {
+                continue;
+            }
+            match directory.entry(child)? {
+                // A subdirectory left non-empty by a kept download does not stop its siblings.
+                Some(entry) if entry.kind == FileKind::Directory => {
+                    match directory.remove_tree(child) {
+                        Err(ServiceError::NotEmpty) => {}
+                        removed => removed?,
+                    }
+                }
+                Some(_) => fs_error::map(directory.remove_entry(child))?,
+                None => {}
+            }
         }
-        fs_error::map(fs::remove_dir_all(self.at(name)))
+        // The pin denies deletion, so it is released before the directory itself goes.
+        drop(directory);
+        fs_error::map(self.remove_dir(name))
     }
 
     /// Renames `from` in this directory to `to`, replacing an existing destination.

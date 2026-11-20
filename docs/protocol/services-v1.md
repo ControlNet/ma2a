@@ -133,7 +133,11 @@ operation, so no ancestor can be renamed or replaced meanwhile, and reparse poin
 
 Content-free operations reply with `reject` (nothing happened) or `outcome`. A recursive
 `remove`, or a `mkdir` with parents, that fails after changing something reports a failed
-`outcome` rather than a `reject`. Every Files operation has a 15-second deadline, and a stream that
+`outcome` rather than a `reject`. A recursive `remove` keeps every download private directory
+(`.ma2a-downloads`, in any letter case) it meets, with everything in it, so a paused or running
+download keeps its progress. It removes everything else, leaves the directories above a kept one,
+and ends with a failed `outcome` of `not_empty`. It removes one entry at a time on every platform
+and never enters a link, junction, or other reparse point; it removes the link itself. Every Files operation has a 15-second deadline, and a stream that
 exceeds it is reset.
 
 ## Transfer v1
