@@ -144,7 +144,7 @@ export class RuntimeController {
         this.clearDetails()
         void this.refresh()
       },
-      onPayloadError: (error) => this.callbacks.onError(error),
+      onPayloadError: (error) => this.handleError(error),
     })
   }
 
@@ -218,7 +218,15 @@ export class RuntimeController {
     }
   }
 
+  /**
+   * Reports one failure of this controller's own requests.
+   *
+   * A stopped controller belongs to a page or session that has moved on: a
+   * request of it that fails late must neither paint an error over the new
+   * page nor end the session that replaced it.
+   */
   private handleError(error: unknown): void {
+    if (this.stopped) return
     if (error instanceof HTTPError && error.response.status === 401) {
       this.stop()
       this.callbacks.onSessionExpired()

@@ -1,3 +1,4 @@
+import { HTTPError } from "ky"
 import { describe, expect, test } from "vitest"
 
 import type { RuntimeApiClient, RuntimeEventCallbacks } from "./api/client"
@@ -189,6 +190,45 @@ describe("runtime controller recovery", () => {
     expect(given.closed()).toBe(1)
     expect(given.callbacks).toHaveLength(1)
   })
+})
+
+test("a stopped controller reports nothing when its pending request fails late", async () => {
+  const request = new Request("http://localhost/api/v1/snapshot")
+  const unauthorized = new HTTPError(
+    new Response(null, { status: 401 }),
+    request,
+    {} as ConstructorParameters<typeof HTTPError>[2],
+  )
+  for (const failure of [unauthorized, new TypeError("network unavailable")]) {
+    const scheduler = new ManualScheduler()
+    let fail: (error: unknown) => void = () => undefined
+    const pending = new Promise<never>((_resolve, reject) => {
+      fail = reject
+    })
+    const given = fakeClient(() => pending)
+    let expired = 0
+    const errors: unknown[] = []
+    const controller = new RuntimeController(
+      {
+        onRuntime: () => undefined,
+        onSessionExpired: () => {
+          expired += 1
+        },
+        onError: (error) => errors.push(error),
+      },
+      given.client,
+      scheduler,
+    )
+    const started = controller.start()
+
+    controller.stop()
+    fail(failure)
+    await started
+
+    expect(expired).toBe(0)
+    expect(errors).toEqual([])
+    expect(scheduler.pending()).toBe(0)
+  }
 })
 
 test("an ordinary revision change never paints the snapshot as uncertain", async () => {
