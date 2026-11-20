@@ -23,11 +23,20 @@ fn remote_from(node: &Node, lab: &AgentLab, arguments: &[&str]) -> TestValue<std
 /// Runs a command on `node` until B answers anything but `unavailable`: B accepts a new
 /// member's streams only once the Space change has replicated to it.
 fn settled(node: &Node, lab: &AgentLab, arguments: &[&str]) -> TestValue<std::process::Output> {
+    retried(node, lab, (arguments, "unavailable"))
+}
+
+/// Runs a command on `node` until B's answer no longer starts with `pending`, or 30 s pass.
+fn retried(
+    node: &Node,
+    lab: &AgentLab,
+    (arguments, pending): (&[&str], &str),
+) -> TestValue<std::process::Output> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let output = remote_from(node, lab, arguments)?;
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.starts_with("unavailable") || std::time::Instant::now() >= deadline {
+        if !stderr.starts_with(pending) || std::time::Instant::now() >= deadline {
             return Ok(output);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -75,7 +84,8 @@ fn unknown_stopped_foreign_and_cross_space_agents_are_refused() -> TestResult {
     lab.a
         .run_ok(&["space", "grant", &lab.space, c.id(), "--agent"])?;
     let task = ["task", "--agent", "worker", &owned];
-    refused(&remote_from(&c, &lab, &task)?, "unknown_task")?;
+    // B admits C as an Agent caller only once A's grant has replicated to it.
+    refused(&retried(&c, &lab, (&task, "unauthorized"))?, "unknown_task")?;
     let cancel = ["cancel", "--agent", "worker", &owned];
     refused(&remote_from(&c, &lab, &cancel)?, "unknown_task")?;
     let submitted = last(&remote_from(&c, &lab, &forged)?)?;
