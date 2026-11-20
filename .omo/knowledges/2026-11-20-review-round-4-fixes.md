@@ -21,9 +21,9 @@ finding was re-checked against the source before fixing; all 28 held. Fixes are 
 | Q11 | medium | fixed (docs) | `712a9d3` security guide, CLI docs, and `--host` help describe plain-HTTP non-loopback mode |
 | Q12 | high | fixed | `63b0183` remote Files cannot address `.ma2a-upload-*` / `.ma2a-write-*` |
 | Q13 | medium | partly | `63b0183` remote callers can no longer plant staging names; a file the local operator places under such a name, and parent renames during recovery, remain |
-| Q14 | high | fixed | `859d823` a download takes over only helper files it can prove it wrote |
+| Q14 | high | fixed | `859d823`, `9a76073` a download takes over only helper files it can prove it wrote, including the staged sidecar |
 | Q15 | medium | fixed | `022e7b0` a torn frame resets the stream instead of appending a terminal frame |
-| Q16 | low | fixed (docs) | `b5fff68` a grant replaces all eight bits, with a keep-the-rest example |
+| Q16 | low | fixed (docs) | `b5fff68`, `96ab5c1` a grant replaces all eight bits, with a keep-the-rest example |
 | Q17 | medium | fixed | `a1c6e6a` an unreadable status record is retried, not concluded as lost |
 | Q18 | medium | fixed | `ffc43da` log retention removes front segments only after the file is gone; reads skip gaps |
 | Q19 | high | fixed | `8d7cc21` an unbound Process of an undefined Agent is terminated |
@@ -36,6 +36,20 @@ finding was re-checked against the source before fixing; all 28 held. Fixes are 
 | Q26 | low | fixed | `7efd26c` Services polling chains each round after the previous one settles |
 | Q27 | high | fixed | `9e70b5a` E2E script replaces only a directory it marked as evidence |
 | Q28 | medium | fixed | `a97e8c5` RUSTSEC-2026-0543 (unmaintained chrono, transitive) acknowledged, review 2027-05-20 |
+
+## Unconfirmed items (not counted in Q01–Q28)
+
+Neither was reproduced, and neither was changed:
+
+- **Mixed-length manifest paging.** The page builder skips a manifest that exceeds the remaining
+  page budget and tries the next one, while the receiver requires contiguous generations. Open
+  question: can normal member operations produce a chain where the first discontiguous page is
+  actually sent, and does the next round then advance by itself? Needs a real signed chain that
+  crosses the negotiated budget.
+- **Control response write under backpressure.** The control handler holds its admission permit
+  while writing the response, with no application-level deadline on that write. Open question:
+  the real reclaim bound under sustained write backpressure for the supported iroh transport;
+  needs a controlled-transport test before adding an overall write deadline.
 
 ## Notes worth keeping
 
@@ -54,6 +68,9 @@ finding was re-checked against the source before fixing; all 28 held. Fixes are 
   a port race in the harness, unrelated to these changes, and passes on rerun.
 
 ## Verification at the end of the campaign
+
+Run on `96ab5c1`, the last code change:
+
 
 - `cargo build --workspace --bins` then `cargo run --locked -p xtask -- check`: exit 0, cargo-deny
   advisories/bans/licenses/sources ok.
