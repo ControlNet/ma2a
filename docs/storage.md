@@ -86,8 +86,12 @@ existing key file. Loaded bytes are held by `ProtectedSecret` and securely zeroi
 ## Backup
 
 `Repository::backup_to` uses SQLite's online backup API while the source connection remains open.
-It does not copy a live database file. The destination must not already exist, receives protected
-file permissions, and must pass `PRAGMA integrity_check = 'ok'` before the call succeeds.
+It does not copy a live database file. The backup is written to a new staging file beside the
+destination, created exclusively and, on Unix, owner-only from the moment it exists. Only after it
+passes `PRAGMA integrity_check = 'ok'` is it published under the destination name by a hard link
+that never replaces an existing file (a file system without hard links falls back to a check before
+the rename). Concurrent backups to one destination publish exactly one, and a failed backup removes
+its staging file and leaves no destination behind.
 
 The backup is a complete copy of the SQLite state, so it needs the same protection as the state
 directory. Besides opaque key references, public chains, and digests of invitation, session, and
