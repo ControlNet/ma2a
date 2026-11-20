@@ -10,7 +10,7 @@ use ma2a_core::{EndpointId, RequestId, SpaceChain, SpaceId};
 
 mod receipt;
 
-pub(crate) use receipt::through_removal;
+pub(crate) use receipt::{through_generation, through_removal};
 
 /// Magic prefix separating a departure request from an enrollment attempt on the
 /// shared bootstrap ALPN.

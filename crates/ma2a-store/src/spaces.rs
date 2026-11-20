@@ -100,13 +100,18 @@ impl Repository {
         &mut self,
         chain: &SpaceChain,
     ) -> Result<SpaceChainPersistence, StoreError> {
-        self.persist_space_chain_with_authority(chain, None)
+        self.persist_space_chain_with_authority(chain, (None, None))
     }
 
+    /// Persists `chain`, and records that its newest generation answers `departure`, if any,
+    /// in the same transaction.
     pub(crate) fn persist_space_chain_with_authority(
         &mut self,
         chain: &SpaceChain,
-        authority_key_reference: Option<&KeyReference>,
+        (authority_key_reference, departure): (
+            Option<&KeyReference>,
+            Option<crate::DepartureRequest>,
+        ),
     ) -> Result<SpaceChainPersistence, StoreError> {
         let stored_reference = self
             .connection
@@ -173,6 +178,10 @@ impl Repository {
             }
         }
         replace_chain(&transaction, chain, effective_reference.as_ref())?;
+        if let Some(departure) = departure {
+            let latest = chain.latest_generation();
+            crate::departure_receipts::record(&transaction, (chain.space_id(), latest), departure)?;
+        }
         let revision = increment_revision(&transaction)?;
         transaction.commit()?;
         Ok(SpaceChainPersistence::advanced_at(revision))

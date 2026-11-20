@@ -1,0 +1,73 @@
+//! An authority remembers which generation answered each departure request with a removal, so a
+//! retry of that request is answered the same way, even after the member joined again.
+#[path = "common/support.rs"]
+mod support;
+
+use ma2a_core::{
+    EndpointId, MemberCapabilities, RequestId, SpaceAuthoritySecret, SpaceManifestMembership,
+    SpaceMemberV1, SpacePolicyV1, SpaceRevocationV1,
+};
+use ma2a_store::{DepartureRequest, OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
+use support::{TempState, TestResult};
+
+fn member(seed: u8, owner: bool) -> Result<SpaceMemberV1, ma2a_core::ProtocolError> {
+    let key = SpaceAuthoritySecret::from_bytes([seed; 32]).public_key();
+    SpaceMemberV1::new(
+        EndpointId::try_from(key.as_bytes().as_slice())?,
+        format!("member-{seed}"),
+        MemberCapabilities::new(true, owner),
+    )
+}
+
+fn sorted(mut members: Vec<SpaceMemberV1>) -> Vec<SpaceMemberV1> {
+    members.sort_by_key(SpaceMemberV1::endpoint_id);
+    members
+}
+
+#[test]
+fn a_removal_answering_a_departure_records_its_generation_with_the_commit() -> TestResult {
+    // Given: an owned Space the peer joined.
+    let state = TempState::new("departure-receipts")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let (owner, peer) = (member(1, true)?, member(2, false)?);
+    let space_id = repository
+        .create_owned_space(&SpaceCreation::new(
+            1_000,
+            owner.clone(),
+            SpacePolicyV1::phase_one_default(),
+        ))?
+        .space_id();
+    let joined = SpaceManifestMembership::new(sorted(vec![owner.clone(), peer.clone()]), vec![]);
+    repository.advance_owned_space(&OwnedSpaceUpdate::new(space_id, 2_000, joined.clone()))?;
+    let request = DepartureRequest::new(
+        peer.endpoint_id(),
+        RequestId::try_from([0x51; 16].as_slice())?,
+    );
+    let other = DepartureRequest::new(
+        peer.endpoint_id(),
+        RequestId::try_from([0x52; 16].as_slice())?,
+    );
+    assert_eq!(repository.departure_receipt(space_id, request)?, None);
+
+    // When: the peer's departure request removes it.
+    let removal = SpaceManifestMembership::new(
+        vec![owner],
+        vec![SpaceRevocationV1::new(peer.endpoint_id())],
+    );
+    let removed = repository
+        .advance_owned_space(&OwnedSpaceUpdate::new(space_id, 3_000, removal).answering(request))?;
+
+    // Then: that request, and only it, names the removing generation, which outlives a rejoin.
+    let generation = removed.chain().latest_generation();
+    assert_eq!(
+        repository.departure_receipt(space_id, request)?,
+        Some(generation)
+    );
+    assert_eq!(repository.departure_receipt(space_id, other)?, None);
+    repository.advance_owned_space(&OwnedSpaceUpdate::new(space_id, 4_000, joined))?;
+    assert_eq!(
+        repository.departure_receipt(space_id, request)?,
+        Some(generation)
+    );
+    Ok(())
+}

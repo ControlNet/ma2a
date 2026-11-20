@@ -35,6 +35,18 @@ pub(crate) fn through_removal(chain: &SpaceChain, departed: EndpointId) -> Optio
     removal
 }
 
+/// Returns `chain` cut at `generation`, or `None` when it holds no such generation.
+pub(crate) fn through_generation(chain: &SpaceChain, generation: u64) -> Option<SpaceChain> {
+    let mut prefix = SpaceChain::from_genesis(chain.genesis().clone()).ok()?;
+    for manifest in chain.manifests() {
+        if prefix.latest_generation() == generation {
+            break;
+        }
+        prefix.apply(manifest).ok()?;
+    }
+    (prefix.latest_generation() == generation).then_some(prefix)
+}
+
 #[cfg(test)]
 mod tests {
     use super::through_removal;

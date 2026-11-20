@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use ma2a_core::{EndpointId, SpaceChain, SpaceId, SpaceManifestMembership, SpaceRevocationV1};
+use ma2a_core::{
+    EndpointId, RequestId, SpaceChain, SpaceId, SpaceManifestMembership, SpaceRevocationV1,
+};
 
 use crate::{error::RuntimeError, store::StoreBackend};
 
@@ -12,6 +14,9 @@ pub(crate) struct RemovedMember {
     pub(crate) memberships: BTreeSet<SpaceId>,
     pub(crate) projection_revision: u64,
     pub(crate) chain: SpaceChain,
+    /// The departure request was answered before: `chain` is that answer, and nothing new
+    /// was committed.
+    pub(crate) replayed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -20,6 +25,8 @@ pub(crate) struct OwnedMemberRevocation {
     pub(crate) endpoint_id: EndpointId,
     pub(crate) issued_at_ms: u64,
     pub(crate) local_endpoint_id: EndpointId,
+    /// The member's own departure request this removal answers, if it answers one.
+    pub(crate) request_id: Option<RequestId>,
 }
 
 impl StoreBackend {
@@ -34,6 +41,29 @@ impl StoreBackend {
         if request.endpoint_id == chain.genesis().genesis().initial_member().endpoint_id() {
             return Err(ma2a_store::StoreError::SpaceOwnerCannotBeRemoved.into());
         }
+        let departure = request
+            .request_id
+            .map(|request_id| ma2a_store::DepartureRequest::new(request.endpoint_id, request_id));
+        if let Some(departure) = departure
+            && let Some(generation) = self
+                .repository
+                .departure_receipt(request.space_id, departure)?
+        {
+            // A retry of a request already answered, perhaps after the member joined again,
+            // gets the same answer and never removes the member a second time.
+            let chain = crate::departure::through_generation(&chain, generation)
+                .ok_or(ma2a_store::StoreError::SpaceNotFound)?;
+            let projection = self
+                .repository
+                .membership_projection(request.local_endpoint_id)?;
+            return Ok(RemovedMember {
+                revision: projection.revision(),
+                projection_revision: projection.revision(),
+                memberships: projection.into_value(),
+                chain,
+                replayed: true,
+            });
+        }
         let member_position = chain
             .members()
             .binary_search_by_key(&request.endpoint_id, ma2a_core::SpaceMemberV1::endpoint_id)
@@ -43,13 +73,15 @@ impl StoreBackend {
         let mut revocations = chain.revocations().to_vec();
         revocations.push(SpaceRevocationV1::new(request.endpoint_id));
         revocations.sort_by_key(|revocation| revocation.endpoint_id());
-        let advanced = self
-            .repository
-            .advance_owned_space(&ma2a_store::OwnedSpaceUpdate::new(
-                request.space_id,
-                request.issued_at_ms,
-                SpaceManifestMembership::new(members, revocations),
-            ))?;
+        let mut update = ma2a_store::OwnedSpaceUpdate::new(
+            request.space_id,
+            request.issued_at_ms,
+            SpaceManifestMembership::new(members, revocations),
+        );
+        if let Some(departure) = departure {
+            update = update.answering(departure);
+        }
+        let advanced = self.repository.advance_owned_space(&update)?;
         let projection = self
             .repository
             .membership_projection(request.local_endpoint_id)
@@ -59,6 +91,7 @@ impl StoreBackend {
             projection_revision: projection.revision(),
             memberships: projection.into_value(),
             chain: advanced.chain().clone(),
+            replayed: false,
         })
     }
 
@@ -114,3 +147,7 @@ impl StoreBackend {
         Ok((projection.revision(), projection.into_value()))
     }
 }
+
+#[cfg(test)]
+#[path = "membership_tests.rs"]
+mod tests;

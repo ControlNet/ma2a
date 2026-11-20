@@ -80,6 +80,7 @@ impl Actor {
                 endpoint_id,
                 issued_at_ms,
                 local_endpoint_id: self.state.endpoint_id,
+                request_id: None,
             })
             .await
             .map_err(|error| self.retain_membership_error(error))?;

@@ -26,6 +26,7 @@ mod enrollment;
 mod enrollment_projection;
 mod hosted_services;
 pub use enrollment_projection::EnrollmentProjection;
+mod departure_receipts;
 mod enrollment_models;
 mod error;
 mod key_store;
@@ -79,6 +80,7 @@ pub use committed::Committed;
 pub use config::StoreConfig;
 pub use control_batch::ControlBatch;
 pub use control_state::ControlSpaceState;
+pub use departure_receipts::DepartureRequest;
 pub use enrollment::CreatedEnrollmentInvite;
 pub use enrollment_models::{
     AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption,

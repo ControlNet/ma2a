@@ -53,6 +53,7 @@ pub struct OwnedSpaceUpdate {
     space_id: SpaceId,
     issued_at_ms: u64,
     membership: SpaceManifestMembership,
+    departure: Option<crate::DepartureRequest>,
 }
 
 impl OwnedSpaceUpdate {
@@ -66,7 +67,15 @@ impl OwnedSpaceUpdate {
             space_id,
             issued_at_ms,
             membership,
+            departure: None,
         }
+    }
+
+    /// Marks this proposal as the removal that answers `request`, recorded with its commit.
+    #[must_use]
+    pub const fn answering(mut self, request: crate::DepartureRequest) -> Self {
+        self.departure = Some(request);
+        self
     }
 }
 
@@ -152,7 +161,8 @@ impl Repository {
             &reference,
             secret_bytes.as_slice(),
         ))?;
-        let persistence = self.persist_space_chain_with_authority(&chain, Some(&reference))?;
+        let persistence =
+            self.persist_space_chain_with_authority(&chain, (Some(&reference), None))?;
         let revision = persistence.revision().ok_or(StoreError::SchemaMismatch {
             detail: "fresh Space creation did not advance repository state",
         })?;
@@ -225,7 +235,8 @@ impl Repository {
         let mut candidate = chain;
         candidate.apply(&manifest)?;
         crate::space_capacity::deliverable(&candidate)?;
-        let persisted = self.persist_space_chain_with_authority(&candidate, Some(&reference))?;
+        let persisted = self
+            .persist_space_chain_with_authority(&candidate, (Some(&reference), update.departure))?;
         if let Some(error) = persisted.error() {
             return Err(StoreError::Manifest(error));
         }

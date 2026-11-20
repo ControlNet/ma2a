@@ -14,16 +14,16 @@ filesystem work directly on an async worker.
    modes on Unix. Symlinks and unexpected file types are rejected.
 3. Require protected Windows DACLs with exactly the current user and SYSTEM holding explicit full
    control. Inherited, broad, or remote access is rejected.
-4. Reject `PRAGMA user_version` values newer than schema version 10 before changing journal mode
+4. Reject `PRAGMA user_version` values newer than schema version 11 before changing journal mode
    or running a migration.
 5. Configure a five-second busy timeout, foreign-key enforcement, WAL, and `synchronous=FULL`.
-6. Apply every missing migration, 1 through 10 in order, in one `BEGIN IMMEDIATE` transaction,
+6. Apply every missing migration, 1 through 11 in order, in one `BEGIN IMMEDIATE` transaction,
    validate the migration records, and run `quick_check`.
 7. Resolve every Endpoint and Space-authority key reference and validate its protected file.
 
 The store never performs an implicit downgrade or upgrades an unknown future schema.
 
-## Schema Version 10
+## Schema Version 11
 
 Migration `0001_init.sql` stores:
 
@@ -51,6 +51,7 @@ Later migrations add:
 | `0008_processes.sql` | durable Processes and the Process exposure kind |
 | `0009_agents.sql` | Agent definitions, instances, outbox, tasks, events, artifacts, tool calls, and the Agent exposure kind |
 | `0010_hosted_services.sql` | hosted service registrations and the hosted-service exposure kind |
+| `0011_departure_receipts.sql` | the generation that removed each departure request's sender, per Space, sender, and RequestId |
 
 The protocol documents under [protocol/](protocol/) describe what each family stores and when it
 is retained or removed.

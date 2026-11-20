@@ -132,11 +132,14 @@ impl Actor {
         call: EnrollmentCall,
     ) -> Result<(), crate::RuntimeError> {
         let departing = call.remote_endpoint_id();
-        let Some((space_id, _request_id)) = decode_departure(call.request()) else {
+        let Some((space_id, request_id)) = decode_departure(call.request()) else {
             call.respond(DEPARTURE_STATUS_REJECTED, Vec::new());
             return Ok(());
         };
-        match self.remove_departing_member(space_id, departing).await {
+        match self
+            .remove_departing_member(space_id, (departing, request_id))
+            .await
+        {
             Ok(Some(chain)) => match departure_pages(&chain) {
                 Ok(pages) => call.respond(DEPARTURE_STATUS_OK, pages),
                 Err(()) => call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new()),
@@ -169,7 +172,7 @@ impl Actor {
     async fn remove_departing_member(
         &mut self,
         space_id: SpaceId,
-        departing: EndpointId,
+        (departing, request_id): (EndpointId, RequestId),
     ) -> Result<Option<SpaceChain>, crate::RuntimeError> {
         let Some(chain) = self.store.load_space_chain(space_id).await? else {
             return Ok(None);
@@ -195,9 +198,13 @@ impl Actor {
                 endpoint_id: departing,
                 issued_at_ms,
                 local_endpoint_id: self.state.endpoint_id,
+                request_id: Some(request_id),
             })
             .await
             .map_err(|error| self.retain_membership_error(error))?;
+        if removed.replayed {
+            return Ok(Some(removed.chain));
+        }
         self.state.revision = removed.projection_revision;
         self.state.memberships = removed.memberships;
         self.synchronized_control_peers.clear();
