@@ -16,7 +16,7 @@ The response frame is `status:u8 || body_len:u32 big-endian || body`. Status zer
 
 ## Canonical request
 
-A request begins with `MCQ1`, followed by a big-endian `u16` cursor count. At most 64 Space cursors are allowed and they are canonically sorted by Space ID without duplicates.
+A request begins with `MCQ1`, followed by a big-endian `u16` cursor count. At most 64 Space cursors are allowed and they are canonically sorted by Space ID without duplicates. A Runtime sharing more than 64 Spaces with one peer sends that peer several requests in the same round, each covering at most 64 of them; every peer's first request is queued before any peer's second, so one peer with many Spaces does not hold back the rest.
 
 Each `ControlCursorV1` contains:
 

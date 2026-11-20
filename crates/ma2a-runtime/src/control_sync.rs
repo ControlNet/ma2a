@@ -2,12 +2,16 @@ mod exchange;
 mod failure;
 pub(crate) use failure::ControlFailure;
 mod pages;
+#[cfg(test)]
+mod round_tests;
 mod scheduler;
 mod scope;
 
 use std::collections::BTreeMap;
 
-use ma2a_core::{ControlRequestV1, EndpointId, SpaceAuthorizationView};
+use ma2a_core::{
+    ControlRequestV1, EndpointId, MAX_CONTROL_SPACES_PER_REQUEST, SpaceAuthorizationView,
+};
 use ma2a_net::{
     AddressRecordTarget, AddressRecordValidationError, AddressRecordValidator, SpaceAddressLookup,
     ValidatedAddressRecord,
@@ -124,17 +128,18 @@ pub(crate) fn load_lookup(
     })
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "indexes are created by enumerating this unchanged collection"
-)]
+/// Prepares every request of one round.
+///
+/// One request carries at most [`MAX_CONTROL_SPACES_PER_REQUEST`] Spaces, so a peer sharing
+/// more Spaces receives several. The queue takes every peer's first request before any peer's
+/// second, so a peer with many Spaces never delays the others.
 pub(crate) fn prepare_round(
     repository: &Repository,
     input: &ControlRoundRequest,
 ) -> Result<Vec<PreparedControlPeer>, RuntimeError> {
     let spaces = repository.control_spaces_for(input.local_endpoint_id)?;
-    let mut by_peer = BTreeMap::<EndpointId, Vec<usize>>::new();
-    for (space_index, state) in spaces.iter().enumerate() {
+    let mut by_peer = BTreeMap::<EndpointId, Vec<&ControlSpaceState>>::new();
+    for state in &spaces {
         let authorization = state.authorization();
         let fresh_targets = state
             .address_records()
@@ -148,37 +153,58 @@ pub(crate) fn prepare_round(
             .map(ma2a_store::PersistedAddressRecord::endpoint_id)
             .collect::<Vec<_>>();
         for peer in input.select(&fresh_targets) {
-            by_peer.entry(peer).or_default().push(space_index);
+            by_peer.entry(peer).or_default().push(state);
         }
     }
-    by_peer
+    let mut queues = by_peer
         .into_iter()
-        .map(|(peer, space_indexes)| {
-            let cursors = space_indexes
-                .iter()
-                .map(|index| spaces[*index].cursor())
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-            let artifact_budget = pages::request_artifact_budget(&cursors, space_indexes.len())
-                .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-            let push_pages = space_indexes
-                .iter()
-                .map(|index| {
-                    pages::push_page(
-                        &spaces[*index],
-                        pages::PushPageRequest {
-                            local_endpoint_id: input.local_endpoint_id,
-                            now_ms: input.now_ms,
-                            artifact_budget,
-                        },
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let request = ControlRequestV1::new(cursors)
-                .and_then(|request| request.with_push_pages(push_pages))
-                .and_then(|request| request.encode())
-                .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-            Ok(PreparedControlPeer { peer, request })
+        .map(|(peer, shared)| {
+            shared
+                .chunks(MAX_CONTROL_SPACES_PER_REQUEST)
+                .map(|chunk| peer_request(peer, chunk, input))
+                .collect::<Result<std::collections::VecDeque<_>, _>>()
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut round = Vec::new();
+    while queues.iter().any(|queue| !queue.is_empty()) {
+        round.extend(
+            queues
+                .iter_mut()
+                .filter_map(std::collections::VecDeque::pop_front),
+        );
+    }
+    Ok(round)
+}
+
+/// Builds one request to `peer` for at most one frame's worth of shared Spaces.
+fn peer_request(
+    peer: EndpointId,
+    shared: &[&ControlSpaceState],
+    input: &ControlRoundRequest,
+) -> Result<PreparedControlPeer, RuntimeError> {
+    let cursors = shared
+        .iter()
+        .map(|state| state.cursor())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+    let artifact_budget = pages::request_artifact_budget(&cursors, shared.len())
+        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+    let push_pages = shared
+        .iter()
+        .map(|state| {
+            pages::push_page(
+                state,
+                pages::PushPageRequest {
+                    local_endpoint_id: input.local_endpoint_id,
+                    now_ms: input.now_ms,
+                    artifact_budget,
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let request = ControlRequestV1::new(cursors)
+        .and_then(|request| request.with_push_pages(push_pages))
+        .and_then(|request| request.encode())
+        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+    Ok(PreparedControlPeer { peer, request })
 }
