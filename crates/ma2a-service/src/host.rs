@@ -89,7 +89,9 @@ impl ServiceHost {
     ///
     /// # Errors
     /// Returns [`Error::MissingHandler`] when the registered manifest lists an operation this
-    /// host cannot serve, and [`Error::Refused`] when the service is not registered.
+    /// host cannot serve, [`Error::Refused`] when the service is not registered, and
+    /// [`Error::Ipc`] when the Runtime speaks another local API version or its IPC path is
+    /// not this user's.
     pub async fn serve(self, paths: IpcPaths, service: &ServiceName) -> Result<(), Error> {
         let client = LocalApiClient::new(paths);
         let handlers: Handlers = Arc::new(self.handlers);
@@ -106,12 +108,7 @@ impl ServiceHost {
                         return Ok(());
                     }
                 }
-                Err(Error::Refused { error, remediation }) if error == "not_found" => {
-                    return Err(Error::Refused { error, remediation });
-                }
-                Err(error @ (Error::Protocol(_) | Error::MissingHandler { .. })) => {
-                    return Err(error);
-                }
+                Err(error) if !error.retries() => return Err(error),
                 Err(_) => {}
             }
             tokio::time::sleep(backoff).await;

@@ -20,6 +20,8 @@ mod wire;
 
 use std::fmt;
 
+use ma2a_runtime::ipc::IpcError;
+
 pub use call::{Call, CallInput, CallOutput, Ended, Input};
 pub use caller::{CallStream, Caller, Received};
 pub use host::ServiceHost;
@@ -33,7 +35,7 @@ pub use ma2a_core::service::{
 #[non_exhaustive]
 pub enum Error {
     /// The local Runtime could not be reached, or the connection broke.
-    Ipc(ma2a_runtime::ipc::IpcError),
+    Ipc(IpcError),
     /// The local Runtime refused the request with this local API error.
     Refused {
         /// The local API error name, such as `not_found` or `unavailable`.
@@ -75,8 +77,28 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl From<ma2a_runtime::ipc::IpcError> for Error {
-    fn from(error: ma2a_runtime::ipc::IpcError) -> Self {
+impl Error {
+    /// Whether an attach that failed with this error may succeed later without anyone acting.
+    ///
+    /// A Runtime that is down, restarting, or not yet told to start the service is retried. A
+    /// Runtime of another local API version, an IPC path that is not this user's, an
+    /// unregistered service, or a manifest this host cannot serve stays that way, so it is
+    /// returned instead.
+    fn retries(&self) -> bool {
+        match self {
+            Self::Ipc(
+                IpcError::VersionMismatch | IpcError::UnauthorizedPeer | IpcError::InvalidPath,
+            )
+            | Self::Protocol(_)
+            | Self::MissingHandler { .. } => false,
+            Self::Refused { error, .. } => error != "not_found",
+            Self::Ipc(_) | Self::Service(_) => true,
+        }
+    }
+}
+
+impl From<IpcError> for Error {
+    fn from(error: IpcError) -> Self {
         Self::Ipc(error)
     }
 }

@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
+use ma2a_runtime::ipc::IpcError;
+
 use super::{Notice, ServiceHost, covered, notice};
 use crate::{Call, Ended, Error};
 
@@ -71,5 +73,38 @@ fn link_messages_are_exactly_a_call_or_a_stop() {
         b"not json",
     ] {
         assert!(notice(malformed).is_none());
+    }
+}
+
+#[test]
+fn only_an_attach_that_may_succeed_later_is_retried() {
+    let unavailable = || Error::Refused {
+        error: "unavailable".to_owned(),
+        remediation: None,
+    };
+    let unregistered = Error::Refused {
+        error: "not_found".to_owned(),
+        remediation: None,
+    };
+    let lost = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+    for transient in [
+        Error::Ipc(IpcError::Io(lost)),
+        Error::Ipc(IpcError::InvalidFrame),
+        unavailable(),
+    ] {
+        assert!(transient.retries(), "{transient} should be retried");
+    }
+    for lasting in [
+        Error::Ipc(IpcError::VersionMismatch),
+        Error::Ipc(IpcError::UnauthorizedPeer),
+        Error::Ipc(IpcError::InvalidPath),
+        unregistered,
+        Error::Protocol("the Runtime attached without a link"),
+        Error::MissingHandler {
+            version: 1,
+            operation: "echo".to_owned(),
+        },
+    ] {
+        assert!(!lasting.retries(), "{lasting} should be returned");
     }
 }
