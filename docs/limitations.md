@@ -45,3 +45,10 @@ on restart until the new process observes current state.
   Web UI lifecycle runs under one Runtime-wide replay lock, reads included. A slow local mutation
   delays other local commands; it never changes their outcome. Stream and hosted-service upgrades
   do not take the lock.
+- **Control synchronization needs a fresh address.** A peer is dialed for control only through a
+  signed address record that is still valid, which lasts at most ten minutes. When two members of
+  a Space are both offline past that window and no other member passes either a newer record,
+  neither can find the other again: periodic rounds skip the peer, and
+  `ma2a space sync now --endpoint` for it fails. Dialing control with an expired record as a hint
+  is not implemented, because it would have to decide which of the record's relays are still
+  authorized.
