@@ -13,8 +13,21 @@ case "$runs" in
   ''|*[!0-9]*|0) printf 'MA2A_E2E_RUNS must be a positive integer\n' >&2; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 2; }
-rm -rf "$output"
+# The output directory is replaced only when it is empty or was written by this script, so a
+# mistyped MA2A_E2E_OUTPUT can never empty a directory holding anything else.
+marker=.ma2a-e2e-evidence
+if [ -e "$output" ] || [ -L "$output" ]; then
+  if [ -d "$output" ] && [ ! -L "$output" ] && {
+    [ -f "$output/$marker" ] || [ -f "$output/provenance.txt" ] || [ -z "$(ls -A "$output")" ]
+  }; then
+    rm -rf "$output"
+  else
+    printf '%s is not an E2E evidence directory; refusing to replace it\n' "$output" >&2
+    exit 2
+  fi
+fi
 mkdir -p "$output"
+: > "$output/$marker"
 commit=$(GIT_MASTER=1 git rev-parse HEAD)
 rustc_version=$(rustc --version)
 nextest_version=$(cargo nextest --version | sed -n '1p')
