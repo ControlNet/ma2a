@@ -60,6 +60,26 @@ impl PageBuilder {
     }
 }
 
+impl PageBuilder {
+    /// Adds a contiguous run of signed objects, such as manifests in generation order, up to the
+    /// first one that does not fit, and returns whether every one fit.
+    ///
+    /// A later, smaller object is never added after a skipped one: the receiver applies
+    /// manifests in order and rejects a page with a gap.
+    pub(super) fn add_contiguous<Object: AsRef<[u8]>>(
+        &mut self,
+        kind: ControlArtifactKind,
+        objects: impl IntoIterator<Item = Object>,
+    ) -> Result<bool, ControlRejection> {
+        for signed_bytes in objects {
+            if !self.add_control(kind, signed_bytes.as_ref())? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ma2a_core::{
@@ -138,5 +158,22 @@ mod tests {
         // Then
         assert!(encoded.len() <= MAX_CONTROL_BATCH_BYTES);
         Ok(())
+    }
+
+    #[test]
+    fn a_contiguous_run_stops_at_the_first_object_that_does_not_fit() {
+        // Given: room for the first object and the third, but not the second.
+        let mut builder = PageBuilder::with_budget(2 * (100 + ARTIFACT_OVERHEAD) + 10);
+        let (first, second, third) = ([1_u8; 100], [2_u8; 120], [3_u8; 90]);
+
+        // When
+        let complete = builder.add_contiguous(
+            ControlArtifactKind::MANIFEST,
+            [first.as_slice(), second.as_slice(), third.as_slice()],
+        );
+
+        // Then: only the first is sent; the third waits behind the second.
+        assert_eq!(complete, Ok(false));
+        assert_eq!(builder.artifacts.len(), 1);
     }
 }

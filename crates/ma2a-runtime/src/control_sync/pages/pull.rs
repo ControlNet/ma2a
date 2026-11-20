@@ -20,10 +20,15 @@ pub(in crate::control_sync) fn pull_page(
     let start =
         usize::try_from(cursor.manifest_generation()).map_err(|_| ControlRejection::Invalid)?;
     let mut page = PageBuilder::with_budget(request.artifact_budget);
-    let mut omitted = false;
-    for manifest in state.chain().manifests().iter().skip(start) {
-        omitted |= !page.add_control(ControlArtifactKind::MANIFEST, manifest.canonical_bytes())?;
-    }
+    let mut omitted = !page.add_contiguous(
+        ControlArtifactKind::MANIFEST,
+        state
+            .chain()
+            .manifests()
+            .iter()
+            .skip(start)
+            .map(ma2a_core::SignedSpaceManifestV1::canonical_bytes),
+    )?;
     if omitted {
         // The receiver validates every record against the chain this page brings it to; with
         // a generation still missing that is not the latest chain, so records wait a page.

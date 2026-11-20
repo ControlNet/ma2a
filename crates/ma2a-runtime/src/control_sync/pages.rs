@@ -53,10 +53,16 @@ pub(super) fn push_page(
     request: PushPageRequest,
 ) -> Result<ControlPageV1, RuntimeError> {
     let mut page = PageBuilder::with_budget(request.artifact_budget);
-    let mut omitted = false;
-    for manifest in state.chain().manifests() {
-        omitted |= !page.add(ControlArtifactKind::MANIFEST, manifest.canonical_bytes())?;
-    }
+    let mut omitted = !page
+        .add_contiguous(
+            ControlArtifactKind::MANIFEST,
+            state
+                .chain()
+                .manifests()
+                .iter()
+                .map(ma2a_core::SignedSpaceManifestV1::canonical_bytes),
+        )
+        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
     for record in state.address_records() {
         if record.endpoint_id() == request.local_endpoint_id
             && u64::try_from(record.issued_at_ms()).is_ok_and(|issued| issued <= request.now_ms)
