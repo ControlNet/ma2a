@@ -93,3 +93,24 @@ async fn a_read_abandoned_mid_frame_resumes_without_losing_bytes() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_frame_abandoned_mid_write_refuses_every_later_frame() {
+    // Given: a peer that reads nothing, so a large data frame stalls after its first bytes.
+    let (client, _server) = tokio::io::duplex(64);
+    let mut writer = FrameWriter::new(client);
+    let chunk = vec![7_u8; MAX_DATA_CHUNK_LEN];
+    let stalled = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        writer.data(Channel::Output, &chunk),
+    )
+    .await;
+    assert!(stalled.is_err(), "the write must have stalled");
+
+    // When: an outcome follows the abandoned frame on the same writer.
+    let outcome = writer.frame(FrameKind::Outcome, &[0]).await;
+
+    // Then: it is refused rather than read by the peer as the rest of the data frame.
+    assert!(writer.is_torn());
+    assert_eq!(outcome, Err(ServiceError::Cancelled));
+}

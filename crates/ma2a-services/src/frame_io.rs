@@ -161,15 +161,24 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 }
 
 /// Writes frames to one stream half without concatenating payloads.
+///
+/// A frame whose write was abandoned part-way, as when a deadline drops the write, leaves the
+/// writer torn: the peer still expects the rest of that frame, so no later frame is written.
 #[derive(Debug)]
 pub struct FrameWriter<W> {
     inner: W,
+    torn: bool,
 }
 
 impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     /// Wraps one writable half.
     pub const fn new(inner: W) -> Self {
-        Self { inner }
+        Self { inner, torn: false }
+    }
+
+    /// Returns whether a frame was abandoned part-way, so the stream can only be reset.
+    pub const fn is_torn(&self) -> bool {
+        self.torn
     }
 
     /// Writes one frame of any type.
@@ -178,8 +187,12 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     /// Returns [`ServiceError::InvalidInput`] for an out-of-bound payload and
     /// [`ServiceError::Cancelled`] when the stream is gone.
     pub async fn frame(&mut self, kind: FrameKind, payload: &[u8]) -> Result<(), ServiceError> {
-        self.header(kind, payload.len()).await?;
-        self.write(payload).await
+        let header = header(kind, payload.len())?;
+        self.begin()?;
+        self.write(&header).await?;
+        self.write(payload).await?;
+        self.torn = false;
+        Ok(())
     }
 
     /// Writes one `data` frame; `bytes` must be 1..=64 KiB.
@@ -190,9 +203,13 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
         if bytes.is_empty() || bytes.len() > MAX_DATA_CHUNK_LEN {
             return Err(ServiceError::InvalidInput);
         }
-        self.header(FrameKind::Data, bytes.len() + 1).await?;
+        let header = header(FrameKind::Data, bytes.len() + 1)?;
+        self.begin()?;
+        self.write(&header).await?;
         self.write(&[channel as u8]).await?;
-        self.write(bytes).await
+        self.write(bytes).await?;
+        self.torn = false;
+        Ok(())
     }
 
     /// Writes one `end` frame for a channel.
@@ -243,11 +260,13 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
         &mut self.inner
     }
 
-    async fn header(&mut self, kind: FrameKind, length: usize) -> Result<(), ServiceError> {
-        let header = FrameHeader::new(kind, length)
-            .and_then(FrameHeader::encode)
-            .map_err(|_| ServiceError::InvalidInput)?;
-        self.write(&header).await
+    /// Starts a frame; the flag is cleared only once the whole frame was written.
+    const fn begin(&mut self) -> Result<(), ServiceError> {
+        if self.torn {
+            return Err(ServiceError::Cancelled);
+        }
+        self.torn = true;
+        Ok(())
     }
 
     async fn write(&mut self, bytes: &[u8]) -> Result<(), ServiceError> {
@@ -256,6 +275,13 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
             .await
             .map_err(|_| ServiceError::Cancelled)
     }
+}
+
+/// Encodes a frame header, before any byte of the frame is written.
+fn header(kind: FrameKind, length: usize) -> Result<[u8; FRAME_HEADER_LEN], ServiceError> {
+    FrameHeader::new(kind, length)
+        .and_then(FrameHeader::encode)
+        .map_err(|_| ServiceError::InvalidInput)
 }
 
 #[cfg(test)]

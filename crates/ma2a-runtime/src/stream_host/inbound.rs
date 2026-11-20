@@ -98,6 +98,11 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
     )
     .await;
     drop(watch);
+    if writer.is_torn() {
+        // A deadline or stop abandoned a frame part-way: the peer must see a reset, never a
+        // clean end of a stream whose last frame is cut short. The report keeps its cause.
+        let _reset = writer.get_mut().reset(0_u8.into());
+    }
     if stop.is_cancelled() && !context.shutdown.is_cancelled() {
         // Authorization was withdrawn while the operation ran.
         report.end = OperationEnd::Failed(ServiceError::Unauthorized);
@@ -144,7 +149,8 @@ async fn dispatch(
     (reader, writer): (&mut Reader<'_>, &mut Writer<'_>),
 ) -> OperationReport {
     let request_id = header.request_id();
-    // Exec, Shell, and Proxy observe `stop` themselves and still send their outcome.
+    // Exec, Shell, and Proxy observe `stop` themselves and still send their outcome, unless a
+    // frame was abandoned part-way, in which case the stream is reset afterwards.
     let shutdown = stop;
     match (header.into_body(), root) {
         (OpenBody::Files(request), Some(root)) => {
