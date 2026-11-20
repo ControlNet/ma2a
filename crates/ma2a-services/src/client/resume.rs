@@ -4,7 +4,8 @@
 //! at any point, including by a daemon or machine restart, resumes only against the exact
 //! source identity it started from. A lock file leases the destination to one download at
 //! a time, so two downloads never write one partial file. All three live in a private
-//! directory beside the destination (see [`partial_path`]).
+//! directory beside the destination (see [`partial_path`]), which the Files service never
+//! lets a remote caller address.
 
 use std::{
     io,
@@ -20,7 +21,7 @@ mod place;
 
 use lease::Lease;
 use place::suffixed;
-pub use place::{PRIVATE_DIRECTORY, partial_path};
+pub use place::{PRIVATE_DIRECTORY, is_private_directory, partial_path};
 
 const SIDECAR_MAGIC: &str = "ma2a-download v1";
 
@@ -50,7 +51,7 @@ impl Partial {
     pub async fn open(destination: &Path, source: &str, resume: bool) -> io::Result<Self> {
         let part = partial_path(destination)?;
         place::prepare(&part)?;
-        let lease = Lease::acquire(suffixed(&part, ".lock")?).await?;
+        let lease = Lease::acquire(place::lock_path(destination)?).await?;
         let sidecar = suffixed(&part, ".meta")?;
         if let Err(error) = claim::ensure_ours(&part, &sidecar, &suffixed(&sidecar, ".tmp")?).await
         {

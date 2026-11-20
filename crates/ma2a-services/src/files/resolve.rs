@@ -32,11 +32,17 @@ pub(crate) fn is_windows_reserved(component: &str) -> bool {
     matches!(bytes, [b'C', b'O', b'M', digit] | [b'L', b'P', b'T', digit] if (b'1'..=b'9').contains(digit))
 }
 
-/// Name prefixes of the staging files the Runtime itself creates in an exported directory.
-const RUNTIME_PREFIXES: [&str; 2] = [".ma2a-upload-", ".ma2a-write-"];
+/// Name prefixes of the staging files the Runtime itself creates in an exported directory,
+/// and of the private directory a local download keeps its helper files in.
+const RUNTIME_PREFIXES: [&str; 3] = [
+    ".ma2a-upload-",
+    ".ma2a-write-",
+    crate::client::resume::PRIVATE_DIRECTORY,
+];
 
-/// Returns whether a component names a Runtime staging file, which no caller may address:
-/// an upload is published from the file it verified, never from one a caller replaced.
+/// Returns whether a component names a Runtime staging file or download directory, which no
+/// caller may address: an upload or download is published from the file it verified, never
+/// from one a caller replaced.
 ///
 /// The prefixes are compared without regard to ASCII case, because a case-insensitive volume
 /// (NTFS, APFS by default) resolves another spelling to the same entry.
@@ -62,7 +68,16 @@ pub(crate) fn check(path: &RemotePath) -> Result<(), ServiceError> {
 }
 
 /// Opens `root` and then each of `components` as a directory.
+///
+/// A root inside a download's private directory is refused outright: everything below it is
+/// a helper file a caller must not reach.
 pub(crate) fn walk(root: &Path, components: &[String]) -> Result<Directory, ServiceError> {
+    if root
+        .components()
+        .any(|part| crate::client::resume::is_private_directory(part.as_os_str()))
+    {
+        return Err(ServiceError::InvalidPath);
+    }
     let mut current = Directory::open_root(root)?;
     for component in components {
         current = current.child(component)?;
@@ -135,6 +150,9 @@ mod tests {
         // Another spelling names the same entry on a case-insensitive volume.
         assert!(is_runtime_reserved(".MA2A-Upload-0011.part"));
         assert!(is_runtime_reserved(".Ma2a-WRITE-0011.tmp"));
+        // A download's private directory, in every spelling.
+        assert!(is_runtime_reserved(".ma2a-downloads"));
+        assert!(is_runtime_reserved(".MA2A-Downloads"));
         for ordinary in [
             ".ma2a-uploads",
             "ma2a-upload-1.part",
@@ -149,6 +167,24 @@ mod tests {
             )?),
             Ok(())
         );
+        Ok(())
+    }
+
+    /// An export rooted in, or below, a download's private directory serves nothing, so no
+    /// caller reaches a helper file through it.
+    #[test]
+    fn a_root_inside_a_download_directory_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let scratch = std::env::temp_dir().join(format!("ma2a-helper-root-{}", std::process::id()));
+        let helpers = scratch.join(".MA2A-downloads");
+        std::fs::create_dir_all(helpers.join("nested"))?;
+        for root in [helpers.clone(), helpers.join("nested")] {
+            assert_eq!(
+                super::walk(&root, &[]).err(),
+                Some(ma2a_core::service::ServiceError::InvalidPath)
+            );
+        }
+        assert!(super::walk(&scratch, &[]).is_ok());
+        std::fs::remove_dir_all(&scratch)?;
         Ok(())
     }
 

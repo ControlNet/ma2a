@@ -98,6 +98,9 @@ are invalid:
 - names starting with `.ma2a-upload-` or `.ma2a-write-`, in any ASCII letter case: the Runtime's
   own staging files, which a caller can neither read nor replace while an upload or write is being
   verified and published.
+- names starting with `.ma2a-downloads`, in any ASCII letter case: the private directory a local
+  download keeps its partial file in (see "Resumable downloads"). A root whose own path passes
+  through such a directory serves nothing and answers `invalid_path`.
 
 Nothing is resolved lexically. A root name is bound Runtime-wide to one canonical absolute
 directory. Each Space exposes it read-only or read-write.
@@ -278,19 +281,25 @@ The `ma2a` CLI drives every family this way:
 | `proxy forward --endpoint ID --listen ADDR HOST PORT` | Proxy | one stream per accepted local connection |
 
 **Resumable downloads.** A download keeps its helper files in `.ma2a-downloads/`, a directory
-beside `LOCAL` that is owner-only on Unix and removed once no download uses it. Each name there
-is `HASH.ma2a-part` plus a suffix, where `HASH` is 32 hex characters of BLAKE3 over `LOCAL`'s
-file name in ASCII lowercase. So no helper file shares a name with an ordinary file, or with
-another download's destination; names differing only in case share one set, which keeps a
-destination leased once on a case-insensitive file system. The partial file is `HASH.ma2a-part`.
+beside `LOCAL` that is owner-only on Unix and removed once no download uses it. On Unix an
+existing `.ma2a-downloads` is used only when the current account owns it and its mode grants
+nothing to group or others; otherwise the download fails with `AlreadyExists` and leaves it as
+it was. A `LOCAL` named `.ma2a-downloads`, in any letter case, is refused with `InvalidInput`
+before anything is created. The partial file is `HASH.ma2a-part`, where `HASH` is 32 hex
+characters of BLAKE3 over `LOCAL`'s exact file name, so no helper file shares a name with an
+ordinary file or another download's destination, and two destinations a case-sensitive file
+system keeps apart (`report`, `REPORT`) keep their own progress. The lock file is
+`FOLDED.ma2a-lock`, where `FOLDED` hashes the name in ASCII lowercase: a case-insensitive file
+system names one destination by every spelling, so it still has one writer, and on a
+case-sensitive one two such destinations wait for each other.
 Before the first content byte, the download durably records the source (target Endpoint and
 remote path) and the content identity in `HASH.ma2a-part.meta`. `--resume` continues only a
 partial file whose sidecar names the same source, and it re-hashes the local prefix so
 verification still covers the whole content. If the target answers `precondition_failed` (the
 source changed), the download restarts once from zero. A partial file whose content changed or
-failed verification is removed. While a download runs, it holds an OS lock on
-`HASH.ma2a-part.lock`, so a second download to the same `LOCAL` fails at once instead of
-writing the same partial file; the lock file is removed when the download ends.
+failed verification is removed. While a download runs, it holds an OS lock on its lock file,
+so a second download to the same `LOCAL` fails at once instead of writing alongside it; the
+lock file is removed when the download ends.
 Even inside that directory, a download takes over only helper files it can show it wrote: a
 sidecar, or its staging file `HASH.ma2a-part.meta.tmp`, that starts with the MA2A header, a
 partial file next to such a sidecar or still empty, and an empty lock file. Any other file or

@@ -22,6 +22,15 @@ async fn refusal(destination: &Path) -> Option<ErrorKind> {
     }
 }
 
+/// Creates the private directory beside `local` the way a download does: owner-only.
+fn private_directory(local: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(local.join(PRIVATE_DIRECTORY))
+}
+
 /// Downloads `content` to `destination` and publishes it.
 async fn download(destination: &Path, content: &[u8]) -> TestResult {
     let mut partial = Partial::open(destination, "peer docs:/file", false).await?;
@@ -86,7 +95,7 @@ async fn an_unrelated_file_inside_the_private_directory_is_still_kept() -> TestR
     let local = TempRoot::new("sidecar-meta")?;
     let destination = local.path().join("report");
     let sidecar = partial_path(&destination)?.with_extension("ma2a-part.meta");
-    std::fs::create_dir(local.path().join(PRIVATE_DIRECTORY))?;
+    private_directory(local.path())?;
     std::fs::write(&sidecar, b"notes")?;
 
     // When
@@ -118,7 +127,7 @@ async fn a_link_where_the_partial_file_would_be_is_never_followed() -> TestResul
     let destination = local.path().join("report");
     let target = local.path().join("elsewhere");
     std::fs::write(&target, b"")?;
-    std::fs::create_dir(local.path().join(PRIVATE_DIRECTORY))?;
+    private_directory(local.path())?;
     std::os::unix::fs::symlink(&target, partial_path(&destination)?)?;
 
     let refused = refusal(&destination).await;
@@ -168,7 +177,7 @@ async fn a_staged_sidecar_cut_short_by_an_interruption_is_reclaimed() -> TestRes
     // Given: a download stopped while writing its staged sidecar, at two different points.
     let local = TempRoot::new("sidecar-staged-cut")?;
     for (name, written) in [("empty", &b""[..]), ("prefix", &b"ma2a-dow"[..])] {
-        std::fs::create_dir_all(local.path().join(PRIVATE_DIRECTORY))?;
+        private_directory(local.path())?;
         let destination = local.path().join(name);
         let staged = partial_path(&destination)?.with_extension("ma2a-part.meta.tmp");
         std::fs::write(staged, written)?;
