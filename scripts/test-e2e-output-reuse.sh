@@ -10,13 +10,27 @@ mkdir "$temporary/bin"
 printf '#!/bin/sh\nexit 1\n' > "$temporary/bin/cargo"
 chmod +x "$temporary/bin/cargo"
 
-# Runs the script against output directory $1 and prints its exit status.
+# Runs the script against output directory $1, with run count $2 (default 1), and prints its
+# exit status.
 run() {
   local status=0
-  PATH="$temporary/bin:$PATH" MA2A_E2E_OUTPUT="$1" ./scripts/run-e2e.sh \
-    >/dev/null 2>&1 || status=$?
+  PATH="$temporary/bin:$PATH" MA2A_E2E_OUTPUT="$1" MA2A_E2E_RUNS="${2:-1}" \
+    ./scripts/run-e2e.sh >/dev/null 2>&1 || status=$?
   printf '%s' "$status"
 }
+
+# A run count must be a positive integer without leading zeros, and is checked before the
+# output directory is created.
+for runs in 0 00 01 x 1x; do
+  test "$(run "$temporary/count-$runs" "$runs")" -eq 2 \
+    || { printf 'MA2A_E2E_RUNS=%s was accepted\n' "$runs" >&2; exit 1; }
+  test ! -e "$temporary/count-$runs" \
+    || { printf 'MA2A_E2E_RUNS=%s created the output\n' "$runs" >&2; exit 1; }
+done
+for runs in 1 3 10; do
+  test "$(run "$temporary/count-$runs" "$runs")" -ne 2 \
+    || { printf 'MA2A_E2E_RUNS=%s was refused\n' "$runs" >&2; exit 1; }
+done
 
 # An evidence directory left by an interrupted run is reused, and only its files go.
 reused="$temporary/reused"
@@ -30,6 +44,20 @@ test "$status" -ne 2 || { printf 'an interrupted evidence directory was refused\
 for name in summary.txt run-1.log run-12.junit.xml run-1.tests.txt.unsorted; do
   test ! -e "$reused/$name" || { printf '%s was kept\n' "$name" >&2; exit 1; }
 done
+
+# The same evidence directory is reused whether or not its name ends in a separator.
+for spelling in "$temporary/slash/" "$temporary/slash//" "$temporary/slash"; do
+  mkdir -p "$temporary/slash"
+  printf '' > "$temporary/slash/.ma2a-e2e-evidence"
+  printf 'old' > "$temporary/slash/run-1.log"
+  test "$(run "$spelling")" -ne 2 \
+    || { printf '%s was refused\n' "$spelling" >&2; exit 1; }
+  test ! -e "$temporary/slash/run-1.log" \
+    || { printf '%s kept run-1.log\n' "$spelling" >&2; exit 1; }
+done
+printf 'notes' > "$temporary/slash/notes.txt"
+test "$(run "$temporary/slash/")" -eq 2
+test "$(cat "$temporary/slash/notes.txt")" = notes
 
 # A file merely named like the script's own is kept, and the directory is refused.
 near="$temporary/near"

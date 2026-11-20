@@ -9,9 +9,15 @@ junit=target/nextest/ci/junit.xml
 # maintained here, so adding a test cannot silently fail the harness.
 expected_records=13
 
+# A run count is a positive decimal integer without leading zeros; an empty value means the
+# default. Anything else, `00` included, is refused before the output directory is touched.
 case "$runs" in
-  ''|*[!0-9]*|0) printf 'MA2A_E2E_RUNS must be a positive integer\n' >&2; exit 2 ;;
+  ''|*[!0-9]*|0*) printf 'MA2A_E2E_RUNS must be a positive integer without leading zeros\n' >&2; exit 2 ;;
 esac
+# Trailing separators are dropped, so `dir` and `dir/` name the same directory in every check.
+while [ "${output%/}" != "$output" ] && [ -n "${output%/}" ]; do
+  output=${output%/}
+done
 command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 2; }
 # An existing output directory is reused only when it is empty, or carries this script's marker
 # and holds nothing but files this script writes. Exactly the files found in that check are
