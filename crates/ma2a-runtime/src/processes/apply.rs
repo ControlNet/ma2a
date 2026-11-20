@@ -124,22 +124,42 @@ impl ProcessManager {
         let directory = self.directory(record.id);
         let recorded = tokio::task::spawn_blocking(move || status::read(&directory))
             .await
-            .map_err(|_| ServiceError::Internal)?
-            .ok()
-            .flatten();
-        match recorded {
-            Some(reported) if reported.is_final() => self.apply(record.id, reported).await,
-            // `go` is sent only after `starting` was committed: no child can exist.
-            _ if record.state == ProcessState::Created => {
-                let interrupted = (ProcessState::Failed, Some(ProcessReason::Interrupted));
-                self.step(record.id, interrupted).await
-            }
-            _ => {
-                let lost = (ProcessState::Lost, Some(ProcessReason::SupervisorLost));
-                self.step(record.id, lost).await
-            }
+            .map_err(|_| ServiceError::Internal)?;
+        match concluded(recorded, record.state)? {
+            Concluded::Reported(reported) => self.apply(record.id, reported).await,
+            Concluded::Ended(ended) => self.step(record.id, ended).await,
         }
     }
+}
+
+/// What a provably gone supervisor's status record proves.
+#[derive(Debug, PartialEq, Eq)]
+enum Concluded {
+    /// The supervisor recorded the end.
+    Reported(SupervisorStatus),
+    /// No end was recorded, so the Process ends with this state and reason.
+    Ended((ProcessState, Option<ProcessReason>)),
+}
+
+/// Decides from one read of the status record; a read that failed for a reason other than a
+/// malformed record proves nothing yet and is retried, never committed as `lost`.
+fn concluded(
+    recorded: std::io::Result<Option<SupervisorStatus>>,
+    state: ProcessState,
+) -> Result<Concluded, ServiceError> {
+    let recorded = match recorded {
+        Ok(recorded) => recorded,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => None,
+        Err(_) => return Err(ServiceError::Unavailable),
+    };
+    Ok(match recorded {
+        Some(reported) if reported.is_final() => Concluded::Reported(reported),
+        // `go` is sent only after `starting` was committed: no child can exist.
+        _ if state == ProcessState::Created => {
+            Concluded::Ended((ProcessState::Failed, Some(ProcessReason::Interrupted)))
+        }
+        _ => Concluded::Ended((ProcessState::Lost, Some(ProcessReason::SupervisorLost))),
+    })
 }
 
 #[cfg(test)]
@@ -147,7 +167,30 @@ mod tests {
     use ma2a_core::service::{ProcessReason, ProcessState, Termination};
     use ma2a_services::supervisor::{EndCause, SupervisorStatus};
 
-    use super::step_for;
+    use super::{Concluded, concluded, step_for};
+
+    #[test]
+    fn an_unreadable_status_record_is_retried_rather_than_lost() {
+        let exited = SupervisorStatus::Ended(Termination::Exited(3), EndCause::Exited, 9);
+        let busy = std::io::Error::from(std::io::ErrorKind::ResourceBusy);
+        assert_eq!(
+            concluded(Err(busy), ProcessState::Running),
+            Err(ma2a_core::service::ServiceError::Unavailable)
+        );
+        assert_eq!(
+            concluded(Ok(Some(exited)), ProcessState::Running),
+            Ok(Concluded::Reported(exited))
+        );
+        let lost = Concluded::Ended((ProcessState::Lost, Some(ProcessReason::SupervisorLost)));
+        assert_eq!(concluded(Ok(None), ProcessState::Running), Ok(lost));
+        let malformed = std::io::Error::from(std::io::ErrorKind::InvalidData);
+        let interrupted =
+            Concluded::Ended((ProcessState::Failed, Some(ProcessReason::Interrupted)));
+        assert_eq!(
+            concluded(Err(malformed), ProcessState::Created),
+            Ok(interrupted)
+        );
+    }
 
     #[test]
     fn running_is_asserted_only_from_starting() {
