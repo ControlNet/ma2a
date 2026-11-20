@@ -89,7 +89,7 @@ impl Anchor {
 
     /// Whether the child `name` is, without following it, the file `held`.
     pub(super) fn names_file(&self, name: &OsStr, held: &File) -> io::Result<bool> {
-        self.names(name, identity(&at::fstat(held)?))
+        self.names(name, id_of(held)?)
     }
 
     /// Whether the child `name` is, without following it, the directory `held`.
@@ -104,7 +104,8 @@ impl Anchor {
         Ok(identity(&at::fstat(&self.fd)?) == identity(&named))
     }
 
-    fn names(&self, name: &OsStr, held: (i128, i128)) -> io::Result<bool> {
+    /// Whether the child `name` is, without following it, the file identified by `held`.
+    pub(super) fn names(&self, name: &OsStr, held: (i128, i128)) -> io::Result<bool> {
         match at::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(named) => Ok(identity(&named) == held),
             Err(rustix::io::Errno::NOENT) => Ok(false),
@@ -143,6 +144,11 @@ impl Anchor {
         at::linkat(&self.fd, from, &to.fd, name, AtFlags::empty())?;
         self.remove_file(from)
     }
+}
+
+/// Which file a held handle refers to.
+pub(super) fn id_of(file: &File) -> io::Result<(i128, i128)> {
+    Ok(identity(&at::fstat(file)?))
 }
 
 /// The device and inode `stat` describes, widened losslessly: their types differ between

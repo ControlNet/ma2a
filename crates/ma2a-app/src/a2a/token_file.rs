@@ -154,7 +154,7 @@ fn write_staged(
 fn create_staging(path: &Path) -> Result<(), ma2a_store::StoreError> {
     #[cfg(windows)]
     {
-        windows::create_protected_dir(path)?;
+        ma2a_services::windows_files::create_protected_dir(path)?;
         ma2a_store::protect_private_directory(path, "A2A token staging directory")
     }
     #[cfg(not(windows))]
@@ -184,10 +184,6 @@ pub(super) fn remove_if_ours(path: &Path, token: &str) {
         let _removed = std::fs::remove_file(path);
     }
 }
-
-#[cfg(windows)]
-#[path = "token_file_windows.rs"]
-mod windows;
 
 #[cfg(test)]
 #[path = "token_file_tests.rs"]

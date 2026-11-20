@@ -12,7 +12,7 @@ impl Partial {
     /// The partial file is renamed from the private directory held since the download began
     /// into the destination's directory held since then too, so it is the very file whose
     /// content was hashed that is published, next to nothing but the destination's own name.
-    /// Without `replace` the rename never replaces an existing file. On Unix, publishing first
+    /// Without `replace` the rename never replaces an existing file. Publishing first
     /// checks that the destination's path still names the held directory and that the partial
     /// file's name still refers to the hashed file; a mismatch fails the download and keeps its
     /// progress for a later resume.
@@ -35,18 +35,17 @@ impl Partial {
         } = self;
         let file = file.into_std().await;
         tokio::task::spawn_blocking(move || {
-            #[cfg(unix)]
+            let hashed = super::anchor::id_of(&file)?;
             if !helpers.parent.0.is_at(&helpers.parent.1)? {
                 lease.release(&helpers.locks);
                 return Err(moved());
             }
-            #[cfg(unix)]
-            if !helpers.directory.names_file(&part, &file)? {
+            if !helpers.directory.names(&part, hashed)? {
                 lease.release(&helpers.locks);
                 return Err(replaced());
             }
-            // An open file without delete sharing cannot be renamed on Windows.
-            #[cfg(windows)]
+            // An open file without delete sharing cannot be renamed on Windows; it is known
+            // by its identity from here on.
             drop(file);
             let to = (&helpers.parent.0, name.as_os_str());
             let published = if replace {
@@ -58,8 +57,7 @@ impl Partial {
                 lease.release(&helpers.locks);
                 return Err(error);
             }
-            #[cfg(unix)]
-            if !helpers.parent.0.names_file(&name, &file)? {
+            if !helpers.parent.0.names(&name, hashed)? {
                 // Whatever is there now may not be ours to remove; report it instead.
                 lease.release(&helpers.locks);
                 return Err(replaced());
@@ -102,14 +100,12 @@ impl Partial {
     }
 }
 
-#[cfg(unix)]
 fn moved() -> io::Error {
     io::Error::other(
         "the destination's directory was moved or replaced during the download; its progress is kept for --resume",
     )
 }
 
-#[cfg(unix)]
 fn replaced() -> io::Error {
     io::Error::other("a helper file of this download was replaced; nothing was published")
 }

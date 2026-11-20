@@ -285,9 +285,14 @@ The `ma2a` CLI drives every family this way:
 | `proxy forward --endpoint ID --listen ADDR HOST PORT` | Proxy | one stream per accepted local connection |
 
 **Resumable downloads.** A download keeps its helper files in `.ma2a-downloads/`, a directory
-beside `LOCAL` that is owner-only on Unix. On Unix an existing `.ma2a-downloads` is used only when
-the current account owns it and its mode grants nothing to group or others; otherwise the download
-fails with `AlreadyExists` and leaves it as it was. A `LOCAL` named `.ma2a-downloads`, in any letter
+beside `LOCAL` that only the current account may enter. On Unix it is made with mode `0700`, and
+an existing one is used only when the current account owns it and its mode grants nothing to
+group or others. On Windows it is made with a protected ACL that grants only its owner and SYSTEM
+and is inherited by every helper file, and an existing one is used only when it is owned by the
+current user, SYSTEM, or Administrators and its protected ACL allows no other account in.
+Otherwise the download fails with `AlreadyExists` and leaves the directory as it was. On Windows
+this refuses a `.ma2a-downloads` made by earlier builds, which inherited `LOCAL`'s directory's
+ACL; remove it, once no download uses it, to let a download make a private one. A `LOCAL` named `.ma2a-downloads`, in any letter
 case, is refused with `InvalidInput` before anything is created. A download that makes the
 directory marks it with an empty `created` file, and the last download to end in it removes it;
 one without that mark, such as one the operator made, is kept, empty, when downloads end.
@@ -308,9 +313,13 @@ so a second download to the same `LOCAL` fails at once instead of writing alongs
 lock file is removed when the download ends.
 A download opens `LOCAL`'s directory, the private directory, and its lock directory once, when it
 starts, and reaches every helper file through them (on Unix by `*at` calls; on Windows each is
-held open without delete sharing, so it cannot be renamed or removed meanwhile). On Unix,
-publishing first checks that `LOCAL`'s directory path still names the directory the download
-started in, and that the partial file is still the one it hashed. If the directory was moved or
+held open without delete sharing, so neither it nor a directory above it can be renamed
+meanwhile, and it is reached by the path its handle resolves to, with every junction and link
+resolved). Publishing first checks that `LOCAL`'s directory path still names the directory the
+download started in, and that the partial file is still the one it hashed (by device and inode
+on Unix, by volume serial number and file index on Windows); afterwards, that `LOCAL` names that
+file. On Windows the partial file, once open, shares only reading, so no other handle can write
+it while the download runs. If the directory was moved or
 replaced, nothing is published, the download fails, and its progress stays in the private
 directory where the original directory now is, for `--resume` there. The verified partial file is
 then renamed into place, so the published file is the one whose content was verified.

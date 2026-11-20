@@ -16,9 +16,13 @@ mod process;
 pub mod proxy;
 mod reply;
 pub mod report;
+#[cfg(any(windows, test))]
+mod sddl;
 pub mod shell;
 pub mod supervisor;
 pub mod transfer;
+#[cfg(windows)]
+pub mod windows_files;
 pub mod windows_security;
 
 pub use exec::serve_exec;

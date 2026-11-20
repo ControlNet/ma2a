@@ -3,8 +3,7 @@
 //! The destination's directory, the private directory beside it, and its lock directory are
 //! held for the whole download, and every helper file is reached through them. A rename of the
 //! destination's directory afterwards therefore never redirects the download into another
-//! directory that carries the same names; on Unix publishing then refuses, keeping the
-//! progress, and on Windows the held directories cannot be renamed at all.
+//! directory that carries the same names: publishing then refuses, keeping the progress.
 
 use std::{
     ffi::OsStr,
@@ -36,8 +35,8 @@ impl Helpers {
     /// Opens the directories of a download to `name` in `parent`, making the private
     /// directory when missing, and takes the destination's lease.
     ///
-    /// An existing private directory is used only when, on Unix, this account owns it and no
-    /// other account may enter it; anything else carrying its name is refused and kept.
+    /// An existing private directory is used only when this account owns it and no other
+    /// account may enter it; anything else carrying its name is refused and kept.
     pub(super) fn open(parent: &Path, name: &OsStr) -> io::Result<(Self, Lease)> {
         let private = OsStr::new(PRIVATE_DIRECTORY);
         for _ in 0..ATTEMPTS {
@@ -56,7 +55,6 @@ impl Helpers {
                 }
                 Err(_) => return Err(foreign_directory()),
             };
-            #[cfg(unix)]
             if !directory.is_private()? {
                 return Err(foreign_directory());
             }
@@ -102,7 +100,6 @@ impl Helpers {
         };
         // The private directory, or its lock directory, may have been removed and made again
         // by other downloads between opening and locking; then this lease guards nothing.
-        #[cfg(unix)]
         if !helpers.still_named()? {
             lease.release(&helpers.locks);
             return Ok(None);
@@ -110,7 +107,6 @@ impl Helpers {
         Ok(Some((helpers, lease)))
     }
 
-    #[cfg(unix)]
     fn still_named(&self) -> io::Result<bool> {
         Ok(self
             .parent
@@ -135,7 +131,6 @@ impl Helpers {
         if !matches!(directory.file_kind(created), Ok(Some((true, _)))) {
             return;
         }
-        #[cfg(unix)]
         if !parent
             .names_directory(OsStr::new(PRIVATE_DIRECTORY), &directory)
             .unwrap_or(false)

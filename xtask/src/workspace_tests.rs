@@ -27,13 +27,6 @@ const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 9] = [
         ),
     ),
     (
-        "crates/ma2a-app/src/a2a/token_file_windows.rs",
-        concat!(
-            "allow(unsafe",
-            "_code, reason = \"audited Windows SDDL FFI boundary\")"
-        ),
-    ),
-    (
         "crates/ma2a-app/src/commands/workflows/space_windows.rs",
         concat!(
             "allow(unsafe",
@@ -66,6 +59,13 @@ const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 9] = [
         concat!(
             "allow(unsafe",
             "_code, reason = \"audited Windows SID FFI boundary\")"
+        ),
+    ),
+    (
+        "crates/ma2a-services/src/windows_files.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows file-handle FFI boundary\")"
         ),
     ),
     (

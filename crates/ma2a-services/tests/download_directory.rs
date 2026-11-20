@@ -12,26 +12,33 @@ use ma2a_services::client::resume::{PRIVATE_DIRECTORY, Partial, partial_path};
 use support::{TempRoot, TestResult};
 use tokio::io::AsyncWriteExt as _;
 
-#[cfg(unix)]
 #[tokio::test]
 async fn an_existing_directory_others_can_enter_is_not_used() -> TestResult {
-    use std::os::unix::fs::PermissionsExt as _;
-    // Given: the operator's own directory with the private directory's name, open to others.
+    // Given: the operator's own directory with the private directory's name, open to others:
+    // on Windows a directory made plainly inherits its parent's entries.
     let local = TempRoot::new("download-open-directory")?;
     let directory = local.path().join(PRIVATE_DIRECTORY);
     std::fs::create_dir(&directory)?;
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        &directory,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )?;
 
     // When
     let opened = Partial::open(&local.path().join("report"), "peer docs:/file", false).await;
 
-    // Then: the download is refused, and the directory keeps its mode and stays in place.
+    // Then: the download is refused, and the directory stays in place, as it was.
     assert_eq!(
         opened.err().map(|error| error.kind()),
         Some(ErrorKind::AlreadyExists)
     );
-    let mode = std::fs::metadata(&directory)?.permissions().mode();
-    assert_eq!(mode & 0o777, 0o755);
+    #[cfg(unix)]
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&directory)?.permissions())
+            & 0o777,
+        0o755
+    );
     assert_eq!(std::fs::read_dir(&directory)?.count(), 0);
     Ok(())
 }
@@ -120,8 +127,8 @@ async fn a_private_directory_an_operator_made_is_kept() -> TestResult {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
         .create(&directory)?;
-    #[cfg(not(unix))]
-    std::fs::create_dir(&directory)?;
+    #[cfg(windows)]
+    ma2a_services::windows_files::create_protected_dir(&directory)?;
 
     // When: one download completes and another is abandoned.
     let mut done = Partial::open(&local.path().join("done"), "peer docs:/done", false).await?;
@@ -176,4 +183,61 @@ async fn a_download_whose_directory_was_swapped_publishes_nothing_and_keeps_both
     assert_eq!(resumed.offset(), 6);
     resumed.discard().await?;
     Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn a_download_whose_junction_was_repointed_publishes_nothing_and_keeps_both() -> TestResult {
+    // Given: a download to `report` through the junction `link` to `a`, and another to
+    // `report` in `b`, each holding a prefix.
+    let local = TempRoot::new("download-junction")?;
+    let (a, b, link) = (
+        local.path().join("a"),
+        local.path().join("b"),
+        local.path().join("link"),
+    );
+    std::fs::create_dir(&a)?;
+    std::fs::create_dir(&b)?;
+    junction(&link, &a)?;
+    let mut first = Partial::open(&link.join("report"), "peer docs:/first", false).await?;
+    first.sink().0.write_all(b"first").await?;
+    let mut second = Partial::open(&b.join("report"), "peer docs:/second", false).await?;
+    second.begin(ContentIdentity::new(100, 1)).await?;
+    second.sink().0.write_all(b"second").await?;
+    second.sink().0.flush().await?;
+
+    // When: the junction is pointed at `b`, then the first download publishes.
+    std::fs::remove_dir(&link)?;
+    junction(&link, &b)?;
+    let published = first.finish(false).await;
+
+    // Then: nothing is published anywhere, and each keeps its own progress.
+    assert!(published.is_err());
+    assert!(!a.join("report").exists());
+    assert!(!b.join("report").exists());
+    assert_eq!(std::fs::read(partial_path(&a.join("report"))?)?, b"first");
+    drop(second);
+    assert_eq!(std::fs::read(partial_path(&b.join("report"))?)?, b"second");
+    let resumed = Partial::open(&b.join("report"), "peer docs:/second", true).await?;
+    assert_eq!(resumed.offset(), 6);
+    resumed.discard().await?;
+    Ok(())
+}
+
+/// Makes `link` a junction to `target`; unlike a symbolic link, it needs no privilege.
+#[cfg(windows)]
+fn junction(link: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    let status = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("mklink /J failed: {status}")))
+    }
 }

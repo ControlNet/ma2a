@@ -37,9 +37,8 @@ impl Lease {
                 Err(TryLockError::WouldBlock) => return Err(in_progress()),
                 Err(TryLockError::Error(error)) => return Err(error),
             }
-            // A lock file without delete sharing cannot be removed while open, so on Windows
-            // the locked file is always the one the name refers to.
-            #[cfg(unix)]
+            // On Windows a lock file opened without delete sharing cannot be removed while
+            // open, so this holds at once there.
             if !locks.names_file(name, &file)? {
                 continue;
             }
