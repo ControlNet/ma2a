@@ -14,8 +14,10 @@ use super::SIDECAR_MAGIC;
 
 /// Refuses a sidecar, its staging file, or a partial file this download cannot show it wrote.
 pub(super) async fn ensure_ours(part: &Path, sidecar: &Path, staged: &Path) -> io::Result<()> {
-    has_header(staged).await?;
-    let sidecar_ours = has_header(sidecar).await?;
+    // A staged sidecar is interrupted mid-write when a download stops before its rename, so any
+    // prefix of the header, including none, is this download's own.
+    has_header(staged, true).await?;
+    let sidecar_ours = has_header(sidecar, false).await?;
     match tokio::fs::symlink_metadata(part).await {
         Ok(metadata) if !metadata.is_file() || (!sidecar_ours && metadata.len() > 0) => {
             Err(foreign(part))
@@ -25,9 +27,9 @@ pub(super) async fn ensure_ours(part: &Path, sidecar: &Path, staged: &Path) -> i
     }
 }
 
-/// Returns whether `path` is a regular file that starts with the sidecar header, `false` when
-/// it is absent, and refuses anything else.
-async fn has_header(path: &Path) -> io::Result<bool> {
+/// Returns whether `path` is a regular file that starts with the sidecar header, or with a
+/// prefix of it when `partial`, `false` when it is absent, and refuses anything else.
+async fn has_header(path: &Path, partial: bool) -> io::Result<bool> {
     match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) if !metadata.is_file() => Err(foreign(path)),
         Ok(_) => {
@@ -37,7 +39,8 @@ async fn has_header(path: &Path) -> io::Result<bool> {
                 .take(u64::try_from(SIDECAR_MAGIC.len()).unwrap_or(u64::MAX))
                 .read_to_end(&mut head)
                 .await?;
-            if head == SIDECAR_MAGIC.as_bytes() {
+            let magic = SIDECAR_MAGIC.as_bytes();
+            if head == magic || (partial && magic.starts_with(&head)) {
                 Ok(true)
             } else {
                 Err(foreign(path))

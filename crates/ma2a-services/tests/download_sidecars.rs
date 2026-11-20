@@ -111,3 +111,20 @@ async fn helper_files_this_download_left_behind_are_still_reclaimed() -> TestRes
     assert!(!local.path().join("report.ma2a-part").exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn a_staged_sidecar_cut_short_by_an_interruption_is_reclaimed() -> TestResult {
+    // Given: a download stopped while writing its staged sidecar, at two different points.
+    let local = TempRoot::new("sidecar-staged-cut")?;
+    for (name, written) in [("empty", &b""[..]), ("prefix", &b"ma2a-dow"[..])] {
+        let destination = local.path().join(name);
+        std::fs::write(
+            local.path().join(format!("{name}.ma2a-part.meta.tmp")),
+            written,
+        )?;
+
+        // When / Then: the next download starts instead of refusing its own file.
+        assert_eq!(refusal(&destination).await, None, "{name}");
+    }
+    Ok(())
+}
