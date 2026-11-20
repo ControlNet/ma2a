@@ -182,12 +182,9 @@ impl Actor {
             .iter()
             .any(|member| member.endpoint_id() == departing)
         {
-            // A repeated departure converges on the chain that already removed it.
-            return Ok(chain
-                .revocations()
-                .iter()
-                .any(|revocation| revocation.endpoint_id() == departing)
-                .then_some(chain));
+            // A repeated departure converges on the chain that already removed it, and learns
+            // nothing the authority signed after that removal.
+            return Ok(crate::departure::through_removal(&chain, departing));
         }
         let issued_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| crate::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;

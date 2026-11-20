@@ -8,6 +8,10 @@ use std::{error::Error, fmt};
 
 use ma2a_core::{EndpointId, RequestId, SpaceChain, SpaceId};
 
+mod receipt;
+
+pub(crate) use receipt::through_removal;
+
 /// Magic prefix separating a departure request from an enrollment attempt on the
 /// shared bootstrap ALPN.
 pub(crate) const DEPARTURE_MAGIC: [u8; 4] = *b"MLV1";
@@ -150,10 +154,10 @@ mod tests {
     };
     use ma2a_net::EndpointSecret;
 
-    type TestValue<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-    type TestResult = TestValue<()>;
+    pub(super) type TestValue<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+    pub(super) type TestResult = TestValue<()>;
 
-    fn endpoint(seed: u8) -> TestValue<ma2a_core::EndpointId> {
+    pub(super) fn endpoint(seed: u8) -> TestValue<ma2a_core::EndpointId> {
         Ok(EndpointSecret::parse(&[seed; 32])?.endpoint_id())
     }
 
@@ -167,7 +171,7 @@ mod tests {
 
     /// Builds a chain whose generation 1 holds both members, and returns the
     /// authority so a caller can sign further generations.
-    fn shared_space(nonce: u8) -> TestValue<(SpaceChain, SpaceAuthoritySecret)> {
+    pub(super) fn shared_space(nonce: u8) -> TestValue<(SpaceChain, SpaceAuthoritySecret)> {
         let secret = SpaceAuthoritySecret::from_bytes([nonce ^ 0x5a; 32]);
         let owner = endpoint(0x41)?;
         let genesis = SpaceGenesisV1::new(
@@ -189,7 +193,7 @@ mod tests {
         Ok((chain, secret))
     }
 
-    fn with_departure(
+    pub(super) fn with_departure(
         chain: &SpaceChain,
         secret: &SpaceAuthoritySecret,
         departing: ma2a_core::EndpointId,
@@ -209,6 +213,30 @@ mod tests {
             ),
             1_700_000_000_002,
             SpaceManifestMembership::new(members, vec![SpaceRevocationV1::new(departing)]),
+        )?
+        .sign(secret)?;
+        advanced.apply(&manifest)?;
+        Ok(advanced)
+    }
+
+    /// Signs the next generation, which adds `joining` and keeps every revocation.
+    pub(super) fn with_member(
+        chain: &SpaceChain,
+        secret: &SpaceAuthoritySecret,
+        joining: ma2a_core::EndpointId,
+    ) -> TestValue<SpaceChain> {
+        let mut advanced = chain.clone();
+        let mut members = chain.members().to_vec();
+        members.push(member(joining)?);
+        members.sort_by_key(SpaceMemberV1::endpoint_id);
+        let manifest = SpaceManifestV1::new(
+            SpaceManifestLink::new(
+                chain.space_id(),
+                chain.latest_generation() + 1,
+                chain.latest_hash(),
+            ),
+            1_700_000_000_003,
+            SpaceManifestMembership::new(members, chain.revocations().to_vec()),
         )?
         .sign(secret)?;
         advanced.apply(&manifest)?;
