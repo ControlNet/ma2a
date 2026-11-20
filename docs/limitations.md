@@ -64,11 +64,15 @@ on restart until the new process observes current state.
   it can remove the file after a restart. If the destination's directory is renamed while the
   upload runs and the Runtime then stops, the staged file stays where the directory now is, and
   the sweep at the next start removes whatever the recorded path then names. When nothing is
-  there, only the moved file is left behind, as disk use; it can be removed by hand. When a
-  directory restored at the old place holds an entry of that name, the sweep removes that entry
-  instead. It cannot be anyone else's file: Files callers can never create or address the
-  `.ma2a-upload-` prefix, and the request id in the name is random, so the entry is a copy of
-  this upload's own incomplete staging file.
+  there, only the moved file is left behind, as disk use; it can be removed by hand. The sweep
+  does not check that the entry it removes is the file the upload created: the path is recorded
+  before the file is created, and only the name is compared. So when a directory restored at the
+  old place holds an entry of that name, or the Runtime stopped between recording the path and
+  creating the file while an entry of that name already existed there, the sweep removes that
+  entry. Files callers can never create or address the `.ma2a-upload-` prefix, but local
+  processes can. Before restoring a directory that held an interrupted upload, or before starting
+  a Runtime that may have stopped mid-upload, move away any `.ma2a-upload-*.part` entry there that
+  must be kept.
 - **A stopped Agent's unbound Process is released with a bounded retry.** When an Agent is
   stopped while its Process is starting, the Runtime terminates the Process that could not be
   bound to it, retrying four times. If the Store fails all four times, or fails the binding
