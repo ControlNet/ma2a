@@ -14,22 +14,56 @@ case "$runs" in
 esac
 command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 2; }
 # An existing output directory is reused only when it is empty, or carries this script's marker
-# and holds nothing but files this script writes. Only those files are removed, so a mistyped
-# MA2A_E2E_OUTPUT, or a file someone added to an evidence directory, is never deleted.
+# and holds nothing but files this script writes. Exactly the files found in that check are
+# removed, so a mistyped MA2A_E2E_OUTPUT, a file someone added to an evidence directory, or one
+# that appears while the check runs is never deleted.
 marker=.ma2a-e2e-evidence
-foreign_entry() {
-  find "$output" -mindepth 1 -maxdepth 1 \( ! -type f -o ! \( -name "$marker" \
-    -o -name inventory.json -o -name inventory.txt -o -name inventory.txt.unsorted \
-    -o -name summary.txt -o -name provenance.txt -o -name 'run-[0-9]*.log' \
-    -o -name 'run-[0-9]*.jsonl' -o -name 'run-[0-9]*.junit.xml' \
-    -o -name 'run-[0-9]*.tests.txt' -o -name 'run-[0-9]*.sha256' \) \) -print -quit
+# Whether the file name $1 is one this script writes: a fixed name, or run-N plus a suffix,
+# where N is digits only.
+ours() {
+  case "$1" in
+    "$marker"|inventory.json|inventory.txt|inventory.txt.unsorted|summary.txt|provenance.txt)
+      return 0 ;;
+    run-*) ;;
+    *) return 1 ;;
+  esac
+  rest=${1#run-}
+  number=${rest%%.*}
+  case "$number" in ''|*[!0-9]*) return 1 ;; esac
+  case "${rest#"$number"}" in
+    .log|.jsonl|.junit.xml|.tests.txt|.tests.txt.unsorted|.sha256) return 0 ;;
+  esac
+  return 1
 }
 if [ -e "$output" ] || [ -L "$output" ]; then
-  if [ -d "$output" ] && [ ! -L "$output" ] && {
-    [ -z "$(ls -A "$output")" ] || { [ -f "$output/$marker" ] && [ -z "$(foreign_entry)" ]; }
-  }; then
-    find "$output" -mindepth 1 -maxdepth 1 -type f -delete
-  else
+  reusable=false
+  if [ -d "$output" ] && [ ! -L "$output" ]; then
+    entries=$(find "$output" -mindepth 1 -maxdepth 1 -print)
+    reusable=true
+    if [ -n "$entries" ] && [ ! -f "$output/$marker" ]; then
+      reusable=false
+    fi
+    saved_ifs=$IFS
+    IFS='
+'
+    set -f
+    for entry in $entries; do
+      # A name holding a newline splits into lines that lack the directory prefix.
+      case "$entry" in "$output"/*) ;; *) reusable=false; break ;; esac
+      if [ ! -f "$entry" ] || [ -L "$entry" ] || ! ours "${entry#"$output"/}"; then
+        reusable=false
+        break
+      fi
+    done
+    if [ "$reusable" = true ]; then
+      for entry in $entries; do
+        rm -f -- "$entry"
+      done
+    fi
+    set +f
+    IFS=$saved_ifs
+  fi
+  if [ "$reusable" != true ]; then
     printf '%s is not an E2E evidence directory written by this script; refusing to reuse it\n' \
       "$output" >&2
     exit 2

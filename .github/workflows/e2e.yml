@@ -28,6 +28,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.143
+      - name: Check which evidence directories the harness reuses
+        run: ./scripts/test-e2e-output-reuse.sh
       - name: Run repeated isolated Phase One scenarios
         run: ./scripts/run-e2e.sh
       - name: Publish repetition summary
