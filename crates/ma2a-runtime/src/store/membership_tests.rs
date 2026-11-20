@@ -115,3 +115,79 @@ fn a_retried_departure_never_removes_a_member_who_joined_again() -> TestResult {
     assert_eq!(backend.repository.revision()?, revision);
     Ok(())
 }
+
+#[test]
+fn each_departure_of_a_member_who_left_twice_gets_its_own_answer() -> TestResult {
+    // Given: a Space this Runtime owns, which the peer joined.
+    let state = State::new()?;
+    let mut backend = StoreBackend::open(&StoreConfig::new(&state.0))?;
+    let local = backend.initialize()?.endpoint_id;
+    let owner = SpaceMemberV1::new(
+        local,
+        "owner".to_owned(),
+        MemberCapabilities::new(true, false),
+    )?;
+    let peer_key = SpaceAuthoritySecret::from_bytes([0x43; 32]).public_key();
+    let peer = EndpointId::try_from(peer_key.as_bytes().as_slice())?;
+    let space_id = backend
+        .repository
+        .create_owned_space(&SpaceCreation::new(
+            1_000,
+            owner.clone(),
+            SpacePolicyV1::phase_one_default(),
+        ))?
+        .space_id();
+    let mut members = vec![
+        owner,
+        SpaceMemberV1::new(
+            peer,
+            "peer".to_owned(),
+            MemberCapabilities::new(true, false),
+        )?,
+    ];
+    members.sort_by_key(SpaceMemberV1::endpoint_id);
+    let joined = SpaceManifestMembership::new(members, Vec::new());
+    let departing = |byte: u8| -> Result<OwnedMemberRevocation, ma2a_core::ProtocolError> {
+        Ok(OwnedMemberRevocation {
+            space_id,
+            endpoint_id: peer,
+            issued_at_ms: 3_000,
+            local_endpoint_id: local,
+            request_id: Some(RequestId::try_from([byte; 16].as_slice())?),
+        })
+    };
+
+    // And: the peer left with request A, joined again, and left again with request B.
+    backend
+        .repository
+        .advance_owned_space(&OwnedSpaceUpdate::new(space_id, 2_000, joined.clone()))?;
+    let first = backend.revoke_owned_space_member(departing(0x61)?)?;
+    backend
+        .repository
+        .advance_owned_space(&OwnedSpaceUpdate::new(space_id, 4_000, joined))?;
+    let second = backend.revoke_owned_space_member(departing(0x62)?)?;
+    assert!(!first.replayed && !second.replayed);
+    let revision = backend.repository.revision()?;
+
+    // When / Then: while the peer is not a member, each retry gets its own answer.
+    let retried = backend.revoke_owned_space_member(departing(0x61)?)?;
+    assert!(retried.replayed);
+    assert_eq!(retried.chain, first.chain);
+    let retried = backend.revoke_owned_space_member(departing(0x62)?)?;
+    assert!(retried.replayed);
+    assert_eq!(retried.chain, second.chain);
+
+    // And: a request with no receipt converges on the latest removal, and an owner-initiated
+    // removal of a non-member is still refused.
+    let unknown = backend.revoke_owned_space_member(departing(0x63)?)?;
+    assert!(unknown.replayed);
+    assert_eq!(unknown.chain, second.chain);
+    let removal = OwnedMemberRevocation {
+        request_id: None,
+        ..departing(0x64)?
+    };
+    let refused = backend.revoke_owned_space_member(removal);
+    assert!(refused.is_err_and(|error| error.is_space_not_found()));
+    assert_eq!(backend.repository.revision()?, revision);
+    Ok(())
+}

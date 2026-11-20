@@ -123,6 +123,18 @@ pub(crate) fn decode_departure(bytes: &[u8]) -> Option<(SpaceId, RequestId)> {
     Some((space_id, request_id))
 }
 
+/// Whether `local` may answer `departing`'s request to leave `chain`: only the Space authority
+/// signs a removal, and Phase 1 has no authority transfer, so that is the genesis owner; the
+/// owner itself never leaves.
+pub(crate) fn answers_departure(
+    chain: &SpaceChain,
+    local: EndpointId,
+    departing: EndpointId,
+) -> bool {
+    let owner = chain.genesis().genesis().initial_member().endpoint_id();
+    owner == local && owner != departing
+}
+
 /// Confirms that `chain` is the same Space, advanced by its own authority, and
 /// that it removes and revokes exactly the departing Endpoint.
 pub(crate) fn accepts_departure(

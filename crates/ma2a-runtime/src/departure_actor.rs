@@ -177,17 +177,10 @@ impl Actor {
         let Some(chain) = self.store.load_space_chain(space_id).await? else {
             return Ok(None);
         };
-        if chain.genesis().genesis().initial_member().endpoint_id() == departing {
+        // A member holding a copy of the chain is not the one that signs; it refuses without
+        // touching anything rather than failing on the authority key it does not hold.
+        if !crate::departure::answers_departure(&chain, self.state.endpoint_id, departing) {
             return Ok(None);
-        }
-        if !chain
-            .members()
-            .iter()
-            .any(|member| member.endpoint_id() == departing)
-        {
-            // A repeated departure converges on the chain that already removed it, and learns
-            // nothing the authority signed after that removal.
-            return Ok(crate::departure::through_removal(&chain, departing));
         }
         let issued_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| crate::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;
@@ -200,8 +193,13 @@ impl Actor {
                 local_endpoint_id: self.state.endpoint_id,
                 request_id: Some(request_id),
             })
-            .await
-            .map_err(|error| self.retain_membership_error(error))?;
+            .await;
+        let removed = match removed {
+            Ok(removed) => removed,
+            // Neither a member now nor removed by any earlier answer: nothing to say.
+            Err(error) if error.is_space_not_found() => return Ok(None),
+            Err(error) => return Err(self.retain_membership_error(error)),
+        };
         if removed.replayed {
             return Ok(Some(removed.chain));
         }

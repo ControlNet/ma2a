@@ -94,6 +94,11 @@ impl RuntimeError {
         )
     }
 
+    /// The named Space, or the member a removal names, is not there.
+    pub(crate) const fn is_space_not_found(&self) -> bool {
+        matches!(self.0, RuntimeErrorKind::Store(StoreError::SpaceNotFound))
+    }
+
     /// Returns a stable non-secret error classification.
     pub const fn code(&self) -> RuntimeErrorCode {
         let kind = match &self.0 {

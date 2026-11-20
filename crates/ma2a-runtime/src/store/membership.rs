@@ -51,23 +51,19 @@ impl StoreBackend {
         {
             // A retry of a request already answered, perhaps after the member joined again,
             // gets the same answer and never removes the member a second time.
-            let chain = crate::departure::through_generation(&chain, generation)
-                .ok_or(ma2a_store::StoreError::SpaceNotFound)?;
-            let projection = self
-                .repository
-                .membership_projection(request.local_endpoint_id)?;
-            return Ok(RemovedMember {
-                revision: projection.revision(),
-                projection_revision: projection.revision(),
-                memberships: projection.into_value(),
-                chain,
-                replayed: true,
-            });
+            let answer = crate::departure::through_generation(&chain, generation);
+            return self.replay(request.local_endpoint_id, answer);
         }
-        let member_position = chain
+        let Ok(member_position) = chain
             .members()
             .binary_search_by_key(&request.endpoint_id, ma2a_core::SpaceMemberV1::endpoint_id)
-            .map_err(|_| ma2a_store::StoreError::SpaceNotFound)?;
+        else {
+            // A departure from before receipts were kept converges on the chain that already
+            // removed its sender, and learns nothing signed after that removal.
+            let answer = departure
+                .and_then(|_| crate::departure::through_removal(&chain, request.endpoint_id));
+            return self.replay(request.local_endpoint_id, answer);
+        };
         let mut members = chain.members().to_vec();
         members.remove(member_position);
         let mut revocations = chain.revocations().to_vec();
@@ -92,6 +88,23 @@ impl StoreBackend {
             memberships: projection.into_value(),
             chain: advanced.chain().clone(),
             replayed: false,
+        })
+    }
+
+    /// Answers a departure again with `chain`, committing nothing; `SpaceNotFound` without one.
+    fn replay(
+        &mut self,
+        local_endpoint_id: EndpointId,
+        chain: Option<SpaceChain>,
+    ) -> Result<RemovedMember, RuntimeError> {
+        let chain = chain.ok_or(ma2a_store::StoreError::SpaceNotFound)?;
+        let projection = self.repository.membership_projection(local_endpoint_id)?;
+        Ok(RemovedMember {
+            revision: projection.revision(),
+            projection_revision: projection.revision(),
+            memberships: projection.into_value(),
+            chain,
+            replayed: true,
         })
     }
 

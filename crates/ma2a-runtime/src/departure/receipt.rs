@@ -50,6 +50,7 @@ pub(crate) fn through_generation(chain: &SpaceChain, generation: u64) -> Option<
 #[cfg(test)]
 mod tests {
     use super::through_removal;
+    use crate::departure::answers_departure;
     use crate::departure::tests::{
         TestResult, endpoint, shared_space, with_departure, with_member,
     };
@@ -79,6 +80,20 @@ mod tests {
         // When / Then: 0x42 is still a member, and 0x44 never was one.
         assert!(through_removal(&chain, endpoint(0x42)?).is_none());
         assert!(through_removal(&chain, endpoint(0x44)?).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn only_the_owner_answers_and_never_for_itself() -> TestResult {
+        // Given: 0x41 owns the Space and 0x42 is a member.
+        let (chain, _secret) = shared_space(0x37)?;
+        let (owner, member) = (endpoint(0x41)?, endpoint(0x42)?);
+
+        // When / Then: the owner answers the member; a member holding a copy never answers,
+        // and nobody answers the owner's own departure.
+        assert!(answers_departure(&chain, owner, member));
+        assert!(!answers_departure(&chain, member, endpoint(0x43)?));
+        assert!(!answers_departure(&chain, owner, owner));
         Ok(())
     }
 }
