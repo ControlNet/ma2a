@@ -108,7 +108,7 @@ fn cancelled_transfers_leave_nothing_active_and_a_download_resumes_verified() ->
     fs::write(lab.root.path().join("huge.bin"), &source)?;
     let local = Root::new("resume-local")?;
     let target = local.path().join("huge.bin");
-    let part = local.path().join("huge.bin.ma2a-part");
+    let part = ma2a_services::client::resume::partial_path(&target)?;
     let get = |resume: bool| {
         let mut arguments = vec![
             "file",

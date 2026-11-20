@@ -1,10 +1,10 @@
 //! Which helper files a download may take over.
 //!
-//! A helper name is the destination's name plus a fixed suffix, so an unrelated file can carry
-//! it: another download's finished file, or anything the operator keeps there. A download
-//! takes over only what it can show it wrote: a sidecar, or a staged sidecar, that starts with
-//! the MA2A header, a partial file next to such a sidecar or still empty, and an empty lock file. Anything else is
-//! refused and left exactly as it was.
+//! Helper files live in a private directory under names derived from the destination, so an
+//! ordinary file never carries one by accident. Whatever is placed there anyway is still not
+//! trusted blindly: a download takes over only a sidecar, or a staged sidecar, that starts
+//! with the MA2A header, a partial file next to such a sidecar or still empty, and an empty
+//! lock file. Anything else is refused and left exactly as it was.
 
 use std::{io, path::Path};
 

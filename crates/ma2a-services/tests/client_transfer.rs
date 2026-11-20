@@ -12,7 +12,10 @@ use ma2a_core::{
 };
 use ma2a_services::{
     StagingJournal,
-    client::{self, ClientError, resume::Partial},
+    client::{
+        self, ClientError,
+        resume::{self, Partial},
+    },
     serve_files, serve_transfer,
 };
 use support::{ClientIo, TempRoot, TestResult, content, pipe_with};
@@ -147,9 +150,7 @@ async fn an_interrupted_download_resumes_to_the_verified_full_content() -> TestR
     assert_eq!((result.bytes, result.size), (250_000, 400_000));
     partial.finish(false).await?;
     assert_eq!(std::fs::read(&destination)?, source);
-    assert!(!local.path().join("big.ma2a-part").exists());
-    assert!(!local.path().join("big.ma2a-part.meta").exists());
-    assert!(!local.path().join("big.ma2a-part.lock").exists());
+    assert!(!local.path().join(resume::PRIVATE_DIRECTORY).exists());
 
     // A partial file of a different source never continues.
     let fresh = Partial::open(&local.path().join("other"), "peer docs:/big", true).await?;
@@ -177,7 +178,7 @@ async fn a_second_download_to_one_destination_is_refused_while_the_first_holds_i
     first.discard().await?;
     let third = Partial::open(&destination, "peer docs:/file", true).await?;
     third.discard().await?;
-    assert!(!local.path().join("file.ma2a-part.lock").exists());
+    assert!(!local.path().join(resume::PRIVATE_DIRECTORY).exists());
     Ok(())
 }
 
@@ -208,7 +209,7 @@ async fn a_resumed_download_whose_source_changed_restarts_from_zero() -> TestRes
 
     // Then: only the new content is published.
     assert_eq!(std::fs::read(&destination)?, b"new");
-    assert!(!local.path().join("file.ma2a-part.meta").exists());
+    assert!(!local.path().join(resume::PRIVATE_DIRECTORY).exists());
     Ok(())
 }
 
@@ -231,7 +232,7 @@ async fn a_download_never_replaces_a_destination_created_meanwhile_without_repla
     );
     assert_eq!(std::fs::read(&destination)?, b"theirs");
     assert_eq!(
-        std::fs::read(local.path().join("file.ma2a-part"))?,
+        std::fs::read(resume::partial_path(&destination)?)?,
         b"downloaded"
     );
     Ok(())

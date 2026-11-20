@@ -1,16 +1,18 @@
-//! A download claims only the helper files it can show it wrote: an unrelated file that
-//! happens to carry a helper's name keeps its content, whether the download starts or not.
+//! A download keeps its helper files in a private directory beside the destination, under
+//! names derived from the destination, and still claims only the helper files it can show it
+//! wrote: an unrelated file keeps its content, whether the download starts or not.
 
 #[path = "support/host.rs"]
 mod support;
 
-use std::io::ErrorKind;
+use std::{io::ErrorKind, path::Path};
 
-use ma2a_services::client::resume::Partial;
+use ma2a_services::client::resume::{PRIVATE_DIRECTORY, Partial, partial_path};
 use support::{TempRoot, TestResult};
+use tokio::io::AsyncWriteExt as _;
 
 /// Starts a fresh download to `destination` and returns how it was refused, if it was.
-async fn refusal(destination: &std::path::Path) -> Option<ErrorKind> {
+async fn refusal(destination: &Path) -> Option<ErrorKind> {
     match Partial::open(destination, "peer docs:/file", false).await {
         Ok(partial) => {
             let _discarded = partial.discard().await;
@@ -20,55 +22,86 @@ async fn refusal(destination: &std::path::Path) -> Option<ErrorKind> {
     }
 }
 
+/// Downloads `content` to `destination` and publishes it.
+async fn download(destination: &Path, content: &[u8]) -> TestResult {
+    let mut partial = Partial::open(destination, "peer docs:/file", false).await?;
+    partial.sink().0.write_all(content).await?;
+    partial.finish(false).await?;
+    Ok(())
+}
+
 #[tokio::test]
-async fn an_unrelated_file_named_like_the_partial_file_is_kept() -> TestResult {
-    // Given: a real file whose name is the partial-file name of another destination.
-    let local = TempRoot::new("sidecar-part")?;
-    let unrelated = local.path().join("report.ma2a-part");
-    std::fs::write(&unrelated, b"someone's report")?;
+async fn files_named_like_a_destination_plus_a_helper_suffix_are_never_touched() -> TestResult {
+    // Given: the operator's files, empty or not, named like the destination plus a suffix.
+    let local = TempRoot::new("sidecar-neighbours")?;
+    let neighbours = [
+        ("report.ma2a-part", &b""[..]),
+        ("report.ma2a-part.meta", b"ma2a-download v1\nnotes"),
+        ("report.ma2a-part.meta.tmp", b"draft"),
+        ("report.ma2a-part.lock", b""),
+    ];
+    for (name, content) in neighbours {
+        std::fs::write(local.path().join(name), content)?;
+    }
 
     // When
-    let refused = refusal(&local.path().join("report")).await;
+    download(&local.path().join("report"), b"downloaded").await?;
+
+    // Then: the download completed beside them and every one of them is as it was.
+    assert_eq!(std::fs::read(local.path().join("report"))?, b"downloaded");
+    for (name, content) in neighbours {
+        assert_eq!(std::fs::read(local.path().join(name))?, content, "{name}");
+    }
+    assert!(!local.path().join(PRIVATE_DIRECTORY).exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_destination_named_like_another_downloads_helper_has_its_own_helpers() -> TestResult {
+    // Given: two downloads at once, one to a name the other once used for its partial file.
+    let local = TempRoot::new("sidecar-overlap")?;
+    let (report, helper_named) = (
+        local.path().join("report"),
+        local.path().join("report.ma2a-part"),
+    );
+    assert_ne!(partial_path(&report)?, partial_path(&helper_named)?);
+    let mut first = Partial::open(&report, "peer docs:/report", false).await?;
+    let mut second = Partial::open(&helper_named, "peer docs:/other", false).await?;
+
+    // When
+    first.sink().0.write_all(b"first").await?;
+    second.sink().0.write_all(b"second").await?;
+    first.finish(false).await?;
+    second.finish(false).await?;
+
+    // Then: each destination holds its own download.
+    assert_eq!(std::fs::read(&report)?, b"first");
+    assert_eq!(std::fs::read(&helper_named)?, b"second");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unrelated_file_inside_the_private_directory_is_still_kept() -> TestResult {
+    // Given: something without the MA2A header where this download's sidecar would be.
+    let local = TempRoot::new("sidecar-meta")?;
+    let destination = local.path().join("report");
+    let sidecar = partial_path(&destination)?.with_extension("ma2a-part.meta");
+    std::fs::create_dir(local.path().join(PRIVATE_DIRECTORY))?;
+    std::fs::write(&sidecar, b"notes")?;
+
+    // When
+    let refused = refusal(&destination).await;
 
     // Then
     assert_eq!(refused, Some(ErrorKind::AlreadyExists));
-    assert_eq!(std::fs::read(&unrelated)?, b"someone's report");
-    assert!(!local.path().join("report.ma2a-part.lock").exists());
+    assert_eq!(std::fs::read(&sidecar)?, b"notes");
     Ok(())
 }
 
 #[tokio::test]
-async fn an_unrelated_file_named_like_the_sidecar_is_kept() -> TestResult {
-    let local = TempRoot::new("sidecar-meta")?;
-    let unrelated = local.path().join("report.ma2a-part.meta");
-    std::fs::write(&unrelated, b"notes")?;
-
-    let refused = refusal(&local.path().join("report")).await;
-
-    assert_eq!(refused, Some(ErrorKind::AlreadyExists));
-    assert_eq!(std::fs::read(&unrelated)?, b"notes");
-    assert!(!local.path().join("report.ma2a-part.lock").exists());
-    Ok(())
-}
-
-#[tokio::test]
-async fn an_unrelated_file_named_like_the_staged_sidecar_is_kept() -> TestResult {
-    let local = TempRoot::new("sidecar-staged")?;
-    let unrelated = local.path().join("report.ma2a-part.meta.tmp");
-    std::fs::write(&unrelated, b"draft")?;
-
-    let refused = refusal(&local.path().join("report")).await;
-
-    assert_eq!(refused, Some(ErrorKind::AlreadyExists));
-    assert_eq!(std::fs::read(&unrelated)?, b"draft");
-    assert!(!local.path().join("report.ma2a-part.lock").exists());
-    Ok(())
-}
-
-#[tokio::test]
-async fn an_unrelated_file_named_like_the_lock_is_kept() -> TestResult {
-    let local = TempRoot::new("sidecar-lock")?;
-    let unrelated = local.path().join("report.ma2a-part.lock");
+async fn a_file_named_like_the_private_directory_is_kept() -> TestResult {
+    let local = TempRoot::new("sidecar-directory")?;
+    let unrelated = local.path().join(PRIVATE_DIRECTORY);
     std::fs::write(&unrelated, b"keep me")?;
 
     let refused = refusal(&local.path().join("report")).await;
@@ -80,15 +113,33 @@ async fn an_unrelated_file_named_like_the_lock_is_kept() -> TestResult {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_link_named_like_the_partial_file_is_never_followed() -> TestResult {
+async fn a_link_where_the_partial_file_would_be_is_never_followed() -> TestResult {
     let local = TempRoot::new("sidecar-link")?;
+    let destination = local.path().join("report");
     let target = local.path().join("elsewhere");
     std::fs::write(&target, b"")?;
-    std::os::unix::fs::symlink(&target, local.path().join("report.ma2a-part"))?;
+    std::fs::create_dir(local.path().join(PRIVATE_DIRECTORY))?;
+    std::os::unix::fs::symlink(&target, partial_path(&destination)?)?;
 
-    let refused = refusal(&local.path().join("report")).await;
+    let refused = refusal(&destination).await;
 
     assert_eq!(refused, Some(ErrorKind::AlreadyExists));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_private_directory_is_readable_only_by_this_user() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let local = TempRoot::new("sidecar-mode")?;
+    let partial = Partial::open(&local.path().join("report"), "peer docs:/file", false).await?;
+
+    let mode = std::fs::metadata(local.path().join(PRIVATE_DIRECTORY))?
+        .permissions()
+        .mode();
+
+    partial.discard().await?;
+    assert_eq!(mode & 0o777, 0o700);
     Ok(())
 }
 
@@ -101,14 +152,14 @@ async fn helper_files_this_download_left_behind_are_still_reclaimed() -> TestRes
     first
         .begin(ma2a_core::service::ContentIdentity::new(100, 1))
         .await?;
-    tokio::io::AsyncWriteExt::write_all(first.sink().0, b"prefix").await?;
+    first.sink().0.write_all(b"prefix").await?;
     drop(first);
 
-    // When / Then: a fresh download starts over from them.
+    // When / Then: a fresh download starts over from them, and tidies up when it ends.
     let fresh = Partial::open(&destination, "peer docs:/file", false).await?;
     assert_eq!(fresh.offset(), 0);
     fresh.discard().await?;
-    assert!(!local.path().join("report.ma2a-part").exists());
+    assert!(!local.path().join(PRIVATE_DIRECTORY).exists());
     Ok(())
 }
 
@@ -117,14 +168,15 @@ async fn a_staged_sidecar_cut_short_by_an_interruption_is_reclaimed() -> TestRes
     // Given: a download stopped while writing its staged sidecar, at two different points.
     let local = TempRoot::new("sidecar-staged-cut")?;
     for (name, written) in [("empty", &b""[..]), ("prefix", &b"ma2a-dow"[..])] {
+        std::fs::create_dir_all(local.path().join(PRIVATE_DIRECTORY))?;
         let destination = local.path().join(name);
-        std::fs::write(
-            local.path().join(format!("{name}.ma2a-part.meta.tmp")),
-            written,
-        )?;
+        let staged = partial_path(&destination)?.with_extension("ma2a-part.meta.tmp");
+        std::fs::write(staged, written)?;
 
-        // When / Then: the next download starts instead of refusing its own file.
+        // When / Then: the next download starts instead of refusing its own file, and takes
+        // the staged file with it when it ends.
         assert_eq!(refusal(&destination).await, None, "{name}");
+        assert!(!local.path().join(PRIVATE_DIRECTORY).exists(), "{name}");
     }
     Ok(())
 }

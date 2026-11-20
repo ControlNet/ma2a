@@ -277,19 +277,27 @@ The `ma2a` CLI drives every family this way:
 | `proxy connect --endpoint ID HOST PORT` | Proxy | relays stdin and stdout, e.g. as an SSH `ProxyCommand` |
 | `proxy forward --endpoint ID --listen ADDR HOST PORT` | Proxy | one stream per accepted local connection |
 
-**Resumable downloads.** A download writes `LOCAL.ma2a-part`. Before the first content byte, it
-durably records the source (target Endpoint and remote path) and the content identity in
-`LOCAL.ma2a-part.meta`. `--resume` continues only a partial file whose sidecar names the same
-source, and it re-hashes the local prefix so verification still covers the whole content. If the
-target answers `precondition_failed` (the source changed), the download restarts once from zero.
-A partial file whose content changed or failed verification is removed. While a download runs,
-it holds an OS lock on `LOCAL.ma2a-part.lock`, so a second download to the same `LOCAL` fails at
-once instead of writing the same partial file; the lock file is removed when the download ends.
-A download takes over only helper files it can show it wrote: a sidecar, or its staging file
-`LOCAL.ma2a-part.meta.tmp`, that starts with the MA2A header, a partial file next to such a
-sidecar or still empty, and an empty lock file. Any
-other file or link that carries one of these names fails the download with `AlreadyExists` before
-anything is written, and keeps its content.
+**Resumable downloads.** A download keeps its helper files in `.ma2a-downloads/`, a directory
+beside `LOCAL` that is owner-only on Unix and removed once no download uses it. Each name there
+is `HASH.ma2a-part` plus a suffix, where `HASH` is 32 hex characters of BLAKE3 over `LOCAL`'s
+file name in ASCII lowercase. So no helper file shares a name with an ordinary file, or with
+another download's destination; names differing only in case share one set, which keeps a
+destination leased once on a case-insensitive file system. The partial file is `HASH.ma2a-part`.
+Before the first content byte, the download durably records the source (target Endpoint and
+remote path) and the content identity in `HASH.ma2a-part.meta`. `--resume` continues only a
+partial file whose sidecar names the same source, and it re-hashes the local prefix so
+verification still covers the whole content. If the target answers `precondition_failed` (the
+source changed), the download restarts once from zero. A partial file whose content changed or
+failed verification is removed. While a download runs, it holds an OS lock on
+`HASH.ma2a-part.lock`, so a second download to the same `LOCAL` fails at once instead of
+writing the same partial file; the lock file is removed when the download ends.
+Even inside that directory, a download takes over only helper files it can show it wrote: a
+sidecar, or its staging file `HASH.ma2a-part.meta.tmp`, that starts with the MA2A header, a
+partial file next to such a sidecar or still empty, and an empty lock file. Any other file or
+link that carries one of these names, or a `.ma2a-downloads` that is not a directory, fails the
+download with `AlreadyExists` before anything is written, and keeps its content. Helper files
+that earlier builds kept directly beside `LOCAL` (`LOCAL.ma2a-part` and its suffixes) are never
+read, resumed, or removed.
 Without `--force`, `LOCAL` is published by a hard link, so a file that appeared meanwhile is
 never replaced. A file system without hard links falls back to a check before the rename.
 

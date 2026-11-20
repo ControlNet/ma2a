@@ -56,9 +56,18 @@ impl Lease {
     }
 }
 
-/// Opens and locks the lock file; `None` means it was removed before the lock was taken.
+/// Opens and locks the lock file; `None` means it, or its directory, was removed before the
+/// lock was taken.
 fn locked(path: &std::path::Path) -> io::Result<Option<File>> {
-    let file = open(path)?;
+    let file = match open(path) {
+        Ok(file) => file,
+        // A download that just ended may have removed the private directory; make it again.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            super::place::prepare(path)?;
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
     match file.try_lock() {
         Ok(()) => {}
         Err(TryLockError::WouldBlock) => return Err(in_progress()),

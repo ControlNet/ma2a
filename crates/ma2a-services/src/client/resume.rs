@@ -3,7 +3,8 @@
 //! The sidecar is written durably before the first content byte, so a download interrupted
 //! at any point, including by a daemon or machine restart, resumes only against the exact
 //! source identity it started from. A lock file leases the destination to one download at
-//! a time, so two downloads never write one partial file.
+//! a time, so two downloads never write one partial file. All three live in a private
+//! directory beside the destination (see [`partial_path`]).
 
 use std::{
     io,
@@ -15,8 +16,11 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 mod claim;
 mod lease;
+mod place;
 
 use lease::Lease;
+use place::suffixed;
+pub use place::{PRIVATE_DIRECTORY, partial_path};
 
 const SIDECAR_MAGIC: &str = "ma2a-download v1";
 
@@ -44,13 +48,15 @@ impl Partial {
     /// Returns [`io::ErrorKind::WouldBlock`] while another download holds `destination`, or
     /// another local file error.
     pub async fn open(destination: &Path, source: &str, resume: bool) -> io::Result<Self> {
-        let lease = Lease::acquire(suffixed(destination, ".ma2a-part.lock")?).await?;
-        let part = suffixed(destination, ".ma2a-part")?;
-        let sidecar = suffixed(destination, ".ma2a-part.meta")?;
+        let part = partial_path(destination)?;
+        place::prepare(&part)?;
+        let lease = Lease::acquire(suffixed(&part, ".lock")?).await?;
+        let sidecar = suffixed(&part, ".meta")?;
         if let Err(error) = claim::ensure_ours(&part, &sidecar, &suffixed(&sidecar, ".tmp")?).await
         {
             // The lock file was checked to be this download's own, so it goes too.
             lease.release().await;
+            place::tidy(&part).await;
             return Err(error);
         }
         let continued = if resume {
@@ -160,7 +166,9 @@ impl Partial {
             }
         }
         remove_if_present(&self.sidecar).await?;
+        remove_if_present(&suffixed(&self.sidecar, ".tmp")?).await?;
         self.lease.release().await;
+        place::tidy(&self.part).await;
         Ok(())
     }
 
@@ -172,7 +180,9 @@ impl Partial {
         drop(self.file);
         remove_if_present(&self.part).await?;
         remove_if_present(&self.sidecar).await?;
+        remove_if_present(&suffixed(&self.sidecar, ".tmp")?).await?;
         self.lease.release().await;
+        place::tidy(&self.part).await;
         Ok(())
     }
 }
@@ -230,15 +240,6 @@ async fn continued(part: &Path, sidecar: &Path, source: &str) -> io::Result<Opti
     }
     let identity = ContentIdentity::new(size, modified);
     Ok(Some((file, offset, Some(identity), hasher)))
-}
-
-fn suffixed(path: &Path, suffix: &str) -> io::Result<PathBuf> {
-    let mut name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
-        .to_os_string();
-    name.push(suffix);
-    Ok(path.with_file_name(name))
 }
 
 async fn remove_if_present(path: &Path) -> io::Result<()> {
