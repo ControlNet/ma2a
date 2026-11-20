@@ -47,7 +47,12 @@ impl Partial {
         let lease = Lease::acquire(suffixed(destination, ".ma2a-part.lock")?).await?;
         let part = suffixed(destination, ".ma2a-part")?;
         let sidecar = suffixed(destination, ".ma2a-part.meta")?;
-        claim::ensure_ours(&part, &sidecar).await?;
+        if let Err(error) = claim::ensure_ours(&part, &sidecar, &suffixed(&sidecar, ".tmp")?).await
+        {
+            // The lock file was checked to be this download's own, so it goes too.
+            lease.release().await;
+            return Err(error);
+        }
         let continued = if resume {
             continued(&part, &sidecar, source).await?
         } else {

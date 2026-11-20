@@ -33,6 +33,7 @@ async fn an_unrelated_file_named_like_the_partial_file_is_kept() -> TestResult {
     // Then
     assert_eq!(refused, Some(ErrorKind::AlreadyExists));
     assert_eq!(std::fs::read(&unrelated)?, b"someone's report");
+    assert!(!local.path().join("report.ma2a-part.lock").exists());
     Ok(())
 }
 
@@ -46,6 +47,21 @@ async fn an_unrelated_file_named_like_the_sidecar_is_kept() -> TestResult {
 
     assert_eq!(refused, Some(ErrorKind::AlreadyExists));
     assert_eq!(std::fs::read(&unrelated)?, b"notes");
+    assert!(!local.path().join("report.ma2a-part.lock").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unrelated_file_named_like_the_staged_sidecar_is_kept() -> TestResult {
+    let local = TempRoot::new("sidecar-staged")?;
+    let unrelated = local.path().join("report.ma2a-part.meta.tmp");
+    std::fs::write(&unrelated, b"draft")?;
+
+    let refused = refusal(&local.path().join("report")).await;
+
+    assert_eq!(refused, Some(ErrorKind::AlreadyExists));
+    assert_eq!(std::fs::read(&unrelated)?, b"draft");
+    assert!(!local.path().join("report.ma2a-part.lock").exists());
     Ok(())
 }
 
