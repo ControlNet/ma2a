@@ -78,19 +78,16 @@ fn link_messages_are_exactly_a_call_or_a_stop() {
 
 #[test]
 fn only_an_attach_that_may_succeed_later_is_retried() {
-    let unavailable = || Error::Refused {
-        error: "unavailable".to_owned(),
-        remediation: None,
-    };
-    let unregistered = Error::Refused {
-        error: "not_found".to_owned(),
+    let refused = |error: &str| Error::Refused {
+        error: error.to_owned(),
         remediation: None,
     };
     let lost = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
     for transient in [
         Error::Ipc(IpcError::Io(lost)),
         Error::Ipc(IpcError::InvalidFrame),
-        unavailable(),
+        refused("unavailable"),
+        refused("conflict"),
     ] {
         assert!(transient.retries(), "{transient} should be retried");
     }
@@ -98,7 +95,9 @@ fn only_an_attach_that_may_succeed_later_is_retried() {
         Error::Ipc(IpcError::VersionMismatch),
         Error::Ipc(IpcError::UnauthorizedPeer),
         Error::Ipc(IpcError::InvalidPath),
-        unregistered,
+        refused("not_found"),
+        refused("unauthorized"),
+        refused("version_mismatch"),
         Error::Protocol("the Runtime attached without a link"),
         Error::MissingHandler {
             version: 1,

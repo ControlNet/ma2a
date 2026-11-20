@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use ma2a_core::ProtocolError;
 use serde_json::Value;
 
 use crate::api::{self, Command};
@@ -112,13 +113,49 @@ fn handshake_command() -> Result<Command, IpcError> {
     api::decode_command(request.as_bytes()).map_err(Into::into)
 }
 
+/// Accepts this version's handshake answer.
+///
+/// A daemon of this version that is too busy to answer, because every business slot is taken,
+/// says `unavailable`; that is reported as such, not as a version mismatch. Any other answer
+/// is one.
 fn validate_handshake(response: &[u8]) -> Result<(), IpcError> {
     let value: Value = serde_json::from_slice(response).map_err(|_| IpcError::VersionMismatch)?;
-    let version = value.get("version").and_then(Value::as_u64);
-    let result_type = value.pointer("/result/type").and_then(Value::as_str);
-    if version == Some(u64::from(api::LOCAL_API_VERSION)) && result_type == Some("handshake") {
-        Ok(())
-    } else {
-        Err(IpcError::VersionMismatch)
+    if value.get("version").and_then(Value::as_u64) != Some(u64::from(api::LOCAL_API_VERSION)) {
+        return Err(IpcError::VersionMismatch);
+    }
+    if value.pointer("/result/type").and_then(Value::as_str) == Some("handshake") {
+        return Ok(());
+    }
+    if value.get("error").and_then(Value::as_str) == Some(ProtocolError::UNAVAILABLE.name()) {
+        return Err(IpcError::Api(api::ApiError::new(
+            ProtocolError::UNAVAILABLE,
+        )));
+    }
+    Err(IpcError::VersionMismatch)
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::ProtocolError;
+
+    use super::{IpcError, validate_handshake};
+    use crate::api;
+
+    #[test]
+    fn a_busy_daemon_of_this_version_is_not_a_version_mismatch() {
+        let version = api::LOCAL_API_VERSION;
+        let busy = format!(r#"{{"version":{version},"error":"unavailable"}}"#);
+        assert!(matches!(
+            validate_handshake(busy.as_bytes()),
+            Err(IpcError::Api(error)) if error.code() == ProtocolError::UNAVAILABLE
+        ));
+        let other = format!(r#"{{"version":{},"error":"unavailable"}}"#, version + 1);
+        let refused = format!(r#"{{"version":{version},"error":"invalid_input"}}"#);
+        for mismatch in [other.as_str(), refused.as_str(), "not json"] {
+            assert!(matches!(
+                validate_handshake(mismatch.as_bytes()),
+                Err(IpcError::VersionMismatch)
+            ));
+        }
     }
 }

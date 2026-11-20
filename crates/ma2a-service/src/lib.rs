@@ -80,10 +80,10 @@ impl std::error::Error for Error {}
 impl Error {
     /// Whether an attach that failed with this error may succeed later without anyone acting.
     ///
-    /// A Runtime that is down, restarting, or not yet told to start the service is retried. A
-    /// Runtime of another local API version, an IPC path that is not this user's, an
-    /// unregistered service, or a manifest this host cannot serve stays that way, so it is
-    /// returned instead.
+    /// A Runtime that is down, restarting, or busy, a service not yet started, and a link
+    /// another host still holds are retried. A Runtime of another local API version, an IPC
+    /// path that is not this user's, an unregistered service, any other refusal, and a
+    /// manifest this host cannot serve stay that way, so they are returned instead.
     fn retries(&self) -> bool {
         match self {
             Self::Ipc(
@@ -91,7 +91,9 @@ impl Error {
             )
             | Self::Protocol(_)
             | Self::MissingHandler { .. } => false,
-            Self::Refused { error, .. } => error != "not_found",
+            Self::Refused { error, .. } => {
+                matches!(error.as_str(), "unavailable" | "conflict" | "internal")
+            }
             Self::Ipc(_) | Self::Service(_) => true,
         }
     }
