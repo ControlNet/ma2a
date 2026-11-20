@@ -1,14 +1,16 @@
 mod builder;
+mod pull;
 mod staging;
 
 use std::collections::BTreeSet;
 
 use ma2a_core::{ControlArtifactKind, ControlCursorV1, ControlPageV1, SpaceChain};
-use ma2a_net::{ControlRejection, is_unseen};
+use ma2a_net::ControlRejection;
 use ma2a_store::ControlSpaceState;
 
 use crate::error::{RuntimeError, RuntimeErrorKind};
 use builder::{PAGE_HEADER_BYTES, PageBuilder};
+pub(super) use pull::pull_page;
 pub(crate) use staging::ControlChanges;
 pub(super) use staging::apply_pages;
 
@@ -78,57 +80,6 @@ pub(super) fn push_page(
     }
     ControlPageV1::new(state.chain().space_id(), omitted, page.artifacts)
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
-}
-
-pub(super) fn pull_page(
-    state: &ControlSpaceState,
-    cursor: &ControlCursorV1,
-    request: PullPageRequest,
-) -> Result<ControlPageV1, ControlRejection> {
-    if cursor.manifest_generation() > state.chain().latest_generation()
-        || hash_at_generation(state.chain(), cursor.manifest_generation())?
-            != cursor.manifest_hash()
-    {
-        return Err(ControlRejection::Invalid);
-    }
-    let start =
-        usize::try_from(cursor.manifest_generation()).map_err(|_| ControlRejection::Invalid)?;
-    let mut page = PageBuilder::with_budget(request.artifact_budget);
-    let mut omitted = false;
-    for manifest in state.chain().manifests().iter().skip(start) {
-        omitted |= !page.add_control(ControlArtifactKind::MANIFEST, manifest.canonical_bytes())?;
-    }
-    for record in state.address_records() {
-        if is_unseen(
-            cursor.address_cursors(),
-            (record.endpoint_id(), record.sequence()),
-        ) && u64::try_from(record.issued_at_ms()).is_ok_and(|issued| issued <= request.now_ms)
-            && u64::try_from(record.expires_at_ms()).is_ok_and(|expires| expires > request.now_ms)
-        {
-            omitted |=
-                !page.add_control(ControlArtifactKind::ADDRESS_RECORD, record.signed_record())?;
-        }
-    }
-    for advertisement in state.active_relay_advertisements() {
-        if is_unseen(
-            cursor.relay_cursors(),
-            (
-                advertisement.provider_endpoint_id(),
-                advertisement.sequence(),
-            ),
-        ) && u64::try_from(advertisement.issued_at_ms())
-            .is_ok_and(|issued| issued <= request.now_ms)
-            && u64::try_from(advertisement.expires_at_ms())
-                .is_ok_and(|expires| expires > request.now_ms)
-        {
-            omitted |= !page.add_control(
-                ControlArtifactKind::RELAY_ADVERTISEMENT,
-                advertisement.signed_advertisement(),
-            )?;
-        }
-    }
-    ControlPageV1::new(state.chain().space_id(), omitted, page.artifacts)
-        .map_err(|_| ControlRejection::Invalid)
 }
 
 pub(super) fn response_artifact_budget(page_count: usize) -> Result<usize, ControlRejection> {
