@@ -20,13 +20,14 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the destination exists, backup I/O fails, the file system
-    /// cannot create hard links, the staged file was replaced, or the completed backup fails its
-    /// integrity check.
+    /// Returns [`StoreError`] when the destination exists, its directory may be changed by
+    /// another account, backup I/O fails, the file system cannot create hard links, the staged
+    /// file was replaced, or the completed backup fails its integrity check.
     pub fn backup_to(&self, destination: &Path) -> Result<(), StoreError> {
         if destination.exists() {
             return Err(already_exists());
         }
+        trusted_parent(destination)?;
         let staging = Staging::create(destination)?;
         let written = self
             .write_backup(&staging.file)
@@ -137,12 +138,53 @@ impl Staging {
         Ok(fs::symlink_metadata(path)?.is_file())
     }
 
-    /// Removes the staging file and directory; the published backup keeps its own link.
+    /// Removes the staging file, only while its name still refers to the file this backup
+    /// created, then the directory once it is empty; the published backup keeps its own link.
     fn remove(self) {
+        if self.holds(&self.file).unwrap_or(false) {
+            let _removed = fs::remove_file(&self.file);
+        }
         drop(self.handle);
-        let _removed = fs::remove_file(&self.file);
         let _removed = fs::remove_dir(&self.directory);
     }
+}
+
+/// Refuses a destination whose directory another account could rearrange.
+///
+/// The staging directory is private, so only an account able to rename entries in the
+/// destination's directory could swap it, or the file in it, for another between the checks
+/// above. On Unix that directory must belong to this account or root, and must not let other
+/// accounts rename entries: no write bit for others unless it is sticky, and group write only
+/// for this account's own group. On Windows the directory's ACL is the operator's precondition.
+#[cfg(unix)]
+fn trusted_parent(destination: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let metadata = fs::metadata(parent)?;
+    let mode = metadata.mode();
+    let owner = metadata.uid() == rustix::process::geteuid().as_raw() || metadata.uid() == 0;
+    let sticky = mode & 0o1000 != 0;
+    let group =
+        mode & 0o020 == 0 || sticky || metadata.gid() == rustix::process::getegid().as_raw();
+    let others = mode & 0o002 == 0 || sticky;
+    if owner && group && others {
+        Ok(())
+    } else {
+        Err(StoreError::InsecurePermissions {
+            target: "backup directory",
+            detail: "another account may rename entries in the backup's directory",
+        })
+    }
+}
+
+#[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "matches the Unix check")]
+const fn trusted_parent(_destination: &Path) -> Result<(), StoreError> {
+    Ok(())
 }
 
 /// Creates `path` exclusively; on Unix it is owner-only from the moment it exists.
@@ -171,12 +213,13 @@ mod tests {
         // When
         let published = staging.publish(&destination);
 
-        // Then: nothing is published, and cleanup leaves no staging directory.
+        // Then: nothing is published, and cleanup leaves the file it did not create.
         assert!(published.is_err());
         assert!(!destination.exists());
+        let replacement = staging.file.clone();
         staging.remove();
-        assert_eq!(std::fs::read_dir(&scratch)?.count(), 0);
-        std::fs::remove_dir(&scratch)?;
+        assert_eq!(std::fs::read(&replacement)?, b"not the backup");
+        std::fs::remove_dir_all(&scratch)?;
         Ok(())
     }
 }

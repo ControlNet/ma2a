@@ -131,3 +131,26 @@ fn a_destination_name_near_the_component_limit_is_backed_up() -> TestResult {
     assert_eq!(staged, 0);
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn a_directory_others_may_rearrange_is_refused_unless_sticky() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // Given: a destination directory any account may write to.
+    let state = TempState::new("backup-open-parent")?;
+    let repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let open = state.path().join("open");
+    std::fs::create_dir(&open)?;
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777))?;
+
+    // When / Then: nothing is created there.
+    assert!(repository.backup_to(&open.join("state.sqlite3")).is_err());
+    assert_eq!(std::fs::read_dir(&open)?.count(), 0);
+
+    // With the sticky bit, other accounts cannot rename this account's entries.
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o1777))?;
+    repository.backup_to(&open.join("state.sqlite3"))?;
+    assert_eq!(std::fs::read_dir(&open)?.count(), 1);
+    Ok(())
+}

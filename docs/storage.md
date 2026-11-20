@@ -97,7 +97,15 @@ then the destination are checked to refer to the held file (same device and inod
 not, the backup fails and leaves whatever is there alone. There is no rename fallback: on a file
 system without hard links the backup fails rather than risk replacing a file another backup
 published meanwhile. Concurrent backups to one destination publish exactly one, and a failed backup
-removes its staging file and directory and leaves no destination behind.
+leaves no destination behind. It removes its staging file only while that name still refers to the
+held file, so a replacement is never deleted, and the directory only once it is empty.
+
+These checks rest on one precondition: no other account can rename entries in the destination's
+directory, which is the only way to swap the private staging directory for another. On Unix the
+backup refuses a directory not owned by the current user or root, one others may write to unless it
+is sticky (as `/tmp` is), and one group-writable for a group other than the process's own. On
+Windows that directory's ACL is the operator's to keep. Processes of the same account are outside
+this boundary: they can read the state itself.
 
 The backup is a complete copy of the SQLite state, so it needs the same protection as the state
 directory. Besides opaque key references, public chains, and digests of invitation, session, and
