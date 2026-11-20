@@ -27,6 +27,10 @@ impl TempState {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
         }
+        // A directory made under the temporary directory inherits its ACL, which the Store
+        // rightly refuses as a state directory; give it the protected ACL the Store expects.
+        #[cfg(windows)]
+        ma2a_store::protect_private_directory(&path, "test state directory")?;
         Ok(Self { path })
     }
 
