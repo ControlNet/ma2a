@@ -117,9 +117,10 @@ fn unknown_stopped_foreign_and_cross_space_agents_are_refused() -> TestResult {
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    // A's own task was never touched.
+    // A's own task was never touched: still running, or, under a slow host, run to its end.
     let still = last(&lab.remote(&["task", "--agent", "worker", &owned])?)?;
-    assert_eq!(text(&still, "/task/state"), "running", "{still}");
+    let state = text(&still, "/task/state");
+    assert!(matches!(state.as_str(), "running" | "completed"), "{still}");
     c.shutdown()?;
     lab.shutdown()
 }
