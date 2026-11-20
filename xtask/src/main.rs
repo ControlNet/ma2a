@@ -6,6 +6,7 @@ pub(crate) mod loc;
 pub(crate) mod pins;
 pub(crate) mod process;
 pub(crate) mod release;
+pub(crate) mod semver;
 pub(crate) mod support;
 
 #[cfg(test)]

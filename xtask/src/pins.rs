@@ -7,7 +7,7 @@ use std::{
 
 use toml::Value;
 
-use crate::{error::XtaskError, fs::collect_files};
+use crate::{error::XtaskError, fs::collect_files, semver::is_version};
 
 const DEPENDENCY_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
@@ -210,23 +210,12 @@ fn is_pinned(policy: &PinPolicy<'_>, manifest: &Path, specification: &Value) -> 
         .is_some_and(is_exact_version)
 }
 
+/// A Cargo requirement that admits one version: `=` and one complete version.
 fn is_exact_version(version: &str) -> bool {
-    let Some(version) = version.strip_prefix('=') else {
-        return false;
-    };
-    let core = version.split(['+', '-']).next().unwrap_or_default();
-    let mut components = core.split('.');
-    components.clone().count() == 3
-        && components.all(|component| {
-            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
-        })
+    version.strip_prefix('=').is_some_and(is_version)
 }
 
+/// An npm specification that admits one version: one complete version and nothing else.
 fn is_npm_exact_version(version: &str) -> bool {
-    let core = version.split(['+', '-']).next().unwrap_or_default();
-    let mut components = core.split('.');
-    components.clone().count() == 3
-        && components.all(|component| {
-            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
-        })
+    is_version(version)
 }
