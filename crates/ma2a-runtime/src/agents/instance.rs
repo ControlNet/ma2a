@@ -18,6 +18,17 @@ const BACKOFF: (Duration, Duration) = (Duration::from_secs(1), Duration::from_se
 /// Uptime after which an instance's end restarts the backoff from its shortest pause.
 const STABLE_UPTIME_MS: u64 = 60_000;
 
+/// Whether a Process launched for `generation` is the live, bound Process of `instance`.
+///
+/// An Agent undefined while its Process started has no instance, so nothing keeps that Process.
+fn keeps(instance: Option<&AgentInstanceRecord>, (generation, process): (u64, ProcessId)) -> bool {
+    instance.is_some_and(|instance| {
+        instance.generation == generation
+            && instance.is_live()
+            && instance.process_id == Some(process)
+    })
+}
+
 /// The `RequestId` of one instance's start, so a crash between the Process commit and the
 /// instance commit can never start a second Process for the same generation.
 ///
@@ -106,15 +117,13 @@ impl AgentManager {
     /// Terminates a Process launched for an instance that ended before it was bound, as when
     /// the Agent was stopped meanwhile; one bound by a concurrent launch keeps running.
     async fn release_unbound(&self, agent: &AgentId, (generation, process): (u64, ProcessId)) {
-        let Ok(Some(record)) = self.agent(agent).await else {
+        // An unreadable record says nothing about the binding, so the Process is left alone
+        // rather than terminated under a concurrent launch that bound it.
+        let Ok(record) = self.agent(agent).await else {
             return;
         };
-        let kept = record.instance.is_some_and(|instance| {
-            instance.generation == generation
-                && instance.is_live()
-                && instance.process_id == Some(process)
-        });
-        if !kept {
+        let instance = record.as_ref().and_then(|record| record.instance.as_ref());
+        if !keeps(instance, (generation, process)) {
             let reason = (super::operator::STOP_GRACE_MS, ProcessReason::Requested);
             let _ended = self.0.processes.terminate((None, process), reason).await;
         }
@@ -200,7 +209,42 @@ fn instance_start(record: &AgentRecord, workspace: &str) -> Result<ProcessStart,
 mod tests {
     use ma2a_core::service::AgentId;
 
-    use super::start_request;
+    use ma2a_core::service::ProcessId;
+    use ma2a_store::AgentInstanceRecord;
+
+    use super::{keeps, start_request};
+
+    fn instance(generation: u64, process_id: Option<ProcessId>) -> AgentInstanceRecord {
+        AgentInstanceRecord {
+            generation,
+            process_id,
+            ready: false,
+            cursor: 0,
+            next_seq: 0,
+            acked_seq: 0,
+            started_ms: 1_000,
+            ended_ms: None,
+        }
+    }
+
+    #[test]
+    fn only_the_live_instance_that_bound_a_process_keeps_it() {
+        let process = ProcessId::from_bytes([7; 16]);
+        let other = ProcessId::from_bytes([8; 16]);
+        assert!(keeps(Some(&instance(3, Some(process))), (3, process)));
+        // Undefined meanwhile: no record and so no instance keeps the Process.
+        assert!(!keeps(None, (3, process)));
+        // Stopped before the bind: the instance never named a Process.
+        assert!(!keeps(Some(&instance(3, None)), (3, process)));
+        // A later generation, another Process, or a concluded instance does not keep it.
+        assert!(!keeps(Some(&instance(4, Some(process))), (3, process)));
+        assert!(!keeps(Some(&instance(3, Some(other))), (3, process)));
+        let ended = AgentInstanceRecord {
+            ended_ms: Some(2_000),
+            ..instance(3, Some(process))
+        };
+        assert!(!keeps(Some(&ended), (3, process)));
+    }
 
     #[test]
     fn instance_starts_are_distinct_per_definition_and_generation()
