@@ -118,7 +118,16 @@ impl ConnectionObservation {
 /// Cloneable bounded observational telemetry cache.
 #[derive(Clone, Debug, Default)]
 pub struct ConnectionTelemetry {
-    state: Arc<Mutex<BTreeMap<EndpointId, VecDeque<ConnectionObservation>>>>,
+    state: Arc<Mutex<Remotes>>,
+}
+
+/// The retained history of every remote, and the order in which each was last observed.
+#[derive(Debug, Default)]
+struct Remotes {
+    /// Bumped on every observation, so a full cache forgets the remote observed longest
+    /// ago even when the clock reads the same, or earlier, for later observations.
+    next_sequence: u64,
+    histories: BTreeMap<EndpointId, (u64, VecDeque<ConnectionObservation>)>,
 }
 
 #[derive(Clone, Copy)]
@@ -139,8 +148,9 @@ impl ConnectionTelemetry {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .histories
             .values()
-            .filter_map(|items| items.back().cloned())
+            .filter_map(|(_, items)| items.back().cloned())
             .collect()
     }
 
@@ -149,8 +159,9 @@ impl ConnectionTelemetry {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .histories
             .get(&target)
-            .map(|items| items.iter().cloned().collect())
+            .map(|(_, items)| items.iter().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -236,13 +247,20 @@ impl ConnectionTelemetry {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.contains_key(&observation.remote_endpoint_id)
-            && state.len() == MAX_REMOTE_ENDPOINTS
-            && let Some(oldest) = state.keys().next().copied()
+        let sequence = state.next_sequence;
+        state.next_sequence = sequence.wrapping_add(1);
+        let histories = &mut state.histories;
+        if !histories.contains_key(&observation.remote_endpoint_id)
+            && histories.len() == MAX_REMOTE_ENDPOINTS
+            && let Some(oldest) = histories
+                .iter()
+                .min_by_key(|(_, (last, _))| *last)
+                .map(|(remote, _)| *remote)
         {
-            state.remove(&oldest);
+            histories.remove(&oldest);
         }
-        let history = state.entry(observation.remote_endpoint_id).or_default();
+        let (last, history) = histories.entry(observation.remote_endpoint_id).or_default();
+        *last = sequence;
         if history.len() == MAX_OBSERVATIONS_PER_REMOTE {
             history.pop_front();
         }
@@ -250,3 +268,6 @@ impl ConnectionTelemetry {
         drop(state);
     }
 }
+
+#[cfg(test)]
+mod tests;
