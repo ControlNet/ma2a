@@ -83,6 +83,17 @@ impl RuntimeError {
         }
     }
 
+    /// A request this Runtime refuses by design: it ends that request and leaves the Runtime
+    /// running.
+    pub(crate) const fn is_request_refusal(&self) -> bool {
+        matches!(
+            self.0,
+            RuntimeErrorKind::Store(
+                StoreError::SpaceHistoryFull | StoreError::SpaceOwnerCannotBeRemoved
+            )
+        )
+    }
+
     /// Returns a stable non-secret error classification.
     pub const fn code(&self) -> RuntimeErrorCode {
         let kind = match &self.0 {
@@ -238,5 +249,15 @@ mod background_policy_test {
             !RuntimeError::from(ma2a_net::AddressPublisherError::ObservationPoisoned)
                 .is_retryable_background()
         );
+    }
+
+    #[test]
+    fn a_refused_remote_request_does_not_stop_the_runtime() {
+        // A full Space history refuses an enrollment or departure; only that request fails.
+        let refused = RuntimeError::from(ma2a_store::StoreError::SpaceHistoryFull);
+        assert!(refused.is_request_refusal());
+        assert!(crate::actor::Actor::absorb_background("owner redemption", Err(refused)).is_ok());
+        let broken = RuntimeError::from(ma2a_store::StoreError::SpaceNotFound);
+        assert!(crate::actor::Actor::absorb_background("owner redemption", Err(broken)).is_err());
     }
 }

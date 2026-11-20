@@ -97,6 +97,12 @@ impl Actor {
                 eprintln!("runtime background step will retry: {step}: {error}");
                 Ok(())
             }
+            // A remote request refused by design, such as an enrollment into a Space whose
+            // history is full, was already answered; it must not stop the Runtime.
+            Err(error) if error.is_request_refusal() => {
+                eprintln!("runtime refused a request: {step}: {error}");
+                Ok(())
+            }
             other => other,
         }
     }
