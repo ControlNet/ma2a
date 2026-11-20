@@ -15,6 +15,9 @@ use super::{AgentManager, fault, private_dir};
 
 /// Shortest and longest pause before an ended instance's successor starts.
 const BACKOFF: (Duration, Duration) = (Duration::from_secs(1), Duration::from_secs(60));
+/// How often an unbound Process's release is tried, and the delay step between attempts.
+const RELEASE_ATTEMPTS: u32 = 4;
+const RELEASE_RETRY: Duration = Duration::from_millis(100);
 /// Uptime after which an instance's end restarts the backoff from its shortest pause.
 const STABLE_UPTIME_MS: u64 = 60_000;
 
@@ -116,17 +119,35 @@ impl AgentManager {
 
     /// Terminates a Process launched for an instance that ended before it was bound, as when
     /// the Agent was stopped meanwhile; one bound by a concurrent launch keeps running.
+    ///
+    /// Once the Agent is undefined nothing else will find this Process again, so a failed read
+    /// or termination is retried a few times instead of being given up at once.
     async fn release_unbound(&self, agent: &AgentId, (generation, process): (u64, ProcessId)) {
-        // An unreadable record says nothing about the binding, so the Process is left alone
-        // rather than terminated under a concurrent launch that bound it.
-        let Ok(record) = self.agent(agent).await else {
-            return;
-        };
-        let instance = record.as_ref().and_then(|record| record.instance.as_ref());
-        if !keeps(instance, (generation, process)) {
+        for attempt in 0..RELEASE_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(RELEASE_RETRY * attempt).await;
+            }
+            // An unreadable record says nothing about the binding, so the Process is never
+            // terminated on one: it might belong to a concurrent launch that bound it.
+            let Ok(record) = self.agent(agent).await else {
+                continue;
+            };
+            let instance = record.as_ref().and_then(|record| record.instance.as_ref());
+            if keeps(instance, (generation, process)) {
+                return;
+            }
             let reason = (super::operator::STOP_GRACE_MS, ProcessReason::Requested);
-            let _ended = self.0.processes.terminate((None, process), reason).await;
+            if self
+                .0
+                .processes
+                .terminate((None, process), reason)
+                .await
+                .is_ok()
+            {
+                return;
+            }
         }
+        eprintln!("agent process could not be released after {RELEASE_ATTEMPTS} attempts");
     }
 
     /// Concludes an instance whose Process ended and schedules its successor.
