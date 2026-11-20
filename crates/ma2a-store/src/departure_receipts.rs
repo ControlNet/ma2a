@@ -1,7 +1,7 @@
 //! Which generation removed the sender of one departure request, for an authority to answer a
 //! retry of that request the same way.
 
-use ma2a_core::{EndpointId, RequestId, SpaceId};
+use ma2a_core::{EndpointId, RequestId, SpaceChain, SpaceId};
 use rusqlite::{OptionalExtension as _, Transaction};
 
 use crate::{Repository, StoreError};
@@ -21,6 +21,27 @@ impl DepartureRequest {
             request_id,
         }
     }
+}
+
+/// Whether advancing `previous` to `chain` removes and revokes the sender of `request`, so that
+/// the new generation may be recorded as its answer.
+pub(crate) fn removes(
+    previous: Option<&SpaceChain>,
+    chain: &SpaceChain,
+    request: DepartureRequest,
+) -> bool {
+    let member = |chain: &SpaceChain| {
+        chain
+            .members()
+            .iter()
+            .any(|member| member.endpoint_id() == request.endpoint_id)
+    };
+    previous.is_some_and(member)
+        && !member(chain)
+        && chain
+            .revocations()
+            .iter()
+            .any(|revocation| revocation.endpoint_id() == request.endpoint_id)
 }
 
 /// Records that `generation` of `space_id` answered `request`, in the transaction that commits it.

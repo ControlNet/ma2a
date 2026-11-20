@@ -71,3 +71,51 @@ fn a_removal_answering_a_departure_records_its_generation_with_the_commit() -> T
     );
     Ok(())
 }
+
+#[test]
+fn a_receipt_is_refused_for_a_generation_that_does_not_remove_its_sender() -> TestResult {
+    // Given: an owned Space the peer joined, and a departure request from the peer.
+    let state = TempState::new("departure-receipts-refused")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let (owner, peer, other) = (member(1, true)?, member(2, false)?, member(3, false)?);
+    let space_id = repository
+        .create_owned_space(&SpaceCreation::new(
+            1_000,
+            owner.clone(),
+            SpacePolicyV1::phase_one_default(),
+        ))?
+        .space_id();
+    let joined = SpaceManifestMembership::new(sorted(vec![owner.clone(), peer.clone()]), vec![]);
+    repository.advance_owned_space(&OwnedSpaceUpdate::new(space_id, 2_000, joined))?;
+    let request = DepartureRequest::new(
+        peer.endpoint_id(),
+        RequestId::try_from([0x53; 16].as_slice())?,
+    );
+    let revision = repository.revision()?;
+
+    // When / Then: a change that keeps the peer, and one that only admits another member, are
+    // not its answer, and neither commits anything.
+    let kept = SpaceManifestMembership::new(
+        sorted(vec![owner.clone(), peer.clone(), other.clone()]),
+        vec![],
+    );
+    assert!(
+        repository
+            .advance_owned_space(&OwnedSpaceUpdate::new(space_id, 3_000, kept).answering(request))
+            .is_err()
+    );
+    let revoked_other = SpaceManifestMembership::new(
+        sorted(vec![owner, peer]),
+        vec![SpaceRevocationV1::new(other.endpoint_id())],
+    );
+    assert!(
+        repository
+            .advance_owned_space(
+                &OwnedSpaceUpdate::new(space_id, 3_000, revoked_other).answering(request)
+            )
+            .is_err()
+    );
+    assert_eq!(repository.revision()?, revision);
+    assert_eq!(repository.departure_receipt(space_id, request)?, None);
+    Ok(())
+}

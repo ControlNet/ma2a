@@ -177,6 +177,13 @@ impl Repository {
                 return Ok(SpaceChainPersistence::rejected(ManifestError::FORK));
             }
         }
+        if let Some(departure) = departure
+            && !crate::departure_receipts::removes(stored.as_ref(), chain, departure)
+        {
+            return Err(StoreError::SchemaMismatch {
+                detail: "a departure receipt must name the member its generation removes",
+            });
+        }
         replace_chain(&transaction, chain, effective_reference.as_ref())?;
         if let Some(departure) = departure {
             let latest = chain.latest_generation();
