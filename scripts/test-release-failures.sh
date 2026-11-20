@@ -78,4 +78,12 @@ if ./scripts/validate-release-metadata.sh "$archive" "$tooled" "$report" >/dev/n
   exit 1
 fi
 
+macro="$temporary/macro.spdx.json"
+jq '.packages += [{SPDXID: "SPDXRef-Macro", name: "serde_derive", versionInfo: "1.0.0"}]' \
+  "$sbom" > "$macro"
+if ./scripts/validate-release-metadata.sh "$archive" "$macro" "$report" >/dev/null 2>&1; then
+  printf 'SBOM listing a procedural macro unexpectedly passed validation\n' >&2
+  exit 1
+fi
+
 printf 'release failure probes passed\n'

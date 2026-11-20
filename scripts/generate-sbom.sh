@@ -25,11 +25,16 @@ jq -n \
   --arg created "$created" \
   --slurpfile cargo "$temporary/cargo-metadata.json" \
   --slurpfile licenses "$report" '
-  # The packages the archive is built from: `ma2a-app` and everything it reaches through
-  # normal dependency edges. Build and dev dependencies, and workspace tools such as xtask,
-  # are not shipped.
+  # The packages whose code the archive carries: `ma2a-app` and everything it reaches through
+  # normal dependency edges, without passing through a procedural macro. A macro runs on the
+  # build host and only its expansion is compiled in, so it, and whatever only it depends on,
+  # is not listed; a library a macro shares with the program is still reached on its own path.
+  # Build and dev dependencies, and workspace tools such as xtask, are not shipped either.
   def shipped:
     ($cargo[0].resolve.nodes | map({key: .id, value: .}) | from_entries) as $nodes
+    | ([$cargo[0].packages[]
+        | select(any(.targets[]; any(.kind[]; . == "proc-macro")))
+        | {key: .id, value: true}] | from_entries) as $macros
     | {seen: {}, queue: [$cargo[0].packages[] | select(.name == "ma2a-app") | .id]}
     | until(.queue | length == 0;
         .queue[0] as $id
@@ -37,7 +42,9 @@ jq -n \
         | if .seen[$id] then .
           else
             .seen[$id] = true
-            | .queue += [$nodes[$id].deps[] | select(any(.dep_kinds[]; .kind == null)) | .pkg]
+            | .queue += [$nodes[$id].deps[]
+                | select(any(.dep_kinds[]; .kind == null) and ($macros[.pkg] | not))
+                | .pkg]
           end)
     | .seen;
   def rust_packages:
