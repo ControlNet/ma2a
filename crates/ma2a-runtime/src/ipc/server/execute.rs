@@ -12,6 +12,7 @@ use crate::{
 use super::{ConnectionContext, IpcError};
 
 mod agents;
+mod exposure_bound;
 mod hosted;
 mod interaction;
 mod processes;

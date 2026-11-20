@@ -61,17 +61,22 @@ pub(super) async fn expose(
         .service_exposures()
         .await
         .map_err(|_| ApiError::new(ProtocolError::UNAVAILABLE).without_effects())?;
-    let replaces = existing
+    // Every exposure kept beside this one; the one it replaces, if any, is left out.
+    let mut views = existing
         .value()
         .iter()
-        .any(|record| record.space_id == space_id && same_exposure(&record.exposure, spec));
-    if !replaces && existing.value().len() >= MAX_EXPOSURES {
+        .filter(|record| !(record.space_id == space_id && same_exposure(&record.exposure, spec)))
+        .map(|record| exposure_view(record.space_id, &record.exposure))
+        .collect::<Result<Vec<_>, _>>()?;
+    if views.len() >= MAX_EXPOSURES {
         return Err(ApiError::with_remediation(
             ProtocolError::INVALID_INPUT,
             "at most 256 exposures; remove one first",
         )
         .without_effects());
     }
+    views.push(exposure_view(space_id, &exposure)?);
+    super::exposure_bound::ensure_listable(views)?;
     let committed = context
         .handle
         .expose_service(space_id, exposure.clone())

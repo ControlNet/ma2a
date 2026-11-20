@@ -63,7 +63,8 @@ never make any Runtime serve anything by themselves.
   The result is `service_exposed`. A root path must be an existing absolute directory; it is stored
   canonicalized. A root name is bound Runtime-wide to one directory, so re-binding it elsewhere
   returns `conflict`. Exposing the same selector again updates it in place. A Runtime holds at most
-  256 exposures.
+  256 exposures, and refuses one with `invalid_input` and no effect when the resulting
+  `service_exposure_list` answer would no longer fit one 65,536-byte response.
 - **`service_unexpose`** names an exposure by the same selector without `path` and `access`. It
   returns `service_unexposed` with the removed exposure, or `not_found` without effect.
 - **`service_exposure_list`** returns `service_exposures`, an array of `service_exposure`.
