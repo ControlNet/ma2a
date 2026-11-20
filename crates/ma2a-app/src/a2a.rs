@@ -35,8 +35,11 @@ mod view;
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Writes `token` to `path`, readable only by this user, replacing any earlier file.
+///
+/// The staging name is this process's own, so two adapters starting together never remove
+/// or install each other's staged token.
 fn write_private(path: &Path, token: &str) -> io::Result<()> {
-    let staging = path.with_extension("ma2a-partial");
+    let staging = path.with_extension(format!("ma2a-partial-{}", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -49,6 +52,14 @@ fn write_private(path: &Path, token: &str) -> io::Result<()> {
     file.write_all(token.as_bytes())?;
     file.sync_all()?;
     std::fs::rename(&staging, path)
+}
+
+/// Removes `path` only while it still holds `token`: another adapter that wrote its own token
+/// there since keeps it when this one stops.
+fn remove_if_ours(path: &Path, token: &str) {
+    if std::fs::read(path).is_ok_and(|held| held == token.as_bytes()) {
+        let _removed = std::fs::remove_file(path);
+    }
 }
 
 /// Resolves once the adapter is asked to stop: Ctrl-C, or `SIGTERM` on Unix.
@@ -93,7 +104,7 @@ pub(crate) async fn serve(
             state_dir: state_dir.to_path_buf(),
             paths,
         },
-        token: Arc::from(token),
+        token: Arc::from(token.as_str()),
         origin: Arc::from(origin),
     };
     // Open streams may last as long as their tasks, so a stop waits for them only briefly.
@@ -110,6 +121,29 @@ pub(crate) async fn serve(
             tokio::time::sleep(STOP_GRACE).await;
         } => Ok(()),
     };
-    let _removed = std::fs::remove_file(&token_file);
+    remove_if_ours(&token_file, &token);
     Ok(outcome?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{remove_if_ours, write_private};
+
+    #[test]
+    fn a_stopping_adapter_leaves_a_token_another_adapter_wrote_since()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = std::env::temp_dir().join(format!("ma2a-a2a-token-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join("a2a-token");
+        write_private(&path, "first")?;
+        write_private(&path, "second")?;
+
+        remove_if_ours(&path, "first");
+        assert_eq!(std::fs::read_to_string(&path)?, "second");
+        remove_if_ours(&path, "second");
+        assert!(!path.exists());
+
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
 }

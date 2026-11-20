@@ -15,8 +15,8 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 - **Listener.** `--listen` must be a loopback address; any other address is a usage error. The default is `127.0.0.1:41241`, and port `0` picks a free port.
 - **Token.** Every route requires `Authorization: Bearer TOKEN`, including the Agent Cards.
   - The token is 32 random bytes as 64 lowercase hex characters, new for every run.
-  - It is written to `STATE_DIR/a2a-token`, or to `--token-file`, with mode `0600`: staged, then renamed into place.
-  - It is never printed or logged, and the file is removed when the adapter stops (Ctrl-C or `SIGTERM`). A stop lets open requests and streams finish for at most 5 s, then closes them.
+  - It is written to `STATE_DIR/a2a-token`, or to `--token-file`, with mode `0600` on Unix: staged under a per-process name, then renamed into place. On Windows the file takes the access rules its directory passes on; the state directory admits only the current user and SYSTEM, so a `--token-file` must name a directory that is just as private.
+  - It is never printed or logged. When the adapter stops (Ctrl-C or `SIGTERM`) the file is removed if it still holds this run's token, so a second adapter that wrote the same file since keeps its own. A stop lets open requests and streams finish for at most 5 s, then closes them.
   - It is compared in constant time. A missing or wrong token answers `401` with `WWW-Authenticate: Bearer`.
 - **Ready line.** Once listening, the adapter prints one JSON line to stdout and nothing else:
 
