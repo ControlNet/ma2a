@@ -64,6 +64,8 @@ fn locked(path: &std::path::Path) -> io::Result<Option<File>> {
         Err(TryLockError::WouldBlock) => return Err(in_progress()),
         Err(TryLockError::Error(error)) => return Err(error),
     }
+    // Checked under the lock, so a foreign file is refused before release could remove it.
+    super::claim::ensure_lock_ours(&file, path)?;
     // A lock file without delete sharing cannot be removed while open, so on Windows the
     // locked file is always the one the path names.
     #[cfg(unix)]

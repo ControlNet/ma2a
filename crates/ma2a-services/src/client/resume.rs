@@ -13,6 +13,7 @@ use std::{
 use ma2a_core::service::{ContentIdentity, MAX_DATA_CHUNK_LEN};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+mod claim;
 mod lease;
 
 use lease::Lease;
@@ -46,6 +47,7 @@ impl Partial {
         let lease = Lease::acquire(suffixed(destination, ".ma2a-part.lock")?).await?;
         let part = suffixed(destination, ".ma2a-part")?;
         let sidecar = suffixed(destination, ".ma2a-part.meta")?;
+        claim::ensure_ours(&part, &sidecar).await?;
         let continued = if resume {
             continued(&part, &sidecar, source).await?
         } else {
@@ -54,8 +56,10 @@ impl Partial {
         let (file, offset, identity, hasher) = if let Some(continued) = continued {
             continued
         } else {
-            remove_if_present(&sidecar).await?;
+            // Empty the partial file before forgetting its sidecar, so an interruption between
+            // the two leaves helper files a later download still recognizes as its own.
             let file = tokio::fs::File::create(&part).await?;
+            remove_if_present(&sidecar).await?;
             (file, 0, None, blake3::Hasher::new())
         };
         Ok(Self {
@@ -115,9 +119,10 @@ impl Partial {
     /// # Errors
     /// Returns a local file error.
     pub async fn restart(&mut self) -> io::Result<()> {
-        remove_if_present(&self.sidecar).await?;
-        // A resumed partial file is open for appending, which may not allow truncation.
+        // A resumed partial file is open for appending, which may not allow truncation. It is
+        // emptied before its sidecar is forgotten, as in `open`.
         self.file = tokio::fs::File::create(&self.part).await?;
+        remove_if_present(&self.sidecar).await?;
         self.offset = 0;
         self.identity = None;
         self.hasher = blake3::Hasher::new();

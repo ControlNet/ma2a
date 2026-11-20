@@ -284,6 +284,10 @@ target answers `precondition_failed` (the source changed), the download restarts
 A partial file whose content changed or failed verification is removed. While a download runs,
 it holds an OS lock on `LOCAL.ma2a-part.lock`, so a second download to the same `LOCAL` fails at
 once instead of writing the same partial file; the lock file is removed when the download ends.
+A download takes over only helper files it can show it wrote: a sidecar that starts with the
+MA2A header, a partial file next to such a sidecar or still empty, and an empty lock file. Any
+other file or link that carries one of these names fails the download with `AlreadyExists` before
+anything is written, and keeps its content.
 Without `--force`, `LOCAL` is published by a hard link, so a file that appeared meanwhile is
 never replaced. A file system without hard links falls back to a check before the rename.
 
