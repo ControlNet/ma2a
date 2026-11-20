@@ -11,6 +11,16 @@ const fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
+/// Days in one month of a proleptic Gregorian year.
+const fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
 /// Formats Unix milliseconds as `YYYY-MM-DDTHH:MM:SS.mmmZ`.
 pub(super) fn format(at_ms: u64) -> String {
     let (days, rest) = (at_ms / 86_400_000, at_ms % 86_400_000);
@@ -48,7 +58,11 @@ pub(super) fn parse(text: &str) -> Option<u64> {
         number(date.next()?, 2)?,
         number(date.next()?, 2)?,
     );
-    let (clock, fraction) = clock.split_once('.').unwrap_or((clock, ""));
+    let (clock, fraction) = match clock.split_once('.') {
+        Some((_, "")) => return None,
+        Some(split) => split,
+        None => (clock, ""),
+    };
     let mut clock = clock.split(':');
     let (hours, minutes, seconds) = (
         number(clock.next()?, 2)?,
@@ -58,7 +72,7 @@ pub(super) fn parse(text: &str) -> Option<u64> {
     if date.next().is_some()
         || clock.next().is_some()
         || !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
+        || !(1..=days_in_month(year, month)).contains(&day)
         || hours > 23
         || minutes > 59
         || seconds > 60
@@ -88,7 +102,16 @@ mod tests {
         assert_eq!(parse("2026-10-01T03:32:38.916Z"), Some(1_790_825_558_916));
         assert_eq!(parse("2000-02-29T00:00:00Z"), Some(951_782_400_000));
         assert_eq!(parse("2000-02-29T00:00:00.1Z"), Some(951_782_400_100));
-        for malformed in ["2000-02-29", "2000-13-01T00:00:00Z", "1969-12-31T23:59:59Z"] {
+        assert_eq!(parse("2024-02-29T00:00:00Z"), Some(1_709_164_800_000));
+        for malformed in [
+            "2000-02-29",
+            "2000-13-01T00:00:00Z",
+            "1969-12-31T23:59:59Z",
+            "2023-02-29T00:00:00Z",
+            "1900-02-29T00:00:00Z",
+            "2024-04-31T00:00:00Z",
+            "2024-04-30T00:00:00.Z",
+        ] {
             assert_eq!(parse(malformed), None, "{malformed}");
         }
     }
