@@ -2,13 +2,7 @@
 //! relative to a directory opened once, so renaming a directory on the path afterwards cannot
 //! redirect it into another directory that happens to carry the same names.
 
-use std::{
-    ffi::OsStr,
-    fs::File,
-    io,
-    os::{fd::OwnedFd, unix::fs::MetadataExt as _},
-    path::Path,
-};
+use std::{ffi::OsStr, fs::File, io, os::fd::OwnedFd, path::Path};
 
 use rustix::fs::{self as at, AtFlags, Mode, OFlags, Stat};
 
@@ -95,8 +89,7 @@ impl Anchor {
 
     /// Whether the child `name` is, without following it, the file `held`.
     pub(super) fn names_file(&self, name: &OsStr, held: &File) -> io::Result<bool> {
-        let held = held.metadata()?;
-        self.names(name, (held.dev(), held.ino()))
+        self.names(name, identity(&at::fstat(held)?))
     }
 
     /// Whether the child `name` is, without following it, the directory `held`.
@@ -107,11 +100,11 @@ impl Anchor {
 
     /// Whether `path` still names this directory.
     pub(super) fn is_at(&self, path: &Path) -> io::Result<bool> {
-        let named = std::fs::metadata(path)?;
-        Ok(identity(&at::fstat(&self.fd)?) == (named.dev(), named.ino()))
+        let named = at::statat(at::CWD, path, AtFlags::empty())?;
+        Ok(identity(&at::fstat(&self.fd)?) == identity(&named))
     }
 
-    fn names(&self, name: &OsStr, held: (u64, u64)) -> io::Result<bool> {
+    fn names(&self, name: &OsStr, held: (i128, i128)) -> io::Result<bool> {
         match at::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(named) => Ok(identity(&named) == held),
             Err(rustix::io::Errno::NOENT) => Ok(false),
@@ -152,11 +145,8 @@ impl Anchor {
     }
 }
 
-/// The device and inode `stat` describes, widened to fixed types.
-fn identity(stat: &Stat) -> (u64, u64) {
-    #[expect(
-        clippy::useless_conversion,
-        reason = "the field widths differ between Unix targets"
-    )]
-    (u64::from(stat.st_dev), u64::from(stat.st_ino))
+/// The device and inode `stat` describes, widened losslessly: their types differ between
+/// Unix targets, and the device number is signed on macOS.
+fn identity(stat: &Stat) -> (i128, i128) {
+    (i128::from(stat.st_dev), i128::from(stat.st_ino))
 }
