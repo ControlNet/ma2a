@@ -104,12 +104,24 @@ where
 }
 
 impl HostedServices {
+    /// Admits `call` from this Endpoint and releases its slot at once; `Ok` once admitted.
+    #[cfg(test)]
+    pub(crate) async fn admits(&self, call: HostedCall) -> Result<(), ServiceError> {
+        let request_id = RequestId::random().map_err(|_| ServiceError::Internal)?;
+        self.admit(call, (self.0.local, request_id)).await.map(drop)
+    }
+
     /// Admits one call of a ready service within its `max_calls`, and tells the service.
+    ///
+    /// The lifecycle lock is held from the registration read until the slot is taken, so the
+    /// manifest checked and the link told belong to one registration: a stop, replacement,
+    /// and new attach cannot fall in between.
     async fn admit(
         &self,
         call: HostedCall,
         (caller, request_id): (EndpointId, RequestId),
     ) -> Result<Admitted, ServiceError> {
+        let lifecycle = self.0.lifecycle.lock().await;
         let service = call.service().clone();
         let record = self
             .registration(&service)
@@ -165,6 +177,7 @@ impl HostedServices {
             },
         );
         drop(state);
+        drop(lifecycle);
         let slot = Slot {
             manager: self.clone(),
             running,

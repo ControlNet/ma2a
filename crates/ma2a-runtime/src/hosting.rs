@@ -112,7 +112,8 @@ struct Inner {
     local: EndpointId,
     store: StoreClient,
     clock: Arc<dyn RuntimeClock>,
-    /// Serializes register, start, stop, and attach, so a link never outlives a stop.
+    /// Serializes register, start, stop, attach, and call admission, so a link never
+    /// outlives a stop and an admission sees one registration throughout.
     lifecycle: tokio::sync::Mutex<()>,
     state: Mutex<State>,
 }
@@ -200,6 +201,12 @@ impl HostedServices {
             .get(name)
             .and_then(|live| live.link.as_ref())
             .is_some_and(|link| link.notices.try_send(Notice::Call(call)).is_ok())
+    }
+
+    /// Holds the lifecycle lock, as register, start, stop, or attach does while it acts.
+    #[cfg(test)]
+    pub(crate) async fn hold_lifecycle(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.0.lifecycle.lock().await
     }
 
     /// Returns one registration with what runs now.

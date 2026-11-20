@@ -204,3 +204,35 @@ async fn a_stop_reaches_a_link_whose_notices_are_full() -> TestResult {
     assert_eq!(link.next().await, Some(crate::hosting::Notice::Stop));
     harness.stop().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_is_admitted_only_between_lifecycle_changes() -> TestResult {
+    // Given: a ready service, and a stop, register, or attach in progress.
+    let harness = Harness::start("hosted-admission").await?;
+    let client = &harness.client;
+    call(client, register(&"71".repeat(16))?).await?;
+    call(client, named("service_start", &"72".repeat(16))).await?;
+    let hosted = harness.hosted()?;
+    let name = ma2a_core::service::ServiceName::new("example")?;
+    let (link, _manifest) = hosted.attach(&name).await?;
+    hosted.report((&name, link.id), true);
+    let lifecycle = hosted.hold_lifecycle().await;
+
+    // When: a call arrives meanwhile.
+    let admitting = tokio::spawn({
+        let hosted = hosted.clone();
+        let call = ma2a_core::service::HostedCall::new(
+            (name.clone(), 1),
+            ma2a_core::service::OperationName::new("echo")?,
+            Vec::new(),
+        )?;
+        async move { hosted.admits(call).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Then: its registration read and slot wait for the change, so both see one generation.
+    assert!(!admitting.is_finished());
+    drop(lifecycle);
+    assert_eq!(admitting.await?, Ok(()));
+    harness.stop().await
+}
