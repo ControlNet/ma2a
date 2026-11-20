@@ -25,6 +25,15 @@ pub(crate) fn create_new_private_dir(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+/// Restricts `path`, a regular file the caller just created, to the current account (and
+/// SYSTEM on Windows, with no inherited entries), then confirms that it is.
+///
+/// # Errors
+/// Returns [`StoreError`] when the permissions cannot be applied or confirmed.
+pub fn protect_private_file(path: &Path, target: &'static str) -> Result<(), StoreError> {
+    protect_new_file(path, target)
+}
+
 pub(crate) fn protect_new_file(path: &Path, target: &'static str) -> Result<(), StoreError> {
     protect_file(path)?;
     validate_private_path(path, target, PathKind::File)
