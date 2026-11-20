@@ -14,7 +14,7 @@ use rusqlite::Connection;
 use support::{TempState, TestResult};
 
 #[test]
-fn current_schema_is_idempotent_configured_and_contains_only_key_references() -> TestResult {
+fn current_schema_is_idempotent_configured_and_lists_every_secret_column() -> TestResult {
     // Given
     let state = TempState::new("migration")?;
     let config = StoreConfig::new(state.path());
@@ -74,16 +74,26 @@ fn current_schema_is_idempotent_configured_and_contains_only_key_references() ->
     }
 
     let key_columns = key_columns(&connection, &names)?;
+    // Every column that names a key or a secret. Private keys appear only as references; the
+    // rest are digests, a password verifier, and the Process ownership credential, which
+    // docs/storage.md lists as what a backup carries.
+    let expected = [
+        ("consumed_invitation_tokens.token_hash", "BLOB"),
+        ("endpoints.endpoint_key_ref", "TEXT"),
+        ("invitations.token_hash", "BLOB"),
+        ("processes.secret", "BLOB"),
+        ("relay_configuration.private_key_path", "TEXT"),
+        ("sessions.csrf_token_hash", "BLOB"),
+        ("spaces.authority_key_ref", "TEXT"),
+        ("ui_credentials.password_verifier", "BLOB"),
+        ("ui_credentials.verifier_version", "INTEGER"),
+    ];
     assert_eq!(
         key_columns,
-        BTreeMap::from([
-            ("endpoints.endpoint_key_ref".to_owned(), "TEXT".to_owned()),
-            (
-                "relay_configuration.private_key_path".to_owned(),
-                "TEXT".to_owned()
-            ),
-            ("spaces.authority_key_ref".to_owned(), "TEXT".to_owned()),
-        ])
+        expected
+            .into_iter()
+            .map(|(column, kind)| (column.to_owned(), kind.to_owned()))
+            .collect::<BTreeMap<_, _>>()
     );
     Ok(())
 }
@@ -261,7 +271,10 @@ fn key_columns(
             Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
         })? {
             let (name, column_type) = column?;
-            if name.contains("key") {
+            if ["key", "secret", "token", "password", "verifier"]
+                .iter()
+                .any(|word| name.contains(word))
+            {
                 found.insert(format!("{table_name}.{name}"), column_type);
             }
         }

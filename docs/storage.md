@@ -72,9 +72,10 @@ treating SQLite as an event log.
 
 ## Protected Keys
 
-SQLite contains only the `endpoint_key_ref` and `authority_key_ref` text columns. It must never
-contain Endpoint private bytes, Space authority private bytes, passphrases, raw session bearer
-tokens, or recoverable secret material.
+SQLite refers to private keys only through the `endpoint_key_ref` and `authority_key_ref` text
+columns. It never contains Endpoint private bytes, Space authority private bytes, passphrases, raw
+session bearer tokens, or raw invitation tokens. It does contain other sensitive state, listed under
+[Backup](#backup).
 
 Each key reference maps to a separate immutable file below `keys/endpoint` or
 `keys/space-authority`. A write creates a same-directory temporary file, applies owner-only
@@ -88,9 +89,24 @@ existing key file. Loaded bytes are held by `ProtectedSecret` and securely zeroi
 It does not copy a live database file. The destination must not already exist, receives protected
 file permissions, and must pass `PRAGMA integrity_check = 'ok'` before the call succeeds.
 
-The backup contains only SQLite state and opaque key references. Protected-key files require a
-separate explicit secure export process; MA2A does not implement automatic key replication or a
-recovery wizard.
+The backup is a complete copy of the SQLite state, so it needs the same protection as the state
+directory. Besides opaque key references, public chains, and digests of invitation, session, and
+CSRF tokens, it carries:
+
+- the Argon2id verifier of the Web password, which an attacker can try to guess offline;
+- for every Process not yet terminal, its 32-byte supervisor ownership credential, which lets the
+  holder prove itself to that Process's supervisor; it is cleared from the live row when the
+  Process ends, but never from a backup taken earlier;
+- the start specification of every retained Process and every Agent definition: program,
+  arguments, working directory, and environment values, in decodable form, including any secret
+  an operator passed that way;
+- member labels, signed address records naming network addresses, relay configuration, exposures,
+  and Agent task history.
+
+It does not carry the protected-key files below `keys/`, which need a separate explicit secure
+export, nor any other file: exported directories, Process output logs, Agent workspaces and
+artifacts, and hosted-service files must be backed up on their own. MA2A does not implement
+automatic key replication or a recovery wizard.
 
 ## Verification
 
