@@ -37,10 +37,16 @@ const RUNTIME_PREFIXES: [&str; 2] = [".ma2a-upload-", ".ma2a-write-"];
 
 /// Returns whether a component names a Runtime staging file, which no caller may address:
 /// an upload is published from the file it verified, never from one a caller replaced.
+///
+/// The prefixes are compared without regard to ASCII case, because a case-insensitive volume
+/// (NTFS, APFS by default) resolves another spelling to the same entry.
 pub(crate) fn is_runtime_reserved(component: &str) -> bool {
-    RUNTIME_PREFIXES
-        .iter()
-        .any(|prefix| component.starts_with(prefix))
+    RUNTIME_PREFIXES.iter().any(|prefix| {
+        component
+            .as_bytes()
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+    })
 }
 
 /// Rejects every component this host cannot name or the Runtime reserves.
@@ -126,6 +132,9 @@ mod tests {
             Err(ma2a_core::service::ServiceError::InvalidPath)
         );
         assert!(is_runtime_reserved(".ma2a-write-0011.tmp"));
+        // Another spelling names the same entry on a case-insensitive volume.
+        assert!(is_runtime_reserved(".MA2A-Upload-0011.part"));
+        assert!(is_runtime_reserved(".Ma2a-WRITE-0011.tmp"));
         for ordinary in [
             ".ma2a-uploads",
             "ma2a-upload-1.part",

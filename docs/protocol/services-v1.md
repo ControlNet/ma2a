@@ -95,8 +95,9 @@ are invalid:
 - `.`, `..`, and empty components;
 - components containing NUL, `/`, `\`, `:`, or control characters;
 - on Windows hosts, reserved device names and names with a trailing dot or space.
-- names starting with `.ma2a-upload-` or `.ma2a-write-`: the Runtime's own staging files, which a
-  caller can neither read nor replace while an upload or write is being verified and published.
+- names starting with `.ma2a-upload-` or `.ma2a-write-`, in any ASCII letter case: the Runtime's
+  own staging files, which a caller can neither read nor replace while an upload or write is being
+  verified and published.
 
 Nothing is resolved lexically. A root name is bound Runtime-wide to one canonical absolute
 directory. Each Space exposes it read-only or read-write.
