@@ -42,6 +42,9 @@ workspace utility. `Cargo.lock` is authoritative for the complete transitive Rus
 `cargo-deny` temporarily acknowledges `RUSTSEC-2023-0089` (`atomic-polyfill`) and
 `RUSTSEC-2024-0436` (`paste`). Both are unmaintained, not vulnerability advisories, have no safe
 upgrade in the required Iroh 1.1.0 graph, and must be re-evaluated when that pinned family moves.
+`RUSTSEC-2026-0543` (`chrono`, unmaintained, no vulnerability) is acknowledged on the same terms:
+it arrives through iroh-relay's ACME client and, on Windows, through `netwatch`/`wmi`. Iroh 1.5.0
+would remove the ACME path but not the Windows one. Review it by 2027-05-20.
 
 ## Frontend Direct Dependencies
 
