@@ -105,3 +105,29 @@ fn a_backup_is_owner_only() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_destination_name_near_the_component_limit_is_backed_up() -> TestResult {
+    // Given: a destination whose name leaves no room for a longer staging name.
+    let state = TempState::new("backup-long-name")?;
+    let repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let destination = state.path().join(format!("{}.sqlite", "b".repeat(240)));
+
+    // When
+    repository.backup_to(&destination)?;
+
+    // Then: it is published and reopens, with no staging entry left beside it.
+    assert!(destination.is_file());
+    drop(rusqlite::Connection::open(&destination)?);
+    let staged = std::fs::read_dir(state.path())?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".ma2a-backup-")
+        })
+        .count();
+    assert_eq!(staged, 0);
+    Ok(())
+}

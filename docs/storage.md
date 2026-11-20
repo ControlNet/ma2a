@@ -87,12 +87,17 @@ existing key file. Loaded bytes are held by `ProtectedSecret` and securely zeroi
 ## Backup
 
 `Repository::backup_to` uses SQLite's online backup API while the source connection remains open.
-It does not copy a live database file. The backup is written to a new staging file beside the
-destination, created exclusively and, on Unix, owner-only from the moment it exists. Only after it
-passes `PRAGMA integrity_check = 'ok'` is it published under the destination name by a hard link
-that never replaces an existing file (a file system without hard links falls back to a check before
-the rename). Concurrent backups to one destination publish exactly one, and a failed backup removes
-its staging file and leaves no destination behind.
+It does not copy a live database file. The backup is written to a staging file inside a new
+directory beside the destination, `.ma2a-backup-<32 hex>/`, whose name does not depend on the
+destination's. The directory is owner-only (mode 0700 on Unix, a current-user-and-SYSTEM ACL on
+Windows), and the file is created exclusively and, on Unix, owner-only from the moment it exists,
+then held open. Only after it passes `PRAGMA integrity_check = 'ok'` is it published under the
+destination name by a hard link that never replaces an existing file. On Unix, the staging name and
+then the destination are checked to refer to the held file (same device and inode); if either does
+not, the backup fails and leaves whatever is there alone. There is no rename fallback: on a file
+system without hard links the backup fails rather than risk replacing a file another backup
+published meanwhile. Concurrent backups to one destination publish exactly one, and a failed backup
+removes its staging file and directory and leaves no destination behind.
 
 The backup is a complete copy of the SQLite state, so it needs the same protection as the state
 directory. Besides opaque key references, public chains, and digests of invitation, session, and

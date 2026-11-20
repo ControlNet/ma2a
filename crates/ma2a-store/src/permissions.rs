@@ -10,6 +10,21 @@ pub(crate) fn ensure_private_dir(path: &Path, target: &'static str) -> Result<()
     validate_private_path(path, target, PathKind::Directory)
 }
 
+/// Creates `path`, which must not exist yet, as a directory only this account may enter.
+pub(crate) fn create_new_private_dir(path: &Path) -> Result<(), StoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        fs::DirBuilder::new().mode(0o700).create(path)?;
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        fs::create_dir(path)?;
+        apply_windows_acl(path, PathKind::Directory)
+    }
+}
+
 pub(crate) fn protect_new_file(path: &Path, target: &'static str) -> Result<(), StoreError> {
     protect_file(path)?;
     validate_private_path(path, target, PathKind::File)
