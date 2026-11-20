@@ -31,16 +31,6 @@ enum Bound {
     Root(Option<PathBuf>),
 }
 
-impl Bound {
-    /// Whether a fresh authorization still resolves the same root.
-    fn admits(&self, root: Option<&PathBuf>) -> bool {
-        match self {
-            Self::Pending => true,
-            Self::Root(bound) => bound.as_ref() == root,
-        }
-    }
-}
-
 #[derive(Debug)]
 struct Watched {
     peer: EndpointId,
@@ -165,7 +155,9 @@ pub(crate) async fn run(context: HostContext) {
 }
 
 /// Authorizes each of `checks` again, cancelling every one that no longer passes. Returns
-/// whether each got a definite answer: `Unavailable` decides nothing.
+/// whether each got a definite answer: `Unavailable` decides nothing, and neither does a
+/// grant for an operation that has not bound its root yet, since the root it is about to use
+/// may come from an older state than this grant.
 async fn recheck<Authorize, Decision>(checks: Vec<Check>, authorize: Authorize) -> bool
 where
     Authorize: Fn(EndpointId, ServiceAccess) -> Decision,
@@ -173,12 +165,12 @@ where
 {
     let mut decided = true;
     for (peer, access, root, stop) in checks {
-        match authorize(peer, access).await {
-            Ok(grant) if root.admits(grant.root.as_ref()) => {}
-            // Either the Store failed this read or it is stopping with the Runtime, when
-            // shutdown ends the operation anyway.
-            Err(ServiceError::Unavailable) => decided = false,
-            Ok(_) | Err(_) => stop.cancel(),
+        match (authorize(peer, access).await, root) {
+            (Ok(grant), Bound::Root(bound)) if bound == grant.root => {}
+            // Unavailable: either the Store failed this read or it is stopping with the
+            // Runtime, when shutdown ends the operation anyway.
+            (Ok(_), Bound::Pending) | (Err(ServiceError::Unavailable), _) => decided = false,
+            (Ok(_) | Err(_), _) => stop.cancel(),
         }
     }
     decided
@@ -191,7 +183,10 @@ mod tests {
     use ma2a_core::service::{ServiceAccess, ServiceError};
     use tokio_util::sync::CancellationToken;
 
+    use std::path::PathBuf;
+
     use super::{Bound, recheck};
+    use crate::store::ServiceGrant;
 
     #[tokio::test]
     async fn a_check_the_store_could_not_answer_is_decided_on_a_later_tick()
@@ -218,6 +213,32 @@ mod tests {
         assert!(!recheck(check(), &authorize).await);
         assert!(!stop.is_cancelled());
         assert!(recheck(check(), &authorize).await);
+        assert!(stop.is_cancelled());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_operation_still_binding_its_root_is_checked_again_once_bound()
+    -> Result<(), ma2a_core::ProtocolError> {
+        // Given: an operation authorized for `old`, not yet bound, while the name now resolves
+        // to `new`.
+        let key = ma2a_core::SpaceAuthoritySecret::from_bytes([7; 32]).public_key();
+        let peer = ma2a_core::EndpointId::try_from(key.as_bytes().as_slice())?;
+        let stop = CancellationToken::new();
+        let access = ServiceAccess::Exec;
+        let authorize = |_, _| async {
+            Ok(ServiceGrant {
+                root: Some(PathBuf::from("new")),
+            })
+        };
+
+        // When / Then: the pending pass decides nothing, so the revision is checked again;
+        // once bound to `old`, the operation is cancelled.
+        let pending = vec![(peer, access.clone(), Bound::Pending, stop.clone())];
+        assert!(!recheck(pending, &authorize).await);
+        assert!(!stop.is_cancelled());
+        let bound = Bound::Root(Some(PathBuf::from("old")));
+        assert!(recheck(vec![(peer, access, bound, stop.clone())], &authorize).await);
         assert!(stop.is_cancelled());
         Ok(())
     }
