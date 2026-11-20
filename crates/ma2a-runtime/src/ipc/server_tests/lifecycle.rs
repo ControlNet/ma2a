@@ -107,16 +107,18 @@ async fn a_lifecycle_call_is_answered_while_the_business_plane_is_blocked() -> T
 async fn a_lifecycle_call_is_answered_when_every_business_slot_is_taken() -> TestResult {
     // Given
     let wedged = wedged("saturated-plane").await?;
-    let stalled = (0..BUSINESS_CONNECTION_LIMIT)
-        .map(|_| {
-            let client = wedged.client.clone();
-            tokio::spawn(async move { stuck_read(&client).await })
-        })
-        .collect::<Vec<_>>();
+    let mut stalled = Vec::new();
     // Waiting for the slots themselves, rather than for a duration that might be
-    // enough: the guarantee only applies once the pool is genuinely exhausted.
+    // enough: the guarantee only applies once the pool is genuinely exhausted. A call
+    // whose handshake missed the 2 s I/O deadline on a loaded host gave its slot back,
+    // so another call takes its place.
     tokio::time::timeout(Duration::from_secs(30), async {
         while wedged.slots.available_permits() > 0 {
+            stalled.retain(|task: &tokio::task::JoinHandle<_>| !task.is_finished());
+            while stalled.len() < BUSINESS_CONNECTION_LIMIT {
+                let client = wedged.client.clone();
+                stalled.push(tokio::spawn(async move { stuck_read(&client).await }));
+            }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
