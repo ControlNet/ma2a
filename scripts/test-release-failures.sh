@@ -71,4 +71,11 @@ if ./scripts/validate-release-metadata.sh "$archive" "$incomplete" "$report" >/d
   exit 1
 fi
 
+tooled="$temporary/tooled.spdx.json"
+jq '.packages += [{SPDXID: "SPDXRef-Tool", name: "xtask", versionInfo: "0.0.0"}]' "$sbom" > "$tooled"
+if ./scripts/validate-release-metadata.sh "$archive" "$tooled" "$report" >/dev/null 2>&1; then
+  printf 'SBOM listing a workspace tool unexpectedly passed validation\n' >&2
+  exit 1
+fi
+
 printf 'release failure probes passed\n'

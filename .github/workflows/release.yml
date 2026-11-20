@@ -95,7 +95,7 @@ jobs:
         run: ./scripts/generate-license-report.sh "target/distrib/${{ matrix.archive }}.licenses.json"
       - name: Generate deterministic SPDX SBOM
         shell: bash
-        run: RELEASE_CREATED_AT=$(git show -s --format=%cI "$GITHUB_SHA") ./scripts/generate-sbom.sh "target/distrib/${{ matrix.archive }}" "target/distrib/${{ matrix.archive }}.licenses.json" "target/distrib/${{ matrix.archive }}.spdx.json"
+        run: RELEASE_CREATED_AT=$(git show -s --format=%cI "$GITHUB_SHA") ./scripts/generate-sbom.sh "target/distrib/${{ matrix.archive }}" "target/distrib/${{ matrix.archive }}.licenses.json" "target/distrib/${{ matrix.archive }}.spdx.json" "${{ matrix.target }}"
       - name: Validate SBOM and license report
         shell: bash
         run: ./scripts/validate-release-metadata.sh "target/distrib/${{ matrix.archive }}" "target/distrib/${{ matrix.archive }}.spdx.json" "target/distrib/${{ matrix.archive }}.licenses.json"

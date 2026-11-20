@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  printf 'usage: %s ARCHIVE LICENSE_REPORT OUTPUT_SPDX\n' "$0" >&2
+if [[ $# -ne 4 ]]; then
+  printf 'usage: %s ARCHIVE LICENSE_REPORT OUTPUT_SPDX TARGET\n' "$0" >&2
   exit 2
 fi
 
 archive=$1
 report=$2
 output=$3
+target=$4
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 
-cargo metadata --locked --format-version 1 > "$temporary/cargo-metadata.json"
+# Resolved for the archive's target only, so another platform's dependencies never appear.
+cargo metadata --locked --format-version 1 --filter-platform "$target" \
+  > "$temporary/cargo-metadata.json"
 digest=$(awk 'NF >= 2 {print $1}' "${archive}.sha256")
 created=${RELEASE_CREATED_AT:-1970-01-01T00:00:00Z}
 
@@ -22,8 +25,24 @@ jq -n \
   --arg created "$created" \
   --slurpfile cargo "$temporary/cargo-metadata.json" \
   --slurpfile licenses "$report" '
+  # The packages the archive is built from: `ma2a-app` and everything it reaches through
+  # normal dependency edges. Build and dev dependencies, and workspace tools such as xtask,
+  # are not shipped.
+  def shipped:
+    ($cargo[0].resolve.nodes | map({key: .id, value: .}) | from_entries) as $nodes
+    | {seen: {}, queue: [$cargo[0].packages[] | select(.name == "ma2a-app") | .id]}
+    | until(.queue | length == 0;
+        .queue[0] as $id
+        | .queue |= .[1:]
+        | if .seen[$id] then .
+          else
+            .seen[$id] = true
+            | .queue += [$nodes[$id].deps[] | select(any(.dep_kinds[]; .kind == null)) | .pkg]
+          end)
+    | .seen;
   def rust_packages:
-    $cargo[0].packages
+    shipped as $shipped
+    | [$cargo[0].packages[] | select($shipped[.id])]
     | to_entries
     | map({
         SPDXID: ("SPDXRef-Rust-" + (.key | tostring)),

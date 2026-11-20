@@ -13,6 +13,7 @@ report=$3
 jq -e '
   .spdxVersion == "SPDX-2.3" and
   (.packages | any(.name == "ma2a-app")) and
+  (.packages | any(.name == "xtask") | not) and
   (.packages | any(.name == "react")) and
   (.packages | any(.name == "react-dom")) and
   (.packages | any(.name == "ky")) and
