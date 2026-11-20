@@ -57,8 +57,12 @@ pub(crate) async fn events(
     let Ok(permit) = Arc::clone(&state.event_connections).try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let Ok(baseline) = fetch_stamp(&state).await else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    // The first frame follows the same rule as every later one: a revocation committed while
+    // the baseline was read ends the stream before anything is sent.
+    let baseline = match authenticated_stamp(&state.auth, &bearer, fetch_stamp(&state)).await {
+        Ok(baseline) => baseline,
+        Err(StatusCode::UNAUTHORIZED) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
     let (sender, receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
     if baseline.revision == query.since {
