@@ -86,4 +86,14 @@ if ./scripts/validate-release-metadata.sh "$archive" "$macro" "$report" >/dev/nu
   exit 1
 fi
 
+# An archive with the same name but other content does not match this SBOM.
+rebuilt="$temporary/rebuilt/$(basename "$archive")"
+mkdir -p "$(dirname "$rebuilt")"
+cp "$archive" "$rebuilt"
+printf 'rebuilt' >> "$rebuilt"
+if ./scripts/validate-release-metadata.sh "$rebuilt" "$sbom" "$report" >/dev/null 2>&1; then
+  printf 'SBOM of another build with the same name unexpectedly passed validation\n' >&2
+  exit 1
+fi
+
 printf 'release failure probes passed\n'

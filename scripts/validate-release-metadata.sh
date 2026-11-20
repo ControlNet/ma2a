@@ -33,4 +33,16 @@ jq -e '
   exit 1
 }
 
+# The SBOM names the archive by the digest of its content, not only by its file name, so an SBOM
+# of another build with the same name is refused before it is attested.
+if command -v sha256sum >/dev/null 2>&1; then
+  digest=$(sha256sum "$archive" | awk '{print $1}')
+else
+  digest=$(shasum -a 256 "$archive" | awk '{print $1}')
+fi
+[[ "$(jq -r '.documentNamespace' "$sbom")" == "https://github.com/ControlNet/ma2a/releases/sha256/$digest" ]] || {
+  printf 'SBOM namespace does not bind the archive content\n' >&2
+  exit 1
+}
+
 printf 'validated release metadata for %s\n' "$archive"
