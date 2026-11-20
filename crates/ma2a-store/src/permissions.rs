@@ -19,6 +19,22 @@ pub fn ensure_private_directory(path: &Path, target: &'static str) -> Result<(),
     ensure_private_dir(path, target)
 }
 
+/// Restricts `path`, a directory the caller just created, to the current account (and SYSTEM
+/// on Windows, under a protected ACL its children inherit), then confirms that it is.
+///
+/// # Errors
+/// Returns [`StoreError`] when the permissions cannot be applied or confirmed.
+pub fn protect_private_directory(path: &Path, target: &'static str) -> Result<(), StoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(windows)]
+    apply_windows_acl(path, PathKind::Directory)?;
+    validate_private_path(path, target, PathKind::Directory)
+}
+
 /// Creates `path`, which must not exist yet, as a directory only this account may enter.
 ///
 /// # Errors
@@ -169,7 +185,7 @@ fn apply_windows_acl(path: &Path, kind: PathKind) -> Result<(), StoreError> {
 }
 
 /// Accepts exactly two explicit Allow rules, one for the current user and one for SYSTEM,
-/// each granting every FullControl right, under a DACL that inherits nothing, on an object
+/// each granting every `FullControl` right, under a DACL that inherits nothing, on an object
 /// owned by the current user, SYSTEM, or the Administrators group. Any other owner could
 /// rewrite the DACL; Administrators can take ownership anyway, and elevated sessions may make
 /// it the default owner of new objects.

@@ -85,10 +85,14 @@ pub(super) fn prepare(helper: &Path) -> io::Result<()> {
             Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
             Err(_) => {}
         }
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        match builder.create(directory) {
+        let created = {
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new().mode(0o700).create(directory)
+        };
+        #[cfg(not(unix))]
+        let created = std::fs::create_dir(directory);
+        match created {
             // Another download may have created it meanwhile; look again.
             Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
             _ => {}
@@ -99,16 +103,18 @@ pub(super) fn prepare(helper: &Path) -> io::Result<()> {
 
 /// Accepts an existing directory only when this account owns it and no other account may
 /// list or enter it. Windows directories inherit the parent's ACL, as the destination does.
+#[cfg(unix)]
 fn private(metadata: &std::fs::Metadata) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
-            return Err(foreign_directory());
-        }
+    use std::os::unix::fs::MetadataExt as _;
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+        return Err(foreign_directory());
     }
-    #[cfg(not(unix))]
-    let _unchecked = metadata;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "shares the Unix signature")]
+const fn private(_metadata: &std::fs::Metadata) -> io::Result<()> {
     Ok(())
 }
 

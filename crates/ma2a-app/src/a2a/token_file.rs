@@ -125,7 +125,7 @@ fn write_staged(
     let mut staging = None;
     for candidate in names.into_iter().take(STAGING_ATTEMPTS) {
         let directory = parent.join(candidate);
-        match ma2a_store::create_private_directory(&directory) {
+        match create_staging(&directory) {
             Ok(()) => {
                 staging = Some(directory);
                 break;
@@ -143,6 +143,22 @@ fn write_staged(
     }
     let _removed = std::fs::remove_dir(&staging);
     written
+}
+
+/// Creates the staging directory `path`, which must not exist yet, private from the start.
+///
+/// On Windows a directory created plainly carries its parent's inherited entries until its ACL
+/// is replaced, and a handle another account opens meanwhile keeps the access it was granted.
+/// So it is created with a protected ACL for its owner and SYSTEM already in place, then given
+/// the Store's exact current-user-and-SYSTEM ACL.
+fn create_staging(path: &Path) -> Result<(), ma2a_store::StoreError> {
+    #[cfg(windows)]
+    {
+        windows::create_protected_dir(path)?;
+        ma2a_store::protect_private_directory(path, "A2A token staging directory")
+    }
+    #[cfg(not(windows))]
+    ma2a_store::create_private_directory(path)
 }
 
 fn publish(staged: &Path, destination: &Path, token: &str) -> Result<(), AppError> {
@@ -168,6 +184,10 @@ pub(super) fn remove_if_ours(path: &Path, token: &str) {
         let _removed = std::fs::remove_file(path);
     }
 }
+
+#[cfg(windows)]
+#[path = "token_file_windows.rs"]
+mod windows;
 
 #[cfg(test)]
 #[path = "token_file_tests.rs"]

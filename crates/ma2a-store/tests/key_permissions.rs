@@ -3,10 +3,7 @@
 #[path = "common/support.rs"]
 mod support;
 
-use ma2a_store::{
-    EndpointRecord, KeyKind, KeyMaterial, KeyReference, KeyStore, Repository, StoreConfig,
-    StoreError,
-};
+use ma2a_store::{KeyKind, KeyMaterial, KeyReference, KeyStore, StoreError};
 use support::{TempState, TestResult, TestResultValue};
 
 const RACE_SECRET_BYTES: usize = 8 * 1024 * 1024;
@@ -131,6 +128,7 @@ fn join_publication(
         .map_err(|_| "key publication thread panicked".into())
 }
 
+#[cfg(unix)]
 fn endpoint_id() -> Result<ma2a_core::EndpointId, ma2a_core::ProtocolError> {
     const BYTES: [u8; 32] = [
         0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
@@ -144,6 +142,8 @@ fn endpoint_id() -> Result<ma2a_core::EndpointId, ma2a_core::ProtocolError> {
 #[test]
 fn startup_rejects_loosened_key_permissions() -> TestResult {
     use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    use ma2a_store::{EndpointRecord, Repository, StoreConfig};
 
     // Given
     let state = TempState::new("key-startup-gate")?;

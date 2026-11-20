@@ -135,8 +135,7 @@ impl Staging {
     /// Windows offers no stable file identity here; the directory's ACL is the protection.
     #[cfg(not(unix))]
     fn holds(&self, path: &Path) -> Result<bool, StoreError> {
-        let _held = &self.handle;
-        Ok(fs::symlink_metadata(path)?.is_file())
+        Ok(self.handle.metadata()?.is_file() && fs::symlink_metadata(path)?.is_file())
     }
 
     /// Removes the staging file, only while its name still refers to the file this backup

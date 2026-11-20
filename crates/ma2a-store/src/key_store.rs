@@ -283,7 +283,9 @@ fn sync_parent(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Windows offers no directory handle to flush; NTFS journals the new entry itself.
 #[cfg(windows)]
+#[expect(clippy::unnecessary_wraps, reason = "shares the Unix signature")]
 const fn sync_parent(_path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
