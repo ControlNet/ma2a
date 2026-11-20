@@ -220,6 +220,10 @@ impl Repository {
         {
             return Ok(EnrollmentOutcome::Conflict);
         }
+        // A full Space refuses this candidate before signing, and the invitation stays unused.
+        if members.len() >= chain.genesis().genesis().policy().maximum_members() {
+            return Err(StoreError::SpaceMembersFull);
+        }
         let candidate = SpaceMemberV1::new(
             input.endpoint_id,
             input.display_name.clone(),

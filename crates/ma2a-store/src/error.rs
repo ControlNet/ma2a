@@ -49,6 +49,8 @@ pub enum StoreError {
     /// A locally owned Space has signed every generation its public chain can carry for this
     /// kind of change; the last generations are kept for revocations.
     SpaceHistoryFull,
+    /// A locally owned Space already lists as many members as its policy allows.
+    SpaceMembersFull,
     /// A public or imported Space has no local authority signing key.
     SpaceAuthorityUnavailable,
     /// A protected-key reference already has immutable material.
@@ -120,6 +122,9 @@ impl fmt::Display for StoreError {
             Self::SpaceHistoryFull => formatter.write_str(
                 "Space history is full; create a new Space to keep changing membership",
             ),
+            Self::SpaceMembersFull => formatter.write_str(
+                "Space already has as many members as its policy allows; remove one first",
+            ),
             Self::SpaceAuthorityUnavailable => {
                 formatter.write_str("Space has no local protected authority key")
             }
@@ -160,6 +165,7 @@ impl Error for StoreError {
             | Self::SpaceNotFound
             | Self::SpaceOwnerCannotBeRemoved
             | Self::SpaceHistoryFull
+            | Self::SpaceMembersFull
             | Self::SpaceAuthorityUnavailable
             | Self::ProtectedKeyAlreadyExists
             | Self::InvalidPasswordLength

@@ -138,7 +138,8 @@ impl SpacePolicyV1 {
         }
     }
 
-    pub(crate) fn maximum_members(self) -> usize {
+    /// Returns how many members, the owner included, one manifest may list.
+    pub fn maximum_members(self) -> usize {
         usize::from(self.maximum_members)
     }
 
