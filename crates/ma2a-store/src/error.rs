@@ -46,6 +46,9 @@ pub enum StoreError {
     SpaceNotFound,
     /// Phase 1 local signing cannot remove or revoke the genesis owner Endpoint.
     SpaceOwnerCannotBeRemoved,
+    /// A locally owned Space has signed every generation its public chain can carry for this
+    /// kind of change; the last generations are kept for revocations.
+    SpaceHistoryFull,
     /// A public or imported Space has no local authority signing key.
     SpaceAuthorityUnavailable,
     /// A protected-key reference already has immutable material.
@@ -114,6 +117,9 @@ impl fmt::Display for StoreError {
             ),
             Self::SpaceNotFound => formatter.write_str("Space was not found in this repository"),
             Self::SpaceOwnerCannotBeRemoved => formatter.write_str("Space owner cannot be removed in Phase 1"),
+            Self::SpaceHistoryFull => formatter.write_str(
+                "Space history is full; create a new Space to keep changing membership",
+            ),
             Self::SpaceAuthorityUnavailable => {
                 formatter.write_str("Space has no local protected authority key")
             }
@@ -153,6 +159,7 @@ impl Error for StoreError {
             | Self::MissingProtectedKey { .. }
             | Self::SpaceNotFound
             | Self::SpaceOwnerCannotBeRemoved
+            | Self::SpaceHistoryFull
             | Self::SpaceAuthorityUnavailable
             | Self::ProtectedKeyAlreadyExists
             | Self::InvalidPasswordLength

@@ -141,6 +141,12 @@ most 8,389,381 bytes including canonical CBOR framing. Export rejects a chain be
 every successfully exported chain is accepted by the same-version importer when its signatures and
 transitions remain valid.
 
+The local authority therefore never signs a generation that export or enrollment paging would
+reject. Generations 240 through 255 are reserved for manifests that revoke at least one Endpoint, so
+a Space whose history is nearly full can still remove a member. Any other change past generation
+239, including an enrollment, fails with `SpaceHistoryFull` and commits nothing; the owner keeps
+working by creating a new Space.
+
 ## Golden Vector
 
 The committed vector uses authority seed `11` repeated 32 times and nonce `33` repeated 32 times.

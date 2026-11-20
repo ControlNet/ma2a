@@ -51,6 +51,7 @@ mod service_exposure_rows;
 mod service_exposures;
 mod session_mutations;
 mod sessions;
+mod space_capacity;
 mod space_rows;
 mod spaces;
 mod transfer_staging;

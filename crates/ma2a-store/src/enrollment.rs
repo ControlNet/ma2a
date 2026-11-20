@@ -235,6 +235,7 @@ impl Repository {
                 .ok_or(StoreError::SchemaMismatch {
                     detail: "Space generation exhausted",
                 })?;
+        crate::space_capacity::admit(generation, false)?;
         let manifest = SpaceManifestV1::new(
             SpaceManifestLink::new(space_id, generation, chain.latest_hash()),
             u64::try_from(now_ms).map_err(|_| StoreError::SchemaMismatch {
@@ -244,6 +245,7 @@ impl Repository {
         )?
         .sign(&secret)?;
         chain.apply(&manifest)?;
+        crate::space_capacity::deliverable(&chain)?;
         let response = chain
             .export_public()
             .map_err(|_| StoreError::SchemaMismatch {
