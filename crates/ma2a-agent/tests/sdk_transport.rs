@@ -1,5 +1,5 @@
 //! The SDK loop's transport: a failed output ends it with that failure, and the end of input
-//! still delivers every line already queued.
+//! still delivers every line already queued and ends every handler still running.
 
 use std::time::Duration;
 
@@ -67,5 +67,53 @@ async fn the_end_of_input_still_delivers_the_last_acknowledgement() -> TestResul
     // Then
     tokio::time::timeout(Duration::from_secs(5), served).await???;
     assert!(lines.contains(&AgentToRuntime::Ack { seq: 1 }), "{lines:?}");
+    Ok(())
+}
+
+/// Signals when the handler holding it is dropped.
+struct Dropped(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for Dropped {
+    fn drop(&mut self) {
+        if let Some(signal) = self.0.take() {
+            let _sent = signal.send(());
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_handler_still_waiting_ends_with_the_input() -> TestResult {
+    // Given: one task whose handler waits for a cancellation that never comes.
+    let (mut to_agent, agent_input) = tokio::io::duplex(1 << 16);
+    let (agent_output, from_agent) = tokio::io::duplex(1 << 16);
+    let (signal, dropped) = tokio::sync::oneshot::channel();
+    let signal = std::sync::Mutex::new(Some(signal));
+    let handler = move |task: Task| {
+        let guard = Dropped(signal.lock().ok().and_then(|mut held| held.take()));
+        async move {
+            task.cancelled().await;
+            drop(guard);
+        }
+    };
+    let delivery = RuntimeToAgent::Task {
+        seq: 1,
+        task: "t".to_owned(),
+        from: Origin {
+            endpoint: "creator".to_owned(),
+            agent: None,
+        },
+        message: Message::user_text("hello"),
+    };
+    to_agent.write_all(&encode_line(&delivery)?).await?;
+    let served = tokio::spawn(sdk::serve_on((agent_input, agent_output), handler));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // When: the input ends.
+    drop(to_agent);
+
+    // Then: the loop returns and the waiting handler is gone with it.
+    tokio::time::timeout(Duration::from_secs(5), served).await???;
+    tokio::time::timeout(Duration::from_secs(5), dropped).await??;
+    drop(from_agent);
     Ok(())
 }

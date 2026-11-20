@@ -110,6 +110,9 @@ where
     });
     let mut input = BufReader::new(input);
     let mut processed = 0_u64;
+    // Every handler belongs to this connection: dropping the set when the loop ends, on any
+    // path, aborts the ones still running, so none outlives the transport it reports on.
+    let mut handlers = tokio::task::JoinSet::new();
     let ended = loop {
         let read = tokio::select! {
             read = read_line(&mut input) => read,
@@ -129,13 +132,16 @@ where
         };
         let seq = delivery.seq();
         if seq > processed {
-            dispatch(&shared, delivery, &handler);
+            while handlers.try_join_next().is_some() {}
+            dispatch((&shared, &mut handlers), delivery, &handler);
             processed = seq;
         }
         shared.emit(&AgentToRuntime::Ack { seq: processed });
     };
-    // Without input no task can make progress, so nothing waits for the tasks still held;
-    // the lines already queued, such as the last acknowledgement, are still written.
+    // Without input no task can make progress, so the tasks still held are ended here; the
+    // lines already queued, such as the last acknowledgement, are still written.
+    handlers.abort_all();
+    shared.tasks().clear();
     drop(shared);
     let _signalled = stop.send(());
     let drained = match tokio::time::timeout(DRAIN, &mut writer).await {
@@ -162,8 +168,11 @@ fn written_failure(written: Result<io::Result<()>, tokio::task::JoinError>) -> i
 }
 
 /// Hands one new delivery to its task.
-fn dispatch<H, F>(shared: &Arc<Shared>, delivery: RuntimeToAgent, handler: &H)
-where
+fn dispatch<H, F>(
+    (shared, handlers): (&Arc<Shared>, &mut tokio::task::JoinSet<()>),
+    delivery: RuntimeToAgent,
+    handler: &H,
+) where
     H: Fn(Task) -> F,
     F: Future<Output = ()> + Send + 'static,
 {
@@ -189,7 +198,7 @@ where
                 Arc::clone(shared),
                 (messages, cancelled),
             );
-            tokio::spawn(handler(handle));
+            handlers.spawn(handler(handle));
         }
         RuntimeToAgent::Message { task, message, .. } => {
             if let Some(slot) = shared.tasks().get(&task) {
