@@ -258,3 +258,33 @@ async fn a_destination_with_the_longest_name_a_component_may_have_downloads() ->
     assert!(!local.path().join(PRIVATE_DIRECTORY).exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn an_operators_files_in_its_private_directory_are_kept() -> TestResult {
+    // Given: the operator's private directory holding its own `created` file, an empty
+    // `locks` directory, and a note.
+    let local = TempRoot::new("download-operator-files")?;
+    let directory = local.path().join(PRIVATE_DIRECTORY);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+        .create(&directory)?;
+    #[cfg(windows)]
+    ma2a_services::windows_files::create_protected_dir(&directory)?;
+    std::fs::write(directory.join("created"), b"the operator's own")?;
+    std::fs::create_dir(directory.join("locks"))?;
+    std::fs::write(directory.join("note"), b"keep")?;
+
+    // When: one download completes and another is abandoned.
+    let mut done = Partial::open(&local.path().join("done"), "peer docs:/done", false).await?;
+    done.sink().0.write_all(b"done").await?;
+    done.finish(false).await?;
+    let abandoned = Partial::open(&local.path().join("gone"), "peer docs:/gone", false).await?;
+    abandoned.discard().await?;
+
+    // Then: every one of them is exactly as it was.
+    assert_eq!(std::fs::read(directory.join("created"))?, b"the operator's own");
+    assert_eq!(std::fs::read_dir(directory.join("locks"))?.count(), 0);
+    assert_eq!(std::fs::read(directory.join("note"))?, b"keep");
+    assert_eq!(std::fs::read_dir(&directory)?.count(), 3);
+    Ok(())
+}

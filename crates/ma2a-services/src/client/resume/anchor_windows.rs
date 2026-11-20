@@ -30,6 +30,8 @@ pub(super) enum Open {
     Create,
     /// A file created when missing, emptied otherwise.
     Truncate,
+    /// A file that must not exist yet.
+    New,
 }
 
 /// One pinned directory.
@@ -109,7 +111,7 @@ impl Anchor {
     pub(super) fn open_file(&self, name: &OsStr, open: Open) -> io::Result<File> {
         let share = match open {
             Open::Create => FILE_SHARE_READ | FILE_SHARE_WRITE,
-            Open::Read | Open::Existing | Open::Truncate => FILE_SHARE_READ,
+            Open::Read | Open::Existing | Open::Truncate | Open::New => FILE_SHARE_READ,
         };
         let mut options = OpenOptions::new();
         options
@@ -121,6 +123,7 @@ impl Anchor {
             Open::Existing => options.write(true),
             Open::Create => options.write(true).create(true).truncate(false),
             Open::Truncate => options.write(true).create(true).truncate(true),
+            Open::New => options.write(true).create_new(true),
         };
         let file = options.open(self.path.join(name))?;
         let metadata = file.metadata()?;

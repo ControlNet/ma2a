@@ -17,6 +17,8 @@ pub(super) enum Open {
     Create,
     /// A file created when missing, emptied otherwise.
     Truncate,
+    /// A file that must not exist yet.
+    New,
 }
 
 /// One open directory.
@@ -62,6 +64,7 @@ impl Anchor {
             Open::Existing => OFlags::RDWR | OFlags::NONBLOCK,
             Open::Create => OFlags::RDWR | OFlags::CREATE | OFlags::NONBLOCK,
             Open::Truncate => OFlags::RDWR | OFlags::CREATE | OFlags::TRUNC | OFlags::NONBLOCK,
+            Open::New => OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NONBLOCK,
         };
         let fd = at::openat(&self.fd, name, base | flags, Mode::RUSR | Mode::WUSR)?;
         // Opened without blocking so a FIFO cannot stall the download; refused below.

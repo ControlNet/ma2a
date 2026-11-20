@@ -7,14 +7,14 @@
 
 use std::{
     ffi::OsStr,
-    io,
+    io::{self, Read as _, Write as _},
     path::{Path, PathBuf},
 };
 
 use super::{
     anchor::{Anchor, Open},
     lease::{Lease, in_progress},
-    place::{CREATED, LOCKS, PRIVATE_DIRECTORY, foreign_directory},
+    place::{CREATED, CREATED_CONTENT, LOCKS, PRIVATE_DIRECTORY, foreign_directory},
 };
 
 /// How often a private directory another download removed meanwhile is made again.
@@ -29,6 +29,8 @@ pub(super) struct Helpers {
     pub(super) directory: Anchor,
     /// The lock directory inside it.
     pub(super) locks: Anchor,
+    /// Whether this download made the lock directory.
+    made_locks: bool,
 }
 
 impl Helpers {
@@ -75,16 +77,17 @@ impl Helpers {
     ) -> io::Result<Option<(Self, Lease)>> {
         let gone = |error: &io::Error| error.kind() == io::ErrorKind::NotFound;
         if created {
-            match directory.open_file(OsStr::new(CREATED), Open::Create) {
+            match mark(&directory) {
                 Err(error) if gone(&error) => return Ok(None),
-                opened => drop(opened?),
+                marked => marked?,
             }
         }
-        match directory.mkdir_private(OsStr::new(LOCKS)) {
+        let made_locks = match directory.mkdir_private(OsStr::new(LOCKS)) {
+            Ok(()) => true,
             Err(error) if gone(&error) => return Ok(None),
-            Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
-            _ => {}
-        }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+            Err(error) => return Err(error),
+        };
         let locks = match directory.child(OsStr::new(LOCKS)) {
             Err(error) if gone(&error) => return Ok(None),
             locks => locks?,
@@ -97,6 +100,7 @@ impl Helpers {
             parent: (parent, path.to_path_buf()),
             directory,
             locks,
+            made_locks,
         };
         // The private directory, or its lock directory, may have been removed and made again
         // by other downloads between opening and locking; then this lease guards nothing.
@@ -118,17 +122,22 @@ impl Helpers {
     }
 
     /// Removes the lock directory once no lease is left in it, and the private directory once
-    /// it is empty, but only one a download made: an operator's own directory is kept.
+    /// it is empty, but only what a download made: an operator's own directory, its own lock
+    /// directory, and its own file named like the marker are kept as they are.
     pub(super) fn tidy(self) {
         let Self {
             parent: (parent, _),
             directory,
             locks,
+            made_locks,
         } = self;
         drop(locks);
-        let _removed = directory.remove_dir(OsStr::new(LOCKS));
+        let ours = is_marked(&directory);
+        if ours || made_locks {
+            let _removed = directory.remove_dir(OsStr::new(LOCKS));
+        }
         let created = OsStr::new(CREATED);
-        if !matches!(directory.file_kind(created), Ok(Some((true, _)))) {
+        if !ours {
             return;
         }
         if !parent
@@ -145,8 +154,30 @@ impl Helpers {
         if parent.remove_dir(OsStr::new(PRIVATE_DIRECTORY)).is_err() {
             // Another download still keeps files there; its end tidies instead.
             if let Ok(directory) = parent.child(OsStr::new(PRIVATE_DIRECTORY)) {
-                let _marked = directory.open_file(created, Open::Create);
+                let _marked = mark(&directory);
             }
         }
     }
+}
+
+/// Marks `directory` as made by a download; an existing file of that name is left alone.
+fn mark(directory: &Anchor) -> io::Result<()> {
+    let mut file = match directory.open_file(OsStr::new(CREATED), Open::New) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        file => file?,
+    };
+    file.write_all(CREATED_CONTENT)?;
+    file.sync_all()
+}
+
+/// Whether `directory` carries a download's marker, with exactly its content.
+fn is_marked(directory: &Anchor) -> bool {
+    let mut content = Vec::new();
+    directory
+        .open_file(OsStr::new(CREATED), Open::Read)
+        .and_then(|file| {
+            let limit = u64::try_from(CREATED_CONTENT.len()).unwrap_or(u64::MAX) + 1;
+            file.take(limit).read_to_end(&mut content)
+        })
+        .is_ok_and(|_| content == CREATED_CONTENT)
 }

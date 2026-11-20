@@ -8,8 +8,8 @@
 //! - `locks/NAME`: the lock file of the destination `NAME`. It carries the destination's own
 //!   name, so the file system decides which spellings name one destination, and each has a
 //!   single writer whatever the volume's name rules.
-//! - `created`: present only in a private directory a download made, which a download may
-//!   therefore remove once nothing else is left in it.
+//! - `created`: present, holding exactly [`CREATED_CONTENT`], only in a private directory a
+//!   download made, which a download may therefore remove once nothing else is left in it.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -24,6 +24,8 @@ pub const PRIVATE_DIRECTORY: &str = ".ma2a-downloads";
 pub(super) const LOCKS: &str = "locks";
 /// The marker of a private directory a download created.
 pub(super) const CREATED: &str = "created";
+/// The marker's exact content; a file named like it with anything else is not a download's.
+pub(super) const CREATED_CONTENT: &[u8] = b"ma2a-download-directory v1\n";
 
 /// Returns where the partial file of a download to `destination` lives.
 ///

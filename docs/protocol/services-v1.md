@@ -294,8 +294,11 @@ Otherwise the download fails with `AlreadyExists` and leaves the directory as it
 this refuses a `.ma2a-downloads` made by earlier builds, which inherited `LOCAL`'s directory's
 ACL; remove it, once no download uses it, to let a download make a private one. A `LOCAL` named `.ma2a-downloads`, in any letter
 case, is refused with `InvalidInput` before anything is created. A download that makes the
-directory marks it with an empty `created` file, and the last download to end in it removes it;
-one without that mark, such as one the operator made, is kept, empty, when downloads end.
+directory marks it with a new `created` file holding exactly `ma2a-download-directory v1` and a
+newline, and the last download to end in it removes it. One without that mark, such as one the
+operator made, is kept when downloads end, along with any `created` file of other content and any
+`locks` directory the operator made; a download removes only a `locks` directory it made itself
+or one in a directory a download made.
 The partial file is `HASH.ma2a-part`, where `HASH` is 32 hex characters of BLAKE3 over `LOCAL`'s
 exact file name, so no helper file shares a name with an ordinary file or another download's
 destination, and two destinations a case-sensitive file system keeps apart (`report`, `REPORT`)
