@@ -164,7 +164,10 @@ fn validate_windows_acl(path: &Path) -> Result<(), StoreError> {
 
 #[cfg(windows)]
 fn run_powershell(path: &Path, script: &str, operation: &'static str) -> Result<(), StoreError> {
+    // Windows PowerShell 5.1 must find its own modules: a PSModulePath inherited from a
+    // PowerShell 7 parent points it at modules it cannot load, Set-Acl among them.
     let status = std::process::Command::new("powershell.exe")
+        .env_remove("PSModulePath")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .arg(path)
         .status()?;

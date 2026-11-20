@@ -34,6 +34,9 @@ jobs:
       - name: Check the Store's private-ACL predicate natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-store --lib windows_acl
+      - name: Check protected key files natively
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p ma2a-store --test key_permissions
 
   quality:
     runs-on: ubuntu-latest

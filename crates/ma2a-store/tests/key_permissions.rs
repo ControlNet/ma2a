@@ -183,6 +183,7 @@ fn assert_owner_only(path: &std::path::Path, expected: u32) -> TestResult {
 #[cfg(windows)]
 fn assert_owner_only(path: &std::path::Path, _expected: u32) -> TestResult {
     let output = std::process::Command::new("powershell.exe")
+        .env_remove("PSModulePath")
         .args([
             "-NoProfile",
             "-NonInteractive",
