@@ -11,10 +11,15 @@ pub(in crate::control_sync) fn pull_page(
     cursor: &ControlCursorV1,
     request: PullPageRequest,
 ) -> Result<ControlPageV1, ControlRejection> {
-    if cursor.manifest_generation() > state.chain().latest_generation()
-        || hash_at_generation(state.chain(), cursor.manifest_generation())?
-            != cursor.manifest_hash()
-    {
+    if cursor.manifest_generation() > state.chain().latest_generation() {
+        // The requester holds a longer chain, for example one whose pushed prefix this Runtime
+        // just committed. It has nothing to learn from here yet; this Runtime pulls the rest in
+        // its own rounds. Nothing else is sent, because the requester validates records against
+        // its own, later chain.
+        return ControlPageV1::new(state.chain().space_id(), false, Vec::new())
+            .map_err(|_| ControlRejection::Invalid);
+    }
+    if hash_at_generation(state.chain(), cursor.manifest_generation())? != cursor.manifest_hash() {
         return Err(ControlRejection::Invalid);
     }
     let start =

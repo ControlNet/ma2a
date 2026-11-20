@@ -134,3 +134,45 @@ fn a_peer_sharing_more_spaces_than_one_frame_gets_several_requests() -> TestResu
     );
     Ok(())
 }
+
+#[test]
+fn a_requester_ahead_of_this_chain_gets_an_empty_page_not_a_rejection() -> TestResult {
+    // Given: a shared Space at generation 1 here, and a requester that already holds generation 5,
+    // as after this Runtime committed only the prefix the requester pushed.
+    let state = TempState::new("ahead")?;
+    let mut repository = Repository::open(&StoreConfig::new(&state.0))?;
+    let local_id = EndpointId::from(SecretKey::from_bytes(&[0x11; 32]).public());
+    let local = member(local_id, "local")?;
+    share_space(&mut repository, &local, &SecretKey::from_bytes(&[0x22; 32]))?;
+    let spaces = repository.control_spaces_for(local_id)?;
+    let shared = spaces.first().ok_or("no shared Space")?;
+    let ahead = ma2a_core::ControlCursorV1::new(shared.chain().space_id(), 5, [0x5a; 32]);
+
+    // When
+    let page = super::pages::pull_page(
+        shared,
+        &ahead,
+        super::pages::PullPageRequest {
+            now_ms: 50,
+            artifact_budget: 16_000,
+        },
+    );
+
+    // Then: nothing to send, and the exchange stands.
+    let page = page.map_err(|rejection| format!("{rejection:?}"))?;
+    assert!(page.artifacts().is_empty());
+    assert!(!page.has_more());
+
+    // A cursor at a generation this chain holds with another hash is still a fork.
+    let forked = ma2a_core::ControlCursorV1::new(shared.chain().space_id(), 1, [0x5a; 32]);
+    let rejected = super::pages::pull_page(
+        shared,
+        &forked,
+        super::pages::PullPageRequest {
+            now_ms: 50,
+            artifact_budget: 16_000,
+        },
+    );
+    assert!(rejected.is_err());
+    Ok(())
+}
