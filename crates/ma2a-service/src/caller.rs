@@ -13,7 +13,7 @@ use ma2a_core::{
 use ma2a_runtime::ipc::{IpcPaths, LocalApiClient, LocalStream, StreamUpgrade};
 use ma2a_services::{FrameReader, FrameWriter};
 use serde_json::{Map, json};
-use tokio::io::{ReadHalf, WriteHalf};
+use tokio::io::{AsyncWrite, ReadHalf, WriteHalf};
 
 use crate::{Error, wire};
 
@@ -88,6 +88,15 @@ impl CallStream {
         Ok(self.writer.flush().await?)
     }
 
+    /// Sends one control message of 1 byte to 16 KiB; the service reads it as
+    /// [`crate::Input::Control`].
+    ///
+    /// # Errors
+    /// Returns [`Error::Service`] when the message is out of bounds or the connection is gone.
+    pub async fn control(&mut self, message: &[u8]) -> Result<(), Error> {
+        control(&mut self.writer, message).await
+    }
+
     /// Asks the service to stop; keep reading for its terminal.
     ///
     /// # Errors
@@ -96,6 +105,15 @@ impl CallStream {
         self.writer.frame(FrameKind::Cancel, &[]).await?;
         Ok(self.writer.flush().await?)
     }
+}
+
+/// Writes one `control` frame; its bounds are the frame header's.
+async fn control<W: AsyncWrite + Unpin>(
+    writer: &mut FrameWriter<W>,
+    message: &[u8],
+) -> Result<(), Error> {
+    writer.frame(FrameKind::Control, message).await?;
+    Ok(writer.flush().await?)
 }
 
 /// Discovers and calls services on other Endpoints through this user's Runtime.
@@ -189,3 +207,7 @@ impl Caller {
         Ok(opened)
     }
 }
+
+#[cfg(test)]
+#[path = "caller_tests.rs"]
+mod tests;
