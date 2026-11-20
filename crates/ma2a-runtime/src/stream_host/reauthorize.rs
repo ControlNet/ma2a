@@ -8,6 +8,7 @@
 
 use std::{
     collections::BTreeMap,
+    future::Future,
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
@@ -146,23 +147,78 @@ pub(crate) async fn run(context: HostContext) {
         let Ok(revision) = context.store.revision().await else {
             continue;
         };
-        let watched = context.authorizations.snapshot();
-        let changed = seen != Some(revision);
-        seen = Some(revision);
-        if !changed || watched.is_empty() {
+        if seen == Some(revision) {
             continue;
         }
-        for (peer, access, root, stop) in watched {
-            let decision = context
-                .store
-                .authorize_service((context.local, peer), access)
-                .await;
-            match decision {
-                Ok(grant) if root.admits(grant.root.as_ref()) => {}
-                // The store is stopping with the Runtime; shutdown ends the operation.
-                Err(ServiceError::Unavailable) => {}
-                Ok(_) | Err(_) => stop.cancel(),
-            }
+        let watched = context.authorizations.snapshot();
+        let store = &context.store;
+        let decided = recheck(watched, |peer, access| {
+            store.authorize_service((context.local, peer), access)
+        })
+        .await;
+        // A revision counts as checked only once every operation got a definite answer;
+        // one the Store could not answer is asked again on the next tick.
+        if decided {
+            seen = Some(revision);
         }
+    }
+}
+
+/// Authorizes each of `checks` again, cancelling every one that no longer passes. Returns
+/// whether each got a definite answer: `Unavailable` decides nothing.
+async fn recheck<Authorize, Decision>(checks: Vec<Check>, authorize: Authorize) -> bool
+where
+    Authorize: Fn(EndpointId, ServiceAccess) -> Decision,
+    Decision: Future<Output = Result<crate::store::ServiceGrant, ServiceError>>,
+{
+    let mut decided = true;
+    for (peer, access, root, stop) in checks {
+        match authorize(peer, access).await {
+            Ok(grant) if root.admits(grant.root.as_ref()) => {}
+            // Either the Store failed this read or it is stopping with the Runtime, when
+            // shutdown ends the operation anyway.
+            Err(ServiceError::Unavailable) => decided = false,
+            Ok(_) | Err(_) => stop.cancel(),
+        }
+    }
+    decided
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use ma2a_core::service::{ServiceAccess, ServiceError};
+    use tokio_util::sync::CancellationToken;
+
+    use super::{Bound, recheck};
+
+    #[tokio::test]
+    async fn a_check_the_store_could_not_answer_is_decided_on_a_later_tick()
+    -> Result<(), ma2a_core::ProtocolError> {
+        // Given: a revoked operation, and a Store whose first answer is unavailable.
+        let key = ma2a_core::SpaceAuthoritySecret::from_bytes([7; 32]).public_key();
+        let peer = ma2a_core::EndpointId::try_from(key.as_bytes().as_slice())?;
+        let stop = CancellationToken::new();
+        let check = || vec![(peer, ServiceAccess::Exec, Bound::Root(None), stop.clone())];
+        let asked = AtomicUsize::new(0);
+        let authorize = |_, _| {
+            let first = asked.fetch_add(1, Ordering::Relaxed) == 0;
+            async move {
+                Err(if first {
+                    ServiceError::Unavailable
+                } else {
+                    ServiceError::Unauthorized
+                })
+            }
+        };
+
+        // When / Then: the first pass decides nothing and keeps the operation; the next
+        // cancels it.
+        assert!(!recheck(check(), &authorize).await);
+        assert!(!stop.is_cancelled());
+        assert!(recheck(check(), &authorize).await);
+        assert!(stop.is_cancelled());
+        Ok(())
     }
 }
