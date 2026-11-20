@@ -20,6 +20,7 @@ use std::{
     future::Future,
     io,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::Duration,
 };
 
 use serde_json::Value;
@@ -102,14 +103,21 @@ where
         out,
         tasks: Mutex::new(HashMap::new()),
     });
-    let writer = tokio::spawn(write_lines(output, lines));
+    let (stop, stopped) = oneshot::channel();
+    let mut writer = tokio::spawn(write_lines(output, lines, stopped));
     shared.emit(&AgentToRuntime::Ready {
         protocol: PROTOCOL_VERSION,
     });
     let mut input = BufReader::new(input);
     let mut processed = 0_u64;
     let ended = loop {
-        let line = match read_line(&mut input).await {
+        let read = tokio::select! {
+            read = read_line(&mut input) => read,
+            // The writer ends early only on a failure: nothing reaches the Runtime any more,
+            // so the Agent must not keep accepting tasks it can never report.
+            written = &mut writer => return Err(written_failure(written)),
+        };
+        let line = match read {
             Ok(Some(line)) => line,
             Ok(None) => break Ok(()),
             Err(error) => break Err(error),
@@ -126,10 +134,31 @@ where
         }
         shared.emit(&AgentToRuntime::Ack { seq: processed });
     };
-    // Without input no task can make progress, so nothing waits for the tasks still held.
+    // Without input no task can make progress, so nothing waits for the tasks still held;
+    // the lines already queued, such as the last acknowledgement, are still written.
     drop(shared);
-    writer.abort();
-    ended
+    let _signalled = stop.send(());
+    let drained = match tokio::time::timeout(DRAIN, &mut writer).await {
+        Ok(Ok(written)) => written,
+        Ok(Err(_)) => Err(io::Error::other("the output writer failed")),
+        Err(_) => {
+            writer.abort();
+            Err(io::ErrorKind::TimedOut.into())
+        }
+    };
+    ended.and(drained)
+}
+
+/// Longest the end of input waits for queued lines to be written.
+const DRAIN: Duration = Duration::from_secs(5);
+
+/// The failure a writer that ended while input was still open reports.
+fn written_failure(written: Result<io::Result<()>, tokio::task::JoinError>) -> io::Error {
+    match written {
+        Ok(Err(error)) => error,
+        Ok(Ok(())) => io::ErrorKind::BrokenPipe.into(),
+        Err(_) => io::Error::other("the output writer failed"),
+    }
 }
 
 /// Hands one new delivery to its task.
@@ -224,13 +253,27 @@ async fn read_line<R: AsyncBufRead + Unpin>(input: &mut R) -> io::Result<Option<
     }
 }
 
+/// Writes lines as they are queued; once `stop` fires, writes what is queued and returns.
 async fn write_lines<W: AsyncWrite + Unpin>(
     mut output: W,
     mut lines: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut stop: oneshot::Receiver<()>,
 ) -> io::Result<()> {
-    while let Some(line) = lines.recv().await {
+    loop {
+        let line = tokio::select! {
+            biased;
+            line = lines.recv() => line,
+            _stopped = &mut stop => {
+                while let Ok(line) = lines.try_recv() {
+                    output.write_all(&line).await?;
+                }
+                return output.flush().await;
+            }
+        };
+        let Some(line) = line else {
+            return Ok(());
+        };
         output.write_all(&line).await?;
         output.flush().await?;
     }
-    Ok(())
 }
