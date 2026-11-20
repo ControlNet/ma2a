@@ -282,7 +282,10 @@ async fn an_operators_files_in_its_private_directory_are_kept() -> TestResult {
     abandoned.discard().await?;
 
     // Then: every one of them is exactly as it was.
-    assert_eq!(std::fs::read(directory.join("created"))?, b"the operator's own");
+    assert_eq!(
+        std::fs::read(directory.join("created"))?,
+        b"the operator's own"
+    );
     assert_eq!(std::fs::read_dir(directory.join("locks"))?.count(), 0);
     assert_eq!(std::fs::read(directory.join("note"))?, b"keep");
     assert_eq!(std::fs::read_dir(&directory)?.count(), 3);

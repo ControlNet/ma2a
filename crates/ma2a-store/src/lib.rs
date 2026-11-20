@@ -80,7 +80,7 @@ pub use committed::Committed;
 pub use config::StoreConfig;
 pub use control_batch::ControlBatch;
 pub use control_state::ControlSpaceState;
-pub use departure_receipts::DepartureRequest;
+pub use departure_receipts::{DepartureRequest, MAX_BOUND_DEPARTURES};
 pub use enrollment::CreatedEnrollmentInvite;
 pub use enrollment_models::{
     AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption,

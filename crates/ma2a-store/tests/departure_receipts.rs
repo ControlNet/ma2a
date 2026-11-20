@@ -177,5 +177,41 @@ fn a_late_departure_is_bound_only_to_a_generation_that_removed_its_sender() -> T
             .is_err()
     );
     assert_eq!(repository.revision()?, revision);
+
+    // And: requests beyond the bound kept for one removal are refused, while every request
+    // already bound keeps its answer.
+    let ids = (0..ma2a_store::MAX_BOUND_DEPARTURES).map(|index| {
+        let byte = u8::try_from(index).unwrap_or(u8::MAX).wrapping_add(0x60);
+        RequestId::try_from([byte; 16].as_slice())
+            .map(|id| DepartureRequest::new(peer.endpoint_id(), id))
+    });
+    let mut bound = vec![request];
+    for extra in ids {
+        let extra = extra?;
+        match repository.bind_departure_receipt((space_id, removed), extra) {
+            Ok(()) => bound.push(extra),
+            Err(ma2a_store::StoreError::DepartureReceiptsFull) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    assert_eq!(
+        i64::try_from(bound.len())?,
+        ma2a_store::MAX_BOUND_DEPARTURES
+    );
+    let refused = DepartureRequest::new(
+        peer.endpoint_id(),
+        RequestId::try_from([0x7f; 16].as_slice())?,
+    );
+    assert!(matches!(
+        repository.bind_departure_receipt((space_id, removed), refused),
+        Err(ma2a_store::StoreError::DepartureReceiptsFull)
+    ));
+    assert_eq!(repository.departure_receipt(space_id, refused)?, None);
+    for request in bound {
+        assert_eq!(
+            repository.departure_receipt(space_id, request)?,
+            Some(removed)
+        );
+    }
     Ok(())
 }

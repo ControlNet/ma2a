@@ -51,6 +51,9 @@ pub enum StoreError {
     SpaceHistoryFull,
     /// A locally owned Space already lists as many members as its policy allows.
     SpaceMembersFull,
+    /// A removed member already has as many departure requests bound to its removal as are
+    /// kept; a new request is refused rather than grow the receipts without bound.
+    DepartureReceiptsFull,
     /// A public or imported Space has no local authority signing key.
     SpaceAuthorityUnavailable,
     /// A protected-key reference already has immutable material.
@@ -125,6 +128,9 @@ impl fmt::Display for StoreError {
             Self::SpaceMembersFull => formatter.write_str(
                 "Space already has as many members as its policy allows; remove one first",
             ),
+            Self::DepartureReceiptsFull => formatter.write_str(
+                "the removed member already has as many departure requests answered as are kept",
+            ),
             Self::SpaceAuthorityUnavailable => {
                 formatter.write_str("Space has no local protected authority key")
             }
@@ -166,6 +172,7 @@ impl Error for StoreError {
             | Self::SpaceOwnerCannotBeRemoved
             | Self::SpaceHistoryFull
             | Self::SpaceMembersFull
+            | Self::DepartureReceiptsFull
             | Self::SpaceAuthorityUnavailable
             | Self::ProtectedKeyAlreadyExists
             | Self::InvalidPasswordLength

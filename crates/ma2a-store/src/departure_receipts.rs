@@ -6,6 +6,10 @@ use rusqlite::{OptionalExtension as _, Transaction};
 
 use crate::{Repository, StoreError};
 
+/// How many departure requests of one removed member may be bound to the generation that
+/// removed it. Retries reuse their request ID, so a member that departs normally needs one.
+pub const MAX_BOUND_DEPARTURES: i64 = 8;
+
 /// One departure request an owner-signed removal answers: who asked, and with which request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepartureRequest {
@@ -107,8 +111,9 @@ impl Repository {
     ///
     /// # Errors
     /// Returns [`StoreError::SpaceNotFound`] without the Space, [`StoreError::SchemaMismatch`]
-    /// when the generation does not remove the sender, and [`StoreError`] when the row cannot
-    /// be written, including when the request already has a receipt.
+    /// when the generation does not remove the sender, [`StoreError::DepartureReceiptsFull`]
+    /// once [`MAX_BOUND_DEPARTURES`] requests are bound to that removal, and [`StoreError`] when
+    /// the row cannot be written, including when the request already has a receipt.
     pub fn bind_departure_receipt(
         &mut self,
         (space_id, generation): (SpaceId, u64),
@@ -124,6 +129,19 @@ impl Repository {
                 detail: "a departure receipt must name the member its generation removes",
             });
         }
+        let bound = transaction.query_row(
+            "SELECT count(*) FROM departure_receipts
+             WHERE space_id = ?1 AND endpoint_id = ?2 AND generation = ?3",
+            (
+                space_id.as_bytes().as_slice(),
+                request.endpoint_id.as_bytes().as_slice(),
+                i64::try_from(generation).unwrap_or(i64::MAX),
+            ),
+            |row| row.get::<_, i64>(0),
+        )?;
+        if bound >= MAX_BOUND_DEPARTURES {
+            return Err(StoreError::DepartureReceiptsFull);
+        }
         record(&transaction, (space_id, generation), request)?;
         transaction.commit()?;
         Ok(())
@@ -131,14 +149,16 @@ impl Repository {
 }
 
 /// Returns `chain` just before and at `generation`, or `None` when it holds no such manifest.
+/// Only the prefix just before `generation` is copied.
 fn cut_at(chain: &SpaceChain, generation: u64) -> Option<(SpaceChain, SpaceChain)> {
     let mut prefix = SpaceChain::from_genesis(chain.genesis().clone()).ok()?;
     for manifest in chain.manifests() {
-        let previous = prefix.clone();
-        prefix.apply(manifest).ok()?;
-        if prefix.latest_generation() == generation {
-            return Some((previous, prefix));
+        if prefix.latest_generation().checked_add(1) == Some(generation) {
+            let previous = prefix.clone();
+            prefix.apply(manifest).ok()?;
+            return (prefix.latest_generation() == generation).then_some((previous, prefix));
         }
+        prefix.apply(manifest).ok()?;
     }
     None
 }

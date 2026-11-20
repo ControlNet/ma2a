@@ -92,6 +92,7 @@ impl RuntimeError {
                 StoreError::SpaceHistoryFull
                     | StoreError::SpaceMembersFull
                     | StoreError::SpaceOwnerCannotBeRemoved
+                    | StoreError::DepartureReceiptsFull
             )
         )
     }
@@ -267,6 +268,9 @@ mod background_policy_test {
         // So does a Space that has no member slot left for the candidate.
         let full = RuntimeError::from(ma2a_store::StoreError::SpaceMembersFull);
         assert!(crate::actor::Actor::absorb_background("owner redemption", Err(full)).is_ok());
+        // And a departure past the receipts kept for one removal.
+        let full = RuntimeError::from(ma2a_store::StoreError::DepartureReceiptsFull);
+        assert!(crate::actor::Actor::absorb_background("owner departure", Err(full)).is_ok());
         let broken = RuntimeError::from(ma2a_store::StoreError::SpaceNotFound);
         assert!(crate::actor::Actor::absorb_background("owner redemption", Err(broken)).is_err());
     }
