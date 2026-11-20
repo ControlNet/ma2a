@@ -147,6 +147,14 @@ a Space whose history is nearly full can still remove a member. Any other change
 239, including an enrollment, fails with `SpaceHistoryFull` and commits nothing; the owner keeps
 working by creating a new Space.
 
+Every change other than a removal must also leave each non-owner member removable on its own: the
+generations left after it (255 minus its generation) must be at least its non-owner member count,
+and its revocations plus its non-owner members must not exceed 64, the most revocations one
+manifest carries. A removal (a manifest that revokes an Endpoint and adds no member) uses one
+generation and one revocation for each member it frees, so it keeps this true, and it is still
+signed for a history from before this rule that already broke it. A change that would break the
+rule, including an enrollment, fails with `SpaceHistoryFull` and commits nothing.
+
 ## Golden Vector
 
 The committed vector uses authority seed `11` repeated 32 times and nonce `33` repeated 32 times.

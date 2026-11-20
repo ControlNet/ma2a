@@ -215,10 +215,7 @@ impl Repository {
                 .ok_or(StoreError::SchemaMismatch {
                     detail: "Space manifest generation exhausted",
                 })?;
-        crate::space_capacity::admit(
-            generation,
-            crate::space_capacity::revokes(&chain, &update.membership),
-        )?;
+        crate::space_capacity::admit(&chain, generation, &update.membership)?;
         let manifest = SpaceManifestV1::new(
             SpaceManifestLink::new(update.space_id, generation, chain.latest_hash()),
             update.issued_at_ms,

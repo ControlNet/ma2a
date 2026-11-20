@@ -235,13 +235,14 @@ impl Repository {
                 .ok_or(StoreError::SchemaMismatch {
                     detail: "Space generation exhausted",
                 })?;
-        crate::space_capacity::admit(generation, false)?;
+        let membership = SpaceManifestMembership::new(members, revocations);
+        crate::space_capacity::admit(&chain, generation, &membership)?;
         let manifest = SpaceManifestV1::new(
             SpaceManifestLink::new(space_id, generation, chain.latest_hash()),
             u64::try_from(now_ms).map_err(|_| StoreError::SchemaMismatch {
                 detail: "negative enrollment timestamp",
             })?,
-            SpaceManifestMembership::new(members, revocations),
+            membership,
         )?
         .sign(&secret)?;
         chain.apply(&manifest)?;

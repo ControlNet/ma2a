@@ -1,11 +1,12 @@
 //! A locally owned Space stops signing before its history can no longer be handed to anyone,
-//! and keeps its last generations for revocations.
+//! keeps its last generations for revocations, and never admits a change that would leave a
+//! member it could not remove on its own.
 #[path = "common/support.rs"]
 mod support;
 
 use ma2a_core::{
-    EndpointId, EnrollmentPage, MemberCapabilities, SpaceManifestMembership, SpaceMemberV1,
-    SpacePolicyV1, SpaceRevocationV1,
+    EndpointId, EnrollmentPage, MemberCapabilities, SpaceAuthoritySecret, SpaceId,
+    SpaceManifestMembership, SpaceMemberV1, SpacePolicyV1, SpaceRevocationV1,
 };
 use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig, StoreError};
 use support::{TempState, TestResult};
@@ -80,5 +81,121 @@ fn ordinary_changes_stop_short_of_the_limit_and_revocations_still_fit() -> TestR
     assert_eq!(revoked.chain().latest_generation(), 240);
     revoked.chain().export_public()?;
     EnrollmentPage::paginate(revoked.chain())?;
+    Ok(())
+}
+
+/// The `index`th of many distinct members, each with a valid Ed25519 public key.
+///
+/// Index 65 is the owner: [`OWNER`] is the public key of the seed `[65; 32]`.
+fn numbered(index: u8) -> Result<SpaceMemberV1, ma2a_core::ProtocolError> {
+    let key = SpaceAuthoritySecret::from_bytes([index; 32]).public_key();
+    SpaceMemberV1::new(
+        EndpointId::try_from(key.as_bytes().as_slice())?,
+        format!("member-{index}"),
+        MemberCapabilities::new(true, false),
+    )
+}
+
+/// One manifest of `members` beside the owner, with `revoked` revoked.
+fn update(
+    space_id: SpaceId,
+    (owner, members): (&SpaceMemberV1, &[SpaceMemberV1]),
+    (issued_at_ms, revoked): (u64, &[SpaceRevocationV1]),
+) -> OwnedSpaceUpdate {
+    let mut all = members.to_vec();
+    all.push(owner.clone());
+    all.sort_by_key(SpaceMemberV1::endpoint_id);
+    let mut revocations = revoked.to_vec();
+    revocations.sort_by_key(|revocation| revocation.endpoint_id());
+    OwnedSpaceUpdate::new(
+        space_id,
+        issued_at_ms,
+        SpaceManifestMembership::new(all, revocations),
+    )
+}
+
+#[test]
+fn many_members_near_the_limit_can_each_still_be_removed() -> TestResult {
+    // Given: 17 members beside the owner, and ordinary changes up to generation 238.
+    let state = TempState::new("space-history-members")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let owner = member(OWNER, "owner")?;
+    let created = repository.create_owned_space(&SpaceCreation::new(
+        1_000,
+        owner.clone(),
+        SpacePolicyV1::phase_one_default(),
+    ))?;
+    let space_id = created.space_id();
+    let mut members = (1..=17).map(numbered).collect::<Result<Vec<_>, _>>()?;
+    for generation in 1..=238_u64 {
+        let mut renamed = members.clone();
+        if let Some(first) = renamed.first_mut() {
+            *first = SpaceMemberV1::new(
+                first.endpoint_id(),
+                format!("renamed-{}", generation % 2),
+                MemberCapabilities::new(true, false),
+            )?;
+        }
+        repository.advance_owned_space(&update(space_id, (&owner, &renamed), (generation, &[])))?;
+    }
+
+    // When / Then: one more ordinary change would leave 17 members and 16 generations.
+    let revision = repository.revision()?;
+    assert!(matches!(
+        repository.advance_owned_space(&update(space_id, (&owner, &members), (500, &[]))),
+        Err(StoreError::SpaceHistoryFull)
+    ));
+    assert_eq!(repository.revision()?, revision);
+
+    // When / Then: every member is still removed one by one until only the owner is left.
+    let mut revoked = Vec::new();
+    while let Some(leaving) = members.pop() {
+        revoked.push(SpaceRevocationV1::new(leaving.endpoint_id()));
+        repository.advance_owned_space(&update(space_id, (&owner, &members), (600, &revoked)))?;
+    }
+    let chain = repository
+        .load_space_chain(space_id)?
+        .ok_or("the Space is gone")?;
+    assert_eq!((chain.latest_generation(), chain.members().len()), (255, 1));
+    Ok(())
+}
+
+#[test]
+fn a_member_is_refused_once_no_revocation_entry_is_left_to_remove_it() -> TestResult {
+    // Given: 64 different members admitted and removed, one after another.
+    let state = TempState::new("space-history-revocations")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let owner = member(OWNER, "owner")?;
+    let created = repository.create_owned_space(&SpaceCreation::new(
+        1_000,
+        owner.clone(),
+        SpacePolicyV1::phase_one_default(),
+    ))?;
+    let space_id = created.space_id();
+    let mut revoked = Vec::new();
+    for index in 1..=64 {
+        let joining = numbered(index)?;
+        repository.advance_owned_space(&update(
+            space_id,
+            (&owner, std::slice::from_ref(&joining)),
+            (2_000, &revoked),
+        ))?;
+        revoked.push(SpaceRevocationV1::new(joining.endpoint_id()));
+        repository.advance_owned_space(&update(space_id, (&owner, &[]), (2_001, &revoked)))?;
+    }
+
+    // When / Then: one more member could never be revoked, so it is not admitted.
+    let revision = repository.revision()?;
+    let admitted = repository.advance_owned_space(&update(
+        space_id,
+        (&owner, &[numbered(66)?]),
+        (3_000, &revoked),
+    ));
+    assert!(
+        matches!(admitted, Err(StoreError::SpaceHistoryFull)),
+        "{:?}",
+        admitted.map(|advanced| advanced.chain().latest_generation())
+    );
+    assert_eq!(repository.revision()?, revision);
     Ok(())
 }
