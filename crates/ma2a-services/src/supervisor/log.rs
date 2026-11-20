@@ -164,7 +164,7 @@ impl LogWriter {
             last.file_bytes += u64::try_from(record.len()).unwrap_or(u64::MAX);
         }
         self.end += added;
-        self.retain()?;
+        self.retain();
         Ok(self.end)
     }
 
@@ -191,16 +191,23 @@ impl LogWriter {
         Ok(())
     }
 
-    fn retain(&mut self) -> io::Result<()> {
+    /// Deletes oldest segments while over the limit. A segment leaves the window only once its
+    /// file is gone, so the window always matches the directory; one that cannot be deleted
+    /// now stays first and is tried again after the next append.
+    fn retain(&mut self) {
         let mut retained: u64 = self.segments.iter().map(|segment| segment.content).sum();
         while retained > self.limit && self.segments.len() > 1 {
-            let Some(oldest) = self.segments.pop_front() else {
+            let Some(oldest) = self.segments.front().copied() else {
                 break;
             };
-            fs::remove_file(self.directory.join(name(oldest.first)))?;
+            match fs::remove_file(self.directory.join(name(oldest.first))) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => break,
+            }
+            self.segments.pop_front();
             retained -= oldest.content;
         }
-        Ok(())
     }
 }
 
@@ -267,6 +274,16 @@ fn read_once(directory: &Path, from: u64, max: usize) -> io::Result<LogRead> {
             .is_some_and(|next| *next <= output.next)
         {
             continue;
+        }
+        if *first > output.next {
+            // A segment between is missing, so the output is not contiguous here: stop at the
+            // gap, or start past it, reported as truncated, when nothing was read yet.
+            if !output.records.is_empty() {
+                return Ok(output);
+            }
+            output.start = *first;
+            output.next = *first;
+            output.truncated = true;
         }
         let mut bytes = Vec::new();
         File::open(directory.join(name(*first)))?.read_to_end(&mut bytes)?;

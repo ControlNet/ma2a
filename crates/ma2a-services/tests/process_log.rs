@@ -137,3 +137,44 @@ fn a_missing_log_has_an_empty_window() -> TestResult {
     assert_eq!(log::window(&missing)?, LogWindow::default());
     Ok(())
 }
+
+#[test]
+fn a_missing_segment_is_reported_as_a_gap_never_read_across() -> TestResult {
+    // Given: three segments, then the middle one gone while the first stayed, as after a
+    // retention delete that failed for the oldest segment and succeeded for the next.
+    let root = TempRoot::new("log-gap")?;
+    let mut writer = LogWriter::create(root.path(), 16 * MIB)?;
+    let chunk = vec![b'x'; usize::try_from(MAX_RECORD_LEN)?];
+    while writer.window().end < 2 * SEGMENT_BYTES + 1 {
+        writer.append(Channel::Output, &chunk)?;
+    }
+    writer.sync()?;
+    let mut firsts: Vec<u64> = std::fs::read_dir(root.path())?
+        .filter_map(|entry| {
+            entry
+                .ok()?
+                .file_name()
+                .to_str()?
+                .strip_suffix(".seg")?
+                .parse()
+                .ok()
+        })
+        .collect();
+    firsts.sort_unstable();
+    let [first, second, third, ..] = firsts[..] else {
+        return Err("expected three segments".into());
+    };
+    std::fs::remove_file(root.path().join(format!("{second:020}.seg")))?;
+
+    // When
+    let before = log::read(root.path(), first, usize::MAX)?;
+    let after = log::read(root.path(), before.next, usize::MAX)?;
+
+    // Then: the first read stops at the gap; the next one starts past it, marked truncated.
+    assert_eq!(
+        (before.start, before.truncated, before.next),
+        (first, false, second)
+    );
+    assert_eq!((after.start, after.truncated), (third, true));
+    Ok(())
+}
