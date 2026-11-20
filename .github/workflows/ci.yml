@@ -31,6 +31,9 @@ jobs:
       - run: cargo check --locked --workspace --all-targets --all-features
       - run: cargo build --locked --release -p ma2a-app
       - run: cargo run --locked -p ma2a-app -- --version
+      - name: Check the Store's private-ACL predicate natively
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p ma2a-store --lib windows_acl
 
   quality:
     runs-on: ubuntu-latest

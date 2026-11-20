@@ -151,11 +151,13 @@ fn apply_windows_acl(path: &Path, kind: PathKind) -> Result<(), StoreError> {
     )
 }
 
+/// Accepts exactly two explicit Allow rules, one for the current user and one for SYSTEM,
+/// each granting every FullControl right, under a DACL that inherits nothing.
 #[cfg(windows)]
 fn validate_windows_acl(path: &Path) -> Result<(), StoreError> {
     run_powershell(
         path,
-        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$a=Get-Acl -LiteralPath $args[0];if(!$a.AreAccessRulesProtected){exit 2};$r=@($a.Access|Where-Object {!$_.IsInherited});if($r.Count-ne 2){exit 3};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band [Security.AccessControl.FileSystemRights]::FullControl)-eq 0)){exit 5}}",
+        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$f=[Security.AccessControl.FileSystemRights]::FullControl;$a=Get-Acl -LiteralPath $args[0];if(!$a.AreAccessRulesProtected){exit 2};$r=@($a.Access|Where-Object {!$_.IsInherited});if($r.Count-ne 2){exit 3};$seen=@{};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};if($seen.ContainsKey($sid)){exit 6};$seen[$sid]=$true;if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band $f)-ne $f)){exit 5}}",
         "validation",
     )
 }
@@ -195,4 +197,47 @@ fn is_remote(path: &Path) -> bool {
 enum PathKind {
     Directory,
     File,
+}
+
+#[cfg(all(test, windows))]
+mod windows_acl_tests {
+    use std::path::Path;
+
+    use super::{PathKind, apply_windows_acl, run_powershell, validate_windows_acl};
+    use crate::StoreError;
+
+    /// Replaces the file's DACL with protected rules: the current user with `rights`, and
+    /// SYSTEM with full control when `system`.
+    fn set_rules(path: &Path, rights: &str, system: bool) -> Result<(), StoreError> {
+        let system = if system {
+            "$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl','Allow')));"
+        } else {
+            ""
+        };
+        run_powershell(
+            path,
+            &format!(
+                "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$s=New-Object Security.Principal.SecurityIdentifier('S-1-5-18');$a=New-Object Security.AccessControl.FileSecurity;$a.SetAccessRuleProtection($true,$false);$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($u,'{rights}','Allow')));{system}Set-Acl -LiteralPath $args[0] -AclObject $a"
+            ),
+            "test fixture",
+        )
+    }
+
+    #[test]
+    fn only_full_control_for_the_user_and_system_counts_as_private()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::temp_dir().join(format!("ma2a-acl-{}", std::process::id()));
+        std::fs::write(&path, b"")?;
+        apply_windows_acl(&path, PathKind::File)?;
+        assert!(validate_windows_acl(&path).is_ok());
+        // Partial rights for the user, and a missing SYSTEM rule, are refused.
+        set_rules(&path, "ReadAndExecute", true)?;
+        assert!(validate_windows_acl(&path).is_err());
+        set_rules(&path, "FullControl", false)?;
+        assert!(validate_windows_acl(&path).is_err());
+        set_rules(&path, "FullControl", true)?;
+        assert!(validate_windows_acl(&path).is_ok());
+        std::fs::remove_file(&path)?;
+        Ok(())
+    }
 }
