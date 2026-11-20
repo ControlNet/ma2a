@@ -25,11 +25,21 @@ async fn refusal(destination: &Path) -> Option<ErrorKind> {
 /// Creates the private directory beside `local` as an operator might: owner-only, but without
 /// the marker of one a download made, so downloads keep it.
 fn private_directory(local: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(local.join(PRIVATE_DIRECTORY))
+    // On Windows a directory made plainly inherits its parent's ACL, which a download refuses.
+    #[cfg(windows)]
+    return match ma2a_services::windows_files::create_protected_dir(&local.join(PRIVATE_DIRECTORY))
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        created => created,
+    };
+    #[cfg(not(windows))]
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(local.join(PRIVATE_DIRECTORY))
+    }
 }
 
 /// Downloads `content` to `destination` and publishes it.
