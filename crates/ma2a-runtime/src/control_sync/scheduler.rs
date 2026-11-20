@@ -82,10 +82,12 @@ impl ControlRoundRunner {
         if had_peers && latest.is_none() {
             return Err(ma2a_net::ControlRejection::Unavailable.into());
         }
+        let incomplete = had_peers && synchronized_peers.is_empty();
         Ok(latest.map(|revision| ControlRoundOutcome {
             revision,
             synchronized_peers,
             changes,
+            incomplete,
         }))
     }
 }

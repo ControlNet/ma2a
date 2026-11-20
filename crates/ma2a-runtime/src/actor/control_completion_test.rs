@@ -95,6 +95,7 @@ async fn control_completion_failure_retains_followup_until_normal_maintenance() 
                     address: false,
                     relay: false,
                 },
+                incomplete: false,
             })),
         )))
         .await?;
@@ -123,6 +124,47 @@ async fn control_completion_failure_retains_followup_until_normal_maintenance() 
             .count(),
         count
     );
+    actor.finish(false).await?;
+    store_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_round_no_dialed_peer_completed_fails_but_keeps_what_it_committed() -> TestResult {
+    let directory = TempState::new("control-incomplete")?;
+    let config = StoreConfig::new(&directory.0);
+    let (mut actor, store_task) = fixture(&config).await?;
+    let mut outcomes = Vec::new();
+    for incomplete in [true, false] {
+        // Given: a global round with a waiter, whose peers answered only part of their requests,
+        // or which had nothing to synchronize.
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let scheduled = actor
+            .control_queue
+            .request(ControlRoundScope::all(), Some(reply))
+            .ok_or("no control round")?;
+        let revision = actor.state.revision + 1;
+
+        // When
+        actor
+            .finish_control_round(Ok((
+                scheduled,
+                Ok(Some(ControlRoundOutcome {
+                    revision,
+                    synchronized_peers: BTreeSet::new(),
+                    changes: ControlChanges::default(),
+                    incomplete,
+                })),
+            )))
+            .await?;
+
+        // Then: the committed revision is kept either way.
+        assert_eq!(actor.state.revision, revision);
+        let history = actor.control_round_history.back().ok_or("no history")?;
+        outcomes.push((answer.await?.is_ok(), history.outcome));
+    }
+    // The incomplete round fails its waiter and is recorded as failed; an empty one is not.
+    assert_eq!(outcomes, [(false, "failed"), (true, "empty")]);
     actor.finish(false).await?;
     store_task.await?;
     Ok(())

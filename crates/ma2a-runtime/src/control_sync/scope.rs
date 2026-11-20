@@ -35,6 +35,9 @@ pub(crate) struct ControlRoundOutcome {
     pub(crate) revision: u64,
     pub(crate) synchronized_peers: BTreeSet<EndpointId>,
     pub(crate) changes: super::ControlChanges,
+    /// Peers were dialed, yet none of them answered every request. What did arrive is
+    /// committed, and `changes` carries it, but the round itself failed.
+    pub(crate) incomplete: bool,
 }
 
 impl ControlRoundScope {

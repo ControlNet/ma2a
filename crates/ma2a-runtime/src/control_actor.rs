@@ -96,6 +96,10 @@ impl Actor {
             Ok(Some(outcome)) => {
                 self.state.revision = self.state.revision.max(outcome.revision);
                 self.retain_control_completion(outcome.changes, outcome.synchronized_peers.clone());
+                if outcome.incomplete {
+                    // Every dialed peer left a request unanswered; its committed part stays.
+                    failure = Some(ma2a_net::ControlRejection::Unavailable.into());
+                }
                 outcome.synchronized_peers
             }
             Ok(None) => BTreeSet::new(),
