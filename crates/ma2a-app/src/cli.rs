@@ -29,7 +29,7 @@ pub(crate) enum A2aCommand {
         /// Loopback address to listen on.
         #[arg(long, default_value = "127.0.0.1:41241")]
         listen: SocketAddr,
-        /// Where to write the bearer token (default: STATE_DIR/a2a-token).
+        /// Where to write the bearer token (default: STATE_DIR/a2a-token); one adapter per file.
         #[arg(long, value_name = "FILE")]
         token_file: Option<PathBuf>,
     },

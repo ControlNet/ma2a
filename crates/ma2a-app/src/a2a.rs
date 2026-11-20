@@ -54,6 +54,34 @@ fn write_private(path: &Path, token: &str) -> io::Result<()> {
     std::fs::rename(&staging, path)
 }
 
+/// Claims the token file at `path` for as long as the returned lock file stays open.
+///
+/// A second adapter naming the same token file is refused here, before it writes anything,
+/// so a running adapter's published token file is never replaced underneath its clients.
+/// The lock file itself stays behind empty; removing it could let two claims race.
+fn claim(path: &Path) -> Result<std::fs::File, AppError> {
+    let mut name = path
+        .file_name()
+        .ok_or(AppError::Usage("--token-file must name a file"))?
+        .to_os_string();
+    name.push(".lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let lock = options.open(path.with_file_name(name))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(std::fs::TryLockError::WouldBlock) => Err(AppError::Usage(
+            "another adapter is serving with this token file; give this one its own --token-file",
+        )),
+        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
 /// Removes `path` only while it still holds `token`: another adapter that wrote its own token
 /// there since keeps it when this one stops.
 fn remove_if_ours(path: &Path, token: &str) {
@@ -90,12 +118,13 @@ pub(crate) async fn serve(
         ));
     }
     crate::daemon_control::require(&paths).await?;
+    let token_file = token_file.unwrap_or_else(|| state_dir.join("a2a-token"));
+    let _claim = claim(&token_file)?;
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let mut secret = [0_u8; 32];
     getrandom::fill(&mut secret).map_err(|_| io::Error::other("random source failed"))?;
     let token = blake3::Hash::from_bytes(secret).to_hex().to_string();
-    let token_file = token_file.unwrap_or_else(|| state_dir.join("a2a-token"));
     write_private(&token_file, &token)?;
     let ready = json!({"url": origin, "token_file": token_file.display().to_string()});
     writeln!(io::stdout().lock(), "{ready}")?;
@@ -127,7 +156,25 @@ pub(crate) async fn serve(
 
 #[cfg(test)]
 mod tests {
-    use super::{remove_if_ours, write_private};
+    use super::{claim, remove_if_ours, write_private};
+
+    #[test]
+    fn a_second_adapter_on_a_claimed_token_file_is_refused_until_the_first_stops()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = std::env::temp_dir().join(format!("ma2a-a2a-claim-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join("a2a-token");
+
+        let first = claim(&path).map_err(|error| error.to_string())?;
+        let refused = claim(&path).err().map(|error| error.to_string());
+        assert!(refused.is_some_and(|message| message.contains("--token-file")));
+        assert!(claim(&directory.join("other-token")).is_ok());
+        drop(first);
+        assert!(claim(&path).is_ok());
+
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
 
     #[test]
     fn a_stopping_adapter_leaves_a_token_another_adapter_wrote_since()
