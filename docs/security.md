@@ -3,7 +3,7 @@
 ## Trust Boundaries
 
 - The operating-system current-user boundary protects the state directory, protected key files,
-  daemon IPC endpoint, and loopback Web control plane.
+  daemon IPC endpoint, and the Web control plane while it listens on loopback (the default).
 - Space signatures, contiguous manifest history, explicit membership, capability, revocation, and
   freshness checks authorize MA2A operations.
 - Iroh authenticates the remote Endpoint transport identity. MA2A still requires exact target
@@ -32,8 +32,8 @@ co-members share.
 
 ## Threat Model
 
-MA2A fails closed for malformed or ambiguous local API input, cross-user IPC, non-loopback Web
-peers, hostile Host/Origin/CSRF/session input, enrollment replay, signature mismatch, stale or forked
+MA2A fails closed for malformed or ambiguous local API input, cross-user IPC, remote Web peers
+of a loopback listener, hostile Host/Origin/CSRF/session input, enrollment replay, signature mismatch, stale or forked
 control state, cross-Space data, Endpoint identity mismatch, and relay provider mismatch. Secret
 keys, passwords, invitation tickets, raw session bearers, and TLS key contents must not enter argv,
 URLs, logs, release metadata, or repository files.
@@ -44,7 +44,12 @@ automatic certificate issuance, or recovery from lost private keys.
 
 ## Web Boundary
 
-The UI binds only to an OS-selected loopback port. Authentication uses an Argon2id password
+By default the UI binds an OS-selected port on `127.0.0.1`. An operator may instead choose any
+local address, including a wildcard, and a fixed port with `ma2a ui start --host --port`; that
+listener accepts remote peers over plain HTTP, so the password, session cookie, and every page
+cross the network unencrypted. Use a non-loopback binding only behind transport the operator
+protects, such as a TLS-terminating proxy that sets `Secure` on the cookie, or a private tunnel
+([web-security.md](web-security.md)). Authentication uses an Argon2id password
 verifier, host-only strict cookies, independent CSRF state, exact same-origin checks, bounded login
 attempts, and no permissive CORS. Static assets are compiled into the binary; the release smoke test
 fetches the HTML and referenced JS/CSS from the extracted executable with no source asset directory.

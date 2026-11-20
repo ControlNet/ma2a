@@ -280,7 +280,8 @@ pub(crate) enum UiCommand {
     RevokeAll,
     /// Start or restart Web UI in the daemon and return to the shell.
     Start {
-        /// IP address or hostname to bind, including wildcard addresses.
+        /// IP address or hostname to bind, including wildcard addresses. A non-loopback
+        /// address serves plain HTTP to the network; protect that transport yourself.
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
         /// Listener port; 0 asks the OS to select a free port.

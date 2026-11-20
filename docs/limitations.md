@@ -1,10 +1,10 @@
 # Limitations and Exclusions
 
 MA2A provides one current-user binary, one persistent Endpoint per Runtime, zero or more Spaces,
-bounded signed control synchronization, Endpoint-addressed Echo, loopback Web administration,
-operator-configured relays, and the service families of Phases 2 to 5: remote Files, Transfer,
-Exec, Shell, and Proxy; durable Processes; Agents with an A2A v1.0 adapter; and hosted
-third-party services.
+bounded signed control synchronization, Endpoint-addressed Echo, Web administration over HTTP
+(loopback by default), operator-configured relays, and the service families of Phases 2 to 5:
+remote Files, Transfer, Exec, Shell, and Proxy; durable Processes; Agents with an A2A v1.0
+adapter; and hosted third-party services.
 
 It does not provide:
 

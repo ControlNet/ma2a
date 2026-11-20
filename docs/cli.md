@@ -165,7 +165,9 @@ one atomically, revoking all existing sessions. Passwords are rejected from argv
 listener, prints its status and URL, and returns to the shell while the daemon serves HTTP in the
 background. Running it again restarts WebUI. `--host` accepts IP addresses and hostnames, including
 `0.0.0.0` and `::` for wildcard binding. The defaults are `127.0.0.1` and `--port 0` (a free port
-selected by the OS). `--json` returns the same status shape as `ui status --json`.
+selected by the OS). A non-loopback `--host` serves plain HTTP to the network, password and
+session cookie included; put it behind transport you protect ([security.md](security.md#web-boundary)).
+`--json` returns the same status shape as `ui status --json`.
 
 `ui stop` closes the WebUI listener and existing HTTP/SSE connections; the daemon and Endpoint
 continue running. `ui status` prints `running` or `stopped` and the URL (or `-` when stopped).
