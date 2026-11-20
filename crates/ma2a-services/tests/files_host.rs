@@ -172,6 +172,29 @@ async fn listing_pages_are_sorted_bounded_and_resumable() -> TestResult {
     Ok(())
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn a_name_too_long_to_address_is_left_out_of_a_listing() -> TestResult {
+    // Given: a name NTFS takes but a remote path component cannot carry, beside an ordinary one.
+    let root = TempRoot::new("long-name")?;
+    fs::write(root.path().join("\u{6587}".repeat(100)), b"")?;
+    fs::write(root.path().join("ok"), b"")?;
+
+    // When
+    let (frames, _) = serve(root.path(), FilesRequest::List(path("docs:/")?, None), None).await?;
+
+    // Then: the page decodes and lists every addressable name.
+    let Ok(FilesResult::Listing(entries, None)) = outcome(&frames)? else {
+        return Err("listing".into());
+    };
+    let names = entries
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["ok"]);
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn symlinks_are_reported_but_never_followed() -> TestResult {

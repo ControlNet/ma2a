@@ -124,7 +124,7 @@ operation, so no ancestor can be renamed or replaced meanwhile, and reparse poin
 | Op | Code | Access | Semantics |
 | --- | --- | --- | --- |
 | stat | 0 | read | kind, size, modified ms, read-only flag |
-| list | 1 | read | byte-order sorted page of at most 128 entries after an opaque cursor; memory bounded by the page |
+| list | 1 | read | byte-order sorted page of at most 128 entries after an opaque cursor; memory bounded by the page; names a path cannot address (not UTF-8, or longer than 255 UTF-8 bytes, which a Windows volume allows) are left out |
 | mkdir | 2 | write | `parents`: missing ancestors are created and an existing directory succeeds; otherwise `already_exists` |
 | read | 3 | read | at most 64 KiB from an offset: `accept`, one `data` (output), then `outcome {length, eof}` |
 | write | 4 | write | at most 64 KiB: `accept`, then the client sends `data` (input) and `end`; `create_new` publishes by hard link (falling back to the platform no-clobber rename) and `replace` by atomic rename, both after fsync of a temporary sibling |

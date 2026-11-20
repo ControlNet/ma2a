@@ -3,7 +3,8 @@
 use std::{collections::BinaryHeap, io::ErrorKind, path::Path};
 
 use ma2a_core::service::{
-    DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, RemotePath, ServiceError,
+    DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, MAX_PATH_COMPONENT_LEN, RemotePath,
+    ServiceError,
 };
 
 use super::resolve::{self, Directory};
@@ -44,7 +45,9 @@ pub(crate) fn stat(root: &Path, path: &RemotePath) -> Result<FilesResult, Servic
 /// Returns the byte-order-first page of names after `cursor`.
 ///
 /// Memory stays bounded by the page: only the smallest `MAX_LIST_PAGE + 1` names are kept.
-/// Names that are not valid UTF-8 cannot be addressed remotely and are skipped.
+/// Names that cannot be addressed remotely are skipped, before paging, so every page and
+/// cursor decodes: names that are not valid UTF-8, and names longer than a path component may
+/// be, which a Windows volume allows (255 UTF-16 units can take up to 765 UTF-8 bytes).
 pub(crate) fn list(
     root: &Path,
     path: &RemotePath,
@@ -53,7 +56,9 @@ pub(crate) fn list(
     let directory = resolve::directory(root, path)?;
     let mut smallest = BinaryHeap::with_capacity(MAX_LIST_PAGE + 1);
     fs_error::map(directory.for_each_name(|name| {
-        let Some(name) = name else { return };
+        let Some(name) = name.filter(|name| addressable(name)) else {
+            return;
+        };
         if cursor.is_some_and(|cursor| name <= cursor) {
             return;
         }
@@ -78,6 +83,11 @@ pub(crate) fn list(
         None
     };
     Ok(FilesResult::Listing(entries, next))
+}
+
+/// Whether `name` fits in one remote path component.
+const fn addressable(name: &str) -> bool {
+    name.len() <= MAX_PATH_COMPONENT_LEN
 }
 
 /// Creates one directory, or every missing ancestor with `parents`.
@@ -150,4 +160,18 @@ pub(crate) fn remove(
         }
     }
     Ok(FilesResult::Done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::addressable;
+
+    #[test]
+    fn a_name_longer_than_a_path_component_is_not_addressable() {
+        // 85 three-byte characters fill a component; 100 exceed it, though NTFS takes them.
+        assert!(addressable(&"\u{6587}".repeat(85)));
+        assert!(!addressable(&"\u{6587}".repeat(100)));
+        assert!(addressable(&"n".repeat(255)));
+        assert!(!addressable(&"n".repeat(256)));
+    }
 }
