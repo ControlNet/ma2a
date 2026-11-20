@@ -35,10 +35,23 @@ pub(super) struct Run {
     pub(super) stream_error: Option<ServiceError>,
 }
 
-async fn read_some<P: AsyncRead + Unpin>(pipe: Option<&mut P>, buffer: &mut [u8]) -> usize {
+/// Reads the next output chunk; zero bytes is end of output, and an error is never mistaken
+/// for it.
+async fn read_some<P: AsyncRead + Unpin>(
+    pipe: Option<&mut P>,
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
     match pipe {
-        Some(pipe) => pipe.read(buffer).await.unwrap_or(0),
+        Some(pipe) => pipe.read(buffer).await,
         None => std::future::pending().await,
+    }
+}
+
+/// How the child ended: its exit status when waiting for it succeeded, `Unknown` otherwise.
+fn ended(status: Option<&std::io::Result<ExitStatus>>) -> Termination {
+    match status {
+        Some(Ok(status)) => process::termination(*status),
+        Some(Err(_)) | None => Termination::Unknown,
     }
 }
 
@@ -80,7 +93,7 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
         error_bytes: 0,
         stream_error: None,
     };
-    let mut exit: Option<ExitStatus> = None;
+    let mut exit: Option<std::io::Result<ExitStatus>> = None;
     let mut drain_until: Option<Instant> = None;
     loop {
         if exit.is_some() && stdout.is_none() && stderr.is_none() {
@@ -94,13 +107,19 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
                 break;
             }
             status = spawned.child.wait(), if exit.is_none() => {
-                exit = Some(status.unwrap_or_else(|_| ExitStatus::default()));
+                exit = Some(status);
                 drain_until = Some(Instant::now() + EXIT_DRAIN_GRACE);
                 continue;
             }
             () = tokio::time::sleep_until(drain_until.unwrap_or_else(Instant::now)), if drain_until.is_some() => break,
             read = read_some(stdout.as_mut(), &mut buffers.0), if stdout.is_some() => (Channel::Output, read),
             read = read_some(stderr.as_mut(), &mut buffers.1), if stderr.is_some() => (Channel::Error, read),
+        };
+        // Output that could not be read is lost, so the run cannot report complete output.
+        let Ok(read) = read else {
+            run.reason = EndReason::Cancelled;
+            run.stream_error = Some(ServiceError::Internal);
+            break;
         };
         if read == 0 {
             match channel {
@@ -139,9 +158,52 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
     spawned.kill_all();
     let status = match exit {
         Some(status) => Some(status),
-        None => spawned.child.wait().await.ok(),
+        None => Some(spawned.child.wait().await),
     };
-    run.termination = status.map_or(Termination::Unknown, process::termination);
+    run.termination = ended(status.as_ref());
     let _finished = done.send(());
     run
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use ma2a_core::service::Termination;
+    use tokio::io::{AsyncRead, ReadBuf};
+
+    use super::{ended, read_some};
+
+    /// A pipe that fails on every read.
+    struct Broken;
+
+    impl AsyncRead for Broken {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_is_not_end_of_output() {
+        let mut buffer = [0_u8; 8];
+        assert!(read_some(Some(&mut Broken), &mut buffer).await.is_err());
+        let mut empty: &[u8] = &[];
+        assert_eq!(read_some(Some(&mut empty), &mut buffer).await.ok(), Some(0));
+    }
+
+    #[test]
+    fn a_failed_wait_is_an_unknown_termination() {
+        assert_eq!(
+            ended(Some(&Err(std::io::ErrorKind::Other.into()))),
+            Termination::Unknown
+        );
+        assert_eq!(ended(None), Termination::Unknown);
+    }
 }
