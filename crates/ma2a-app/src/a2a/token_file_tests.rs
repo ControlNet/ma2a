@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{claim, remove_if_ours, write_private, write_staged};
+use super::{Published, claim, remove_if_ours, write_private, write_staged};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -170,6 +170,56 @@ fn a_stopping_adapter_leaves_a_token_another_adapter_wrote_since() -> TestResult
     remove_if_ours(&path, "first");
     assert_eq!(std::fs::read_to_string(&path)?, "second");
     remove_if_ours(&path, "second");
+    assert!(!path.exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_claim_keeps_the_directory_its_path_resolved_to() -> TestResult {
+    // Given: a token file claimed through a link to `a`.
+    let scratch = Scratch::new("repointed")?;
+    let (a, b, link) = (
+        scratch.path().join("a"),
+        scratch.path().join("b"),
+        scratch.path().join("link"),
+    );
+    std::fs::create_dir(&a)?;
+    std::fs::create_dir(&b)?;
+    std::os::unix::fs::symlink(&a, &link)?;
+    let held = claim(&link.join("token")).map_err(|error| error.to_string())?;
+
+    // When: the link is pointed at `b`, then the token is written and the adapter stops.
+    std::fs::remove_file(&link)?;
+    std::os::unix::fs::symlink(&b, &link)?;
+    write_private(held.path(), "secret").map_err(|error| error.to_string())?;
+
+    // Then: the token is beside the lock it was claimed with, and `b` holds nothing.
+    assert_eq!(std::fs::read(a.join("token"))?, b"secret");
+    assert!(names(&b)?.is_empty());
+    // A second adapter through the repointed link names another file and may claim it.
+    assert!(claim(&link.join("token")).is_ok());
+    drop(held);
+    Ok(())
+}
+
+#[test]
+fn a_published_token_is_removed_however_the_adapter_ends() -> TestResult {
+    // Given: a published token file.
+    let scratch = Scratch::new("published")?;
+    let path = scratch.path().join("token");
+    write_private(&path, "first").map_err(|error| error.to_string())?;
+
+    // When / Then: dropping a guard for another token keeps it; its own guard removes it.
+    drop(Published {
+        path: &path,
+        token: "other",
+    });
+    assert!(path.exists());
+    drop(Published {
+        path: &path,
+        token: "first",
+    });
     assert!(!path.exists());
     Ok(())
 }

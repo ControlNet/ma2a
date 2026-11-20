@@ -64,13 +64,17 @@ pub(crate) async fn serve(
     }
     crate::daemon_control::require(&paths).await?;
     let token_file = token_file.unwrap_or_else(|| state_dir.join("a2a-token"));
-    let _claim = token_file::claim(&token_file)?;
+    let claim = token_file::claim(&token_file)?;
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let mut secret = [0_u8; 32];
     getrandom::fill(&mut secret).map_err(|_| io::Error::other("random source failed"))?;
     let token = blake3::Hash::from_bytes(secret).to_hex().to_string();
-    token_file::write_private(&token_file, &token)?;
+    token_file::write_private(claim.path(), &token)?;
+    let _published = token_file::Published {
+        path: claim.path(),
+        token: &token,
+    };
     let ready = json!({"url": origin, "token_file": token_file.display().to_string()});
     writeln!(io::stdout().lock(), "{ready}")?;
     let shared = http::Shared {
@@ -95,6 +99,5 @@ pub(crate) async fn serve(
             tokio::time::sleep(STOP_GRACE).await;
         } => Ok(()),
     };
-    token_file::remove_if_ours(&token_file, &token);
     Ok(outcome?)
 }

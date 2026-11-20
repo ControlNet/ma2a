@@ -26,10 +26,10 @@ const LOCK_DIRECTORY: &str = ".ma2a-a2a-locks";
 /// How many fresh staging names are tried before giving up.
 const STAGING_ATTEMPTS: usize = 8;
 
-/// The token file's directory, as an absolute path, and its name.
+/// The token file's directory, resolved, and its name.
 ///
-/// The directory keeps its given spelling rather than its canonical one, which on Windows
-/// carries a `\\?\` prefix the ACL helper is not given.
+/// The directory is resolved once, so a link on the given path pointed elsewhere afterwards
+/// cannot move the lock, the staging, the token, or its removal into another directory.
 fn locate(path: &Path) -> Result<(PathBuf, &OsStr), AppError> {
     let name = path
         .file_name()
@@ -43,16 +43,35 @@ fn locate(path: &Path) -> Result<(PathBuf, &OsStr), AppError> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let parent = std::path::absolute(parent)?;
-    if std::fs::canonicalize(&parent)?
-        .file_name()
-        .is_some_and(is_reserved)
-    {
+    let parent = resolve(parent)?;
+    if parent.file_name().is_some_and(is_reserved) {
         return Err(AppError::Usage(
             "--token-file cannot be inside a directory the adapter keeps for itself",
         ));
     }
     Ok((parent, name))
+}
+
+/// Resolves `directory` to its canonical path. On Windows that path carries a `\\?\` prefix,
+/// which the Store's ACL helper is not given; it is dropped for a local drive whenever the
+/// plain spelling resolves to the very same path.
+fn resolve(directory: &Path) -> io::Result<PathBuf> {
+    let resolved = std::fs::canonicalize(directory)?;
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = resolved.components();
+        if let Some(Component::Prefix(prefix)) = components.next()
+            && let Prefix::VerbatimDisk(disk) = prefix.kind()
+        {
+            let mut plain = PathBuf::from(format!("{}:", char::from(disk)));
+            plain.extend(components);
+            if std::fs::canonicalize(&plain)? == resolved {
+                return Ok(plain);
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 fn is_reserved(name: &OsStr) -> bool {
@@ -72,8 +91,9 @@ fn store_error(error: ma2a_store::StoreError) -> AppError {
 /// never replaced underneath its clients. The lock directory must be private to this account;
 /// one that is not is refused and left as it was. The empty lock file stays behind: removing
 /// it could let two claims race.
-pub(super) fn claim(path: &Path) -> Result<std::fs::File, AppError> {
+pub(super) fn claim(path: &Path) -> Result<Claim, AppError> {
     let (parent, name) = locate(path)?;
+    let path = parent.join(name);
     let locks = parent.join(LOCK_DIRECTORY);
     ma2a_store::ensure_private_directory(&locks, "A2A lock directory").map_err(store_error)?;
     let mut options = std::fs::OpenOptions::new();
@@ -85,11 +105,38 @@ pub(super) fn claim(path: &Path) -> Result<std::fs::File, AppError> {
     }
     let lock = options.open(locks.join(name))?;
     match lock.try_lock() {
-        Ok(()) => Ok(lock),
+        Ok(()) => Ok(Claim { _lock: lock, path }),
         Err(std::fs::TryLockError::WouldBlock) => Err(AppError::Usage(
             "another adapter is serving with this token file; give this one its own --token-file",
         )),
         Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+/// A claimed token file, in its resolved directory.
+#[derive(Debug)]
+pub(super) struct Claim {
+    _lock: std::fs::File,
+    path: PathBuf,
+}
+
+impl Claim {
+    /// The token file's path below its resolved directory, which every later step uses.
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// A published token file, removed when dropped while it still holds this token, so an
+/// adapter that fails after publishing, even before it reports ready, leaves none behind.
+pub(super) struct Published<'a> {
+    pub(super) path: &'a Path,
+    pub(super) token: &'a str,
+}
+
+impl Drop for Published<'_> {
+    fn drop(&mut self) {
+        remove_if_ours(self.path, self.token);
     }
 }
 
