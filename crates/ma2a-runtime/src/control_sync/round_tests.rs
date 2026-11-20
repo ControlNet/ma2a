@@ -227,5 +227,20 @@ fn a_response_answering_another_requests_spaces_is_refused() -> TestResult {
     // As the answer to the first request, the same pages complete a round with no change.
     super::apply_response(&mut repository, &input, &first.spaces)
         .map_err(|failure| failure.to_string())?;
+    // A response leaving out one of the requested Spaces is refused too.
+    let short = ma2a_core::ControlResponseV1::new(
+        first
+            .spaces
+            .iter()
+            .skip(1)
+            .map(|space| ma2a_core::ControlPageV1::new(*space, false, Vec::new()))
+            .collect::<Result<Vec<_>, _>>()?,
+    )?
+    .encode()?;
+    let short = super::ControlExchangeInput {
+        payload: short,
+        ..input
+    };
+    assert!(super::apply_response(&mut repository, &short, &first.spaces).is_err());
     Ok(())
 }

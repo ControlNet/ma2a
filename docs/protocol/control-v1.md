@@ -36,7 +36,7 @@ A response begins with `MCR1` and contains up to 64 Space-local pages. Request a
 
 Each page contains at most 256 artifacts. An artifact is `kind:u8 || signed_len:u32 || signed_bytes`, where kind `0` is a signed manifest, `1` is a signed Space address record, and `2` is a signed Private Relay advertisement. The complete encoded request or response remains within 1 MiB.
 
-A response answers exactly one request: every page in it must be for a Space that request carried a cursor for. The responder sends one page per such cursor while it still shares that Space, an empty page when nothing changed. A response with a page for any other Space, even one the two Runtimes share, is refused as invalid before anything in it is applied, and that request counts as failed, so the peer is not reported as synchronized in that round. Only a local failure ends the round itself.
+A response answers exactly one request. The responder refuses a request naming any Space it does not share, so a successful response carries exactly one page for each Space the request carried a cursor for, an empty page when nothing changed. A response with a page missing, repeated, or for any other Space, even one the two Runtimes share, is refused as invalid before anything in it is applied, and that request counts as failed, so the peer is not reported as synchronized in that round. Only a local failure ends the round itself.
 
 The sender forwards original canonical signed bytes unchanged. It does not re-sign, normalize, or attribute trust to the forwarding peer. `more = 1` means another bounded round may retrieve additional artifacts.
 

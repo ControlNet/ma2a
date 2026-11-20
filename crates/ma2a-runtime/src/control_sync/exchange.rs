@@ -112,8 +112,10 @@ fn authorize_shared(
 
 /// Applies a peer's response to a request that asked about the Spaces `requested`.
 ///
-/// A response may answer only those: one carrying a page for any other Space, even one the two
-/// share, answers another request, and is refused before anything is applied.
+/// A responder refuses a request naming any Space it does not share, so its answer carries
+/// exactly one page for each requested Space. A response with a page missing, repeated, or for
+/// any other Space, even one the two share, answers some other request, and is refused before
+/// anything is applied.
 pub(crate) fn apply_response(
     repository: &mut Repository,
     input: &ControlExchangeInput,
@@ -128,11 +130,12 @@ pub(crate) fn apply_response(
         ControlResponseV1::decode(&input.payload).map_err(|_| ControlRejection::Invalid)?;
     pages::validate_page_spaces(&shared, response.pages())
         .map_err(|_| ControlRejection::Invalid)?;
-    if response
+    let answered = response
         .pages()
         .iter()
-        .any(|page| !requested.contains(&page.space_id()))
-    {
+        .map(ControlPageV1::space_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if answered.len() != response.pages().len() || answered != requested.iter().copied().collect() {
         return Err(ControlRejection::Invalid.into());
     }
     let changes = pages::apply_pages(
