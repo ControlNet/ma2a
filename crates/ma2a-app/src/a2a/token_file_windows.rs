@@ -1,7 +1,4 @@
-#![allow(
-    unsafe_code,
-    reason = "audited Windows security-descriptor FFI boundary"
-)]
+#![allow(unsafe_code, reason = "audited Windows SDDL FFI boundary")]
 //! A directory whose protected ACL is in place from the moment it exists.
 
 use std::{io, os::windows::ffi::OsStrExt as _, path::Path, ptr};

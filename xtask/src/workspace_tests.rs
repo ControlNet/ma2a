@@ -11,7 +11,7 @@ const EXPECTED_MEMBERS: [&str; 9] = [
     "ma2a-store",
     "xtask",
 ];
-const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 8] = [
+const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 9] = [
     (
         "crates/ma2a-services/src/client/terminal_windows.rs",
         concat!(
@@ -24,6 +24,13 @@ const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 8] = [
         concat!(
             "allow(unsafe",
             "_code, reason = \"audited Windows no-clobber rename FFI boundary\")"
+        ),
+    ),
+    (
+        "crates/ma2a-app/src/a2a/token_file_windows.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows SDDL FFI boundary\")"
         ),
     ),
     (
