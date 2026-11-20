@@ -29,102 +29,11 @@ mod remote;
 mod rpc;
 mod stream;
 mod time;
+mod token_file;
 mod view;
 
 /// How long a stop waits for open requests and streams to finish.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Writes `token` to `path`, readable only by this user, replacing any earlier file.
-///
-/// The staging file is made private before the token is written: owner-only on Unix, and on
-/// Windows a protected current-user-and-SYSTEM ACL, so a shared parent directory's inherited
-/// permissions never reach it. The staging name is this process's own, so two adapters
-/// starting together never remove or install each other's staged token.
-fn write_private(path: &Path, token: &str) -> Result<(), AppError> {
-    let staging = path.with_extension(format!("ma2a-partial-{}", std::process::id()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let _stale = std::fs::remove_file(&staging);
-    let mut file = options.open(&staging)?;
-    let written = ma2a_store::protect_private_file(&staging, "A2A token")
-        .map_err(|error| AppError::Io(io::Error::other(error)))
-        .and_then(|()| {
-            file.write_all(token.as_bytes())?;
-            file.sync_all()?;
-            drop(file);
-            Ok(std::fs::rename(&staging, path)?)
-        });
-    if written.is_err() {
-        let _removed = std::fs::remove_file(&staging);
-    }
-    written
-}
-
-/// Claims the token file at `path` for as long as the returned lock file stays open.
-///
-/// A second adapter naming the same token file is refused here, before it writes anything,
-/// so a running adapter's published token file is never replaced underneath its clients.
-/// Lock files live in `STATE_DIR/a2a-locks/`, named by a hash of the token file's canonical
-/// path, so no token file another adapter may choose can take a lock file's place; a token
-/// file inside that directory is refused. The lock file itself stays behind empty; removing
-/// it could let two claims race.
-fn claim(state_dir: &Path, path: &Path) -> Result<std::fs::File, AppError> {
-    let name = path
-        .file_name()
-        .ok_or(AppError::Usage("--token-file must name a file"))?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let locks = state_dir.join("a2a-locks");
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(&locks)?;
-    let parent = std::fs::canonicalize(parent)?;
-    if parent == std::fs::canonicalize(&locks)? {
-        return Err(AppError::Usage(
-            "--token-file cannot be inside the adapter's lock directory",
-        ));
-    }
-    let canonical = parent.join(name);
-    let mut key = canonical.as_os_str().as_encoded_bytes().to_vec();
-    if cfg!(windows) {
-        // Windows paths name one file in every letter case.
-        key.make_ascii_lowercase();
-    }
-    let digest = blake3::hash(&key).to_hex();
-    let lock_name = format!("{}.lock", digest.get(..32).unwrap_or_default());
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let lock = options.open(locks.join(lock_name))?;
-    match lock.try_lock() {
-        Ok(()) => Ok(lock),
-        Err(std::fs::TryLockError::WouldBlock) => Err(AppError::Usage(
-            "another adapter is serving with this token file; give this one its own --token-file",
-        )),
-        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
-    }
-}
-
-/// Removes `path` only while it still holds `token`: another adapter that wrote its own token
-/// there since keeps it when this one stops.
-fn remove_if_ours(path: &Path, token: &str) {
-    if std::fs::read(path).is_ok_and(|held| held == token.as_bytes()) {
-        let _removed = std::fs::remove_file(path);
-    }
-}
 
 /// Resolves once the adapter is asked to stop: Ctrl-C, or `SIGTERM` on Unix.
 async fn stopped() {
@@ -155,13 +64,13 @@ pub(crate) async fn serve(
     }
     crate::daemon_control::require(&paths).await?;
     let token_file = token_file.unwrap_or_else(|| state_dir.join("a2a-token"));
-    let _claim = claim(state_dir, &token_file)?;
+    let _claim = token_file::claim(&token_file)?;
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let mut secret = [0_u8; 32];
     getrandom::fill(&mut secret).map_err(|_| io::Error::other("random source failed"))?;
     let token = blake3::Hash::from_bytes(secret).to_hex().to_string();
-    write_private(&token_file, &token)?;
+    token_file::write_private(&token_file, &token)?;
     let ready = json!({"url": origin, "token_file": token_file.display().to_string()});
     writeln!(io::stdout().lock(), "{ready}")?;
     let shared = http::Shared {
@@ -186,75 +95,6 @@ pub(crate) async fn serve(
             tokio::time::sleep(STOP_GRACE).await;
         } => Ok(()),
     };
-    remove_if_ours(&token_file, &token);
+    token_file::remove_if_ours(&token_file, &token);
     Ok(outcome?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{claim, remove_if_ours, write_private};
-
-    #[test]
-    fn a_second_adapter_on_a_claimed_token_file_is_refused_until_the_first_stops()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = std::env::temp_dir().join(format!("ma2a-a2a-claim-{}", std::process::id()));
-        std::fs::create_dir_all(&directory)?;
-        let path = directory.join("a2a-token");
-
-        let first = claim(&directory, &path).map_err(|error| error.to_string())?;
-        let refused = claim(&directory, &path)
-            .err()
-            .map(|error| error.to_string());
-        assert!(refused.is_some_and(|message| message.contains("--token-file")));
-        assert!(claim(&directory, &directory.join("other-token")).is_ok());
-        // Another spelling of the same path is the same claim.
-        let respelled = directory.join(".").join("a2a-token");
-        assert!(claim(&directory, &respelled).is_err());
-        drop(first);
-        assert!(claim(&directory, &path).is_ok());
-
-        std::fs::remove_dir_all(&directory)?;
-        Ok(())
-    }
-
-    #[test]
-    fn a_token_file_named_like_another_adapters_lock_takes_nothing_from_it()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // Given: one adapter serving `a2a-token`.
-        let directory = std::env::temp_dir().join(format!("ma2a-a2a-lock-{}", std::process::id()));
-        std::fs::create_dir_all(&directory)?;
-        let path = directory.join("a2a-token");
-        let first = claim(&directory, &path).map_err(|error| error.to_string())?;
-
-        // When: a second adapter serves, and publishes, `a2a-token.lock`.
-        let suffixed = directory.join("a2a-token.lock");
-        let second = claim(&directory, &suffixed).map_err(|error| error.to_string())?;
-        write_private(&suffixed, "second").map_err(|error| error.to_string())?;
-
-        // Then: the first adapter's claim still holds, and no token file may sit among locks.
-        assert!(claim(&directory, &path).is_err());
-        let inside = directory.join("a2a-locks").join("token");
-        assert!(claim(&directory, &inside).is_err());
-        drop((first, second));
-        std::fs::remove_dir_all(&directory)?;
-        Ok(())
-    }
-
-    #[test]
-    fn a_stopping_adapter_leaves_a_token_another_adapter_wrote_since()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = std::env::temp_dir().join(format!("ma2a-a2a-token-{}", std::process::id()));
-        std::fs::create_dir_all(&directory)?;
-        let path = directory.join("a2a-token");
-        write_private(&path, "first").map_err(|error| error.to_string())?;
-        write_private(&path, "second").map_err(|error| error.to_string())?;
-
-        remove_if_ours(&path, "first");
-        assert_eq!(std::fs::read_to_string(&path)?, "second");
-        remove_if_ours(&path, "second");
-        assert!(!path.exists());
-
-        std::fs::remove_dir_all(&directory)?;
-        Ok(())
-    }
 }

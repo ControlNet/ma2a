@@ -10,7 +10,24 @@ pub(crate) fn ensure_private_dir(path: &Path, target: &'static str) -> Result<()
     validate_private_path(path, target, PathKind::Directory)
 }
 
+/// Makes sure `path`, an absolute local path, is a directory only this account may enter:
+/// creates it so when missing, and otherwise accepts it only when it already is one.
+///
+/// # Errors
+/// Returns [`StoreError::InsecurePermissions`] for an existing directory that is not private.
+pub fn ensure_private_directory(path: &Path, target: &'static str) -> Result<(), StoreError> {
+    ensure_private_dir(path, target)
+}
+
 /// Creates `path`, which must not exist yet, as a directory only this account may enter.
+///
+/// # Errors
+/// Returns [`StoreError::Io`] with [`std::io::ErrorKind::AlreadyExists`] when anything
+/// already has that name, which is left as it was.
+pub fn create_private_directory(path: &Path) -> Result<(), StoreError> {
+    create_new_private_dir(path)
+}
+
 pub(crate) fn create_new_private_dir(path: &Path) -> Result<(), StoreError> {
     #[cfg(unix)]
     {
