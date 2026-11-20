@@ -262,4 +262,3 @@ python3 .omo/reviews/2026-11-23/check.py
 
 - 截断的 push 同页附带本地 relay 公告时，发送端基于最新授权，接收端按实际收到的链前缀校验。`crates/ma2a-runtime/src/control_sync/pages.rs:74`、`crates/ma2a-runtime/src/control_sync/pages/staging.rs:109`。本轮没有形成同时满足签名大小、授权切换和剩余页预算的实际样本，未计数。
 - 控制响应在传输持续背压时的入站 permit 回收上界。`crates/ma2a-net/src/control/handler.rs:89`、第 125、147 行。应用层写响应没有单独的全程时限，现有证据不足以确定底层连接在受支持配置下的实际回收时间，未计数。
-
