@@ -1,3 +1,4 @@
+mod dial_queue;
 mod exchange;
 mod failure;
 pub(crate) use failure::ControlFailure;

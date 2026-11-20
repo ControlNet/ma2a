@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeSet, VecDeque},
-    future::Future,
-};
+use std::{collections::BTreeSet, future::Future};
 
 use ma2a_net::{
     CONTROL_DIAL_CONCURRENCY, CONTROL_ROUND_DEADLINE, ControlClient, exchange_control_with_retry,
@@ -12,7 +9,7 @@ use tokio::time::timeout;
 use crate::{
     control_sync::{
         ControlApplyOutcome, ControlExchangeInput, ControlFailure, ControlRoundOutcome,
-        ControlRoundRequest, PreparedControlPeer,
+        ControlRoundRequest, PreparedControlPeer, dial_queue::DialQueue,
     },
     error::RuntimeError,
     store::StoreClient,
@@ -41,12 +38,7 @@ impl ControlRoundRunner {
     ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
         let local_endpoint_id = request.local_endpoint_id;
         let now_ms = request.now_ms;
-        let mut pending = self
-            .store
-            .prepare_control_round(request)
-            .await?
-            .into_iter()
-            .collect::<VecDeque<_>>();
+        let mut pending = DialQueue::new(self.store.prepare_control_round(request).await?);
         let had_peers = !pending.is_empty();
         let mut dials = JoinSet::new();
         let mut latest = None;
@@ -63,7 +55,9 @@ impl ControlRoundRunner {
             let Some(joined) = dials.join_next().await else {
                 break;
             };
-            let Ok((peer, response)) = joined.map_err(RuntimeError::from)? else {
+            let (peer, response) = joined.map_err(RuntimeError::from)?;
+            pending.finished(peer, response.is_ok());
+            let Ok(response) = response else {
                 continue;
             };
             let ControlApplyOutcome {
@@ -82,6 +76,9 @@ impl ControlRoundRunner {
             changes.merge(applied);
             latest = Some(revision);
         }
+        // A peer whose Spaces were split across requests is synchronized only if all of them
+        // succeeded.
+        synchronized_peers.retain(|peer| !pending.failed().contains(peer));
         if had_peers && latest.is_none() {
             return Err(ma2a_net::ControlRejection::Unavailable.into());
         }
@@ -101,9 +98,11 @@ async fn with_control_deadline<Output>(
         .map_err(|_| ma2a_net::ControlRejection::Unavailable.into())
 }
 
+type DialOutcome<DialError> = (ma2a_core::EndpointId, Result<Vec<u8>, DialError>);
+
 fn spawn_control_dials<Dial, DialFuture, DialError>(
-    pending: &mut VecDeque<PreparedControlPeer>,
-    dials: &mut JoinSet<Result<(ma2a_core::EndpointId, Vec<u8>), DialError>>,
+    pending: &mut DialQueue,
+    dials: &mut JoinSet<DialOutcome<DialError>>,
     dial: Dial,
 ) where
     Dial: Fn(ma2a_core::EndpointId, Vec<u8>) -> DialFuture + Clone + Send + 'static,
@@ -111,18 +110,17 @@ fn spawn_control_dials<Dial, DialFuture, DialError>(
     DialError: Send + 'static,
 {
     while dials.len() < CONTROL_DIAL_CONCURRENCY {
-        let Some(PreparedControlPeer { peer, request }) = pending.pop_front() else {
+        let Some(PreparedControlPeer { peer, request }) = pending.next() else {
             break;
         };
         let dial = dial.clone();
-        dials.spawn(async move { dial(peer, request).await.map(|response| (peer, response)) });
+        dials.spawn(async move { (peer, dial(peer, request).await) });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
         error::Error,
         future::pending,
         sync::{
@@ -134,7 +132,7 @@ mod tests {
     use ma2a_net::{CONTROL_DIAL_CONCURRENCY, EndpointSecret};
     use tokio::sync::Semaphore;
 
-    use super::{spawn_control_dials, with_control_deadline};
+    use super::{DialQueue, spawn_control_dials, with_control_deadline};
     use crate::control_sync::PreparedControlPeer;
 
     type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
@@ -166,9 +164,11 @@ mod tests {
     #[tokio::test]
     async fn dial_collection_never_exceeds_runtime_concurrency() -> TestResult {
         // Given
-        let queue = (0..=CONTROL_DIAL_CONCURRENCY)
-            .map(|offset| prepared_peer(0x50_u8.saturating_add(u8::try_from(offset)?)))
-            .collect::<TestResultValue<VecDeque<_>>>()?;
+        let queue = DialQueue::new(
+            (0..=CONTROL_DIAL_CONCURRENCY)
+                .map(|offset| prepared_peer(0x50_u8.saturating_add(u8::try_from(offset)?)))
+                .collect::<TestResultValue<Vec<_>>>()?,
+        );
         let gate = Arc::new(Semaphore::new(0));
         let active = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));
@@ -210,7 +210,9 @@ mod tests {
         gate.add_permits(CONTROL_DIAL_CONCURRENCY + 1);
         let mut completed = 0;
         while let Some(joined) = dials.join_next().await {
-            joined??;
+            let (peer, response) = joined?;
+            response?;
+            queue.finished(peer, true);
             completed += 1;
             spawn_control_dials(&mut queue, &mut dials, {
                 let gate = Arc::clone(&gate);
