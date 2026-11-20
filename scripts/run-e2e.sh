@@ -3,16 +3,17 @@ set -eu
 
 runs=${MA2A_E2E_RUNS:-3}
 output=${MA2A_E2E_OUTPUT:-target/e2e-evidence}
-junit=target/nextest/ci/junit.xml
 # The Phase One evidence scenarios. The jq program below names each of them;
 # the number of tests, by contrast, is read from nextest itself rather than
 # maintained here, so adding a test cannot silently fail the harness.
 expected_records=13
 
-# A run count is a positive decimal integer without leading zeros; an empty value means the
-# default. Anything else, `00` included, is refused before the output directory is touched.
+# A run count is a decimal integer from 1 to 9999 without leading zeros; an empty value means
+# the default. Anything else, `00` and numbers too long for shell arithmetic included, is
+# refused before the output directory is touched.
 case "$runs" in
-  ''|*[!0-9]*|0*) printf 'MA2A_E2E_RUNS must be a positive integer without leading zeros\n' >&2; exit 2 ;;
+  ''|*[!0-9]*|0*|?????*)
+    printf 'MA2A_E2E_RUNS must be an integer from 1 to 9999 without leading zeros\n' >&2; exit 2 ;;
 esac
 # Trailing separators are dropped, so `dir` and `dir/` name the same directory in every check.
 while [ "${output%/}" != "$output" ] && [ -n "${output%/}" ]; do
@@ -77,6 +78,28 @@ if [ -e "$output" ] || [ -L "$output" ]; then
 fi
 mkdir -p "$output"
 : > "$output/$marker"
+# nextest writes the JUnit report to one fixed place under the target directory, which may
+# be set elsewhere, so it is read from Cargo. Runs sharing that directory take turns from
+# removing the report to copying it, so each run copies its own.
+target=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+junit="$target/nextest/ci/junit.xml"
+lock="$target/ma2a-e2e-junit.lock"
+held=false
+release() { if [ "$held" = true ]; then rmdir "$lock" 2>/dev/null || true; held=false; fi; }
+trap release EXIT
+trap 'release; exit 130' INT TERM
+acquire() {
+  mkdir -p "$target"
+  waited=0
+  until mkdir "$lock" 2>/dev/null; do
+    if [ "$waited" -eq 30 ]; then
+      printf 'waiting for %s; remove it if no other E2E run is active\n' "$lock" >&2
+    fi
+    waited=$((waited + 1))
+    sleep 1
+  done
+  held=true
+}
 commit=$(GIT_MASTER=1 git rev-parse HEAD)
 rustc_version=$(rustc --version)
 nextest_version=$(cargo nextest --version | sed -n '1p')
@@ -105,10 +128,12 @@ while [ "$run" -le "$runs" ]; do
   log="$output/run-$run.log"
   evidence="$output/run-$run.jsonl"
   report="$output/run-$run.junit.xml"
-  rm -f "$junit"
   printf 'run=%s command=cargo nextest run -p ma2a-app --test e2e --profile ci --success-output final --no-output-indent --color never\n' "$run" >> "$output/summary.txt"
+  acquire
+  rm -f "$junit"
   cargo nextest run -p ma2a-app --test e2e --profile ci --success-output final --no-output-indent --color never > "$log" 2>&1
   cp "$junit" "$report"
+  release
   grep -E '^\{' "$log" > "$evidence"
   root="$(sed -n '2p' "$report")"
   case "$root" in

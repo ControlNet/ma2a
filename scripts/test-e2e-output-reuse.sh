@@ -19,15 +19,15 @@ run() {
   printf '%s' "$status"
 }
 
-# A run count must be a positive integer without leading zeros, and is checked before the
-# output directory is created.
-for runs in 0 00 01 x 1x; do
+# A run count must be an integer from 1 to 9999 without leading zeros, and is checked before
+# the output directory is created.
+for runs in 0 00 01 x 1x 10000 999999999999999999999999; do
   test "$(run "$temporary/count-$runs" "$runs")" -eq 2 \
     || { printf 'MA2A_E2E_RUNS=%s was accepted\n' "$runs" >&2; exit 1; }
   test ! -e "$temporary/count-$runs" \
     || { printf 'MA2A_E2E_RUNS=%s created the output\n' "$runs" >&2; exit 1; }
 done
-for runs in 1 3 10; do
+for runs in 1 3 10 9999; do
   test "$(run "$temporary/count-$runs" "$runs")" -ne 2 \
     || { printf 'MA2A_E2E_RUNS=%s was refused\n' "$runs" >&2; exit 1; }
 done
