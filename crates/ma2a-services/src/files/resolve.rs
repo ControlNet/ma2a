@@ -32,13 +32,23 @@ pub(crate) fn is_windows_reserved(component: &str) -> bool {
     matches!(bytes, [b'C', b'O', b'M', digit] | [b'L', b'P', b'T', digit] if (b'1'..=b'9').contains(digit))
 }
 
-/// Rejects every component this host cannot name.
+/// Name prefixes of the staging files the Runtime itself creates in an exported directory.
+const RUNTIME_PREFIXES: [&str; 2] = [".ma2a-upload-", ".ma2a-write-"];
+
+/// Returns whether a component names a Runtime staging file, which no caller may address:
+/// an upload is published from the file it verified, never from one a caller replaced.
+pub(crate) fn is_runtime_reserved(component: &str) -> bool {
+    RUNTIME_PREFIXES
+        .iter()
+        .any(|prefix| component.starts_with(prefix))
+}
+
+/// Rejects every component this host cannot name or the Runtime reserves.
 pub(crate) fn check(path: &RemotePath) -> Result<(), ServiceError> {
-    if cfg!(windows)
-        && path
-            .components()
-            .iter()
-            .any(|name| is_windows_reserved(name))
+    if path
+        .components()
+        .iter()
+        .any(|name| is_runtime_reserved(name) || (cfg!(windows) && is_windows_reserved(name)))
     {
         return Err(ServiceError::InvalidPath);
     }
@@ -104,7 +114,34 @@ pub(crate) fn destination<'path>(
 
 #[cfg(test)]
 mod tests {
-    use super::is_windows_reserved;
+    use super::{is_runtime_reserved, is_windows_reserved};
+
+    #[test]
+    fn runtime_staging_names_cannot_be_addressed() -> Result<(), Box<dyn std::error::Error>> {
+        let staged = ma2a_core::service::RemotePath::parse(
+            "data:/inbox/.ma2a-upload-00112233445566778899aabbccddeeff.part",
+        )?;
+        assert_eq!(
+            super::check(&staged),
+            Err(ma2a_core::service::ServiceError::InvalidPath)
+        );
+        assert!(is_runtime_reserved(".ma2a-write-0011.tmp"));
+        for ordinary in [
+            ".ma2a-uploads",
+            "ma2a-upload-1.part",
+            ".ma2a",
+            "report.part",
+        ] {
+            assert!(!is_runtime_reserved(ordinary), "{ordinary}");
+        }
+        assert_eq!(
+            super::check(&ma2a_core::service::RemotePath::parse(
+                "data:/inbox/report.part"
+            )?),
+            Ok(())
+        );
+        Ok(())
+    }
 
     /// A caller may rename entries while another of its operations runs. Once an ancestor was
     /// opened, swapping its name for a link to outside the root must not redirect the rest.
