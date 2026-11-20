@@ -100,12 +100,13 @@ published meanwhile. Concurrent backups to one destination publish exactly one, 
 leaves no destination behind. It removes its staging file only while that name still refers to the
 held file, so a replacement is never deleted, and the directory only once it is empty.
 
-These checks rest on one precondition: no other account can rename entries in the destination's
-directory, which is the only way to swap the private staging directory for another. On Unix the
-backup refuses a directory not owned by the current user or root, one others may write to unless it
-is sticky (as `/tmp` is), and one group-writable for a group other than the process's own. On
-Windows that directory's ACL is the operator's to keep. Processes of the same account are outside
-this boundary: they can read the state itself.
+These checks rest on one precondition: no other account can rename entries anywhere along the
+destination's path, which is how the private staging directory, or a directory above it, could be
+swapped for another. On Unix the backup resolves the destination's directory and refuses it unless
+every directory from the root down belongs to the current user or root and grants no group or other
+write unless it is sticky (as `/tmp` is). A group-writable home directory is refused too, even for
+the user's own group. On Windows those directories' ACLs are the operator's to keep. Processes of
+the same account are outside this boundary: they can read the state itself.
 
 The backup is a complete copy of the SQLite state, so it needs the same protection as the state
 directory. Besides opaque key references, public chains, and digests of invitation, session, and

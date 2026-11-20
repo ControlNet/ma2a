@@ -27,6 +27,7 @@ impl Repository {
         if destination.exists() {
             return Err(already_exists());
         }
+        #[cfg(unix)]
         trusted_parent(destination)?;
         let staging = Staging::create(destination)?;
         let written = self
@@ -149,13 +150,15 @@ impl Staging {
     }
 }
 
-/// Refuses a destination whose directory another account could rearrange.
+/// Refuses a destination whose directory, or any directory above it, another account could
+/// rearrange.
 ///
-/// The staging directory is private, so only an account able to rename entries in the
-/// destination's directory could swap it, or the file in it, for another between the checks
-/// above. On Unix that directory must belong to this account or root, and must not let other
-/// accounts rename entries: no write bit for others unless it is sticky, and group write only
-/// for this account's own group. On Windows the directory's ACL is the operator's precondition.
+/// The staging directory is private, so only an account able to rename entries along the
+/// destination's path could swap it, or the file in it, for another between the checks above:
+/// renaming any ancestor swaps the whole subtree below it. On Unix every directory from the
+/// root down to the destination's, after resolving links, must belong to this account or
+/// root, and must not let another account rename entries: no group or other write bit unless
+/// it is sticky. On Windows the directories' ACLs are the operator's precondition.
 #[cfg(unix)]
 fn trusted_parent(destination: &Path) -> Result<(), StoreError> {
     use std::os::unix::fs::MetadataExt as _;
@@ -164,26 +167,18 @@ fn trusted_parent(destination: &Path) -> Result<(), StoreError> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let metadata = fs::metadata(parent)?;
-    let mode = metadata.mode();
-    let owner = metadata.uid() == rustix::process::geteuid().as_raw() || metadata.uid() == 0;
-    let sticky = mode & 0o1000 != 0;
-    let group =
-        mode & 0o020 == 0 || sticky || metadata.gid() == rustix::process::getegid().as_raw();
-    let others = mode & 0o002 == 0 || sticky;
-    if owner && group && others {
-        Ok(())
-    } else {
-        Err(StoreError::InsecurePermissions {
-            target: "backup directory",
-            detail: "another account may rename entries in the backup's directory",
-        })
+    let euid = rustix::process::geteuid().as_raw();
+    for directory in fs::canonicalize(parent)?.ancestors() {
+        let metadata = fs::metadata(directory)?;
+        let mode = metadata.mode();
+        let owner = metadata.uid() == euid || metadata.uid() == 0;
+        if !owner || (mode & 0o022 != 0 && mode & 0o1000 == 0) {
+            return Err(StoreError::InsecurePermissions {
+                target: "backup directory",
+                detail: "another account may rename entries along the backup's path",
+            });
+        }
     }
-}
-
-#[cfg(not(unix))]
-#[expect(clippy::unnecessary_wraps, reason = "matches the Unix check")]
-const fn trusted_parent(_destination: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 

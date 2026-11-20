@@ -152,5 +152,13 @@ fn a_directory_others_may_rearrange_is_refused_unless_sticky() -> TestResult {
     std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o1777))?;
     repository.backup_to(&open.join("state.sqlite3"))?;
     assert_eq!(std::fs::read_dir(&open)?.count(), 1);
+
+    // A group-writable directory further up is refused just the same: renaming it would swap
+    // everything below.
+    let nested = open.join("nested");
+    std::fs::create_dir(&nested)?;
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o775))?;
+    assert!(repository.backup_to(&nested.join("state.sqlite3")).is_err());
+    assert_eq!(std::fs::read_dir(&nested)?.count(), 0);
     Ok(())
 }
