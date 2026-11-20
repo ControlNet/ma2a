@@ -1,6 +1,6 @@
 //! `files.*`, `transfer.*`, and `artifact.publish`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ma2a_agent::{
     protocol::ToolError,
@@ -13,8 +13,8 @@ use ma2a_core::service::{
     FileMetadata, FilesRequest, FilesResult, OpenBody, RemotePath, ServiceError, TransferRequest,
     TransferResource, TransferResult, WriteMode,
 };
-use ma2a_services::{FrameReader, client};
-use tokio::io::{AsyncRead, AsyncWriteExt as _};
+use ma2a_services::{FrameReader, client, client::resume::Partial};
+use tokio::io::AsyncRead;
 
 use super::{
     Call, Outcome, failed, ok, status,
@@ -44,17 +44,6 @@ fn transferred(result: TransferResult) -> Transferred {
         size: result.size,
         blake3: hex(&result.hash),
     }
-}
-
-/// Returns a hidden sibling to download into, published by rename only once verified.
-fn staging(destination: &Path) -> Result<PathBuf, ToolError> {
-    let mut suffix = [0_u8; 8];
-    getrandom::fill(&mut suffix).map_err(|_| status(ServiceError::Internal))?;
-    let name = destination
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    Ok(destination.with_file_name(format!(".{name}.{}.partial", hex(&suffix))))
 }
 
 impl Call<'_> {
@@ -136,6 +125,10 @@ impl Call<'_> {
 }
 
 /// Downloads one accepted Transfer stream into `target`, verified before it is published.
+///
+/// The content goes to a partial file in the private download directory beside `target`, held
+/// with its directories from the start, so the file published is the one whose content was
+/// verified; a concurrent download to the same target is refused.
 pub(super) async fn download<R: AsyncRead + Unpin>(
     mut reader: FrameReader<R>,
     target: &Path,
@@ -143,25 +136,17 @@ pub(super) async fn download<R: AsyncRead + Unpin>(
     client::transfer::download_accepted(&mut reader)
         .await
         .map_err(|error| failed(&error))?;
-    let partial = staging(target)?;
-    let downloaded = async {
-        let mut file = tokio::fs::File::create_new(&partial)
-            .await
-            .map_err(|error| local(&error))?;
-        let mut hasher = blake3::Hasher::new();
-        let result = client::transfer::download_content(&mut reader, (&mut file, &mut hasher))
-            .await
-            .map_err(|error| failed(&error))?;
-        file.flush().await.map_err(|error| local(&error))?;
-        file.sync_all().await.map_err(|error| local(&error))?;
-        tokio::fs::rename(&partial, target)
-            .await
-            .map_err(|error| local(&error))?;
-        Ok(result)
+    let mut partial = Partial::open(target, "agent tool download", false)
+        .await
+        .map_err(|error| local(&error))?;
+    match client::transfer::download_content(&mut reader, partial.sink()).await {
+        Ok(result) => {
+            partial.finish(true).await.map_err(|error| local(&error))?;
+            Ok(result)
+        }
+        Err(error) => {
+            let _discarded = partial.discard().await;
+            Err(failed(&error))
+        }
     }
-    .await;
-    if downloaded.is_err() {
-        let _removed = tokio::fs::remove_file(&partial).await;
-    }
-    downloaded
 }

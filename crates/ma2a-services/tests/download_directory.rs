@@ -241,3 +241,20 @@ fn junction(link: &std::path::Path, target: &std::path::Path) -> std::io::Result
         Err(std::io::Error::other(format!("mklink /J failed: {status}")))
     }
 }
+
+#[tokio::test]
+async fn a_destination_with_the_longest_name_a_component_may_have_downloads() -> TestResult {
+    // Given: a destination whose name has the 255 bytes most file systems allow.
+    let local = TempRoot::new("download-long-name")?;
+    let destination = local.path().join("n".repeat(255));
+
+    // When: its helper files are made and it is published.
+    let mut partial = Partial::open(&destination, "peer docs:/long", false).await?;
+    partial.sink().0.write_all(b"long").await?;
+    partial.finish(false).await?;
+
+    // Then: helper names never grow with the destination's.
+    assert_eq!(std::fs::read(&destination)?, b"long");
+    assert!(!local.path().join(PRIVATE_DIRECTORY).exists());
+    Ok(())
+}

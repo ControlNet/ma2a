@@ -383,9 +383,11 @@ verifies BLAKE3 over its final file.
 standard base64, with the reference and `eof`. A reader verifies the whole content against the
 returned hash. The local API reports an unknown task or artifact as `not_found`.
 `ma2a agent artifact … --output FILE` uses these chunks for a local task and the `artifact`
-operation for a remote one. It writes the sibling file `FILE.ma2a-partial`, verifies it, and
-hard-links it to `FILE`, so an existing `FILE` is never overwritten. A partial file it did not
-create, such as one left by a concurrent download, is never removed.
+operation for a remote one. Like `transfer get`, it writes a partial file in the private
+`.ma2a-downloads` directory beside `FILE`, holding that directory and `FILE`'s from the start,
+verifies the content, and publishes that very file as `FILE` without replacing anything, so an
+existing `FILE` is never overwritten and a concurrent download to the same `FILE` is refused
+(see the resumable-download rules in `services-v1.md`).
 
 **Publication.** `artifact.publish` copies the file to a staging file in the blob directory while
 hashing it. A blob of that hash that is already stored is kept untouched, and the copy is
@@ -613,8 +615,10 @@ An Agent asks for a tool with a `tool` line. The daemon:
   no `..`, no root, no backslash, and not empty. A file read must canonicalize to a path inside the
   canonical workspace, so a symbolic link may be followed only within it. A destination's parent
   directories are created as needed, and none of them may be a symbolic link; a destination that
-  is a directory is refused. Downloads (`transfer.get`, `agent.artifact`) go to a hidden staging
-  sibling, are verified, and are then renamed over the destination, replacing an existing file.
+  is a directory is refused. Downloads (`transfer.get`, `agent.artifact`) go to a partial file
+  in the private `.ma2a-downloads` directory beside the destination, whose helper names have a
+  fixed length whatever the destination is called, are verified, and are then renamed over the
+  destination, replacing an existing file. A destination named `.ma2a-downloads` is refused.
 - **`exec.run`.** Stdin is empty, and nothing is interpreted by a shell. `timeout_ms` defaults to
   60 s and is at most 24 hours. `stdout` and `stderr` each carry at most the first 64 KiB as lossy
   UTF-8; when the whole answer would exceed the 64 KiB result bound, the longer stream is halved

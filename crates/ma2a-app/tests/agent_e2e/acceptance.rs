@@ -3,6 +3,7 @@
 
 use std::fmt::Write as _;
 
+use ma2a_services::client::resume::PRIVATE_DIRECTORY;
 use serde_json::Value;
 
 use super::{
@@ -79,8 +80,9 @@ fn a_delegated_task_fetches_from_its_creator_and_returns_an_artifact() -> TestRe
     let downloaded = last(&lab.remote(&artifact)?)?;
     assert_eq!(text(&downloaded, "/blake3"), expected);
     assert_eq!(std::fs::read(&output)?, content(INPUT_LEN));
-    // An existing output file is never overwritten.
+    // An existing output file is never overwritten, and no helper file stays behind.
     refused(&lab.remote(&artifact)?, "exists")?;
+    assert!(!output.with_file_name(PRIVATE_DIRECTORY).exists());
 
     // A's operator downloads `lead`'s own artifact through bounded local API chunks.
     let local = lab.output_path("local-report.txt");
@@ -96,6 +98,7 @@ fn a_delegated_task_fetches_from_its_creator_and_returns_an_artifact() -> TestRe
     ])?)?;
     assert_eq!(text(&saved, "/blake3"), expected);
     assert_eq!(std::fs::read(&local)?, content(INPUT_LEN));
+    let missing = lab.output_path("missing.txt");
     refused(
         &lab.a.run(&[
             "agent",
@@ -103,10 +106,12 @@ fn a_delegated_task_fetches_from_its_creator_and_returns_an_artifact() -> TestRe
             &lead_task,
             "missing.txt",
             "--output",
-            local_arg,
+            missing.to_str().ok_or("output path is not UTF-8")?,
         ])?,
         "not_found",
     )?;
+    assert!(!missing.exists());
+    assert!(!local.with_file_name(PRIVATE_DIRECTORY).exists());
 
     // The same task through the local API and through A's remote view agree.
     let remote = last(&lab.remote(&["task", "--agent", "worker", &worker_task])?)?;

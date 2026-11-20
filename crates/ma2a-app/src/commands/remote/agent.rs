@@ -12,7 +12,6 @@ use ma2a_runtime::{
 };
 use ma2a_services::client::{self, ClientError};
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt as _;
 
 use super::{open, open_as};
 use crate::{
@@ -228,28 +227,24 @@ async fn artifact(
     ((agent, task), name): ((AgentId, AgentTaskId), String),
     output: &Path,
 ) -> Result<(), AppError> {
-    let partial = crate::commands::agent_artifact::partial_of(output);
-    let request = AgentRequest::Artifact(agent, task, name, 0, None);
+    crate::commands::agent_artifact::refuse_existing(output)?;
+    let request = AgentRequest::Artifact(agent, task, name.clone(), 0, None);
     let (mut reader, _writer) = open(target.0, target.1, OpenBody::Agent(request)).await?;
-    let mut created = false;
-    let downloaded = async {
-        client::transfer::download_accepted(&mut reader).await?;
-        let mut file = tokio::fs::File::create_new(&partial).await?;
-        created = true;
-        let mut hasher = blake3::Hasher::new();
-        let result =
-            client::transfer::download_content(&mut reader, (&mut file, &mut hasher)).await?;
-        file.flush().await?;
-        file.sync_all().await?;
-        drop(file);
-        tokio::fs::hard_link(&partial, output).await?;
-        Ok::<_, AppError>(result)
-    }
-    .await;
-    // Only a partial file this download created is removed, never one already there.
-    if created {
-        let _removed = tokio::fs::remove_file(&partial).await;
-    }
+    client::transfer::download_accepted(&mut reader).await?;
+    let source = format!("remote agent task {task} artifact {name}");
+    let mut partial = client::resume::Partial::open(output, &source, false).await?;
+    let downloaded = client::transfer::download_content(&mut reader, partial.sink()).await;
+    let downloaded = match downloaded {
+        Ok(result) => partial
+            .finish(false)
+            .await
+            .map(|()| result)
+            .map_err(AppError::from),
+        Err(error) => {
+            let _discarded = partial.discard().await;
+            Err(error.into())
+        }
+    };
     let result = downloaded?;
     print(&json!({
         "output": output.display().to_string(),
