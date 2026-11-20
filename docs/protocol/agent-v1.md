@@ -68,7 +68,8 @@ The check runs twice, both from durable state at call time:
   lacks the grant for are indistinguishable.
 
 The operator consents with `ma2a service expose agent SPACE_REF AGENT`, once per Space and Agent.
-The Space owner grants the bit with `space grant … --agent`.
+The Space owner grants the bit with `space grant … --agent`, repeating every other flag the member
+should keep: a grant replaces all eight bits, so a flag left out is cleared.
 
 **Creator ownership.** A remote caller sees and manages only the tasks its own Endpoint created.
 Every task operation names its Agent, and the task must belong to that Agent. A task that does not

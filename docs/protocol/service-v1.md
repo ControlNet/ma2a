@@ -180,7 +180,7 @@ ma2a-example-service manifest 4 > example.json
 ma2a service register example --manifest example.json
 ma2a service start example
 ma2a service expose service SPACE_REF example
-ma2a space grant SPACE_REF CALLER_ENDPOINT_ID --service
+ma2a space grant SPACE_REF CALLER_ENDPOINT_ID --service   # replaces every other grant bit
 ma2a-example-service serve "$STATE_DIR" example &
 ma2a service hosted --json
 ```

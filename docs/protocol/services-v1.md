@@ -292,8 +292,12 @@ Without `--force`, `LOCAL` is published by a hard link, so a file that appeared 
 never replaced. A file system without hard links falls back to a check before the rename.
 
 **Consent and grants.** The Space owner sets a member's grants with
-`space grant SPACE_REF ENDPOINT_ID [--files-read] [--files-write] [--exec] [--shell] [--proxy]`,
-which sets exactly those five bits. Each serving Endpoint consents for itself with
+`space grant SPACE_REF ENDPOINT_ID [--files-read] [--files-write] [--exec] [--shell] [--proxy]
+[--process] [--agent] [--service]`. One grant replaces all eight bits at once: every flag left
+out is cleared, including the Process, Agent, and Service grants of later phases, and work that
+relied on a cleared grant is withdrawn. To change one bit, repeat every flag the member should
+keep, for example `space grant SPACE_REF ENDPOINT_ID --files-read --files-write --process` to add
+write access for a member that already reads files and manages Processes. Each serving Endpoint consents for itself with
 `service expose|unexpose files|exec|shell|proxy SPACE_REF …`, and `service list` shows what it
 serves. `ops` shows active and recent operations. Consent lasts only while the serving
 Endpoint belongs to the Space: once a stored chain no longer lists it (it left or was removed),

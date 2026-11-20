@@ -192,7 +192,8 @@ ma2a service list
 ma2a ops
 ```
 
-`space grant` sets exactly the listed bits. `ops` shows active and recent remote operations.
+`space grant` sets exactly the listed bits and clears every bit it does not list, so repeat the
+grants a member should keep. `ops` shows active and recent remote operations.
 Each family's commands, bounds, and status codes are specified in its protocol document:
 
 | Commands | What they do | Specification |
