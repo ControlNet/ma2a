@@ -105,7 +105,9 @@ destination's path, which is how the private staging directory, or a directory a
 swapped for another. On Unix the backup resolves the destination's directory and refuses it unless
 every directory from the root down belongs to the current user or root and grants no group or other
 write unless it is sticky (as `/tmp` is). A group-writable home directory is refused too, even for
-the user's own group. On Windows those directories' ACLs are the operator's to keep. Processes of
+the user's own group. Every later step uses that resolved path rather than the one given, so a
+link on the given path pointed elsewhere after the check cannot move the backup. On Windows those
+directories' ACLs are the operator's to keep. Processes of
 the same account are outside this boundary: they can read the state itself.
 
 The backup is a complete copy of the SQLite state, so it needs the same protection as the state

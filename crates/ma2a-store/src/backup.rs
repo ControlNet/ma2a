@@ -24,11 +24,13 @@ impl Repository {
     /// another account, backup I/O fails, the file system cannot create hard links, the staged
     /// file was replaced, or the completed backup fails its integrity check.
     pub fn backup_to(&self, destination: &Path) -> Result<(), StoreError> {
+        // Every later step uses the path that was checked, never the caller's spelling: a
+        // link on the caller's path could be pointed elsewhere once the check has passed.
+        #[cfg(unix)]
+        let destination = &trusted_destination(destination)?;
         if destination.exists() {
             return Err(already_exists());
         }
-        #[cfg(unix)]
-        trusted_parent(destination)?;
         let staging = Staging::create(destination)?;
         let written = self
             .write_backup(&staging.file)
@@ -149,25 +151,31 @@ impl Staging {
     }
 }
 
-/// Refuses a destination whose directory, or any directory above it, another account could
-/// rearrange.
+/// Returns `destination` below its resolved directory, refusing it when that directory, or
+/// any directory above it, another account could rearrange.
 ///
 /// The staging directory is private, so only an account able to rename entries along the
 /// destination's path could swap it, or the file in it, for another between the checks above:
 /// renaming any ancestor swaps the whole subtree below it. On Unix every directory from the
 /// root down to the destination's, after resolving links, must belong to this account or
 /// root, and must not let another account rename entries: no group or other write bit unless
-/// it is sticky. On Windows the directories' ACLs are the operator's precondition.
+/// it is sticky. The resolved path holds no links, and nobody else may rename any directory on
+/// it, so it keeps naming the checked directory. On Windows the directories' ACLs are the
+/// operator's precondition.
 #[cfg(unix)]
-fn trusted_parent(destination: &Path) -> Result<(), StoreError> {
+fn trusted_destination(destination: &Path) -> Result<PathBuf, StoreError> {
     use std::os::unix::fs::MetadataExt as _;
 
     let parent = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    let name = destination.file_name().ok_or(StoreError::SchemaMismatch {
+        detail: "backup destination has no file name",
+    })?;
+    let resolved = fs::canonicalize(parent)?;
     let euid = rustix::process::geteuid().as_raw();
-    for directory in fs::canonicalize(parent)?.ancestors() {
+    for directory in resolved.ancestors() {
         let metadata = fs::metadata(directory)?;
         let mode = metadata.mode();
         let owner = metadata.uid() == euid || metadata.uid() == 0;
@@ -178,7 +186,7 @@ fn trusted_parent(destination: &Path) -> Result<(), StoreError> {
             });
         }
     }
-    Ok(())
+    Ok(resolved.join(name))
 }
 
 /// Creates `path` exclusively; on Unix it is owner-only from the moment it exists.
@@ -192,7 +200,33 @@ fn create_private(path: &Path) -> Result<File, StoreError> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::Staging;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::{Staging, trusted_destination};
+
+    #[test]
+    fn a_backup_through_a_link_is_written_where_the_link_pointed_when_checked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Given: a destination reached through a directory link.
+        let scratch = std::env::temp_dir().join(format!("ma2a-backup-link-{}", std::process::id()));
+        let target = scratch.join("target");
+        std::fs::create_dir_all(&target)?;
+        for directory in [&scratch, &target] {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+        }
+        std::os::unix::fs::symlink(&target, scratch.join("alias"))?;
+
+        // When
+        let resolved = trusted_destination(&scratch.join("alias").join("state.sqlite"))?;
+
+        // Then: later steps use a path with no link left to repoint.
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(&target)?.join("state.sqlite")
+        );
+        std::fs::remove_dir_all(&scratch)?;
+        Ok(())
+    }
 
     #[test]
     fn a_replaced_staging_file_is_never_published() -> Result<(), Box<dyn std::error::Error>> {
