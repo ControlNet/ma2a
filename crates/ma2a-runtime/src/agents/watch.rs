@@ -14,6 +14,22 @@ use super::{
 
 /// Most events read from the Store at once.
 const EVENT_BATCH: u32 = 64;
+/// Longest wait for one event frame or flush to leave the stream.
+const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn write_bounded<F>(stop: &CancellationToken, work: F) -> Result<(), ServiceError>
+where
+    F: std::future::Future<Output = Result<(), ServiceError>>,
+{
+    tokio::select! {
+        biased;
+        () = stop.cancelled() => Err(ServiceError::Unavailable),
+        done = tokio::time::timeout(WRITE_DEADLINE, work) => match done {
+            Ok(Ok(())) => Ok(()),
+            _ => Err(ServiceError::Cancelled),
+        },
+    }
+}
 
 impl AgentManager {
     pub(super) async fn watch<R, W>(
@@ -59,15 +75,20 @@ impl AgentManager {
                 .store(move |repository| repository.agent_task_events(task, (after, EVENT_BATCH)))
                 .await;
             let Ok(events) = events else {
-                return finish(writer, Err(ServiceError::Unavailable)).await;
+                return finish(writer, Err(ServiceError::Unavailable))
+                    .await
+                    .with_bytes(0, sent);
             };
             let read = events.len();
             for event in events {
                 let Ok(bytes) = event.to_bytes() else {
-                    return finish(writer, Err(ServiceError::Internal)).await;
+                    return finish(writer, Err(ServiceError::Internal))
+                        .await
+                        .with_bytes(0, sent);
                 };
-                if writer.data(Channel::Output, &bytes).await.is_err() {
-                    return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+                if let Err(error) = write_bounded(stop, writer.data(Channel::Output, &bytes)).await
+                {
+                    return OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent);
                 }
                 sent += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                 after = event.seq;
@@ -79,21 +100,26 @@ impl AgentManager {
                 let ended = finish(writer, Ok(AgentReply::Summary(record.summary))).await;
                 return ended.with_bytes(0, sent);
             }
-            if writer.flush().await.is_err() {
-                return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+            if let Err(error) = write_bounded(stop, writer.flush()).await {
+                return OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent);
             }
             tokio::select! {
-                woke = changes.changed() => if woke.is_err() {
-                    return finish(writer, Err(ServiceError::Unavailable)).await;
-                },
+                biased;
                 () = stop.cancelled() => {
-                    return finish(writer, Err(ServiceError::Unavailable)).await;
+                    return finish(writer, Err(ServiceError::Unavailable))
+                        .await
+                        .with_bytes(0, sent);
                 }
                 () = &mut caller_gone => {
                     let _ended = finish(writer, Err(ServiceError::Cancelled)).await;
                     return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled))
                         .with_bytes(0, sent);
                 }
+                woke = changes.changed() => if woke.is_err() {
+                    return finish(writer, Err(ServiceError::Unavailable))
+                        .await
+                        .with_bytes(0, sent);
+                },
             }
         }
     }

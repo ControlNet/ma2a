@@ -137,7 +137,7 @@ async fn logs_stay_readable_after_the_process_ended() -> TestResult {
     let viewer = Some(harness.creator);
     let report = manager
         .logs(
-            (viewer, (record.id, LogFrom::Cursor(1), 1_024)),
+            ((viewer, &shutdown), (record.id, LogFrom::Cursor(1), 1_024)),
             &mut writer,
         )
         .await;

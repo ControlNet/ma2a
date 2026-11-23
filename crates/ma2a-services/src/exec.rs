@@ -32,6 +32,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    if shutdown.is_cancelled() {
+        return reply::reject(writer, ServiceError::Unavailable).await;
+    }
     let started = Instant::now();
     let Some(program) = request.spec().program() else {
         return reply::reject(writer, ServiceError::InvalidInput).await;

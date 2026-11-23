@@ -91,16 +91,20 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
     };
     watch.bind(grant.root.clone());
     let guard = context.operations.start(key);
-    let mut report = dispatch(
-        (header, grant.root, peer),
-        (&context, &stop),
-        (&mut reader, &mut writer),
-    )
-    .await;
+    let mut report = if stop.is_cancelled() {
+        stopped(&mut writer, ServiceError::Unavailable)
+    } else {
+        dispatch(
+            (header, grant.root, peer),
+            (&context, &stop),
+            (&mut reader, &mut writer),
+        )
+        .await
+    };
     drop(watch);
-    if writer.is_torn() {
-        // A deadline or stop abandoned a frame part-way: the peer must see a reset, never a
-        // clean end of a stream whose last frame is cut short. The report keeps its cause.
+    if writer.is_torn() || (stop.is_cancelled() && !writer.terminal_sent()) {
+        // A deadline or stop abandoned a stream without a terminal frame: the peer must see a
+        // reset, never a clean end. The report keeps its cause.
         let _reset = writer.get_mut().reset(0_u8.into());
     }
     if stop.is_cancelled() && !context.shutdown.is_cancelled() {
@@ -155,11 +159,12 @@ async fn dispatch(
     match (header.into_body(), root) {
         (OpenBody::Files(request), Some(root)) => {
             let served = tokio::select! {
+                biased;
+                () = stop.cancelled() => Err(ServiceError::Unavailable),
                 served = tokio::time::timeout(
                     FILES_DEADLINE,
                     ma2a_services::serve_files(root, request, (reader, writer)),
                 ) => served.map_err(|_| ServiceError::TimedOut),
-                () = stop.cancelled() => Err(ServiceError::Unavailable),
             };
             served.unwrap_or_else(|error| stopped(writer, error))
         }
@@ -172,12 +177,13 @@ async fn dispatch(
                 request_id,
             };
             let served = tokio::select! {
+                biased;
+                () = stop.cancelled() => None,
                 served = ma2a_services::serve_transfer(
                     (root, request_id),
                     (request, &journal),
                     (reader, writer),
                 ) => Some(served),
-                () = stop.cancelled() => None,
             };
             served.unwrap_or_else(|| stopped(writer, ServiceError::Unavailable))
         }

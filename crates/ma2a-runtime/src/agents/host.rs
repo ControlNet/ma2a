@@ -88,7 +88,7 @@ where
         AgentRequest::Artifact(agent, task, name, offset, identity) => {
             let operation = (viewer(&agent), (task, name), (offset, identity));
             manager
-                .serve_artifact((operation, request_id), (reader, writer))
+                .serve_artifact((operation, request_id, stop), (reader, writer))
                 .await
         }
     }
@@ -144,11 +144,12 @@ pub(super) async fn refuse<W: AsyncWrite + Unpin + Send>(
     OperationReport::new(OperationEnd::Rejected(error))
 }
 
-/// Sends the terminal outcome of an accepted operation.
+/// Sends the terminal outcome of an accepted operation, bounded against a stalled peer.
 pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     outcome: AgentReplyOutcome,
 ) -> OperationReport {
+    const FINAL_WRITE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
     let end = match &outcome {
         Ok(_) => OperationEnd::Completed,
         Err(error) => OperationEnd::Failed(*error),
@@ -156,10 +157,16 @@ pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
     let Ok(payload) = AgentReply::encode_outcome(&outcome) else {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Internal));
     };
-    if writer.frame(FrameKind::Outcome, &payload).await.is_err() {
-        return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+    let wrote = tokio::time::timeout(
+        FINAL_WRITE_GRACE,
+        writer.frame(FrameKind::Outcome, &payload),
+    )
+    .await;
+    match wrote {
+        Ok(Ok(())) => OperationReport::new(end),
+        Ok(Err(_)) => OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled)),
+        Err(_) => OperationReport::new(OperationEnd::Failed(ServiceError::TimedOut)),
     }
-    OperationReport::new(end)
 }
 
 /// Sends `accept` and the outcome.

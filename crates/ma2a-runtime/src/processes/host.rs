@@ -37,7 +37,9 @@ where
         ProcessRequest::List(after) => answer(writer, manager.list(viewer, after).await).await,
         ProcessRequest::Inspect(id) => answer(writer, manager.inspect(viewer, id).await).await,
         ProcessRequest::Logs(id, from, max) => {
-            manager.logs((viewer, (id, from, max)), writer).await
+            manager
+                .logs(((viewer, stop), (id, from, max)), writer)
+                .await
         }
         ProcessRequest::Attach(id, from, stdin) => {
             let operation = ((viewer, stop), (id, from, stdin));
@@ -71,11 +73,12 @@ pub(super) async fn refuse<W: AsyncWrite + Unpin + Send>(
     OperationReport::new(OperationEnd::Rejected(error))
 }
 
-/// Sends the terminal outcome of an accepted operation.
+/// Sends the terminal outcome of an accepted operation within a bounded write grace.
 pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     outcome: ProcessReplyOutcome,
 ) -> OperationReport {
+    const FINAL_WRITE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
     let end = match &outcome {
         Ok(_) => OperationEnd::Completed,
         Err(error) => OperationEnd::Failed(*error),
@@ -83,7 +86,12 @@ pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
     let Ok(payload) = ProcessReply::encode_outcome(&outcome) else {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Internal));
     };
-    if writer.frame(FrameKind::Outcome, &payload).await.is_err() {
+    let sent = tokio::time::timeout(
+        FINAL_WRITE_GRACE,
+        writer.frame(FrameKind::Outcome, &payload),
+    )
+    .await;
+    if !matches!(sent, Ok(Ok(()))) {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
     }
     OperationReport::new(end)

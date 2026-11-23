@@ -188,7 +188,12 @@ fn read_notices(mut reader: LinkReader) -> mpsc::Receiver<Option<Notice>> {
     let (sender, notices) = mpsc::channel(16);
     tokio::spawn(async move {
         loop {
-            let message = reader.next().await.ok().as_deref().and_then(notice);
+            let next = tokio::select! {
+                biased;
+                () = sender.closed() => return,
+                next = reader.next() => next,
+            };
+            let message = next.ok().as_deref().and_then(notice);
             let ended = message.is_none() || matches!(message, Some(Notice::Stop));
             if sender.send(message).await.is_err() || ended {
                 return;

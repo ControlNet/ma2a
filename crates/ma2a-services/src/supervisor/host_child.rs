@@ -164,13 +164,17 @@ async fn run(
                     let _sent = reply.send(signal_group(&mut spawned, signal));
                 }
                 Some(Lifecycle::Terminate(grace_ms, reply)) => {
-                    let waiters = &mut terminating
-                        .get_or_insert_with(|| {
-                            let _signalled = signal_group(&mut spawned, ProcessSignal::Terminate);
-                            let grace = Duration::from_millis(u64::from(grace_ms));
-                            (tokio::time::Instant::now() + grace, Vec::new())
-                        })
-                        .1;
+                    let requested = tokio::time::Instant::now()
+                        + Duration::from_millis(u64::from(grace_ms));
+                    let (deadline, waiters) = terminating.get_or_insert_with(|| {
+                        let _signalled = signal_group(&mut spawned, ProcessSignal::Terminate);
+                        (requested, Vec::new())
+                    });
+                    // A later, stricter termination (for example an operator kill or revoked
+                    // authorization) can always shorten an existing grace deadline.
+                    if requested < *deadline {
+                        *deadline = requested;
+                    }
                     waiters.push(reply);
                 }
                 None => {}

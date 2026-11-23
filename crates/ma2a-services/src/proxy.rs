@@ -31,7 +31,11 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let connected = tokio::time::timeout(CONNECT_DEADLINE, connect(&request)).await;
+    let connected = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => return reply::reject(writer, ServiceError::Unavailable).await,
+        connected = tokio::time::timeout(CONNECT_DEADLINE, connect(&request)) => connected,
+    };
     let stream = match connected {
         Ok(Ok(stream)) => stream,
         Ok(Err(error)) => return reply::reject(writer, error).await,

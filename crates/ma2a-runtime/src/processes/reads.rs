@@ -114,9 +114,15 @@ impl ProcessManager {
     /// Sends at most `max` retained bytes from `from`, then the cursor to continue from.
     pub(super) async fn logs<W: AsyncWrite + Unpin + Send>(
         &self,
-        (viewer, (id, from, max)): (Option<EndpointId>, (ProcessId, LogFrom, u32)),
+        ((viewer, stop), (id, from, max)): (
+            (Option<EndpointId>, &tokio_util::sync::CancellationToken),
+            (ProcessId, LogFrom, u32),
+        ),
         writer: &mut FrameWriter<W>,
     ) -> OperationReport {
+        if stop.is_cancelled() {
+            return OperationReport::new(OperationEnd::Failed(ServiceError::Unavailable));
+        }
         let record = match self
             .record(id)
             .await
@@ -143,9 +149,16 @@ impl ProcessManager {
             return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
         }
         let budget = usize::try_from(max).unwrap_or(usize::MAX);
-        let (next, sent) = match self.send_output((id, start, budget), writer).await {
+        let (next, sent) = match self.send_output((id, start, budget), (stop, writer)).await {
             Ok(read) => read,
-            Err(error) => return finish(writer, Err(error)).await,
+            Err((error, sent)) => {
+                let report = if writer.is_torn() {
+                    OperationReport::new(OperationEnd::Failed(error))
+                } else {
+                    finish(writer, Err(error)).await
+                };
+                return report.with_bytes(0, sent);
+            }
         };
         // Everything was read once the Process ended and no byte is left after `next`.
         let ended = record.state.is_terminal() && next >= window.end;
@@ -157,34 +170,59 @@ impl ProcessManager {
     async fn send_output<W: AsyncWrite + Unpin + Send>(
         &self,
         (id, mut cursor, mut budget): (ProcessId, u64, usize),
-        writer: &mut FrameWriter<W>,
-    ) -> Result<(u64, u64), ServiceError> {
+        (stop, writer): (&tokio_util::sync::CancellationToken, &mut FrameWriter<W>),
+    ) -> Result<(u64, u64), (ServiceError, u64)> {
+        const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
         let directory = log_directory(&self.directory(id));
         let mut sent = 0_u64;
         while budget > 0 {
+            if stop.is_cancelled() {
+                return Err((ServiceError::Unavailable, sent));
+            }
             let path = directory.clone();
             let batch = budget.min(BATCH);
             let read = tokio::task::spawn_blocking(move || log::read(&path, cursor, batch))
                 .await
-                .map_err(|_| ServiceError::Internal)?;
+                .map_err(|_| (ServiceError::Internal, sent))?;
             let read = match read {
                 Ok(read) => read,
                 // No output was ever written, or the Process was archived: nothing to send.
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Ok((cursor, sent));
                 }
-                Err(_) => return Err(ServiceError::Io),
+                Err(_) => return Err((ServiceError::Io, sent)),
             };
             if read.start > cursor {
                 // Retention dropped output while this read was running.
-                let skipped = encode_skipped(read.start).map_err(|_| ServiceError::Internal)?;
-                writer.frame(FrameKind::Control, &skipped).await?;
+                let skipped =
+                    encode_skipped(read.start).map_err(|_| (ServiceError::Internal, sent))?;
+                tokio::select! {
+                    biased;
+                    () = stop.cancelled() => return Err((ServiceError::Unavailable, sent)),
+                    wrote = tokio::time::timeout(WRITE_DEADLINE, writer.frame(FrameKind::Control, &skipped)) => {
+                        match wrote {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => return Err((error, sent)),
+                            Err(_) => return Err((ServiceError::TimedOut, sent)),
+                        }
+                    }
+                }
             }
             if read.records.is_empty() {
                 return Ok((read.start.max(cursor), sent));
             }
             for (channel, bytes) in &read.records {
-                writer.data(*channel, bytes).await?;
+                tokio::select! {
+                    biased;
+                    () = stop.cancelled() => return Err((ServiceError::Unavailable, sent)),
+                    wrote = tokio::time::timeout(WRITE_DEADLINE, writer.data(*channel, bytes)) => {
+                        match wrote {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => return Err((error, sent)),
+                            Err(_) => return Err((ServiceError::TimedOut, sent)),
+                        }
+                    }
+                }
                 let length = bytes.len();
                 budget = budget.saturating_sub(length);
                 sent += u64::try_from(length).unwrap_or(u64::MAX);

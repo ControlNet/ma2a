@@ -16,7 +16,7 @@ enum Launcher {
     /// A separate executable that reads the launch record from stdin and supervises.
     Executable(PathBuf, Vec<OsString>),
     /// A supervisor task inside this process, for tests of everything around it.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     InProcess,
 }
 
@@ -37,7 +37,7 @@ impl ProcessHosting {
         Self(Launcher::Executable(program, args))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) const fn in_process() -> Self {
         Self(Launcher::InProcess)
     }
@@ -94,7 +94,7 @@ impl ProcessManager {
                 });
                 Ok(channel)
             }
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             Launcher::InProcess => {
                 let address = record.address.clone();
                 tokio::spawn(ma2a_services::supervisor::supervise(record));

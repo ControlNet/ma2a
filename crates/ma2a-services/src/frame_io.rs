@@ -168,17 +168,27 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 pub struct FrameWriter<W> {
     inner: W,
     torn: bool,
+    terminal_sent: bool,
 }
 
 impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     /// Wraps one writable half.
     pub const fn new(inner: W) -> Self {
-        Self { inner, torn: false }
+        Self {
+            inner,
+            torn: false,
+            terminal_sent: false,
+        }
     }
 
     /// Returns whether a frame was abandoned part-way, so the stream can only be reset.
     pub const fn is_torn(&self) -> bool {
         self.torn
+    }
+
+    /// Returns whether a complete terminal `outcome` or `reject` frame was written.
+    pub const fn terminal_sent(&self) -> bool {
+        self.terminal_sent
     }
 
     /// Writes one frame of any type.
@@ -192,6 +202,9 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
         self.write(&header).await?;
         self.write(payload).await?;
         self.torn = false;
+        if matches!(kind, FrameKind::Outcome | FrameKind::Reject) {
+            self.terminal_sent = true;
+        }
         Ok(())
     }
 

@@ -17,9 +17,10 @@ use ma2a_core::{
         TransferRequest, TransferResource,
     },
 };
-use ma2a_services::{FrameReader, FrameWriter, OperationReport};
+use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport};
 use ma2a_store::AgentTaskChange;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::sync::CancellationToken;
 
 use super::{AgentManager, convert::hex, host::refuse, private_dir, tasks::Viewer};
 use crate::stream_host::journal::StoreJournal;
@@ -157,13 +158,20 @@ impl AgentManager {
     /// Serves one artifact with exactly the Transfer v1 download frames.
     pub(super) async fn serve_artifact<R, W>(
         &self,
-        ((viewer, (task, name), (offset, identity)), request_id): (ArtifactRequest<'_>, RequestId),
+        ((viewer, (task, name), (offset, identity)), request_id, stop): (
+            ArtifactRequest<'_>,
+            RequestId,
+            &CancellationToken,
+        ),
         (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     ) -> OperationReport
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
+        if stop.is_cancelled() {
+            return OperationReport::new(OperationEnd::Failed(ServiceError::Unavailable));
+        }
         let details = match self.details(viewer, task).await {
             Ok(details) => details,
             Err(error) => return refuse(writer, error).await,
@@ -181,12 +189,15 @@ impl AgentManager {
             store: self.0.store.clone(),
             request_id,
         };
-        ma2a_services::serve_transfer(
-            (self.blobs(), request_id),
-            (request, &journal),
-            (reader, writer),
-        )
-        .await
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => OperationReport::new(OperationEnd::Failed(ServiceError::Unavailable)),
+            report = ma2a_services::serve_transfer(
+                (self.blobs(), request_id),
+                (request, &journal),
+                (reader, writer),
+            ) => report,
+        }
     }
 
     /// Removes every old blob no retained task references.

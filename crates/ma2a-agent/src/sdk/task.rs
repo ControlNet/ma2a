@@ -116,7 +116,16 @@ impl Task {
             );
             return None;
         }
-        self.report(ReportedState::Waiting, (Some(question), None));
+        if !self.report(ReportedState::Waiting, (Some(question), None)) {
+            self.report(
+                ReportedState::Failed,
+                (
+                    None,
+                    Some("the prompt exceeds the adapter line bound".to_owned()),
+                ),
+            );
+            return None;
+        }
         let mut cancelled = self.cancelled.clone();
         let answer = tokio::select! {
             answer = self.messages.recv() => answer,
@@ -193,9 +202,9 @@ impl Task {
         &mut self,
         state: ReportedState,
         (message, error): (Option<Message>, Option<String>),
-    ) {
+    ) -> bool {
         if self.ended {
-            return;
+            return false;
         }
         // The Runtime ignores a whole report whose message is out of bounds, which would
         // leave a released task running forever.
@@ -203,10 +212,11 @@ impl Task {
             .as_ref()
             .is_some_and(|message| !message.is_within_bounds())
         {
-            return self.report(
+            self.report(
                 ReportedState::Failed,
                 (None, Some(OUT_OF_BOUNDS.to_owned())),
             );
+            return false;
         }
         let terminal = matches!(
             state,
@@ -231,6 +241,7 @@ impl Task {
             self.ended = true;
             self.shared.tasks().remove(&self.id);
         }
+        sent
     }
 }
 

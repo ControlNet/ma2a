@@ -76,11 +76,14 @@ impl ProcessManager {
             }
         };
         let written = tokio::select! {
-            written = written => written,
+            biased;
             // The stream host reports a withdrawn authorization as such; the wire says only
             // that this Runtime no longer serves the operation.
             () = stop.cancelled() => Err(ServiceError::Unavailable),
+            written = written => written,
         };
+        // Release the supervisor stdin lease before writing the terminal frame to the peer.
+        drop((from_supervisor, to_supervisor));
         match written {
             Ok((bytes, closed)) => finish(writer, Ok(ProcessReply::Written(bytes, closed)))
                 .await
