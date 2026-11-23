@@ -81,7 +81,7 @@ export function createRuntimeApiClient(
     credentials: "same-origin",
     headers: { accept: "application/json" },
     retry: 0,
-    timeout: 5_000,
+    timeout: 30_000,
   })
 
   return {

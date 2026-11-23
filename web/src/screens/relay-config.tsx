@@ -1,5 +1,6 @@
-import { type ReactNode, useState } from "react"
+import { type ReactNode, useRef, useState } from "react"
 
+import { RuntimeMutationRejectedError } from "../api/mutations"
 import { Field, Form, text } from "../components/form"
 import { Inspector } from "../components/inspector"
 import { Card } from "../components/ui"
@@ -10,9 +11,18 @@ export function RelaysInspector({
 }: {
   readonly actions: RuntimeActions | undefined
 }): ReactNode {
-  const [message, setMessage] = useState<string | undefined>()
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  const [privateMessage, setPrivateMessage] = useState<string | undefined>()
+  const [publicMessage, setPublicMessage] = useState<string | undefined>()
   const [native, setNative] = useState(true)
-  const disabled = actions === undefined
+  const disabled = actions === undefined || busy
+  const rejection = (error: unknown): string =>
+    error instanceof RuntimeMutationRejectedError &&
+    typeof error.remediation === "string" &&
+    error.remediation.length > 0
+      ? error.remediation
+      : "The Runtime rejected the configuration."
   return (
     <Inspector eyebrow="Operations" title="Relay configuration">
       <Card label="Private provider">
@@ -20,8 +30,10 @@ export function RelaysInspector({
           disabled={disabled}
           label="Configure the Private Relay"
           onSubmit={(data) => {
-            if (actions === undefined) return
-            setMessage("Configuring…")
+            if (actions === undefined || busyRef.current) return
+            busyRef.current = true
+            setBusy(true)
+            setPrivateMessage("Configuring…")
             const served = text(data, "served")
               .split(/[\s,]+/u)
               .filter((value) => value.length > 0)
@@ -43,13 +55,19 @@ export function RelaysInspector({
                   certificatePath: null,
                   privateKeyPath: null,
                 }
-            void actions.configurePrivateRelay(configuration).then(
-              (relay) => setMessage(`Configured at ${relay.host}:${relay.port}.`),
-              () => setMessage("The Runtime rejected the configuration."),
-            )
+            void actions
+              .configurePrivateRelay(configuration)
+              .then(
+                (relay) => setPrivateMessage(`Configured at ${relay.host}:${relay.port}.`),
+                (error: unknown) => setPrivateMessage(rejection(error)),
+              )
+              .finally(() => {
+                busyRef.current = false
+                setBusy(false)
+              })
           }}
           submitLabel="Configure private"
-          {...(message === undefined ? {} : { status: message })}
+          {...(privateMessage === undefined ? {} : { status: privateMessage })}
         >
           <fieldset className="segmented">
             <legend className="visually-hidden">TLS termination</legend>
@@ -109,14 +127,23 @@ export function RelaysInspector({
           disabled={disabled}
           label="Configure the public fallback"
           onSubmit={(data) => {
-            if (actions === undefined) return
-            setMessage("Configuring…")
-            void actions.configurePublicRelay(text(data, "url")).then(
-              () => setMessage("Public fallback updated."),
-              () => setMessage("The Runtime rejected the configuration."),
-            )
+            if (actions === undefined || busyRef.current) return
+            busyRef.current = true
+            setBusy(true)
+            setPublicMessage("Configuring…")
+            void actions
+              .configurePublicRelay(text(data, "url"))
+              .then(
+                () => setPublicMessage("Public fallback updated."),
+                (error: unknown) => setPublicMessage(rejection(error)),
+              )
+              .finally(() => {
+                busyRef.current = false
+                setBusy(false)
+              })
           }}
           submitLabel="Configure public"
+          {...(publicMessage === undefined ? {} : { status: publicMessage })}
         >
           <Field
             help="MA2A never promotes fallback automatically."

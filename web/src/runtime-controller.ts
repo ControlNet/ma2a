@@ -47,6 +47,8 @@ export class RuntimeController {
   private cancelRetry: (() => void) | undefined
   private retryAttempt = 0
   private recoveryPending = false
+  private refreshQueued = false
+  private offline = false
   private stopped = false
   private readonly details = new Map<string, SpaceDetails>()
   private readonly failedDetails = new Set<string>()
@@ -71,16 +73,32 @@ export class RuntimeController {
   }
 
   async start(): Promise<void> {
+    if (this.stopped || this.recoveryPending) return
+    this.recoveryPending = true
     try {
-      this.coordinator.install(await this.client.fetchSnapshot())
+      const snapshot = await this.client.fetchSnapshot()
+      if (this.stopped) return
+      if (this.latestSnapshot === undefined || snapshot.revision >= this.latestSnapshot.revision) {
+        this.coordinator.install(snapshot)
+      }
     } catch (error) {
       this.handleError(error)
       this.scheduleRetry()
+    } finally {
+      this.recoveryPending = false
+      if (this.refreshQueued && !this.stopped) {
+        this.refreshQueued = false
+        void this.refresh()
+      }
     }
   }
 
   async refresh(): Promise<void> {
-    if (this.stopped || this.recoveryPending) return
+    if (this.stopped) return
+    if (this.recoveryPending) {
+      this.refreshQueued = true
+      return
+    }
     this.recoveryPending = true
     this.cancelRetry?.()
     this.cancelRetry = undefined
@@ -90,17 +108,24 @@ export class RuntimeController {
         runtimeViewFromSnapshot(this.latestSnapshot, "uncertain", this.details, this.failedDetails),
       )
     })
-    await this.coordinator.resyncRequired()
-    settled()
-    this.recoveryPending = false
+    try {
+      await this.coordinator.resyncRequired()
+    } finally {
+      settled()
+      this.recoveryPending = false
+    }
     if (this.stopped) return
     if (this.coordinator.currentState().kind === "uncertain") {
+      this.offline = true
       if (this.latestSnapshot !== undefined) {
         this.callbacks.onRuntime(
           runtimeViewFromSnapshot(this.latestSnapshot, "offline", this.details, this.failedDetails),
         )
       }
       this.scheduleRetry()
+    } else if (this.refreshQueued) {
+      this.refreshQueued = false
+      await this.refresh()
     }
   }
 
@@ -126,7 +151,7 @@ export class RuntimeController {
     }
     this.failedDetails.clear()
     this.retryAttempt = 0
-    this.recoveryPending = false
+    this.offline = false
     this.cancelRetry?.()
     this.cancelRetry = undefined
     this.callbacks.onRuntime(
@@ -155,7 +180,7 @@ export class RuntimeController {
   }
 
   private publishDetails(): void {
-    if (!this.stopped && this.latestSnapshot !== undefined) {
+    if (!this.stopped && !this.offline && this.latestSnapshot !== undefined) {
       const connection =
         this.coordinator.currentState().kind === "uncertain" ? "uncertain" : "online"
       this.callbacks.onRuntime(
@@ -212,7 +237,8 @@ export class RuntimeController {
         .finally(() => {
           this.detailWorkers -= 1
           this.detailPending.delete(key)
-          this.publishDetails()
+          if (this.stopped || this.offline) return
+          if (epoch === this.detailEpoch) this.publishDetails()
           this.loadDetails()
         })
     }
@@ -237,7 +263,10 @@ export class RuntimeController {
 
   private scheduleRetry(): void {
     if (this.stopped || this.cancelRetry !== undefined) return
-    const delay = RETRY_DELAYS_MS[this.retryAttempt]
+    const delay =
+      this.latestSnapshot === undefined
+        ? RETRY_DELAYS_MS[this.retryAttempt]
+        : RETRY_DELAYS_MS[Math.min(this.retryAttempt, RETRY_DELAYS_MS.length - 1)]
     if (delay === undefined) return
     this.retryAttempt += 1
     this.cancelRetry = this.scheduler.schedule(delay, () => {

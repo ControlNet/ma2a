@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react"
+import { type ReactNode, useRef, useState } from "react"
 
 import { Inspector } from "../components/inspector"
 import { ThemeToggle } from "../components/theme-toggle"
@@ -111,29 +111,41 @@ export function SettingsInspector({
   readonly onSessionsRevoked: (() => void) | undefined
 }): ReactNode {
   const [message, setMessage] = useState<string | undefined>()
-  const [pending, setPending] = useState(false)
+  const [pendingAction, setPendingAction] = useState<"logout" | "revoke" | null>(null)
+  const pendingRef = useRef(false)
   const logout = (): void => {
-    if (onLogout === undefined) return
-    setPending(true)
+    if (onLogout === undefined || pendingRef.current) return
+    pendingRef.current = true
+    setPendingAction("logout")
     void onLogout().then(
       () => undefined,
       () => {
-        setPending(false)
+        pendingRef.current = false
+        setPendingAction(null)
         setMessage("The current session could not be logged out.")
       },
     )
   }
   const revokeAll = (): void => {
-    if (actions === undefined) return
+    if (actions === undefined || pendingRef.current) return
+    pendingRef.current = true
+    setPendingAction("revoke")
     setMessage("Revoking sessions…")
     void actions.revokeSessions().then(
       () => {
+        pendingRef.current = false
+        setPendingAction(null)
         setMessage("All browser sessions were revoked. Sign in again.")
         onSessionsRevoked?.()
       },
-      () => setMessage("Sessions could not be revoked."),
+      () => {
+        pendingRef.current = false
+        setPendingAction(null)
+        setMessage("Sessions could not be revoked.")
+      },
     )
   }
+  const busy = pendingAction !== null
   return (
     <Inspector eyebrow="Session" title="This browser session">
       <Card label="Cookie boundary">
@@ -148,11 +160,11 @@ export function SettingsInspector({
         </p>
       </Card>
       <div className="cluster">
-        <Button disabled={onLogout === undefined || pending} onClick={logout}>
-          {pending ? "Logging out…" : "Log out"}
+        <Button disabled={onLogout === undefined || busy} onClick={logout}>
+          {pendingAction === "logout" ? "Logging out…" : "Log out"}
         </Button>
-        <Button disabled={actions === undefined} onClick={revokeAll} variant="danger">
-          Revoke all sessions
+        <Button disabled={actions === undefined || busy} onClick={revokeAll} variant="danger">
+          {pendingAction === "revoke" ? "Revoking…" : "Revoke all sessions"}
         </Button>
       </div>
       {message === undefined ? null : (

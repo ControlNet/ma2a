@@ -118,14 +118,12 @@ async fn answer(
 
 async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>, bool), IpcError> {
     let command = api::decode_command(input)?;
-    // Volatile lifecycle instructions execute on every call and never enter durable replay.
-    // They must not hold the mutation lock while closing HTTP requests using this IPC. Nor
-    // may the handshake, which changes nothing and precedes every command and upgrade: a
-    // slow mutation must not delay a stream or a hosted service accepting its call.
-    let _replay = if command.is_ui_lifecycle() || command.operation() == "handshake" {
-        None
-    } else {
+    // Only durable mutations (commands carrying a RequestId) serialize on the replay lock;
+    // read-only queries, handshake, and UI lifecycle never queue behind slow mutations.
+    let _replay = if command.request_id().is_some() {
         Some(context.replay.lock().await)
+    } else {
+        None
     };
     let fingerprint = match command.request_id() {
         Some(request_id) => Some((request_id, api::command_fingerprint(&command)?)),

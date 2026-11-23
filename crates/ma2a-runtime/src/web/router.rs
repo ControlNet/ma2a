@@ -65,7 +65,7 @@ impl Default for WebServerConfig {
     fn default() -> Self {
         Self {
             binding: None,
-            request_timeout: Duration::from_secs(10),
+            request_timeout: Duration::from_secs(120),
         }
     }
 }
@@ -180,10 +180,6 @@ fn routes(state: WebState, runtime: bool) -> Router {
             )
             .route(
                 "/api/v1/spaces/invite",
-                post(super::runtime_mutations::mutation),
-            )
-            .route(
-                "/api/v1/spaces/redeem",
                 post(super::runtime_mutations::mutation),
             )
             .route(

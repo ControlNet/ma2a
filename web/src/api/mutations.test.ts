@@ -62,6 +62,46 @@ test("rejects a mutation response whose result does not match the command", asyn
   await expect(result).rejects.toMatchObject({ name: "RuntimeMutationPayloadError" })
 })
 
+test("surfaces typed Local API rejection code and remediation instead of payload error", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    Response.json({
+      version: 1,
+      error: "unauthorized",
+      remediation: "Space owner cannot be removed in Phase 1",
+    }),
+  )
+  const client = createRuntimeMutationClient({
+    csrfToken: "cd".repeat(32),
+    requestId: () => "01".repeat(16),
+  })
+
+  await expect(client.revokeEndpoint("ab".repeat(32), "ef".repeat(32))).rejects.toMatchObject({
+    name: "RuntimeMutationRejectedError",
+    code: "unauthorized",
+    remediation: "Space owner cannot be removed in Phase 1",
+  })
+})
+
+test("accepts nullable remediation on Local API rejection envelopes", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    Response.json({
+      version: 1,
+      error: "conflict",
+      remediation: null,
+    }),
+  )
+  const client = createRuntimeMutationClient({
+    csrfToken: "cd".repeat(32),
+    requestId: () => "01".repeat(16),
+  })
+
+  await expect(client.createSpace("Operations")).rejects.toMatchObject({
+    name: "RuntimeMutationRejectedError",
+    code: "conflict",
+    remediation: undefined,
+  })
+})
+
 test("posts the generated Space invitation ticket contract without browser secret material", async () => {
   const requests: Request[] = []
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {

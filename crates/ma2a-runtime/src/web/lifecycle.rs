@@ -147,24 +147,52 @@ impl ManagedWebServer {
 
     // Own every connection task so stop also closes SSE and incomplete requests.
     async fn serve(self, cancellation: CancellationToken) -> std::io::Result<()> {
+        const MAX_WEB_CONNECTIONS: usize = 64;
+        const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+        let permits = Arc::new(tokio::sync::Semaphore::new(MAX_WEB_CONNECTIONS));
         let mut connections = tokio::task::JoinSet::new();
         loop {
-            tokio::select! {
+            while connections.try_join_next().is_some() {}
+            let permit = tokio::select! {
                 biased;
                 () = cancellation.cancelled() => break,
-                accepted = self.listener.accept() => {
-                    let (stream, peer) = accepted?;
-                    let router = self.router.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer)));
-                    connections.spawn(async move {
-                        let builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
-                        let _result = builder.serve_connection(
-                            hyper_util::rt::TokioIo::new(stream),
-                            hyper_util::service::TowerToHyperService::new(router),
-                        ).await;
-                    });
-                }
-                _ = connections.join_next(), if !connections.is_empty() => {}
-            }
+                permit = Arc::clone(&permits).acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                },
+            };
+            let accepted = tokio::select! {
+                biased;
+                () = cancellation.cancelled() => break,
+                accepted = self.listener.accept() => accepted,
+            };
+            let Ok((stream, peer)) = accepted else {
+                drop(permit);
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                continue;
+            };
+            let router = self
+                .router
+                .clone()
+                .layer(axum::Extension(axum::extract::ConnectInfo(peer)));
+            connections.spawn(async move {
+                let _permit = permit;
+                let mut builder = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .http1_only();
+                builder
+                    .http1()
+                    .timer(hyper_util::rt::TokioTimer::new())
+                    .header_read_timeout(HEADER_READ_TIMEOUT);
+                let _result = builder
+                    .serve_connection(
+                        hyper_util::rt::TokioIo::new(stream),
+                        hyper_util::service::TowerToHyperService::new(router),
+                    )
+                    .await;
+            });
         }
         drop(self.listener);
         connections.abort_all();

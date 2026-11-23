@@ -78,6 +78,7 @@ fn build() -> Result<(), BuildError> {
         "bun.lock",
         "index.html",
         "package.json",
+        "public",
         "src",
         "tsconfig.json",
         "vite.config.ts",

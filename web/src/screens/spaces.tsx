@@ -1,5 +1,6 @@
-import { type ReactNode, useState } from "react"
+import { type ReactNode, useRef, useState } from "react"
 
+import { RuntimeMutationRejectedError } from "../api/mutations"
 import { EmptyState, PendingSnapshot } from "../components/feedback"
 import { Field, Form, text } from "../components/form"
 import { Inspector } from "../components/inspector"
@@ -75,15 +76,42 @@ export function SpacesInspector({
   readonly runtime: RuntimeViewData | undefined
   readonly actions: RuntimeActions | undefined
 }): ReactNode {
-  const [message, setMessage] = useState<string | undefined>()
-  const run = (operation: () => Promise<void>, success: string): void => {
-    setMessage("Working…")
-    void operation().then(
-      () => setMessage(success),
-      () => setMessage("The Runtime rejected the request."),
-    )
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  const [status, setStatus] = useState<{
+    readonly create?: string
+    readonly invite?: string
+    readonly revoke?: string
+  }>({})
+  const run = (
+    slot: "create" | "invite" | "revoke",
+    operation: () => Promise<void>,
+    success: string,
+  ): void => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setStatus((current) => ({ ...current, [slot]: "Working…" }))
+    void operation()
+      .then(
+        () => setStatus((current) => ({ ...current, [slot]: success })),
+        (error: unknown) =>
+          setStatus((current) => ({
+            ...current,
+            [slot]:
+              error instanceof RuntimeMutationRejectedError &&
+              typeof error.remediation === "string" &&
+              error.remediation.length > 0
+                ? error.remediation
+                : "The Runtime rejected the request.",
+          })),
+      )
+      .finally(() => {
+        busyRef.current = false
+        setBusy(false)
+      })
   }
-  const disabled = actions === undefined
+  const disabled = actions === undefined || busy
   const spaces = runtime?.spaces ?? []
   return (
     <Inspector eyebrow="Operations" title="Space actions">
@@ -93,10 +121,14 @@ export function SpacesInspector({
           label="Create a Space"
           onSubmit={(data) => {
             if (actions === undefined) return
-            run(() => actions.createSpace(text(data, "name")), "Space created by the Runtime.")
+            run(
+              "create",
+              () => actions.createSpace(text(data, "name")),
+              "Space created by the Runtime.",
+            )
           }}
           submitLabel="Create"
-          {...(message === undefined ? {} : { status: message })}
+          {...(status.create === undefined ? {} : { status: status.create })}
         >
           <Field
             help="Shared metadata signed into the Space. Every member reads the same name, and names are not unique."
@@ -114,6 +146,7 @@ export function SpacesInspector({
           onSubmit={(data) => {
             if (actions === undefined) return
             run(
+              "invite",
               () =>
                 actions.createInvitation(
                   text(data, "space-id"),
@@ -124,6 +157,7 @@ export function SpacesInspector({
             )
           }}
           submitLabel="Create invite"
+          {...(status.invite === undefined ? {} : { status: status.invite })}
         >
           <Field id="invite-space" label="Space">
             <select id="invite-space" name="space-id" required>
@@ -166,11 +200,13 @@ export function SpacesInspector({
           onSubmit={(data) => {
             if (actions === undefined) return
             run(
+              "revoke",
               () => actions.revokeEndpoint(text(data, "space-id"), text(data, "endpoint-id")),
               "Member removed. The revocation applies to this Space only.",
             )
           }}
           submitLabel="Remove"
+          {...(status.revoke === undefined ? {} : { status: status.revoke })}
         >
           <Field id="revoke-space" label="Space">
             <select id="revoke-space" name="space-id" required>

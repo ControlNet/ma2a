@@ -8,6 +8,16 @@ export type CoverageRow = {
   readonly compatible: boolean
 }
 
+export type CoverageSpace = string | { readonly id: string; readonly name: string }
+
+function spaceKey(space: CoverageSpace, index: number): string {
+  return typeof space === "string" ? `${index}:${space}` : space.id
+}
+
+function spaceLabel(space: CoverageSpace): string {
+  return typeof space === "string" ? space : space.name
+}
+
 /**
  * `home_relay_compatible` is exactly "this candidate covers every active Space",
  * so the verdict and its reason are drawn as one grid rather than two claims.
@@ -17,7 +27,7 @@ export function CoverageMatrix({
   rows,
   caption,
 }: {
-  readonly spaces: readonly string[]
+  readonly spaces: readonly CoverageSpace[]
   readonly rows: readonly CoverageRow[]
   readonly caption: string
 }): ReactNode {
@@ -27,9 +37,9 @@ export function CoverageMatrix({
       <thead>
         <tr>
           <th scope="col">Candidate</th>
-          {spaces.map((space) => (
-            <th key={space} scope="col">
-              {space}
+          {spaces.map((space, index) => (
+            <th key={spaceKey(space, index)} scope="col">
+              {spaceLabel(space)}
             </th>
           ))}
           <th scope="col">Home-compatible</th>
@@ -42,13 +52,18 @@ export function CoverageMatrix({
               <span className="matrix__name">{row.name}</span>
               <span className="matrix__detail">{row.detail}</span>
             </th>
-            {row.covers.map((covered, index) => (
-              <td className="matrix__cell" key={`${row.id}-${spaces[index] ?? index}`}>
-                <span className={covered ? "trust__mark" : "trust__mark trust__mark--absent"}>
-                  <span className="visually-hidden">{covered ? "covered" : "not covered"}</span>
-                </span>
-              </td>
-            ))}
+            {row.covers.map((covered, index) => {
+              const space = spaces[index]
+              const cellKey =
+                space === undefined ? `${row.id}-${index}` : `${row.id}-${spaceKey(space, index)}`
+              return (
+                <td className="matrix__cell" key={cellKey}>
+                  <span className={covered ? "trust__mark" : "trust__mark trust__mark--absent"}>
+                    <span className="visually-hidden">{covered ? "covered" : "not covered"}</span>
+                  </span>
+                </td>
+              )
+            })}
             <td className="matrix__cell">
               <span
                 className={

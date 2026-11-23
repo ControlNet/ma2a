@@ -46,8 +46,9 @@ pub(super) async fn mutation(State(state): State<WebState>, request: Request) ->
             serde_json::from_slice::<Value>(&response).map_or_else(
                 |_| StatusCode::INTERNAL_SERVER_ERROR.into_response(),
                 |payload| {
+                    let succeeded = payload.get("error").is_none();
                     let mut response = Json(payload).into_response();
-                    if revoke_sessions {
+                    if revoke_sessions && succeeded {
                         super::expire_session_cookies(&mut response);
                     }
                     response
@@ -61,7 +62,6 @@ fn mutation_operation(path: &str) -> Option<&'static str> {
     match path {
         "/api/v1/spaces/create" => Some("space_create"),
         "/api/v1/spaces/invite" => Some("space_invite"),
-        "/api/v1/spaces/redeem" => Some("space_redeem"),
         "/api/v1/spaces/revoke" => Some("space_revoke"),
         "/api/v1/control-sync/trigger" => Some("control_sync_trigger"),
         "/api/v1/relays/private/configure" => Some("private_relay_configure"),

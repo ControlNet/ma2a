@@ -199,7 +199,7 @@ export async function fetchServicesData(): Promise<ServicesData> {
     credentials: "same-origin",
     headers: { accept: "application/json" },
     retry: 0,
-    timeout: 5_000,
+    timeout: 30_000,
   })
   const [exposures, operations, processes, agents, hosted] = await Promise.all([
     http.get("/api/v1/services").json(),

@@ -187,15 +187,23 @@ async fn asset(State(state): State<WebState>, request: axum::extract::Request) -
 }
 
 fn cookie(headers: &HeaderMap) -> Option<&str> {
-    let value = headers::single_header_value(headers, &header::COOKIE)?;
     let mut bearer = None;
-    for part in value.split(';').map(str::trim) {
-        let (name, token) = part.split_once('=')?;
-        if name == SESSION_COOKIE {
-            if token.is_empty() || bearer.is_some() {
-                return None;
+    for raw in headers.get_all(header::COOKIE) {
+        let value = raw.to_str().ok()?;
+        for part in value
+            .split(';')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            let Some((name, token)) = part.split_once('=') else {
+                continue;
+            };
+            if name == SESSION_COOKIE {
+                if token.is_empty() || bearer.is_some() {
+                    return None;
+                }
+                bearer = Some(token);
             }
-            bearer = Some(token);
         }
     }
     bearer

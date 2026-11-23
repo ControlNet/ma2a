@@ -26,9 +26,8 @@ pub struct WebAuthService {
 }
 
 struct WebAuthInner {
-    store: StoreConfig,
-    /// The connection opened and verified at start, kept for the session checks every request
-    /// makes: reopening runs the full startup verification, whose cost grows with history.
+    /// The connection opened and verified at start, kept for every auth/session check:
+    /// reopening runs the full startup verification, whose cost grows with history.
     sessions: Arc<Mutex<Repository>>,
     clock: Arc<dyn Clock>,
     config: WebAuthConfig,
@@ -49,14 +48,12 @@ impl WebAuthService {
         clock: Arc<dyn Clock>,
         config: WebAuthConfig,
     ) -> Result<Self, AuthFailure> {
-        let open_config = store.clone();
-        let sessions = tokio::task::spawn_blocking(move || Repository::open(&open_config))
+        let sessions = tokio::task::spawn_blocking(move || Repository::open(&store))
             .await
             .map_err(|_| AuthFailure::Internal)?
             .map_err(|_| AuthFailure::Internal)?;
         Ok(Self {
             inner: Arc::new(WebAuthInner {
-                store,
                 sessions: Arc::new(Mutex::new(sessions)),
                 clock,
                 config,
@@ -70,12 +67,17 @@ impl WebAuthService {
     ///
     /// Returns [`AuthFailure::Internal`] when credential state cannot be read.
     pub async fn setup_required(&self) -> Result<bool, AuthFailure> {
-        let config = self.inner.store.clone();
-        tokio::task::spawn_blocking(move || Repository::open(&config)?.credential())
-            .await
-            .map_err(|_| AuthFailure::Internal)?
-            .map(|credential| credential.is_none())
-            .map_err(|_| AuthFailure::Internal)
+        let sessions = Arc::clone(&self.inner.sessions);
+        tokio::task::spawn_blocking(move || {
+            sessions
+                .lock()
+                .map_err(|_| AuthFailure::Internal)?
+                .credential()
+                .map(|credential| credential.is_none())
+                .map_err(|_| AuthFailure::Internal)
+        })
+        .await
+        .map_err(|_| AuthFailure::Internal)?
     }
 
     /// Performs a CLI-authorized password lifecycle transition.
@@ -88,11 +90,13 @@ impl WebAuthService {
         action: PasswordAction,
         password: Zeroizing<String>,
     ) -> Result<CredentialState, AuthFailure> {
-        let config = self.inner.store.clone();
+        let sessions = Arc::clone(&self.inner.sessions);
         let now_ms = self.inner.clock.now_ms();
         tokio::task::spawn_blocking(move || {
-            let verifier = derive_password_verifier(password.as_bytes())?;
-            Repository::open(&config)?
+            let verifier =
+                derive_password_verifier(password.as_bytes()).map_err(|_| AuthFailure::Internal)?;
+            let mut repository = sessions.lock().map_err(|_| AuthFailure::Internal)?;
+            let changed = repository
                 .change_password_committed(
                     match action {
                         PasswordAction::Init => PasswordTransition::Init,
@@ -105,17 +109,17 @@ impl WebAuthService {
                         now_ms,
                     },
                 )
-                .map(|credential| {
-                    credential.map(|credential| CredentialState {
-                        auth_epoch: credential.value().auth_epoch(),
-                        revision: credential.revision(),
-                    })
+                .map_err(|_| AuthFailure::Internal)?;
+            drop(repository);
+            changed
+                .map(|credential| CredentialState {
+                    auth_epoch: credential.value().auth_epoch(),
+                    revision: credential.revision(),
                 })
+                .ok_or(AuthFailure::Conflict)
         })
         .await
         .map_err(|_| AuthFailure::Internal)?
-        .map_err(|_: ma2a_store::StoreError| AuthFailure::Internal)?
-        .ok_or(AuthFailure::Conflict)
     }
 
     /// Verifies the password and rotates fresh bearer and CSRF tokens.
@@ -124,13 +128,16 @@ impl WebAuthService {
     ///
     /// Returns [`AuthFailure::Unauthorized`] for invalid credentials or a closed internal failure.
     pub async fn login(&self, password: Zeroizing<String>) -> Result<LoginSession, AuthFailure> {
-        let config = self.inner.store.clone();
+        let sessions = Arc::clone(&self.inner.sessions);
         let now_ms = self.inner.clock.now_ms();
         let max_sessions = self.inner.config.max_sessions;
         let pair = csrf::generate_pair()?;
         let issued = tokio::task::spawn_blocking(move || {
-            let mut repository = Repository::open(&config)?;
-            let credential = repository.credential()?.ok_or(AuthFailure::Unauthorized)?;
+            let credential = {
+                let repository = sessions.lock().map_err(|_| AuthFailure::Internal)?;
+                repository.credential()?.ok_or(AuthFailure::Unauthorized)?
+            };
+            // Verify Argon2id outside the sessions lock so concurrent requests never queue on it.
             if !verify_password(credential.verifier(), password.as_bytes()).unwrap_or(false) {
                 return Err(AuthFailure::Unauthorized);
             }
@@ -145,6 +152,7 @@ impl WebAuthService {
                     ],
                 ),
             );
+            let mut repository = sessions.lock().map_err(|_| AuthFailure::Internal)?;
             match repository
                 .create_session_if_current(&session, SessionAdmission::new(max_sessions, now_ms))?
             {
@@ -238,12 +246,17 @@ impl WebAuthService {
     ///
     /// Returns a closed internal failure when revocation cannot be persisted.
     pub async fn logout(&self, session: AuthenticatedSession) -> Result<(), AuthFailure> {
-        let config = self.inner.store.clone();
+        let sessions = Arc::clone(&self.inner.sessions);
         let digest = *session.bearer_digest();
-        tokio::task::spawn_blocking(move || Repository::open(&config)?.delete_session(&digest))
-            .await
-            .map_err(|_| AuthFailure::Internal)?
-            .map_err(|_| AuthFailure::Internal)
+        tokio::task::spawn_blocking(move || {
+            sessions
+                .lock()
+                .map_err(|_| AuthFailure::Internal)?
+                .delete_session(&digest)
+                .map_err(|_| AuthFailure::Internal)
+        })
+        .await
+        .map_err(|_| AuthFailure::Internal)?
     }
 
     /// Revokes every browser session through the trusted local-control path.
@@ -257,14 +270,17 @@ impl WebAuthService {
     pub(crate) async fn revoke_all_sessions_committed(
         &self,
     ) -> Result<ma2a_store::Committed<bool>, AuthFailure> {
-        let config = self.inner.store.clone();
+        let sessions = Arc::clone(&self.inner.sessions);
         let now_ms = self.inner.clock.now_ms();
         tokio::task::spawn_blocking(move || {
-            Repository::open(&config)?.revoke_all_sessions_committed(now_ms)
+            sessions
+                .lock()
+                .map_err(|_| AuthFailure::Internal)?
+                .revoke_all_sessions_committed(now_ms)
+                .map_err(|_| AuthFailure::Internal)
         })
         .await
         .map_err(|_| AuthFailure::Internal)?
-        .map_err(|_| AuthFailure::Internal)
     }
 }
 

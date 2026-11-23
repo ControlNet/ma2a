@@ -43,7 +43,7 @@ export function RelaysScreen({
                         ),
                         compatible: relay.homeCompatible,
                       }))}
-                      spaces={runtime.spaces.map((space) => space.name)}
+                      spaces={runtime.spaces.map((space) => ({ id: space.id, name: space.name }))}
                     />
                   </div>
                 </div>
