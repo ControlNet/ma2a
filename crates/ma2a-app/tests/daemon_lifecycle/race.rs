@@ -257,17 +257,22 @@ fn start_and_a_foreground_daemon_racing_always_leave_one_addressable_owner() -> 
     Ok(())
 }
 
+#[cfg(unix)]
 fn assert_is_socket(path: &Path) -> TestResult {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt as _;
-        assert!(
-            fs::metadata(path)?.file_type().is_socket(),
-            "{} is not a live endpoint",
-            path.display()
-        );
-    }
-    #[cfg(not(unix))]
-    let _unused = path;
+    use std::os::unix::fs::FileTypeExt as _;
+    assert!(
+        fs::metadata(path)?.file_type().is_socket(),
+        "{} is not a live endpoint",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches the Unix signature that queries socket file metadata"
+)]
+const fn assert_is_socket(_path: &Path) -> TestResult {
     Ok(())
 }

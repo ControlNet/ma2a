@@ -1,14 +1,17 @@
 //! The lifecycle cases that used to leave daemons behind.
 
+use std::fs::{self, OpenOptions};
+#[cfg(unix)]
 use std::{
-    fs::{self, OpenOptions},
     process::Stdio,
     time::{Duration, Instant},
 };
 
 use serde_json::Value;
 
-use super::{DaemonFixture, TestResult, TestValue, daemon_record, is_owned};
+#[cfg(unix)]
+use super::is_owned;
+use super::{DaemonFixture, TestResult, TestValue, daemon_record};
 
 /// Holds the daemon lock the way a live daemon does, without serving anything.
 ///

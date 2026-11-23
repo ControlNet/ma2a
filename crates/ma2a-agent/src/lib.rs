@@ -5,6 +5,8 @@
 //! own: its tools run with exactly the hosting Endpoint's authority, and the Runtime is the
 //! only party that talks to other Endpoints.
 
+#![forbid(unsafe_code)]
+
 pub mod protocol;
 pub mod sdk;
 pub mod tools;

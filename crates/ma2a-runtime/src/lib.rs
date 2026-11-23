@@ -1,6 +1,7 @@
 //! Runtime orchestration boundary for MA2A.
 
-#![deny(unsafe_code)]
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 
 /// Transport-neutral local Runtime API v1.
 pub mod api;

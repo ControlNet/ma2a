@@ -13,6 +13,8 @@
 //! The link protocol is language-neutral (`docs/protocol/service-v1.md`); this crate is one
 //! implementation of it.
 
+#![forbid(unsafe_code)]
+
 mod call;
 mod caller;
 mod host;

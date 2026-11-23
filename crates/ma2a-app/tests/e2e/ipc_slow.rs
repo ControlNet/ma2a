@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::sync::Arc;
 
 use ma2a_runtime::{

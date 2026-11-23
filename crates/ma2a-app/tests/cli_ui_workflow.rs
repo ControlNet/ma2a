@@ -1,4 +1,5 @@
 //! Process-level daemon-owned UI workflow coverage.
+#![cfg(unix)]
 
 use std::sync::Arc;
 

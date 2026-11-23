@@ -1,4 +1,6 @@
-use super::{DaemonFixture, TestResult, TestValue, status_json};
+#[cfg(unix)]
+use super::TestValue;
+use super::{DaemonFixture, TestResult, status_json};
 
 #[cfg(unix)]
 use std::{

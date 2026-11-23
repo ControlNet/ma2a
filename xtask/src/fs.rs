@@ -22,14 +22,15 @@ fn collect_from(
 ) -> Result<(), XtaskError> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             let directory_name = entry.file_name();
             let directory_name = directory_name.to_string_lossy();
             if !EXCLUDED_DIRECTORIES.contains(&directory_name.as_ref()) {
                 collect_from(&path, name, files)?;
             }
-        } else if name.is_none_or(|expected| entry.file_name() == expected) {
+        } else if file_type.is_file() && name.is_none_or(|expected| entry.file_name() == expected) {
             files.push(path);
         }
     }

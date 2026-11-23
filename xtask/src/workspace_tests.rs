@@ -138,17 +138,11 @@ fn unsafe_code_is_confined_to_audited_windows_boundary() -> Result<(), Box<dyn E
             .strip_prefix(root)?
             .to_string_lossy()
             .replace('\\', "/");
-        if [
-            concat!("unsafe", " {"),
-            concat!("unsafe", " fn "),
-            concat!("unsafe", " impl "),
-        ]
-        .into_iter()
-        .any(|marker| source.contains(marker))
-        {
+        let (has_unsafe, has_allow) = crate::unsafe_scan::scan_unsafe_tokens(&source);
+        if has_unsafe {
             unsafe_files.insert(relative.clone());
         }
-        if source.contains(concat!("allow(unsafe", "_code")) {
+        if has_allow {
             allow_files.insert(relative);
         }
     }
@@ -164,6 +158,50 @@ fn unsafe_code_is_confined_to_audited_windows_boundary() -> Result<(), Box<dyn E
         assert!(fs::read_to_string(root.join(path))?.contains(audited_allow));
     }
     Ok(())
+}
+
+#[test]
+fn unsafe_token_scanner_catches_rust_2024_and_multiline_forms() {
+    use crate::unsafe_scan::scan_unsafe_tokens;
+    assert_eq!(scan_unsafe_tokens("unsafe\n{}"), (true, false));
+    assert_eq!(
+        scan_unsafe_tokens("unsafe extern \"C\" { fn x(); }"),
+        (true, false)
+    );
+    assert_eq!(
+        scan_unsafe_tokens("#[unsafe(no_mangle)] fn x() {}"),
+        (true, false)
+    );
+    assert_eq!(
+        scan_unsafe_tokens("#[expect(unsafe_code, reason = \"x\")]"),
+        (false, true)
+    );
+    assert_eq!(
+        scan_unsafe_tokens("#![allow(\n    rust::unsafe_code,\n    reason = \"x\"\n)]"),
+        (false, true)
+    );
+    assert_eq!(
+        scan_unsafe_tokens("#[allow /* comment */ (unsafe_code)]"),
+        (false, true)
+    );
+    assert_eq!(scan_unsafe_tokens("#[warn(unsafe_code)]"), (false, true));
+    assert_eq!(
+        scan_unsafe_tokens("let _ = ('\\'', '\"'); #[allow(unsafe_code)] unsafe {}"),
+        (true, true)
+    );
+    assert_eq!(
+        scan_unsafe_tokens("let _ = ('\\u{10FFFF}', '\"'); unsafe {}"),
+        (true, false)
+    );
+    assert_eq!(scan_unsafe_tokens("let r#unsafe = 1;"), (false, false));
+    assert_eq!(
+        scan_unsafe_tokens("let unsafe_code = \"m\"; opt.expect(unsafe_code);"),
+        (false, false)
+    );
+    assert_eq!(
+        scan_unsafe_tokens("// unsafe { }\nlet s = \"allow(unsafe_code)\";"),
+        (false, false)
+    );
 }
 
 #[test]
@@ -185,6 +223,12 @@ fn process_heavy_app_tests_have_a_bounded_nextest_group() -> Result<(), Box<dyn 
         .and_then(|default| default.get("overrides"))
         .and_then(toml::Value::as_array)
         .ok_or("default ma2a-processes override missing")?;
+    let ci_overrides = document
+        .get("profile")
+        .and_then(|profile| profile.get("ci"))
+        .and_then(|ci| ci.get("overrides"))
+        .and_then(toml::Value::as_array)
+        .ok_or("ci ma2a-processes override missing")?;
     let default_threads = document
         .get("profile")
         .and_then(|profile| profile.get("default"))
@@ -215,12 +259,14 @@ fn process_heavy_app_tests_have_a_bounded_nextest_group() -> Result<(), Box<dyn 
         max_threads < ci_threads,
         "ma2a-processes must leave slots for the rest of the suite in CI"
     );
-    assert!(default_overrides.iter().any(|override_value| {
-        override_value.get("filter").and_then(toml::Value::as_str) == Some("package(ma2a-app)")
-            && override_value
-                .get("test-group")
-                .and_then(toml::Value::as_str)
-                == Some("ma2a-processes")
-    }));
+    for overrides in [default_overrides, ci_overrides] {
+        assert!(overrides.iter().any(|override_value| {
+            override_value.get("filter").and_then(toml::Value::as_str) == Some("package(ma2a-app)")
+                && override_value
+                    .get("test-group")
+                    .and_then(toml::Value::as_str)
+                    == Some("ma2a-processes")
+        }));
+    }
     Ok(())
 }

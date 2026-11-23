@@ -1,6 +1,8 @@
 //! Process-level invite input security coverage.
 
-use std::{fs, path::PathBuf, process::Stdio};
+#[cfg(unix)]
+use std::path::PathBuf;
+use std::{fs, process::Stdio};
 
 use serde_json::Value;
 

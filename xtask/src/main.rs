@@ -16,6 +16,8 @@ mod release_tests;
 #[cfg(test)]
 mod support_tests;
 #[cfg(test)]
+mod unsafe_scan;
+#[cfg(test)]
 mod workspace_tests;
 
 use std::{env, path::Path};
