@@ -176,18 +176,25 @@ impl Repository {
             |row| Ok((row.get::<_, u8>(0)?, row.get::<_, i64>(1)?, row.get::<_, Option<Vec<u8>>>(2)?, row.get::<_, Option<Vec<u8>>>(3)?, row.get::<_, Option<Vec<u8>>>(4)?)),
         )?;
         match state.0 {
-            1 => {
-                if state.2.as_deref() == Some(input.endpoint_id.as_bytes())
-                    && state.3.as_deref() == Some(input.request_id.as_bytes())
-                {
-                    return Ok(EnrollmentOutcome::Retry {
-                        chain: state.4.ok_or(StoreError::SchemaMismatch {
-                            detail: "consumed invitation response missing",
-                        })?,
-                    });
-                }
-                return Ok(EnrollmentOutcome::Conflict);
+            1 if now_ms < created_at_ms || state.1 <= now_ms => {
+                return Ok(EnrollmentOutcome::Expired);
             }
+            1 if state.2.as_deref() == Some(input.endpoint_id.as_bytes())
+                && state.3.as_deref() == Some(input.request_id.as_bytes()) =>
+            {
+                let current =
+                    load_chain(&transaction, space_id)?.ok_or(StoreError::SpaceNotFound)?;
+                if !ma2a_core::SpaceAuthorizationView::from_chain(&current)
+                    .contains_member(input.endpoint_id)
+                {
+                    return Ok(EnrollmentOutcome::Conflict);
+                }
+                let chain = state.4.ok_or(StoreError::SchemaMismatch {
+                    detail: "consumed invitation response missing",
+                })?;
+                return Ok(EnrollmentOutcome::Retry { chain });
+            }
+            1 => return Ok(EnrollmentOutcome::Conflict),
             2 => return Ok(EnrollmentOutcome::Cancelled),
             3 => return Ok(EnrollmentOutcome::Expired),
             _ if now_ms < created_at_ms || state.1 <= now_ms => {

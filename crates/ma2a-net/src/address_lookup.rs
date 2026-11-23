@@ -198,7 +198,9 @@ impl SpaceAddressLookup {
                 }
                 user_data = Some(record_user_data);
                 for address in record.endpoint_data().addresses() {
-                    if seen.insert(address.clone()) {
+                    if addresses.len() < ma2a_core::MAX_ADDRESS_RECORD_ADDRESSES
+                        && seen.insert(address.clone())
+                    {
                         addresses.push(address.clone());
                     }
                 }

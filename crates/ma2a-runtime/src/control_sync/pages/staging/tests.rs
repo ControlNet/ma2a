@@ -119,3 +119,116 @@ fn invalid_later_artifact_leaves_manifest_and_revision_unchanged() -> TestResult
     );
     Ok(())
 }
+
+#[test]
+fn truncated_push_page_omits_records_until_full_prefix_fits() -> TestResult {
+    use crate::control_sync::pages::{PushPageRequest, push_page};
+    use ma2a_core::{
+        AddressEndpointDataV1, AddressRecordScope, AddressRecordValidity, SpaceAddressRecordV1,
+        SpaceRevocationV1,
+    };
+    use ma2a_net::{AddressRecordTarget, AddressRecordValidator};
+
+    // Given: receiver at generation 1 with {owner, sender}; sender was removed at generation 2
+    // and re-enrolled at generation 3, with a fresh address record at generation 3.
+    let receiver_state = TempState::new()?;
+    let sender_state = TempState::new()?;
+    let mut receiver_repo = Repository::open(&StoreConfig::new(&receiver_state.0))?;
+    let mut sender_repo = Repository::open(&StoreConfig::new(&sender_state.0))?;
+    let authority = SpaceAuthoritySecret::from_bytes([0x41; 32]);
+    let owner_secret = iroh::SecretKey::from_bytes(&[0x42; 32]);
+    let sender_secret = iroh::SecretKey::from_bytes(&[0x43; 32]);
+    let owner = ma2a_core::EndpointId::from(owner_secret.public());
+    let sender = ma2a_core::EndpointId::from(sender_secret.public());
+    let owner_member = SpaceMemberV1::new(
+        owner,
+        "owner".to_owned(),
+        MemberCapabilities::new(true, true),
+    )?;
+    let sender_member = SpaceMemberV1::new(
+        sender,
+        "sender".to_owned(),
+        MemberCapabilities::new(true, true),
+    )?;
+    let genesis = SpaceGenesisV1::new(
+        SpaceGenesisIdentity::new([0x44; 32], 1, authority.public_key())?,
+        SpaceGenesisOwner::new(owner_member.clone(), SpacePolicyV1::phase_one_default()),
+    )
+    .sign(&authority)?;
+    let mut both = vec![owner_member.clone(), sender_member];
+    both.sort_by_key(SpaceMemberV1::endpoint_id);
+    let mut chain = SpaceChain::from_genesis(genesis)?;
+    let g1 = SpaceManifestV1::new(
+        SpaceManifestLink::new(chain.space_id(), 1, chain.latest_hash()),
+        100,
+        SpaceManifestMembership::new(both.clone(), vec![]),
+    )?
+    .sign(&authority)?;
+    chain.apply(&g1)?;
+    receiver_repo.persist_space_chain(&chain)?;
+    let g2 = SpaceManifestV1::new(
+        SpaceManifestLink::new(chain.space_id(), 2, chain.latest_hash()),
+        200,
+        SpaceManifestMembership::new(vec![owner_member], vec![SpaceRevocationV1::new(sender)]),
+    )?
+    .sign(&authority)?;
+    chain.apply(&g2)?;
+    let g3 = SpaceManifestV1::new(
+        SpaceManifestLink::new(chain.space_id(), 3, chain.latest_hash()),
+        300,
+        SpaceManifestMembership::new(both, vec![]),
+    )?
+    .sign(&authority)?;
+    chain.apply(&g3)?;
+    sender_repo.persist_space_chain(&chain)?;
+    let signed_address = SpaceAddressRecordV1::new(
+        AddressRecordScope::new(chain.space_id(), sender),
+        AddressRecordValidity::new(1, 300, 10_000)?,
+        AddressEndpointDataV1::from_parts(vec![], None)?,
+    )
+    .sign(&sender_secret)?;
+    let authorization = ma2a_core::SpaceAuthorizationView::from_chain(&chain);
+    let validated = AddressRecordValidator::validate(
+        signed_address.canonical_bytes(),
+        AddressRecordTarget::new(chain.space_id(), sender).validation(&authorization, 400),
+    )?;
+    sender_repo.advance_validated_address(&validated)?;
+
+    // Budget fits g1 + g2 plus enough leftover bytes for the address record, but NOT g3.
+    let g1_g2_bytes = g1.canonical_bytes().len() + g2.canonical_bytes().len() + 32;
+    let budget = g1_g2_bytes + signed_address.canonical_bytes().len() + 64;
+    let sender_shared = sender_repo.control_spaces_between(sender, owner)?;
+    let sender_space = sender_shared.first().ok_or("sender space missing")?;
+
+    // When: sender builds a truncated push_page and receiver applies it.
+    let page = push_page(
+        sender_space,
+        PushPageRequest {
+            local_endpoint_id: sender,
+            now_ms: 400,
+            artifact_budget: budget,
+        },
+    )?;
+    assert!(page.has_more());
+    assert!(
+        page.artifacts()
+            .iter()
+            .all(|artifact| artifact.kind() == ControlArtifactKind::MANIFEST)
+    );
+    let receiver_shared = receiver_repo.control_spaces_between(owner, sender)?;
+    let changes = apply_pages(
+        &mut receiver_repo,
+        PageApplication::new(&receiver_shared, &[page], 400),
+    )?;
+
+    // Then: receiver advances to generation 2 without rejecting the page.
+    assert!(changes.manifest);
+    assert_eq!(
+        receiver_repo
+            .load_space_chain(chain.space_id())?
+            .ok_or("chain missing")?
+            .latest_generation(),
+        2
+    );
+    Ok(())
+}

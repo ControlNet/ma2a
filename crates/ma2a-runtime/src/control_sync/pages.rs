@@ -63,6 +63,12 @@ pub(super) fn push_page(
                 .map(ma2a_core::SignedSpaceManifestV1::canonical_bytes),
         )
         .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+    if omitted {
+        // The receiver validates records against the chain this page brings it to; when later
+        // manifests did not fit, records wait until the full prefix reaches the current head.
+        return ControlPageV1::new(state.chain().space_id(), true, page.artifacts)
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control));
+    }
     for record in state.address_records() {
         if record.endpoint_id() == request.local_endpoint_id
             && u64::try_from(record.issued_at_ms()).is_ok_and(|issued| issued <= request.now_ms)
@@ -73,6 +79,9 @@ pub(super) fn push_page(
     }
     for advertisement in state.active_relay_advertisements() {
         if advertisement.provider_endpoint_id() == request.local_endpoint_id
+            && state
+                .authorization()
+                .allows_private_relay_provider(request.local_endpoint_id)
             && u64::try_from(advertisement.issued_at_ms())
                 .is_ok_and(|issued| issued <= request.now_ms)
             && u64::try_from(advertisement.expires_at_ms())
