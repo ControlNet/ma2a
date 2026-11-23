@@ -171,15 +171,17 @@ fn mismatched_and_insecure_key_material_fail_closed() -> TestResult {
     let state = TempState::new("relay-tls-rejections")?;
     let (cert_path, _matching_key) = write_certificate_fixture(&state, "certificate")?;
     let (_other_cert, mismatched_key) = write_certificate_fixture(&state, "other")?;
-    let mismatched = NativeRelayTlsConfig::new(cert_path, mismatched_key.clone());
+    #[cfg(unix)]
+    let other_key = mismatched_key.clone();
+    let mismatched = NativeRelayTlsConfig::new(cert_path, mismatched_key);
 
     // When
     let mismatch_result = mismatched.load_server_config();
     #[cfg(unix)]
     let insecure_result = {
         use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&mismatched_key, fs::Permissions::from_mode(0o640))?;
-        NativeRelayTlsConfig::new(state.path().join("other.cert.pem"), mismatched_key)
+        fs::set_permissions(&other_key, fs::Permissions::from_mode(0o640))?;
+        NativeRelayTlsConfig::new(state.path().join("other.cert.pem"), other_key)
             .load_server_config()
     };
 

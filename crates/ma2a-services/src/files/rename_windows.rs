@@ -17,13 +17,18 @@ pub(crate) fn no_clobber_io(from: &Path, to: &Path) -> std::io::Result<()> {
 
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<u16>>()
+    let wide = |path: &Path| -> std::io::Result<Vec<u16>> {
+        let mut units = path.as_os_str().encode_wide().collect::<Vec<u16>>();
+        if units.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "path contains an interior NUL character",
+            ));
+        }
+        units.push(0);
+        Ok(units)
     };
-    let (from, to) = (wide(from), wide(to));
+    let (from, to) = (wide(from)?, wide(to)?);
     // SAFETY: both buffers are NUL-terminated UTF-16 strings that outlive the call, and flag 0
     // requests a plain move that fails when the destination exists.
     let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) };

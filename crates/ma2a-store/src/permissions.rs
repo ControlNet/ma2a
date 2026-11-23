@@ -25,6 +25,7 @@ pub fn ensure_private_directory(path: &Path, target: &'static str) -> Result<(),
 /// # Errors
 /// Returns [`StoreError`] when the permissions cannot be applied or confirmed.
 pub fn protect_private_directory(path: &Path, target: &'static str) -> Result<(), StoreError> {
+    validate_local_absolute(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -199,14 +200,36 @@ fn validate_windows_acl(path: &Path) -> Result<(), StoreError> {
 }
 
 #[cfg(windows)]
+fn powershell_path(path: &Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf, Prefix};
+
+    let mut components = path.components();
+    if let Some(Component::Prefix(prefix)) = components.next()
+        && let Prefix::VerbatimDisk(disk) = prefix.kind()
+    {
+        let mut plain = PathBuf::from(format!("{}:", char::from(disk)));
+        plain.extend(components);
+        if std::fs::canonicalize(&plain)
+            .ok()
+            .zip(std::fs::canonicalize(path).ok())
+            .is_some_and(|(left, right)| left == right)
+        {
+            return plain;
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(windows)]
 fn run_powershell(path: &Path, script: &str, operation: &'static str) -> Result<(), StoreError> {
     // Windows PowerShell 5.1 must find its own modules: a PSModulePath inherited from a
     // PowerShell 7 parent points it at modules it cannot load, Set-Acl among them. The path
     // travels in the environment: `-Command` joins every later argument into the script
     // text, so `$args` would be empty, and no quoting is needed this way.
+    let literal = powershell_path(path);
     let status = std::process::Command::new("powershell.exe")
         .env_remove("PSModulePath")
-        .env("MA2A_ACL_PATH", path)
+        .env("MA2A_ACL_PATH", &literal)
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .status()?;
     if !status.success() {

@@ -6,6 +6,8 @@ use ma2a_core::{
 use crate::{SpaceDepartureErrorCode, api::ApiError, api::CommandResult};
 
 use super::super::ConnectionContext;
+#[path = "invite_file.rs"]
+mod invite_file;
 
 pub(super) async fn create(
     context: &ConnectionContext,
@@ -50,39 +52,16 @@ pub(super) async fn invite(
         )
         .await
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    write_owner_only(output_path, created.ticket().encode_string().as_bytes())
+    let output_path = output_path.to_owned();
+    let encoded = created.ticket().encode_string().into_bytes();
+    tokio::task::spawn_blocking(move || invite_file::write_owner_only(&output_path, &encoded))
+        .await
+        .unwrap_or(Err(ProtocolError::INTERNAL))
         .map_err(|error| ApiError::new(error).after_commit(created.revision()))?;
     Ok(
         CommandResult::space_invitation_created(committed_space(created.chain())?)
             .at_revision(created.revision()),
     )
-}
-
-#[cfg(unix)]
-fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
-    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    file.write_all(contents)
-        .and_then(|()| file.write_all(b"\n"))
-        .map_err(|_| ProtocolError::INTERNAL)
-}
-
-#[cfg(not(unix))]
-fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
-    use std::io::Write as _;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    file.write_all(contents)
-        .and_then(|()| file.write_all(b"\n"))
-        .map_err(|_| ProtocolError::INTERNAL)
 }
 
 pub(super) async fn list(context: &ConnectionContext) -> Result<CommandResult, ProtocolError> {

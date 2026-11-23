@@ -1,4 +1,4 @@
-use std::{fs, io};
+use std::{io, path::Path};
 
 use interprocess::{
     local_socket::{
@@ -17,8 +17,43 @@ pub(crate) type PlatformListener = Listener;
 pub(crate) type PlatformStream = Stream;
 
 pub(crate) fn prepare(paths: &IpcPaths) -> Result<(), IpcError> {
-    fs::create_dir_all(paths.runtime_dir())?;
-    Ok(())
+    ensure_private_dir(paths.state_dir(), "state directory")?;
+    ensure_private_dir(paths.runtime_dir(), "runtime directory")
+}
+
+fn is_remote(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(
+                prefix.kind(),
+                Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _) | Prefix::DeviceNS(_)
+            )
+    )
+}
+
+fn ensure_private_dir(path: &Path, target: &'static str) -> Result<(), IpcError> {
+    if !path.is_absolute() || is_remote(path) {
+        return Err(IpcError::InvalidPath);
+    }
+    if !path.exists()
+        && path.parent().is_some_and(Path::exists)
+        && ma2a_services::windows_files::create_protected_dir(path).is_ok()
+    {
+        return ma2a_store::protect_private_directory(path, target).map_err(store_dir_error);
+    }
+    ma2a_store::ensure_private_directory(path, target).map_err(store_dir_error)
+}
+
+fn store_dir_error(error: ma2a_store::StoreError) -> IpcError {
+    match error {
+        ma2a_store::StoreError::InvalidStateDirectory => IpcError::InvalidPath,
+        ma2a_store::StoreError::InsecurePermissions { .. }
+        | ma2a_store::StoreError::WindowsAcl { .. } => IpcError::UnauthorizedPeer,
+        other => IpcError::Io(io::Error::other(other)),
+    }
 }
 
 fn name(paths: &IpcPaths) -> Result<interprocess::local_socket::Name<'static>, IpcError> {
@@ -66,6 +101,10 @@ pub(crate) fn authorize(stream: &PlatformStream, _paths: &IpcPaths) -> Result<()
     }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Unix counterpart returns IpcError when unlinking the socket"
+)]
 pub(crate) const fn remove_stale_endpoint(_paths: &IpcPaths) -> Result<(), IpcError> {
     Ok(())
 }

@@ -32,7 +32,7 @@ mod sid;
 
 use super::space_windows_policy::{AccessRule, Principal, is_owner_only};
 use crate::AppError;
-use sid::{current_user_sid, local_system_sid};
+use sid::{builtin_administrators_sid, current_user_sid, local_system_sid};
 
 pub(super) fn read_owner_only_invitation(path: &Path) -> Result<String, AppError> {
     let file = OpenOptions::new()
@@ -66,42 +66,57 @@ fn has_owner_only_acl(file: &File) -> bool {
 }
 
 fn file_owner_only_policy(file: &File) -> Result<(), ()> {
-    let descriptor = file_security_descriptor(file)?;
-    let descriptor = descriptor.as_ptr().cast_mut().cast::<c_void>();
+    let mut descriptor = file_security_descriptor(file)?;
+    let descriptor = descriptor.as_mut_ptr().cast::<c_void>();
     // SAFETY: [Category 8 - FFI boundary] a successful GetKernelObjectSecurity call initialized
     // the descriptor in live aligned storage.
     if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
         return Err(());
     }
-    let user = current_user_sid()?;
-    let system = local_system_sid()?;
-    let owner = descriptor_owner(descriptor, user.as_ptr())?;
+    let mut user = current_user_sid()?;
+    let mut system = local_system_sid()?;
+    let mut admins = builtin_administrators_sid()?;
+    let (user_ptr, system_ptr, admins_ptr) =
+        (user.as_mut_ptr(), system.as_mut_ptr(), admins.as_mut_ptr());
+    let owner = descriptor_owner(descriptor, (user_ptr, system_ptr, admins_ptr))?;
     let (protected, dacl) = descriptor_dacl(descriptor)?;
-    let rules = dacl_rules(dacl, user.as_ptr(), system.as_ptr())?;
+    let rules = dacl_rules(dacl, user_ptr, system_ptr)?;
     if !is_owner_only(owner, protected, &rules) {
         return Err(());
     }
     Ok(())
 }
 
-fn descriptor_owner(descriptor: PSECURITY_DESCRIPTOR, user: PSID) -> Result<Principal, ()> {
+fn descriptor_owner(
+    descriptor: PSECURITY_DESCRIPTOR,
+    (user, system, admins): (PSID, PSID, PSID),
+) -> Result<Principal, ()> {
     let mut owner = ptr::null_mut();
     let mut defaulted = 0;
     // SAFETY: [Category 8 - FFI boundary] the descriptor is valid and both output locations are
     // initialized writable storage.
-    if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0
+    if unsafe { GetSecurityDescriptorOwner(descriptor, &raw mut owner, &raw mut defaulted) } == 0
         || owner.is_null()
-        || unsafe { IsValidSid(owner) } == 0
     {
         return Err(());
     }
-    // SAFETY: [Category 8 - FFI boundary] owner and user reference validated SIDs backed by live
-    // descriptor and token storage for this comparison.
-    Ok(if unsafe { EqualSid(owner, user) } != 0 {
-        Principal::CurrentUser
-    } else {
-        Principal::Other
-    })
+    // SAFETY: [Category 8 - FFI boundary] Windows returned owner from a valid live descriptor.
+    if unsafe { IsValidSid(owner) } == 0 {
+        return Err(());
+    }
+    // SAFETY: [Category 8 - FFI boundary] owner and user reference validated live SIDs.
+    if unsafe { EqualSid(owner, user) } != 0 {
+        return Ok(Principal::CurrentUser);
+    }
+    // SAFETY: [Category 8 - FFI boundary] owner and system reference validated live SIDs.
+    if unsafe { EqualSid(owner, system) } != 0 {
+        return Ok(Principal::System);
+    }
+    // SAFETY: [Category 8 - FFI boundary] owner and admins reference validated live SIDs.
+    if unsafe { EqualSid(owner, admins) } != 0 {
+        return Ok(Principal::Administrators);
+    }
+    Ok(Principal::Other)
 }
 
 fn descriptor_dacl(descriptor: PSECURITY_DESCRIPTOR) -> Result<(bool, *mut ACL), ()> {
@@ -109,7 +124,8 @@ fn descriptor_dacl(descriptor: PSECURITY_DESCRIPTOR) -> Result<(bool, *mut ACL),
     let mut revision = 0_u32;
     // SAFETY: [Category 8 - FFI boundary] the descriptor is valid and both output scalars are live
     // writable storage for this synchronous query.
-    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+    if unsafe { GetSecurityDescriptorControl(descriptor, &raw mut control, &raw mut revision) } == 0
+    {
         return Err(());
     }
     let mut present = 0;
@@ -117,12 +133,21 @@ fn descriptor_dacl(descriptor: PSECURITY_DESCRIPTOR) -> Result<(bool, *mut ACL),
     let mut dacl = ptr::null_mut();
     // SAFETY: [Category 8 - FFI boundary] the descriptor is valid and all output locations remain
     // live for this synchronous query.
-    if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
-        == 0
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &raw mut present,
+            &raw mut dacl,
+            &raw mut defaulted,
+        )
+    } == 0
         || present == 0
         || dacl.is_null()
-        || unsafe { IsValidAcl(dacl) } == 0
     {
+        return Err(());
+    }
+    // SAFETY: [Category 8 - FFI boundary] dacl came from the valid live descriptor above.
+    if unsafe { IsValidAcl(dacl) } == 0 {
         return Err(());
     }
     Ok((control & SE_DACL_PROTECTED != 0, dacl))
@@ -145,15 +170,18 @@ fn dacl_rules(dacl: *mut ACL, user: PSID, system: PSID) -> Result<Vec<AccessRule
         return Err(());
     }
     (0..info.AceCount)
-        .map(|index| access_rule(dacl, index, user, system))
+        .map(|index| access_rule((dacl, index), (user, system)))
         .collect()
 }
 
-fn access_rule(dacl: *mut ACL, index: u32, user: PSID, system: PSID) -> Result<AccessRule, ()> {
+fn access_rule(
+    (dacl, index): (*mut ACL, u32),
+    (user, system): (PSID, PSID),
+) -> Result<AccessRule, ()> {
     let mut raw_ace = ptr::null_mut();
     // SAFETY: [Category 8 - FFI boundary] index is below the queried AceCount and Windows writes
     // one borrowed ACE pointer backed by the live ACL.
-    if unsafe { GetAce(dacl, index, &mut raw_ace) } == 0 || raw_ace.is_null() {
+    if unsafe { GetAce(dacl, index, &raw mut raw_ace) } == 0 || raw_ace.is_null() {
         return Err(());
     }
     let ace = raw_ace.cast::<ACCESS_ALLOWED_ACE>();
@@ -178,10 +206,13 @@ fn access_rule(dacl: *mut ACL, index: u32, user: PSID, system: PSID) -> Result<A
     let full_control = unsafe { (*ace).Mask } == FILE_ALL_ACCESS;
     // SAFETY: [Categories 8 and 10 - FFI boundary/out-of-bounds] SidStart lies inside the checked
     // ACE and its full count-derived extent is validated before Windows consumes it.
-    let sid = unsafe { ptr::addr_of_mut!((*ace).SidStart).cast::<c_void>() };
+    let sid = unsafe { &raw mut (*ace).SidStart }.cast::<c_void>();
     // SAFETY: [Categories 8 and 10 - FFI boundary/out-of-bounds] the minimum ACE size proves the SID
     // revision and sub-authority count bytes are readable.
-    let sub_authority_count = usize::from(unsafe { *sid.cast::<u8>().add(1) });
+    let count_ptr = unsafe { sid.cast::<u8>().add(1) };
+    // SAFETY: [Categories 8 and 10 - FFI boundary/out-of-bounds] count_ptr points at the readable
+    // sub-authority count byte inside the live ACE.
+    let sub_authority_count = usize::from(unsafe { *count_ptr });
     let sid_length = 8_usize
         .checked_add(sub_authority_count.checked_mul(4).ok_or(())?)
         .ok_or(())?;
@@ -197,13 +228,14 @@ fn access_rule(dacl: *mut ACL, index: u32, user: PSID, system: PSID) -> Result<A
         return Err(());
     }
     // SAFETY: [Category 8 - FFI boundary] sid and user reference validated live SIDs.
-    let principal = if unsafe { EqualSid(sid, user) } != 0 {
-        Principal::CurrentUser
+    let is_user = unsafe { EqualSid(sid, user) } != 0;
     // SAFETY: [Category 8 - FFI boundary] sid and system reference validated live SIDs.
-    } else if unsafe { EqualSid(sid, system) } != 0 {
-        Principal::System
-    } else {
-        Principal::Other
+    let is_system = unsafe { EqualSid(sid, system) } != 0;
+    let principal = match (is_user, is_system) {
+        (true, true) => Principal::CurrentUserAndSystem,
+        (true, false) => Principal::CurrentUser,
+        (false, true) => Principal::System,
+        (false, false) => Principal::Other,
     };
     Ok(AccessRule {
         principal,
@@ -220,7 +252,7 @@ fn file_security_descriptor(file: &File) -> Result<Vec<usize>, ()> {
     // SAFETY: [Category 8 - FFI boundary] handle is borrowed from the live file and null storage
     // with zero size is the documented size-query form.
     unsafe {
-        GetKernelObjectSecurity(handle, information, ptr::null_mut(), 0, &mut required);
+        GetKernelObjectSecurity(handle, information, ptr::null_mut(), 0, &raw mut required);
     }
     let mut storage = aligned_storage(required)?;
     // SAFETY: [Categories 8 and 10 - FFI boundary/out-of-bounds] storage is aligned and contains
@@ -231,7 +263,7 @@ fn file_security_descriptor(file: &File) -> Result<Vec<usize>, ()> {
             information,
             storage.as_mut_ptr().cast::<c_void>(),
             required,
-            &mut required,
+            &raw mut required,
         )
     } == 0
     {

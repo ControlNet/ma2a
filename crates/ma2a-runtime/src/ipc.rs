@@ -142,6 +142,13 @@ impl IpcPaths {
     ///
     /// # Errors
     /// Returns an I/O error when the stale endpoint cannot be removed.
+    #[cfg_attr(
+        windows,
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "Unix counterpart performs filesystem I/O"
+        )
+    )]
     pub fn remove_stale_endpoint(&self) -> Result<(), IpcError> {
         platform::remove_stale_endpoint(self)
     }

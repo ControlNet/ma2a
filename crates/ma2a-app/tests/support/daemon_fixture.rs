@@ -72,6 +72,8 @@ impl DaemonFixture {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700))?;
         }
+        #[cfg(windows)]
+        ma2a_store::protect_private_directory(&state_dir, "test state directory")?;
         Ok(Self {
             state_dir,
             owned: None,
@@ -318,7 +320,7 @@ fn request_exit(child: &Child) {
 }
 
 #[cfg(windows)]
-fn request_exit(_child: &Child) {}
+const fn request_exit(_child: &Child) {}
 
 /// Proves that nothing owns the state directory any more.
 ///

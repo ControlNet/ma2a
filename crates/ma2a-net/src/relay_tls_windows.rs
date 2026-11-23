@@ -24,11 +24,11 @@ use windows_sys::Win32::{
 #[path = "relay_tls_windows_sid.rs"]
 mod sid;
 
-use sid::{current_user_sid, local_system_sid};
+use sid::{builtin_administrators_sid, current_user_sid, local_system_sid};
 
 pub(super) fn validate_private_key_acl(file: &File) -> Result<(), ()> {
-    let descriptor = file_security_descriptor(file)?;
-    let descriptor_ptr = descriptor.as_ptr().cast_mut().cast::<c_void>();
+    let mut descriptor = file_security_descriptor(file)?;
+    let descriptor_ptr = descriptor.as_mut_ptr().cast::<c_void>();
     validate_descriptor(descriptor_ptr)
 }
 
@@ -39,18 +39,17 @@ fn file_security_descriptor(file: &File) -> Result<Vec<usize>, ()> {
     // SAFETY: [Category 8 - FFI boundary] `handle` is borrowed from the live file and the null
     // descriptor with zero size is the documented size-query form.
     unsafe {
-        GetKernelObjectSecurity(handle, information, ptr::null_mut(), 0, &mut required);
+        GetKernelObjectSecurity(handle, information, ptr::null_mut(), 0, &raw mut required);
     }
     if required == 0 {
         return Err(());
     }
     let storage = aligned_storage(required)?;
-    fill_security_descriptor(handle, information, storage, required)
+    fill_security_descriptor((handle, information), storage, required)
 }
 
 fn fill_security_descriptor(
-    handle: HANDLE,
-    information: u32,
+    (handle, information): (HANDLE, u32),
     mut storage: Vec<usize>,
     mut required: u32,
 ) -> Result<Vec<usize>, ()> {
@@ -62,7 +61,7 @@ fn fill_security_descriptor(
             information,
             storage.as_mut_ptr().cast::<c_void>(),
             required,
-            &mut required,
+            &raw mut required,
         )
     } == 0
     {
@@ -77,29 +76,35 @@ fn validate_descriptor(descriptor: PSECURITY_DESCRIPTOR) -> Result<(), ()> {
     if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
         return Err(());
     }
-    let user = current_user_sid()?;
-    let system = local_system_sid()?;
-    validate_owner(descriptor, user.as_ptr())?;
+    let mut user = current_user_sid()?;
+    let mut system = local_system_sid()?;
+    let mut admins = builtin_administrators_sid()?;
+    let (user_ptr, system_ptr, admins_ptr) =
+        (user.as_mut_ptr(), system.as_mut_ptr(), admins.as_mut_ptr());
+    validate_owner(descriptor, [user_ptr, system_ptr, admins_ptr])?;
     let dacl = protected_dacl(descriptor)?;
-    validate_dacl(dacl, user.as_ptr(), system.as_ptr())
+    validate_dacl(dacl, user_ptr, system_ptr)
 }
 
-fn validate_owner(descriptor: PSECURITY_DESCRIPTOR, user: PSID) -> Result<(), ()> {
+fn validate_owner(descriptor: PSECURITY_DESCRIPTOR, trusted: [PSID; 3]) -> Result<(), ()> {
     let mut owner = ptr::null_mut();
     let mut defaulted = 0;
     // SAFETY: [Category 8 - FFI boundary] the descriptor is valid and both output locations are
     // initialized writable storage for pointers and flags owned by Windows.
-    if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0
+    if unsafe { GetSecurityDescriptorOwner(descriptor, &raw mut owner, &raw mut defaulted) } == 0
         || owner.is_null()
     {
         return Err(());
     }
-    // SAFETY: [Category 8 - FFI boundary] Windows returned `owner` from a valid live descriptor;
-    // `user` is a validated SID copied from the current process token.
-    if unsafe { IsValidSid(owner) } == 0 || unsafe { EqualSid(owner, user) } == 0 {
+    // SAFETY: [Category 8 - FFI boundary] Windows returned `owner` from a valid live descriptor.
+    if unsafe { IsValidSid(owner) } == 0 {
         return Err(());
     }
-    Ok(())
+    let allowed = trusted.into_iter().any(|candidate| {
+        // SAFETY: [Category 8 - FFI boundary] `owner` and `candidate` are validated live SIDs.
+        unsafe { EqualSid(owner, candidate) != 0 }
+    });
+    if allowed { Ok(()) } else { Err(()) }
 }
 
 fn protected_dacl(descriptor: PSECURITY_DESCRIPTOR) -> Result<*mut ACL, ()> {
@@ -107,7 +112,7 @@ fn protected_dacl(descriptor: PSECURITY_DESCRIPTOR) -> Result<*mut ACL, ()> {
     let mut revision = 0_u32;
     // SAFETY: [Category 8 - FFI boundary] the descriptor is valid and the control outputs are
     // writable initialized scalars.
-    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
+    if unsafe { GetSecurityDescriptorControl(descriptor, &raw mut control, &raw mut revision) } == 0
         || control & SE_DACL_PROTECTED == 0
     {
         return Err(());
@@ -117,8 +122,14 @@ fn protected_dacl(descriptor: PSECURITY_DESCRIPTOR) -> Result<*mut ACL, ()> {
     let mut dacl = ptr::null_mut();
     // SAFETY: [Category 8 - FFI boundary] the descriptor is valid and all output locations remain
     // live for this synchronous call.
-    if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
-        == 0
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &raw mut present,
+            &raw mut dacl,
+            &raw mut defaulted,
+        )
+    } == 0
         || present == 0
         || dacl.is_null()
     {
@@ -152,11 +163,13 @@ fn validate_dacl(dacl: *mut ACL, user: PSID, system: PSID) -> Result<(), ()> {
     let mut system_seen = false;
     for index in 0..info.AceCount {
         let sid = allowed_full_control_sid(dacl, index)?;
-        // SAFETY: [Category 8 - FFI boundary] all three pointers reference validated SIDs that
-        // remain live for this loop iteration.
-        if unsafe { EqualSid(sid, user) } != 0 && !user_seen {
+        // SAFETY: [Category 8 - FFI boundary] `sid` and `user` reference validated live SIDs.
+        let is_user = unsafe { EqualSid(sid, user) } != 0;
+        // SAFETY: [Category 8 - FFI boundary] `sid` and `system` reference validated live SIDs.
+        let is_system = unsafe { EqualSid(sid, system) } != 0;
+        if is_user && !user_seen {
             user_seen = true;
-        } else if unsafe { EqualSid(sid, system) } != 0 && !system_seen {
+        } else if is_system && !system_seen {
             system_seen = true;
         } else {
             return Err(());
@@ -173,7 +186,7 @@ fn allowed_full_control_sid(dacl: *mut ACL, index: u32) -> Result<PSID, ()> {
     let mut raw_ace = ptr::null_mut();
     // SAFETY: [Category 8 - FFI boundary] `dacl` is valid and `index` is below its queried AceCount;
     // Windows writes one borrowed ACE pointer to `raw_ace`.
-    if unsafe { GetAce(dacl, index, &mut raw_ace) } == 0 || raw_ace.is_null() {
+    if unsafe { GetAce(dacl, index, &raw mut raw_ace) } == 0 || raw_ace.is_null() {
         return Err(());
     }
     let ace = raw_ace.cast::<ACCESS_ALLOWED_ACE>();
@@ -193,10 +206,13 @@ fn allowed_full_control_sid(dacl: *mut ACL, index: u32) -> Result<PSID, ()> {
     }
     // SAFETY: [Categories 8 and 10 - FFI boundary/out-of-bounds] SidStart is inside the checked ACE;
     // the pointer is used only after validating the SID header and full encoded length below.
-    let sid = unsafe { ptr::addr_of_mut!((*ace).SidStart).cast::<c_void>() };
+    let sid = unsafe { &raw mut (*ace).SidStart }.cast::<c_void>();
     // SAFETY: [Categories 8 and 10 - FFI boundary/out-of-bounds] the minimum-size check proves the
     // SID revision and sub-authority-count bytes are inside this ACE.
-    let sub_authority_count = usize::from(unsafe { *sid.cast::<u8>().add(1) });
+    let count_ptr = unsafe { sid.cast::<u8>().add(1) };
+    // SAFETY: [Categories 8 and 10 - FFI boundary/out-of-bounds] `count_ptr` points at the valid
+    // sub-authority-count byte inside the live ACE.
+    let sub_authority_count = usize::from(unsafe { *count_ptr });
     let encoded_sid_length = 8_usize
         .checked_add(sub_authority_count.checked_mul(4).ok_or(())?)
         .ok_or(())?;

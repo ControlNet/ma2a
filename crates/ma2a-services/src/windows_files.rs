@@ -3,19 +3,19 @@
 //! and a directory whose protected ACL is in place from the moment it exists.
 
 use std::{
-    ffi::OsString,
+    ffi::{OsString, c_void},
     fs::File,
     io,
     os::windows::{
         ffi::{OsStrExt as _, OsStringExt as _},
-        io::AsRawHandle as _,
+        io::{AsRawHandle as _, FromRawHandle as _},
     },
     path::{Path, PathBuf},
     ptr,
 };
 
 use windows_sys::Win32::{
-    Foundation::LocalFree,
+    Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree},
     Security::{
         Authorization::{
             ConvertSecurityDescriptorToStringSecurityDescriptorW,
@@ -26,34 +26,55 @@ use windows_sys::Win32::{
         SECURITY_ATTRIBUTES,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, FILE_NAME_NORMALIZED,
-        GetFileInformationByHandle, GetFinalPathNameByHandleW,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
+        FILE_ATTRIBUTE_NORMAL, FILE_ID_INFO, FILE_NAME_NORMALIZED, FileIdInfo,
+        GetFileInformationByHandle, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
     },
 };
 
-/// Full access for the object's owner (`OW`) and SYSTEM only, inherited by everything created
-/// inside, and nothing inherited from the parent (`P`).
-const PRIVATE: &str = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)";
-
-/// Which file a handle refers to: its volume's serial number and its index on that volume.
+/// Which file a handle refers to: its volume's serial number and its 128-bit file identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FileId(u32, u64);
+pub struct FileId(u64, u128);
 
-/// Returns the identity of the file `file` refers to.
+/// Returns the identity of the file `file` refers to, using 128-bit IDs (safe on `ReFS` and NTFS).
 ///
 /// # Errors
-/// Returns the operating system's error.
+/// Returns the operating system's error, or `Unsupported` when a legacy volume reports an
+/// invalid sentinel identifier.
 pub fn file_id(file: &File) -> io::Result<FileId> {
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    let mut info = FILE_ID_INFO::default();
+    let size = u32::try_from(size_of::<FILE_ID_INFO>()).unwrap_or(u32::MAX);
     // SAFETY: [Category 8 - FFI boundary] the handle is live for the borrow of `file`, and
-    // `information` is a valid, writable structure of the expected type.
-    let read = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut information) };
+    // `info` is valid writable storage of `size` bytes matching `FileIdInfo`.
+    let read = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&raw mut info).cast::<c_void>(),
+            size,
+        )
+    };
+    if read != 0 {
+        return Ok(FileId(
+            info.VolumeSerialNumber,
+            u128::from_le_bytes(info.FileId.Identifier),
+        ));
+    }
+    let mut legacy = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: [Category 8 - FFI boundary] the handle is live for the borrow of `file`, and
+    // `legacy` is a valid, writable structure of the expected type.
+    let read = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut legacy) };
     if read == 0 {
         return Err(io::Error::last_os_error());
     }
-    let index =
-        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
-    Ok(FileId(information.dwVolumeSerialNumber, index))
+    let index = (u64::from(legacy.nFileIndexHigh) << 32) | u64::from(legacy.nFileIndexLow);
+    if index == u64::MAX {
+        return Err(io::Error::from(io::ErrorKind::Unsupported));
+    }
+    Ok(FileId(
+        u64::from(legacy.dwVolumeSerialNumber),
+        u128::from(index),
+    ))
 }
 
 /// Returns the path `file` is reachable at now, with every link and junction resolved.
@@ -83,7 +104,11 @@ pub fn final_path(file: &File) -> io::Result<PathBuf> {
             buffer.truncate(length);
             return Ok(OsString::from_wide(&buffer).into());
         }
-        buffer.resize(length, 0);
+        let grown = length.max(buffer.len().saturating_add(1));
+        if grown > 65_536 {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        buffer.resize(grown, 0);
     }
 }
 
@@ -130,10 +155,12 @@ pub fn owner_and_dacl(file: &File) -> io::Result<String> {
     let error = io::Error::last_os_error();
     let sddl = if converted == 0 {
         Err(error)
+    } else if text.is_null() {
+        Ok(String::new())
     } else {
         let units = usize::try_from(length).unwrap_or(0);
-        // SAFETY: [Category 8 - FFI boundary] on success `text` points at `length` UTF-16
-        // units, the terminator included, allocated by the conversion.
+        // SAFETY: [Category 8 - FFI boundary] on success `text` is non-null and points at
+        // `length` UTF-16 units, the terminator included, allocated by the conversion.
         let slice = unsafe { std::slice::from_raw_parts(text, units) };
         let slice = slice.split(|unit| *unit == 0).next().unwrap_or_default();
         Ok(String::from_utf16_lossy(slice))
@@ -147,13 +174,21 @@ pub fn owner_and_dacl(file: &File) -> io::Result<String> {
     sddl
 }
 
-/// Creates `path`, which must not exist yet, under the [`PRIVATE`] ACL.
-///
-/// # Errors
-/// Returns [`io::ErrorKind::AlreadyExists`] when anything already has that name, or another
-/// local error.
-pub fn create_protected_dir(path: &Path) -> io::Result<()> {
-    let sddl = PRIVATE
+fn with_private_object<T>(
+    path: &Path,
+    ace_flags: &str,
+    work: impl FnOnce(*const u16, &SECURITY_ATTRIBUTES) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if wide.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains an interior NUL character",
+        ));
+    }
+    wide.push(0);
+    let user = crate::windows_security::current_process_user_sid()?.to_sddl()?;
+    let sddl = format!("D:P(A;{ace_flags};FA;;;{user})(A;{ace_flags};FA;;;SY)")
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
@@ -171,24 +206,75 @@ pub fn create_protected_dir(path: &Path) -> io::Result<()> {
     if converted == 0 {
         return Err(io::Error::last_os_error());
     }
-    let wide = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
     let attributes = SECURITY_ATTRIBUTES {
         nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(u32::MAX),
         lpSecurityDescriptor: descriptor,
         bInheritHandle: 0,
     };
-    // SAFETY: [Category 8 - FFI boundary] `wide` is a live NUL-terminated UTF-16 path and
-    // `attributes` points at the descriptor converted above, which is still allocated.
-    let created = unsafe { CreateDirectoryW(wide.as_ptr(), &raw const attributes) };
-    let error = io::Error::last_os_error();
+    let result = work(wide.as_ptr(), &attributes);
     // SAFETY: [Category 8 - FFI boundary] `descriptor` was allocated by the conversion above
     // with LocalAlloc and is freed exactly once, after its last use.
     let _freed = unsafe { LocalFree(descriptor) };
-    if created == 0 { Err(error) } else { Ok(()) }
+    result
+}
+
+/// Creates `path`, which must not exist yet, under a protected owner-and-SYSTEM ACL.
+///
+/// The explicit current-user SID replaces `OW` so elevated and non-elevated tokens of the same
+/// account share access.
+///
+/// # Errors
+/// Returns [`io::ErrorKind::AlreadyExists`] when anything already has that name,
+/// [`io::ErrorKind::InvalidInput`] for embedded NUL characters, or another local error.
+pub fn create_protected_dir(path: &Path) -> io::Result<()> {
+    with_private_object(path, "OICI", |wide, attributes| {
+        // SAFETY: [Category 8 - FFI boundary] `wide` is NUL-terminated UTF-16 and `attributes`
+        // points at the live security descriptor converted for this call.
+        if unsafe { CreateDirectoryW(wide, attributes) } == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+/// Creates a new regular file at `path` under a protected owner-and-SYSTEM ACL.
+///
+/// # Errors
+/// Returns [`io::ErrorKind::AlreadyExists`] when anything already has that name,
+/// [`io::ErrorKind::InvalidInput`] for embedded NUL characters, or another local error.
+pub fn create_protected_file(path: &Path) -> io::Result<File> {
+    with_private_object(path, "", |wide, attributes| {
+        // SAFETY: [Category 8 - FFI boundary] `wide` is NUL-terminated UTF-16 and `attributes`
+        // points at the live security descriptor converted for this call.
+        let handle = unsafe {
+            CreateFileW(
+                wide,
+                GENERIC_WRITE,
+                0,
+                attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: [Category 8 - FFI boundary] `handle` is an owned file handle returned by
+            // CreateFileW above and is not shared with any other owner.
+            Ok(unsafe { File::from_raw_handle(handle) })
+        }
+    })
+}
+
+/// Renames `from` to `to`, failing with [`io::ErrorKind::AlreadyExists`] instead of replacing
+/// an existing file or directory.
+///
+/// # Errors
+/// Returns the operating system's error.
+pub fn rename_no_clobber(from: &Path, to: &Path) -> io::Result<()> {
+    crate::files::rename_windows::no_clobber_io(from, to)
 }
 
 #[cfg(test)]

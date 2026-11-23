@@ -37,6 +37,8 @@ impl TempState {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
         }
+        #[cfg(windows)]
+        ma2a_store::protect_private_directory(&path, "test state directory")?;
         Ok(Self(path))
     }
 }

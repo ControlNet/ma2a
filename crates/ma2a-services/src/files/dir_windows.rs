@@ -53,7 +53,9 @@ impl Directory {
     /// Opens the canonical root directory recorded at exposure time.
     pub(crate) fn open_root(path: &Path) -> Result<Self, ServiceError> {
         // The root was canonicalized when it was exposed, so it is pinned as a directory
-        // without refusing a reparse point the owner deliberately exported through.
+        // without refusing a reparse point the owner deliberately exported through. Its path
+        // comes from the pinned handle itself so repointing a junction afterwards cannot move
+        // later operations into another directory.
         let handle = fs_error::map(
             OpenOptions::new()
                 .access_mode(FILE_READ_ATTRIBUTES)
@@ -61,8 +63,12 @@ impl Directory {
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
                 .open(path),
         )?;
+        if !fs_error::map(handle.metadata())?.is_dir() {
+            return Err(ServiceError::NotADirectory);
+        }
+        let resolved = fs_error::map(crate::windows_files::final_path(&handle))?;
         Ok(Self {
-            path: path.to_path_buf(),
+            path: resolved,
             held: vec![Arc::new(handle)],
         })
     }

@@ -58,8 +58,10 @@ pub(super) async fn invite(
         let _cleanup = std::fs::remove_file(&output_path);
         return Err(error);
     }
-    let invitation = read_owner_only_invitation(&output_path)?;
-    std::fs::remove_file(&output_path)?;
+    let invitation = read_owner_only_invitation(&output_path);
+    let removed = std::fs::remove_file(&output_path);
+    let invitation = invitation?;
+    removed?;
     println!("{}", invitation.trim());
     Ok(())
 }

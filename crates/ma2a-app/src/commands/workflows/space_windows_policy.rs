@@ -2,6 +2,8 @@
 pub(super) enum Principal {
     CurrentUser,
     System,
+    CurrentUserAndSystem,
+    Administrators,
     Other,
 }
 
@@ -14,7 +16,14 @@ pub(super) struct AccessRule {
 }
 
 pub(super) fn is_owner_only(owner: Principal, protected: bool, rules: &[AccessRule]) -> bool {
-    if owner != Principal::CurrentUser || !protected || rules.len() != 2 {
+    let trusted_owner = matches!(
+        owner,
+        Principal::CurrentUser
+            | Principal::System
+            | Principal::CurrentUserAndSystem
+            | Principal::Administrators
+    );
+    if !trusted_owner || !protected || rules.len() != 2 {
         return false;
     }
     let mut user_seen = false;
@@ -24,9 +33,17 @@ pub(super) fn is_owner_only(owner: Principal, protected: bool, rules: &[AccessRu
             return false;
         }
         match rule.principal {
-            Principal::CurrentUser if !user_seen => user_seen = true,
-            Principal::System if !system_seen => system_seen = true,
-            Principal::CurrentUser | Principal::System | Principal::Other => return false,
+            Principal::CurrentUser | Principal::CurrentUserAndSystem if !user_seen => {
+                user_seen = true;
+            }
+            Principal::System | Principal::CurrentUserAndSystem if !system_seen => {
+                system_seen = true;
+            }
+            Principal::CurrentUser
+            | Principal::System
+            | Principal::CurrentUserAndSystem
+            | Principal::Administrators
+            | Principal::Other => return false,
         }
     }
     user_seen && system_seen
@@ -115,5 +132,61 @@ mod tests {
 
         // Then
         assert!(!accepted);
+    }
+
+    #[test]
+    fn administrators_owner_and_local_system_self_rules_are_accepted() {
+        let user_and_system = [
+            AccessRule {
+                principal: Principal::CurrentUser,
+                allowed: true,
+                inherited: false,
+                full_control: true,
+            },
+            AccessRule {
+                principal: Principal::System,
+                allowed: true,
+                inherited: false,
+                full_control: true,
+            },
+        ];
+        assert!(is_owner_only(
+            Principal::Administrators,
+            true,
+            &user_and_system
+        ));
+        let admins_in_dacl = [
+            user_and_system[0],
+            AccessRule {
+                principal: Principal::Administrators,
+                allowed: true,
+                inherited: false,
+                full_control: true,
+            },
+        ];
+        assert!(!is_owner_only(
+            Principal::CurrentUser,
+            true,
+            &admins_in_dacl
+        ));
+        let local_system = [
+            AccessRule {
+                principal: Principal::CurrentUserAndSystem,
+                allowed: true,
+                inherited: false,
+                full_control: true,
+            },
+            AccessRule {
+                principal: Principal::CurrentUserAndSystem,
+                allowed: true,
+                inherited: false,
+                full_control: true,
+            },
+        ];
+        assert!(is_owner_only(
+            Principal::CurrentUserAndSystem,
+            true,
+            &local_system
+        ));
     }
 }
