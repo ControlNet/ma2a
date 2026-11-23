@@ -1,7 +1,5 @@
 //! Process-level invite input security coverage.
 
-#[cfg(unix)]
-use std::path::PathBuf;
 use std::{fs, process::Stdio};
 
 use serde_json::Value;
@@ -112,6 +110,7 @@ fn interactive_acceptance_prompts_for_the_ticket_without_echoing_it() -> TestRes
         ffi::OsStr,
         fs::File,
         io::{Read as _, Write as _},
+        path::PathBuf,
         thread,
         time::Duration,
     };
