@@ -80,7 +80,15 @@ jobs:
         working-directory: web
       - name: Validate release policy
         shell: bash
-        run: cargo run --locked -p xtask -- check-release
+        run: |
+          cargo run --locked -p xtask -- check-release
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            expected="${GITHUB_REF_NAME#v}"
+            cargo metadata --locked --no-deps --format-version 1 | jq -e --arg expected "$expected" 'any(.packages[]; .name == "ma2a-app" and .version == $expected)' >/dev/null || {
+              echo "release tag $GITHUB_REF_NAME does not match Cargo.toml version" >&2
+              exit 1
+            }
+          fi
       - name: Build archive
         shell: bash
         run: bunx @axodotdev/dist@0.32.0 build --artifacts=local --target=${{ matrix.target }}
@@ -95,7 +103,10 @@ jobs:
         run: ./scripts/generate-license-report.sh "target/distrib/${{ matrix.archive }}.licenses.json"
       - name: Generate deterministic SPDX SBOM
         shell: bash
-        run: RELEASE_CREATED_AT=$(git show -s --format=%cI "$GITHUB_SHA") ./scripts/generate-sbom.sh "target/distrib/${{ matrix.archive }}" "target/distrib/${{ matrix.archive }}.licenses.json" "target/distrib/${{ matrix.archive }}.spdx.json" "${{ matrix.target }}"
+        run: |
+          created_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          created_at=$(jq -nr --argjson t "$created_epoch" '$t | todate' | tr -d '\r')
+          RELEASE_CREATED_AT="$created_at" ./scripts/generate-sbom.sh "target/distrib/${{ matrix.archive }}" "target/distrib/${{ matrix.archive }}.licenses.json" "target/distrib/${{ matrix.archive }}.spdx.json" "${{ matrix.target }}"
       - name: Validate SBOM and license report
         shell: bash
         run: ./scripts/validate-release-metadata.sh "target/distrib/${{ matrix.archive }}" "target/distrib/${{ matrix.archive }}.spdx.json" "target/distrib/${{ matrix.archive }}.licenses.json"
@@ -167,4 +178,9 @@ jobs:
       - name: Publish archive-only GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --generate-notes
+        run: |
+          release_flags=(--verify-tag --generate-notes)
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" release-assets/* "${release_flags[@]}"

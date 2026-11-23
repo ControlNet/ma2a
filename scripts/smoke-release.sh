@@ -28,7 +28,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -m 700 "$state_dir"
+case "$target" in
+  *-pc-windows-msvc)
+    # On Windows let ma2a create state_dir with a protected DACL rather than inheriting %TEMP%'s ACL.
+    ;;
+  *)
+    mkdir -m 700 "$state_dir"
+    ;;
+esac
 touch "$request_log" "$cookie_jar" "$original_cookie_jar" "$logout_cookie_jar" "$login_body" "$wrong_login_body" "$login_response" "$csrf_config"
 chmod 600 "$request_log" "$cookie_jar" "$original_cookie_jar" "$logout_cookie_jar" "$login_body" "$wrong_login_body" "$login_response" "$csrf_config"
 case "$target" in
@@ -55,21 +62,23 @@ binary_count=$(wc -l < "$binaries")
 binary=$(sed -n '1p' "$binaries")
 chmod 700 "$binary"
 
-version=$($binary --version)
+version=$("$binary" --version)
+version=${version%$'\r'}
 [[ "$version" == ma2a\ * ]] || { printf 'unexpected version output: %s\n' "$version" >&2; exit 1; }
 
 "$binary" --state-dir "$state_dir" start >/dev/null
-status=$($binary --state-dir "$state_dir" status --json)
+status=$("$binary" --state-dir "$state_dir" status --json)
 jq -e '.result.payload.endpoint.online == true and .result.payload.spaces == []' <<<"$status" >/dev/null
 
 smoke_credential="ma2a-release-smoke-password"
 printf '%s\n%s\n' "$smoke_credential" "$smoke_credential" |
   MA2A_PASSWORD_STDIN=1 "$binary" --state-dir "$state_dir" ui init >/dev/null
 
-created=$($binary --state-dir "$state_dir" space create release-smoke --json)
+created=$("$binary" --state-dir "$state_dir" space create release-smoke --json)
 jq -e '.result.payload.space_id | type == "string"' <<<"$created" >/dev/null
 
-url=$($binary --state-dir "$state_dir" ui start --json | jq -er .url)
+url=$("$binary" --state-dir "$state_dir" ui start --json | jq -er .url)
+url=${url%$'\r'}
 [[ "$url" == http://127.0.0.1:* ]] || { printf 'unexpected Web URL: %s\n' "$url" >&2; exit 1; }
 
 same_origin_headers=(--header "Origin: $url" --header "Sec-Fetch-Site: same-origin")
@@ -119,6 +128,7 @@ while [[ ${#asset_queue[@]} -gt 0 ]]; do
     *.js) ./scripts/extract-runtime-references.pl js "$local_asset" > "$references" ;;
   esac
   while IFS=$'\t' read -r reference_kind reference; do
+    reference=${reference%$'\r'}
     reference=${reference%%#*}
     reference=${reference%%\?*}
     [[ -n "$reference" ]] || continue
@@ -164,14 +174,14 @@ printf 'GET /api/v1/snapshot %s\n' "$status" >> "$request_log"
 jq -n --arg password "not-the-release-smoke-password" '{password: $password}' > "$wrong_login_body"
 status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
   "${same_origin_headers[@]}" --header 'Content-Type: application/json' \
-  --data-binary "@$wrong_login_body" "$url/api/v1/web/auth/login")
+  --data-binary @- "$url/api/v1/web/auth/login" < "$wrong_login_body")
 printf 'POST /api/v1/web/auth/login %s\n' "$status" >> "$request_log"
 [[ "$status" == 401 ]] || { printf 'invalid login returned HTTP %s\n' "$status" >&2; exit 1; }
 
 jq -n --arg password "$smoke_credential" '{password: $password}' > "$login_body"
 status=$(curl --silent --show-error --output "$login_response" --write-out '%{http_code}' \
   "${same_origin_headers[@]}" --header 'Content-Type: application/json' \
-  --cookie-jar "$cookie_jar" --data-binary "@$login_body" "$url/api/v1/web/auth/login")
+  --cookie-jar "$cookie_jar" --data-binary @- "$url/api/v1/web/auth/login" < "$login_body")
 printf 'POST /api/v1/web/auth/login %s\n' "$status" >> "$request_log"
 [[ "$status" == 200 ]] || { printf 'authenticated login returned HTTP %s\n' "$status" >&2; exit 1; }
 jq -e '.csrf_token | select(test("^[0-9a-f]{64}$"))' "$login_response" >/dev/null
@@ -196,7 +206,7 @@ status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}
 printf 'GET /api/v1/snapshot %s\n' "$status" >> "$request_log"
 [[ "$status" == 401 ]] || { printf 'logged-out snapshot returned HTTP %s\n' "$status" >&2; exit 1; }
 
-$binary --state-dir "$state_dir" stop >/dev/null
+"$binary" --state-dir "$state_dir" stop >/dev/null
 binary=
 while IFS= read -r request; do
   printf 'smoke request: %s\n' "$request"

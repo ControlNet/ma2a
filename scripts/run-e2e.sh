@@ -81,19 +81,24 @@ mkdir -p "$output"
 # nextest writes the JUnit report to one fixed place under the target directory, which may
 # be set elsewhere, so it is read from Cargo. Runs sharing that directory take turns from
 # removing the report to copying it, so each run copies its own.
-target=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+metadata_json=$(cargo metadata --locked --format-version 1 --no-deps)
+target=$(printf '%s\n' "$metadata_json" | jq -er '.target_directory' | tr -d '\r')
 junit="$target/nextest/ci/junit.xml"
 lock="$target/ma2a-e2e-junit.lock"
 held=false
 release() { if [ "$held" = true ]; then rmdir "$lock" 2>/dev/null || true; held=false; fi; }
 trap release EXIT
-trap 'release; exit 130' INT TERM
+trap 'release; exit 130' INT; trap 'release; exit 143' TERM; trap 'release; exit 129' HUP
 acquire() {
   mkdir -p "$target"
   waited=0
   until mkdir "$lock" 2>/dev/null; do
     if [ "$waited" -eq 30 ]; then
       printf 'waiting for %s; remove it if no other E2E run is active\n' "$lock" >&2
+    fi
+    if [ "$waited" -ge 600 ]; then
+      printf 'timed out waiting for %s\n' "$lock" >&2
+      exit 1
     fi
     waited=$((waited + 1))
     sleep 1
@@ -102,7 +107,8 @@ acquire() {
 }
 commit=$(GIT_MASTER=1 git rev-parse HEAD)
 rustc_version=$(rustc --version)
-nextest_version=$(cargo nextest --version | sed -n '1p')
+nextest_raw=$(cargo nextest --version)
+nextest_version=$(printf '%s\n' "$nextest_raw" | sed -n '1p')
 # The authoritative inventory: every test nextest would run in this binary. An
 # ignored test is refused outright, because nextest does not run it and would
 # report the remainder as a clean pass.
@@ -113,7 +119,7 @@ jq -e -r '
   if ($cases | length) == 0 then error("nextest listed no E2E tests")
   elif any($cases[]; .value.ignored) then error("an E2E test is ignored")
   else $cases[].key end
-' "$output/inventory.json" > "$inventory.unsorted"
+' "$output/inventory.json" | tr -d '\r' > "$inventory.unsorted"
 LC_ALL=C sort "$inventory.unsorted" > "$inventory"
 rm -f "$inventory.unsorted"
 test -z "$(uniq -d "$inventory")" || { printf 'duplicate E2E test names\n' >&2; exit 1; }
@@ -131,9 +137,17 @@ while [ "$run" -le "$runs" ]; do
   printf 'run=%s command=cargo nextest run -p ma2a-app --test e2e --profile ci --success-output final --no-output-indent --color never\n' "$run" >> "$output/summary.txt"
   acquire
   rm -f "$junit"
+  set +e
   cargo nextest run -p ma2a-app --test e2e --profile ci --success-output final --no-output-indent --color never > "$log" 2>&1
-  cp "$junit" "$report"
+  nextest_status=$?
+  set -e
+  if [ -f "$junit" ]; then
+    cp "$junit" "$report"
+  fi
   release
+  if [ "$nextest_status" -ne 0 ]; then
+    exit "$nextest_status"
+  fi
   grep -E '^\{' "$log" > "$evidence"
   root="$(sed -n '2p' "$report")"
   case "$root" in
@@ -223,9 +237,12 @@ while [ "$run" -le "$runs" ]; do
         .accepted == false
       else false end)
   ' --argjson expected "$expected_records" "$evidence" >/dev/null
-  records=$(wc -l < "$evidence")
-  sha256sum "$log" "$report" "$evidence" > "$output/run-$run.sha256"
-  sha256sum -c "$output/run-$run.sha256" >/dev/null
+  records=$(wc -l < "$evidence" | tr -d ' ')
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$log" "$report" "$evidence" > "$output/run-$run.sha256" && sha256sum -c "$output/run-$run.sha256" >/dev/null
+  else
+    shasum -a 256 "$log" "$report" "$evidence" > "$output/run-$run.sha256" && shasum -a 256 -c "$output/run-$run.sha256" >/dev/null
+  fi
   printf 'run=%s exit=0 tests=%s records=%s junit=%s evidence=%s\n' \
     "$run" "$expected_tests" "$records" "$report" "$evidence" >> "$output/summary.txt"
   run=$((run + 1))

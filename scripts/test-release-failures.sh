@@ -13,13 +13,21 @@ report=$4
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 ./scripts/test-runtime-references.sh >/dev/null
 
-if ! grep -Fqx 'url=$($binary --state-dir "$state_dir" ui start --json | jq -er .url)' ./scripts/smoke-release.sh; then
+if ! grep -Fqx 'url=$("$binary" --state-dir "$state_dir" ui start --json | jq -er .url)' ./scripts/smoke-release.sh; then
   printf 'release smoke must use the canonical ui start command\n' >&2
   exit 1
 fi
-if grep -Fq 'url=$($binary --state-dir "$state_dir" web)' ./scripts/smoke-release.sh; then
+if grep -Fq 'ui web' ./scripts/smoke-release.sh || grep -Fq 'state_dir" web' ./scripts/smoke-release.sh; then
   printf 'release smoke still invokes the removed web command\n' >&2
   exit 1
 fi
@@ -39,7 +47,7 @@ prefix=$(find "$temporary/extracted" -mindepth 1 -maxdepth 1 -type d -print -qui
 rm "$prefix/quickstart.md"
 missing="$temporary/missing-asset.tar.xz"
 tar -cJf "$missing" -C "$temporary/extracted" "$(basename "$prefix")"
-printf '%s *%s\n' "$(sha256sum "$missing" | awk '{print $1}')" "$(basename "$missing")" > "${missing}.sha256"
+printf '%s *%s\n' "$(hash_file "$missing")" "$(basename "$missing")" > "${missing}.sha256"
 if ./scripts/validate-release.sh "$missing" "$target" >/dev/null 2>&1; then
   printf 'archive without quickstart unexpectedly passed validation\n' >&2
   exit 1
@@ -57,7 +65,7 @@ reference_count=$(perl -0777 -ne '$count = () = m{/favicon\.svg}g; print $count'
 perl -0777 -pi -e 's{/favicon\.svg}{//bad.test/x}' "$external_binary"
 external="$temporary/external-reference.tar.xz"
 tar -cJf "$external" -C "$temporary/external-extracted" "$(basename "$external_prefix")"
-printf '%s *%s\n' "$(sha256sum "$external" | awk '{print $1}')" "$(basename "$external")" > "${external}.sha256"
+printf '%s *%s\n' "$(hash_file "$external")" "$(basename "$external")" > "${external}.sha256"
 ./scripts/validate-release.sh "$external" "$target" >/dev/null
 if ./scripts/smoke-release.sh "$external" "$target" >/dev/null 2>&1; then
   printf 'archive with an external runtime asset reference unexpectedly passed smoke\n' >&2
@@ -93,6 +101,57 @@ cp "$archive" "$rebuilt"
 printf 'rebuilt' >> "$rebuilt"
 if ./scripts/validate-release-metadata.sh "$rebuilt" "$sbom" "$report" >/dev/null 2>&1; then
   printf 'SBOM of another build with the same name unexpectedly passed validation\n' >&2
+  exit 1
+fi
+
+# Windows cargo-dist .zip archives place files directly at the archive root; verify flat layout
+# passes while mixed, stray-dir, or incomplete .zip archives are still rejected.
+if command -v python3 >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
+  win_flat="$temporary/ma2a-app-x86_64-pc-windows-msvc.zip"
+  win_mixed="$temporary/mixed-x86_64-pc-windows-msvc.zip"
+  win_empty_dir="$temporary/empty-dir-x86_64-pc-windows-msvc.zip"
+  win_incomplete="$temporary/incomplete-x86_64-pc-windows-msvc.zip"
+  python3 - "$win_flat" "$win_mixed" "$win_empty_dir" "$win_incomplete" <<'PY'
+import sys, zipfile
+files = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "README.md", "ma2a.exe", "quickstart.md")
+with zipfile.ZipFile(sys.argv[1], "w") as zf:
+    for name in files:
+        zf.writestr(name, "x")
+with zipfile.ZipFile(sys.argv[2], "w") as zf:
+    for name in files:
+        zf.writestr(name, "x")
+    zf.writestr("extra/stray.txt", "x")
+with zipfile.ZipFile(sys.argv[3], "w") as zf:
+    for name in files:
+        zf.writestr(name, "x")
+    zf.writestr("stray/", "")
+with zipfile.ZipFile(sys.argv[4], "w") as zf:
+    for name in files[:-1]:
+        zf.writestr(name, "x")
+PY
+  for z in "$win_flat" "$win_mixed" "$win_empty_dir" "$win_incomplete"; do
+    printf '%s *%s\n' "$(hash_file "$z")" "$(basename "$z")" > "${z}.sha256"
+  done
+  ./scripts/validate-release.sh "$win_flat" x86_64-pc-windows-msvc >/dev/null
+  for bad in "$win_mixed" "$win_empty_dir" "$win_incomplete"; do
+    if ./scripts/validate-release.sh "$bad" x86_64-pc-windows-msvc >/dev/null 2>&1; then
+      printf 'invalid Windows zip unexpectedly passed validation: %s\n' "$bad" >&2
+      exit 1
+    fi
+  done
+fi
+
+# Prefix matching must be literal, never a regex where '.' matches arbitrary characters.
+mkdir -p "$temporary/dot-prefix/ma2a-0.1.0" "$temporary/dot-prefix/ma2a-0X1X0"
+for name in LICENSE-APACHE LICENSE-MIT NOTICE README.md quickstart.md; do
+  printf 'x' > "$temporary/dot-prefix/ma2a-0.1.0/$name"
+done
+printf 'x' > "$temporary/dot-prefix/ma2a-0X1X0/ma2a"
+dot_bad="$temporary/dot-prefix.tar.xz"
+tar -cJf "$dot_bad" -C "$temporary/dot-prefix" ma2a-0.1.0 ma2a-0X1X0
+printf '%s *%s\n' "$(hash_file "$dot_bad")" "$(basename "$dot_bad")" > "${dot_bad}.sha256"
+if ./scripts/validate-release.sh "$dot_bad" "$target" >/dev/null 2>&1; then
+  printf 'multi-directory archive with dot-matching prefix unexpectedly passed validation\n' >&2
   exit 1
 fi
 

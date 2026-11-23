@@ -12,6 +12,9 @@ report=$3
 
 jq -e '
   .spdxVersion == "SPDX-2.3" and
+  (.creationInfo.created | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+  (.documentDescribes | type == "array" and length == 1) and
+  (.packages | all(.licenseDeclared | type == "string" and (contains("/") | not))) and
   (.packages | any(.name == "ma2a-app")) and
   (.packages | any(.name == "xtask") | not) and
   (.packages | any(.name == "serde")) and
@@ -28,7 +31,7 @@ jq -e '
   (.frontend.MIT | any(.name == "react"))
 ' "$report" >/dev/null
 
-[[ "$(jq -r '.name' "$sbom")" == "$(basename "$archive")" ]] || {
+jq -e --arg expected "$(basename "$archive")" '.name == $expected' "$sbom" >/dev/null || {
   printf 'SBOM name does not bind the archive filename\n' >&2
   exit 1
 }
@@ -40,7 +43,8 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
   digest=$(shasum -a 256 "$archive" | awk '{print $1}')
 fi
-[[ "$(jq -r '.documentNamespace' "$sbom")" == "https://github.com/ControlNet/ma2a/releases/sha256/$digest" ]] || {
+jq -e --arg expected "https://github.com/ControlNet/ma2a/releases/sha256/$digest" \
+  '.documentNamespace == $expected' "$sbom" >/dev/null || {
   printf 'SBOM namespace does not bind the archive content\n' >&2
   exit 1
 }

@@ -11,7 +11,7 @@ target=$2
 checksum_file="${archive}.sha256"
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
-raw_entries="$temporary/raw-entries"
+all_entries="$temporary/all-entries"
 entries="$temporary/entries"
 expected="$temporary/expected"
 
@@ -22,12 +22,12 @@ case "$target" in
   *-pc-windows-msvc)
     [[ "$archive" == *.zip ]] || { printf 'Windows target requires .zip archive\n' >&2; exit 1; }
     binary=ma2a.exe
-    unzip -Z1 "$archive" | sed '/\/$/d' > "$raw_entries"
+    unzip -Z1 "$archive" | tr -d '\r' > "$all_entries"
     ;;
   *-apple-darwin|*-unknown-linux-gnu)
     [[ "$archive" == *.tar.xz ]] || { printf 'Unix target requires .tar.xz archive\n' >&2; exit 1; }
     binary=ma2a
-    tar -tJf "$archive" | sed '/\/$/d' > "$raw_entries"
+    tar -tJf "$archive" | tr -d '\r' > "$all_entries"
     ;;
   *)
     printf 'unknown release target: %s\n' "$target" >&2
@@ -35,13 +35,37 @@ case "$target" in
     ;;
 esac
 
-prefix=$(sed -n '1s#/.*##p' "$raw_entries")
-[[ -n "$prefix" ]] || { printf 'archive has no top-level directory\n' >&2; exit 1; }
-sed -n "s#^${prefix}/##p" "$raw_entries" | sort > "$entries"
-[[ "$(wc -l < "$entries")" -eq "$(wc -l < "$raw_entries")" ]] || {
-  printf 'archive contains entries outside its single top-level directory\n' >&2
-  exit 1
+strip_single_prefix() {
+  local prefix
+  prefix=$(awk -F/ 'NF >= 2 { print $1; exit }' "$all_entries")
+  if [[ -z "$prefix" || "$prefix" == "." || "$prefix" == ".." ]]; then
+    printf 'archive has no valid single top-level directory\n' >&2
+    exit 1
+  fi
+  if ! awk -v p="${prefix}/" 'index($0, p) != 1 { exit 1 }' "$all_entries"; then
+    printf 'archive contains entries outside its single top-level directory\n' >&2
+    exit 1
+  fi
+  awk -v p="${prefix}/" '
+    {
+      rel = substr($0, length(p) + 1)
+      if (rel != "" && substr(rel, length(rel), 1) != "/") print rel
+    }
+  ' "$all_entries" | sort > "$entries"
 }
+
+case "$target" in
+  *-pc-windows-msvc)
+    if ! grep -q '/' "$all_entries"; then
+      sort "$all_entries" > "$entries"
+    else
+      strip_single_prefix
+    fi
+    ;;
+  *)
+    strip_single_prefix
+    ;;
+esac
 
 printf '%s\n' LICENSE-APACHE LICENSE-MIT NOTICE README.md "$binary" quickstart.md | sort > "$expected"
 if ! cmp -s "$expected" "$entries"; then
@@ -52,13 +76,13 @@ if ! cmp -s "$expected" "$entries"; then
   exit 1
 fi
 
-checksum_name=$(awk 'NF >= 2 {print $2}' "$checksum_file" | sed 's/^\*//')
+checksum_name=$(tr -d '\r' < "$checksum_file" | awk 'NF >= 2 { sub(/^[^[:space:]]+[[:space:]]+\*?/, ""); print; exit }')
 [[ "$checksum_name" == "$(basename "$archive")" ]] || {
   printf 'checksum sidecar names %s instead of %s\n' "$checksum_name" "$(basename "$archive")" >&2
   exit 1
 }
 
-expected_digest=$(awk 'NF >= 2 {print $1; exit}' "$checksum_file")
+expected_digest=$(tr -d '\r' < "$checksum_file" | awk 'NF >= 2 {print $1; exit}')
 if command -v sha256sum >/dev/null 2>&1; then
   observed_digest=$(sha256sum "$archive" | awk '{print $1}')
 else

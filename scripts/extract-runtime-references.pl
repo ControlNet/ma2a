@@ -9,6 +9,7 @@ open my $handle, '<:raw', $path or die "open $path: $!\n";
 local $/;
 my $source = <$handle>;
 close $handle or die "close $path: $!\n";
+binmode STDOUT;
 
 sub emit {
     my ($reference_kind, $reference) = @_;
@@ -17,21 +18,22 @@ sub emit {
 }
 
 if ($kind eq 'html' || $kind eq 'svg') {
-    while ($source =~ /(?:src|href|poster|data)\s*=\s*(["'])([^"']*)\1/gis) {
-        emit('asset', $2);
+    while ($source =~ /(?:src|href|poster|data)\s*=\s*(?:"([^"]*)"|'([^']*)')/gis) {
+        emit('asset', defined $1 ? $1 : $2);
     }
-    while ($source =~ /srcset\s*=\s*(["'])([^"']*)\1/gis) {
-        for my $candidate (split /,/, $2) {
+    while ($source =~ /srcset\s*=\s*(?:"([^"]*)"|'([^']*)')/gis) {
+        my $value = defined $1 ? $1 : $2;
+        for my $candidate (split /,/, $value) {
             my ($reference) = $candidate =~ /^\s*(\S+)/;
             emit('asset', $reference) if defined $reference;
         }
     }
 } elsif ($kind eq 'css') {
-    while ($source =~ /url\(\s*(["']?)([^"']*)\1\s*\)/gis) {
-        emit('asset', $2);
+    while ($source =~ /url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s]+))\s*\)/gis) {
+        emit('asset', defined $1 ? $1 : defined $2 ? $2 : $3);
     }
-    while ($source =~ /\@import\s+(["'])([^"']*)\1/gis) {
-        emit('asset', $2);
+    while ($source =~ /\@import\s+(?:"([^"]*)"|'([^']*)')/gis) {
+        emit('asset', defined $1 ? $1 : $2);
     }
 } elsif ($kind eq 'js') {
     while ($source =~ /(?:import\s*\(|from\s+|import\s+)(["'`])([^"'`]*)\1/gs) {

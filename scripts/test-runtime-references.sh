@@ -11,6 +11,8 @@ HTML
 cat > "$temporary/app.css" <<'CSS'
 @import "/theme.css";
 body { background: url(//cdn.invalid/background.png); }
+a{background:url(data:image/gif;base64,AA==)}b{background:url(https://evil.invalid/track.png)}
+c{background:url("https://evil.invalid/a'b.png")}
 CSS
 cat > "$temporary/app.js" <<'JS'
 import "/module.js";
@@ -33,6 +35,8 @@ javascript=$(./scripts/extract-runtime-references.pl js "$temporary/app.js")
 grep -F $'asset\t/app.js' <<<"$html" >/dev/null
 grep -F $'asset\thttps://cdn.invalid/large.png' <<<"$html" >/dev/null
 grep -F $'asset\t//cdn.invalid/background.png' <<<"$css" >/dev/null
+grep -F $'asset\thttps://evil.invalid/track.png' <<<"$css" >/dev/null
+grep -F $'asset\thttps://evil.invalid/a\'b.png' <<<"$css" >/dev/null
 grep -F $'asset\t/module.js' <<<"$javascript" >/dev/null
 grep -F $'asset\t/worker.js' <<<"$javascript" >/dev/null
 for reference in \
