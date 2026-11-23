@@ -21,7 +21,7 @@ The closed Phase 1 operation mapping is:
 | `ma2a/control/1` | control synchronization | caller and target are current members |
 | `ma2a/metadata/1` | metadata read | caller and target are current members |
 | `ma2a/address/1` | signed address-record exchange | caller and target are current members |
-| `ma2a/relay/1` | relay advertisement | caller and target are current members, and the caller has relay-provider capability enabled by policy |
+| `ma2a/relay/1` | relay advertisement | caller and target are current members, and private relay providers are enabled by Space policy |
 
 Unknown or future ALPNs and unsupported operations deny by construction.
 

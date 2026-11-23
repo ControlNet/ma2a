@@ -12,6 +12,12 @@ and Sigstore attestation bundles from the GitHub release. From the directory con
 sha256sum --check ma2a-app-x86_64-unknown-linux-gnu.tar.xz.sha256
 gh attestation verify ma2a-app-x86_64-unknown-linux-gnu.tar.xz \
   --repo ControlNet/ma2a \
+  --bundle ma2a-app-x86_64-unknown-linux-gnu.tar.xz.provenance.sigstore.json \
+  --signer-workflow ControlNet/ma2a/.github/workflows/release.yml
+gh attestation verify ma2a-app-x86_64-unknown-linux-gnu.tar.xz \
+  --repo ControlNet/ma2a \
+  --bundle ma2a-app-x86_64-unknown-linux-gnu.tar.xz.sbom.sigstore.json \
+  --predicate-type https://spdx.dev/Document/v2.3 \
   --signer-workflow ControlNet/ma2a/.github/workflows/release.yml
 ```
 

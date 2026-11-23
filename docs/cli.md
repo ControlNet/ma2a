@@ -187,11 +187,11 @@ serves anything, and grants and exposures from different Spaces never combine.
 
 ```sh
 ma2a space grant SPACE_REF ENDPOINT_ID [--files-read] [--files-write] [--exec] [--shell] \
-  [--proxy] [--process] [--agent] [--service]
-ma2a service expose SPACE_REF files|exec|shell|process|agent|service|proxy ...
-ma2a service unexpose SPACE_REF files|exec|shell|process|agent|service|proxy ...
-ma2a service list
-ma2a ops
+  [--proxy] [--process] [--agent] [--service] [--json]
+ma2a service expose files|exec|shell|process|agent|service|proxy SPACE_REF ... [--json]
+ma2a service unexpose files|exec|shell|process|agent|service|proxy SPACE_REF ... [--json]
+ma2a service list [--json]
+ma2a ops [--json]
 ```
 
 `space grant` sets exactly the listed bits and clears every bit it does not list, so repeat the

@@ -41,10 +41,10 @@ on restart until the new process observes current state.
 - **The service SDK builds the Runtime.** `ma2a-service` uses the IPC client and local API types
   of `ma2a-runtime`, so a third-party service compiles the Runtime's dependency graph. A smaller
   shared client crate would remove that coupling; it is not split out yet.
-- **Local commands are serialized.** Every local API command except the handshake and the
-  Web UI lifecycle runs under one Runtime-wide replay lock, reads included. A slow local mutation
-  delays other local commands; it never changes their outcome. Stream and hosted-service upgrades
-  do not take the lock.
+- **Local mutations are serialized.** Every durable local API mutation (commands carrying a
+  `RequestId`) runs under one Runtime-wide replay lock so retries replay deterministically.
+  Read-only queries, handshakes, UI lifecycle, and stream/hosted-service upgrades do not take
+  the lock.
 - **Control synchronization needs a fresh address.** A peer is dialed for control only through a
   signed address record that is still valid, which lasts at most ten minutes. When two members of
   a Space are both offline past that window and no other member passes either a newer record,

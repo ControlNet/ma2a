@@ -77,7 +77,7 @@ never make any Runtime serve anything by themselves.
   request ID, the peer, the service, a content-free operation name, and a direction. They never
   carry paths, argv, environment, or content. This state is in memory only.
 
-These commands are local IPC operations. The HTTP layer routes only four reads, all for the
+These commands are local IPC operations. The HTTP layer routes only five reads, all for the
 Web console's Services view. Each needs an authenticated session:
 
 - `GET /api/v1/services` returns the `service_exposures` payload.
@@ -87,6 +87,7 @@ Web console's Services view. Each needs an authenticated session:
   `agent_list` and of `agent_task_list`. Each Agent keeps only `agent`, `description`, `tools`,
   `max_tasks`, `enabled`, `generation`, `live_tasks`, and `instance`, never its program,
   arguments, working directory, or environment names. Tasks are the content-free summaries.
+- `GET /api/v1/hosted-services` returns the first `hosted_services` page of `service_hosted_list`.
 
 Grants and consent
 (`space_grant`, `service_expose`, `service_unexpose`) are never routed over HTTP, so a browser
@@ -272,7 +273,9 @@ Errors:
 ### Hosted services (Phase 5)
 
 These commands let the operator of a Runtime host third-party services (`docs/protocol/service-v1.md`).
-They are local IPC operations only; another Endpoint's services are discovered and called through
+Only the first `service_hosted_list` page is routed over HTTP, read-only, as
+`GET /api/v1/hosted-services`; registration, lifecycle, and process upgrades are local IPC
+operations only. Another Endpoint's services are discovered and called through
 `stream_open` with service `service`.
 
 Registrations:

@@ -48,7 +48,9 @@ CBOR byte string, not embedded as a nested CBOR value.
 
 The initial member record is `{0: endpoint_id, 1: label, 2: capability_bits}`. The policy is
 `{0: echo_enabled, 1: private_relay_provider_enabled, 2: maximum_members}`. Capability bit `0`
-grants Echo and bit `1` grants private-relay-provider service.
+grants Echo; bit `1` is carried as `relay_provider` in the signed member record, while
+private-relay provider authorization in Phase 1 checks current Space membership together with
+`policy.private_relay_provider_enabled`.
 
 A member label names an Endpoint inside the Space and is a different signed fact from the Space
 name in key `6`; neither is ever written in place of the other, so a Space never appears in a
