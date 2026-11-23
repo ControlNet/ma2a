@@ -75,7 +75,7 @@ pub(crate) async fn serve(
         path: claim.path(),
         token: &token,
     };
-    let ready = json!({"url": origin, "token_file": token_file.display().to_string()});
+    let ready = json!({"url": origin, "token_file": claim.path().display().to_string()});
     writeln!(io::stdout().lock(), "{ready}")?;
     let shared = http::Shared {
         backend: backend::Backend {

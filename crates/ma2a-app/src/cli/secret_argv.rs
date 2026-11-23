@@ -11,40 +11,23 @@ pub(super) fn reject_secret_argv(arguments: &[OsString]) -> Result<(), clap::Err
     let password_secret = values
         .iter()
         .any(|value| value == "--password" || value.starts_with("--password="));
-    // An invitation is bearer material wherever it appears, including as the
-    // operand of a command that has no invitation parameter at all.
-    let invite_ticket = values
-        .iter()
-        .any(|value| value.trim().starts_with(INVITE_TICKET_PREFIX));
-    let accept_index = command_tail_index(&values, ["space", "accept"]);
-    let unsupported_accept_value = accept_index.is_some_and(|index| {
-        values
-            .get(index..)
-            .is_some_and(state_dir_tail_has_unknown_value)
+    // An invitation is bearer material wherever it appears, including as an inline `--flag=` value.
+    let invite_ticket = values.iter().any(|value| {
+        let trimmed = value.trim();
+        trimmed.starts_with(INVITE_TICKET_PREFIX)
+            || trimmed
+                .split_once('=')
+                .is_some_and(|(_, rhs)| rhs.trim().starts_with(INVITE_TICKET_PREFIX))
     });
-    let password_index = values
-        .windows(3)
-        .position(|window| {
-            matches!(
-                window,
-                [ui, password, action]
-                    if ui == "ui"
-                        && password == "password"
-                        && matches!(action.as_ref(), "set" | "reset")
-            )
-        })
-        .map(|index| index + 3)
-        .or_else(|| {
-            values
-                .windows(2)
-                .position(|window| window == ["ui", "init"])
-                .map(|index| index + 2)
-        });
-    let unsupported_password_value = password_index.is_some_and(|index| {
-        values
-            .get(index..)
-            .is_some_and(state_dir_tail_has_unknown_value)
-    });
+    let stripped = strip_state_dir(&values);
+    let accept_index = command_tail_index(&stripped, ["space", "accept"]);
+    let unsupported_accept_value =
+        accept_index.is_some_and(|index| stripped.get(index..).is_some_and(tail_has_unknown_value));
+    let password_index = command_tail_index(&stripped, ["ui", "password", "set"])
+        .or_else(|| command_tail_index(&stripped, ["ui", "password", "reset"]))
+        .or_else(|| command_tail_index(&stripped, ["ui", "init"]));
+    let unsupported_password_value = password_index
+        .is_some_and(|index| stripped.get(index..).is_some_and(tail_has_unknown_value));
     if password_secret || invite_ticket || unsupported_password_value || unsupported_accept_value {
         Err(clap::Error::raw(
             clap::error::ErrorKind::InvalidValue,
@@ -55,34 +38,115 @@ pub(super) fn reject_secret_argv(arguments: &[OsString]) -> Result<(), clap::Err
     }
 }
 
+/// Removes valid global `--state-dir` options before `--` so subcommands cannot be split.
+fn strip_state_dir<'a>(values: &[Cow<'a, str>]) -> Vec<Cow<'a, str>> {
+    let mut kept = Vec::with_capacity(values.len());
+    let mut iter = values.iter();
+    while let Some(value) = iter.next() {
+        if value == "--" {
+            kept.push(value.clone());
+            kept.extend(iter.cloned());
+            break;
+        }
+        if value == "--state-dir" {
+            if let Some(operand) = iter.next() {
+                if operand.starts_with('-') {
+                    kept.push(value.clone());
+                    kept.push(operand.clone());
+                }
+            } else {
+                kept.push(value.clone());
+            }
+        } else if value
+            .strip_prefix("--state-dir=")
+            .is_some_and(|path| !path.is_empty())
+        {
+        } else {
+            kept.push(value.clone());
+        }
+    }
+    kept
+}
+
+/// Anchors subcommand matching to index 0 (argv[0] is not present in `Cli::parse_safe`) so
+/// passthrough commands after `exec --` or `process start --` are never misclassified.
 fn command_tail_index<const N: usize>(
     values: &[Cow<'_, str>],
     command: [&str; N],
 ) -> Option<usize> {
     values
-        .windows(command.len())
-        .position(|window| window == command)
-        .map(|index| index + command.len())
+        .get(..command.len())
+        .is_some_and(|prefix| prefix.iter().map(AsRef::as_ref).eq(command))
+        .then_some(command.len())
 }
 
-/// Accepts only informational flags and the global state directory after a
-/// command whose remaining operands could only ever be secret material.
-fn state_dir_tail_has_unknown_value(values: &[Cow<'_, str>]) -> bool {
-    let mut values = values.iter();
-    while let Some(value) = values.next() {
-        match value.as_ref() {
-            "--help" | "-h" | "--version" | "-V" => {}
-            "--state-dir" => {
-                if values.next().is_none_or(|operand| operand.starts_with('-')) {
-                    return true;
-                }
-            }
-            value
-                if value
-                    .strip_prefix("--state-dir=")
-                    .is_some_and(|path| !path.is_empty()) => {}
-            _ => return true,
-        }
+/// Accepts only informational flags after a command whose remaining operands could only be secrets.
+fn tail_has_unknown_value(values: &[Cow<'_, str>]) -> bool {
+    values
+        .iter()
+        .any(|value| !matches!(value.as_ref(), "--help" | "-h" | "--version" | "-V"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::reject_secret_argv;
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
     }
-    false
+
+    #[test]
+    fn rejects_secrets_even_when_global_state_dir_splits_subcommands_or_uses_inline_flag() {
+        assert!(
+            reject_secret_argv(&args(&[
+                "ui",
+                "--state-dir",
+                "/tmp/s",
+                "init",
+                "SecretPass!"
+            ]))
+            .is_err()
+        );
+        assert!(
+            reject_secret_argv(&args(&[
+                "space",
+                "--state-dir=/tmp/s",
+                "accept",
+                "raw-ticket"
+            ]))
+            .is_err()
+        );
+        assert!(reject_secret_argv(&args(&["echo", "--text=ma2ainvite1abcdef"])).is_err());
+        assert!(reject_secret_argv(&args(&["ui", "--state-dir", "/tmp/s", "init"])).is_ok());
+        assert!(
+            reject_secret_argv(&args(&[
+                "exec",
+                "--endpoint",
+                "peer",
+                "--",
+                "tool",
+                "ui",
+                "init",
+                "--port",
+                "80"
+            ]))
+            .is_ok()
+        );
+        assert!(
+            reject_secret_argv(&args(&[
+                "process",
+                "start",
+                "--endpoint",
+                "peer",
+                "--",
+                "cli",
+                "space",
+                "accept",
+                "foo"
+            ]))
+            .is_ok()
+        );
+    }
 }

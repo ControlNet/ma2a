@@ -129,13 +129,17 @@ fn write_snapshot(payload: &Value) -> io::Result<()> {
         .unwrap_or_default();
     writeln!(io::stdout().lock(), "Endpoint: {endpoint}")?;
     writeln!(io::stdout().lock(), "Revision: {revision}")?;
+    let relay_candidates = payload
+        .get("private_relay_candidates")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len)
+        + payload
+            .get("public_relay_fallbacks")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
     writeln!(
         io::stdout().lock(),
-        "Configured relay candidates: {}",
-        payload
-            .get("relay_candidates")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len)
+        "Configured relay candidates: {relay_candidates}"
     )?;
     writeln!(
         io::stdout().lock(),
