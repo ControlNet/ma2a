@@ -82,12 +82,14 @@ impl Call<'_> {
 
     pub(super) async fn transfer_get(&self, args: TransferGet) -> Outcome {
         let resource = TransferResource::File(remote(&args.root, &args.path)?);
-        let target = destination(&self.workspace, &args.to)?;
+        let _target = destination(&self.workspace, &args.to)?;
         let request = TransferRequest::Get(resource, 0, None);
         let (reader, _writer) = self
             .open_read(&args.endpoint, OpenBody::Transfer(request))
             .await?;
-        ok(&transferred(download(reader, &target).await?))
+        ok(&transferred(
+            download(reader, (&self.workspace, &args.to)).await?,
+        ))
     }
 
     pub(super) async fn transfer_put(&self, args: TransferPut) -> Outcome {
@@ -131,17 +133,27 @@ impl Call<'_> {
 /// verified; a concurrent download to the same target is refused.
 pub(super) async fn download<R: AsyncRead + Unpin>(
     mut reader: FrameReader<R>,
-    target: &Path,
+    (workspace, relative): (&Path, &str),
 ) -> Result<TransferResult, ToolError> {
-    client::transfer::download_accepted(&mut reader)
+    let identity = client::transfer::download_accepted(&mut reader)
         .await
         .map_err(|error| failed(&error))?;
-    let mut partial = Partial::open(target, "agent tool download", false)
+    // Re-validate immediately before opening the partial file so a directory component swapped
+    // into a symlink during the remote handshake cannot escape the workspace.
+    let target = destination(workspace, relative)?;
+    let mut partial = Partial::open(&target, "agent tool download", false)
         .await
         .map_err(|error| local(&error))?;
+    if let Err(error) = partial.begin(identity).await {
+        let _discarded = partial.discard().await;
+        return Err(local(&error));
+    }
     match client::transfer::download_content(&mut reader, partial.sink()).await {
         Ok(result) => {
-            partial.finish(true).await.map_err(|error| local(&error))?;
+            partial
+                .finish_or_discard(true)
+                .await
+                .map_err(|error| local(&error))?;
             Ok(result)
         }
         Err(error) => {

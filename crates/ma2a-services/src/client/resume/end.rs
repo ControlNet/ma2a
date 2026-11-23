@@ -20,9 +20,33 @@ impl Partial {
     /// # Errors
     /// Returns [`io::ErrorKind::AlreadyExists`] when the destination exists and `replace` is
     /// false (the partial file is kept), or another local file error.
-    pub async fn finish(mut self, replace: bool) -> io::Result<()> {
-        self.file.flush().await?;
-        self.file.sync_all().await?;
+    pub async fn finish(self, replace: bool) -> io::Result<()> {
+        self.finish_inner(replace, false).await
+    }
+
+    /// Publishes the verified partial file as the destination, discarding all helper files if
+    /// publishing fails (for callers that do not support `--resume`).
+    ///
+    /// # Errors
+    /// Returns [`io::ErrorKind::AlreadyExists`] when the destination exists and `replace` is
+    /// false, or another local file error.
+    pub async fn finish_or_discard(self, replace: bool) -> io::Result<()> {
+        self.finish_inner(replace, true).await
+    }
+
+    async fn finish_inner(mut self, replace: bool, discard_on_error: bool) -> io::Result<()> {
+        if let Err(error) = self.file.flush().await {
+            if discard_on_error {
+                let _discarded = self.discard().await;
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.file.sync_all().await {
+            if discard_on_error {
+                let _discarded = self.discard().await;
+            }
+            return Err(error);
+        }
         let Self {
             name,
             helpers,
@@ -35,38 +59,11 @@ impl Partial {
         } = self;
         let file = file.into_std().await;
         tokio::task::spawn_blocking(move || {
-            let hashed = super::anchor::id_of(&file)?;
-            if !helpers.parent.0.is_at(&helpers.parent.1)? {
-                lease.release(&helpers.locks);
-                return Err(moved());
-            }
-            if !helpers.directory.names(&part, hashed)? {
-                lease.release(&helpers.locks);
-                return Err(replaced());
-            }
-            // An open file without delete sharing cannot be renamed on Windows; it is known
-            // by its identity from here on.
-            drop(file);
-            let to = (&helpers.parent.0, name.as_os_str());
-            let published = if replace {
-                helpers.directory.rename(&part, to)
-            } else {
-                helpers.directory.rename_no_clobber(&part, to)
-            };
-            if let Err(error) = published {
-                lease.release(&helpers.locks);
-                return Err(error);
-            }
-            if !helpers.parent.0.names(&name, hashed)? {
-                // Whatever is there now may not be ours to remove; report it instead.
-                lease.release(&helpers.locks);
-                return Err(replaced());
-            }
-            remove_if_present(&helpers.directory, &sidecar)?;
-            remove_if_present(&helpers.directory, &staged)?;
-            lease.release(&helpers.locks);
-            helpers.tidy();
-            Ok(())
+            publish_blocking(
+                (file, helpers, lease),
+                (name, part, sidecar, staged),
+                (replace, discard_on_error),
+            )
         })
         .await
         .map_err(io::Error::other)?
@@ -98,6 +95,95 @@ impl Partial {
         .await
         .map_err(io::Error::other)?
     }
+}
+
+fn publish_blocking(
+    (file, helpers, lease): (std::fs::File, super::Helpers, super::Lease),
+    (name, part, sidecar, staged): (
+        std::ffi::OsString,
+        std::ffi::OsString,
+        std::ffi::OsString,
+        std::ffi::OsString,
+    ),
+    (replace, discard_on_error): (bool, bool),
+) -> io::Result<()> {
+    let cleanup = |helpers: super::Helpers, lease: super::Lease, remove_part: bool| {
+        if discard_on_error {
+            if remove_part {
+                let _removed = remove_if_present(&helpers.directory, &part);
+            }
+            let _removed = remove_if_present(&helpers.directory, &sidecar);
+            let _removed = remove_if_present(&helpers.directory, &staged);
+        }
+        lease.release(&helpers.locks);
+        if discard_on_error {
+            helpers.tidy();
+        }
+    };
+    let hashed = match super::anchor::id_of(&file) {
+        Ok(hashed) => hashed,
+        Err(error) => {
+            drop(file);
+            cleanup(helpers, lease, true);
+            return Err(error);
+        }
+    };
+    match helpers.parent.0.is_at(&helpers.parent.1) {
+        Ok(true) => {}
+        Ok(false) => {
+            drop(file);
+            cleanup(helpers, lease, true);
+            return Err(moved());
+        }
+        Err(error) => {
+            drop(file);
+            cleanup(helpers, lease, true);
+            return Err(error);
+        }
+    }
+    match helpers.directory.names(&part, hashed) {
+        Ok(true) => {}
+        Ok(false) => {
+            drop(file);
+            cleanup(helpers, lease, false);
+            return Err(replaced());
+        }
+        Err(error) => {
+            drop(file);
+            cleanup(helpers, lease, false);
+            return Err(error);
+        }
+    }
+    // An open file without delete sharing cannot be renamed on Windows; it is known
+    // by its identity from here on.
+    drop(file);
+    let to = (&helpers.parent.0, name.as_os_str());
+    let published = if replace {
+        helpers.directory.rename(&part, to)
+    } else {
+        helpers.directory.rename_no_clobber(&part, to)
+    };
+    if let Err(error) = published {
+        cleanup(helpers, lease, true);
+        return Err(error);
+    }
+    match helpers.parent.0.names(&name, hashed) {
+        Ok(true) => {}
+        Ok(false) => {
+            // Whatever is there now may not be ours to remove; report it instead.
+            cleanup(helpers, lease, false);
+            return Err(replaced());
+        }
+        Err(error) => {
+            cleanup(helpers, lease, false);
+            return Err(error);
+        }
+    }
+    remove_if_present(&helpers.directory, &sidecar)?;
+    remove_if_present(&helpers.directory, &staged)?;
+    lease.release(&helpers.locks);
+    helpers.tidy();
+    Ok(())
 }
 
 fn moved() -> io::Error {

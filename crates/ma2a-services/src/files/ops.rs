@@ -70,6 +70,7 @@ pub(crate) fn list(
     let mut names = smallest.into_sorted_vec();
     let more = names.len() > MAX_LIST_PAGE;
     names.truncate(MAX_LIST_PAGE);
+    let last_scanned = names.last().cloned();
     let mut entries = Vec::with_capacity(names.len());
     for name in names {
         let Some(entry) = directory.entry(&name)? else {
@@ -77,17 +78,13 @@ pub(crate) fn list(
         };
         entries.push(DirEntry::new(name, entry.wire()));
     }
-    let next = if more {
-        entries.last().map(|entry| entry.name.clone())
-    } else {
-        None
-    };
+    let next = if more { last_scanned } else { None };
     Ok(FilesResult::Listing(entries, next))
 }
 
-/// Whether `name` fits in one remote path component.
-const fn addressable(name: &str) -> bool {
-    name.len() <= MAX_PATH_COMPONENT_LEN
+/// Whether `name` fits in one remote path component and can be decoded by `Decoder::text`.
+fn addressable(name: &str) -> bool {
+    !name.is_empty() && name.len() <= MAX_PATH_COMPONENT_LEN && !name.chars().any(char::is_control)
 }
 
 /// Creates one directory, or every missing ancestor with `parents`.
@@ -173,5 +170,10 @@ mod tests {
         assert!(!addressable(&"\u{6587}".repeat(100)));
         assert!(addressable(&"n".repeat(255)));
         assert!(!addressable(&"n".repeat(256)));
+        assert!(!addressable(""));
+        assert!(!addressable("bad\nname"));
+        assert!(!addressable("bad\tname"));
+        assert!(!addressable("bad\x7fname"));
+        assert!(!addressable("bad\u{0085}name"));
     }
 }

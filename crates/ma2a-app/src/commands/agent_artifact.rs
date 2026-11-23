@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use base64::Engine as _;
+use ma2a_core::service::ContentIdentity;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
@@ -65,29 +66,41 @@ pub(crate) async fn save(
     output: &Path,
 ) -> Result<(), AppError> {
     refuse_existing(output)?;
+    // Fetch the first chunk before opening `.ma2a-downloads`, so an unknown task or artifact
+    // never truncates a paused `file get` targeting the same path.
+    let first = read(runtime, (task, name), 0).await?;
+    let (size, hash) = (first.size, first.blake3.clone());
     let source = format!("local agent task {task} artifact {name}");
     let mut partial = Partial::open(output, &source, false).await?;
     let copied = async {
-        let (mut offset, mut expected) = (0_u64, None);
+        partial.begin(ContentIdentity::new(size, 0)).await?;
+        let mut chunk = first;
+        let mut offset = 0_u64;
         loop {
-            let chunk = read(runtime, (task, name), offset).await?;
-            let (size, hash) = expected.get_or_insert_with(|| (chunk.size, chunk.blake3.clone()));
-            if (chunk.size, &chunk.blake3) != (*size, &*hash)
+            if (chunk.size, &chunk.blake3) != (size, &hash)
                 || (chunk.content.is_empty() && !chunk.eof)
             {
                 return Err(AppError::Protocol(
                     "the artifact changed while read".to_owned(),
                 ));
             }
+            let chunk_len = u64::try_from(chunk.content.len()).unwrap_or(u64::MAX);
+            offset = offset
+                .checked_add(chunk_len)
+                .ok_or_else(|| AppError::Protocol("the artifact failed verification".to_owned()))?;
+            if offset > size {
+                return Err(AppError::Protocol(
+                    "the artifact failed verification".to_owned(),
+                ));
+            }
             let (file, hasher) = partial.sink();
             hasher.update(&chunk.content);
             file.write_all(&chunk.content).await?;
-            offset += u64::try_from(chunk.content.len()).unwrap_or(u64::MAX);
             if chunk.eof {
                 break;
             }
+            chunk = read(runtime, (task, name), offset).await?;
         }
-        let (size, hash) = expected.unwrap_or_default();
         if offset != size || partial.sink().1.finalize().to_hex().as_str() != hash {
             return Err(AppError::Protocol(
                 "the artifact failed verification".to_owned(),
@@ -103,7 +116,7 @@ pub(crate) async fn save(
             return Err(error);
         }
     };
-    partial.finish(false).await?;
+    partial.finish_or_discard(false).await?;
     let saved = json!({"output": output.display().to_string(), "size": size, "blake3": hash});
     super::agents::print(&saved)
 }

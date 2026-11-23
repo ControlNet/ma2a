@@ -103,8 +103,11 @@ impl Anchor {
 
     /// Whether `path` still names this directory.
     pub(super) fn is_at(&self, path: &Path) -> io::Result<bool> {
-        let named = at::statat(at::CWD, path, AtFlags::empty())?;
-        Ok(identity(&at::fstat(&self.fd)?) == identity(&named))
+        match at::statat(at::CWD, path, AtFlags::empty()) {
+            Ok(named) => Ok(identity(&at::fstat(&self.fd)?) == identity(&named)),
+            Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR) => Ok(false),
+            Err(errno) => Err(errno.into()),
+        }
     }
 
     /// Whether the child `name` is, without following it, the file identified by `held`.

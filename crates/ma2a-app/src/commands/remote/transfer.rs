@@ -34,13 +34,29 @@ pub(super) async fn get(
                 error.into()
             }
         })?;
-    match attempt(target, &resource, &mut partial).await? {
-        Err(ClientError::Rejected(ServiceError::PreconditionFailed)) if partial.offset() > 0 => {
+    let outcome = match attempt(target, &resource, &mut partial).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if partial.identity().is_none() || !partial.has_bytes().await {
+                let _discarded = partial.discard().await;
+            }
+            return Err(error);
+        }
+    };
+    match outcome {
+        Err(ClientError::Rejected(ServiceError::PreconditionFailed))
+            if partial.identity().is_some() =>
+        {
             // The source changed since the partial download began: start over once, still
             // holding the destination.
             partial.restart().await?;
-            if let Err(error) = attempt(target, &resource, &mut partial).await? {
-                return Err(abandon(partial, error).await);
+            match attempt(target, &resource, &mut partial).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(abandon(partial, error).await),
+                Err(error) => {
+                    let _discarded = partial.discard().await;
+                    return Err(error);
+                }
             }
         }
         Err(error) => return Err(abandon(partial, error).await),
@@ -78,14 +94,19 @@ async fn attempt(
 ///
 /// Content that changed or failed verification cannot be continued, and an attempt that
 /// failed before its first byte left nothing of value.
-async fn abandon(partial: Partial, error: ClientError) -> AppError {
+async fn abandon(mut partial: Partial, error: ClientError) -> AppError {
     let worthless = partial.identity().is_none()
+        || !partial.has_bytes().await
         || matches!(
             error,
             ClientError::Failed(ServiceError::ContentChanged | ServiceError::IntegrityMismatch)
         );
-    if worthless && let Err(removed) = partial.discard().await {
-        return removed.into();
+    if worthless {
+        if let Err(removed) = partial.discard().await {
+            return removed.into();
+        }
+    } else {
+        let _flushed = partial.flush().await;
     }
     error.into()
 }

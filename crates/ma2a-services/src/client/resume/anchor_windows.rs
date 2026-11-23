@@ -160,7 +160,23 @@ impl Anchor {
 
     /// Whether `path` still names this directory.
     pub(super) fn is_at(&self, path: &Path) -> io::Result<bool> {
-        Ok(id_of(&pin(path, 0)?)? == id_of(&self.pin)?)
+        let opened = OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path);
+        match opened {
+            Ok(opened) => Ok(id_of(&opened)? == id_of(&self.pin)?),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) fn remove_file(&self, name: &OsStr) -> io::Result<()> {

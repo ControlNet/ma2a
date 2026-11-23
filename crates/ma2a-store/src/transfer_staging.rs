@@ -40,7 +40,7 @@ impl Repository {
         } = staging;
         let transaction = self.immediate()?;
         transaction.execute(
-            "INSERT INTO transfer_staging(staging_path, request_id, created_at_ms)
+            "INSERT OR REPLACE INTO transfer_staging(staging_path, request_id, created_at_ms)
              VALUES (?1, ?2, ?3)",
             params![
                 staging_path,

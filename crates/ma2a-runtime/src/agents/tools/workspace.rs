@@ -24,10 +24,48 @@ fn components(relative: &str) -> Result<Vec<&str>, ToolError> {
             _ => Err(outside()),
         })
         .collect::<Result<_, _>>()?;
-    if parts.is_empty() || relative.contains('\\') {
+    if parts.is_empty()
+        || relative.contains('\\')
+        || parts.iter().any(|part| {
+            part.contains(':')
+                || part.ends_with(['.', ' '])
+                || is_windows_reserved(part)
+                || ma2a_services::client::resume::is_private_directory(std::ffi::OsStr::new(part))
+        })
+    {
         return Err(outside());
     }
     Ok(parts)
+}
+
+fn is_windows_reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    let upper = stem.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 /// Resolves an existing regular file for reading; symlinks may be followed only within the
@@ -110,6 +148,14 @@ mod tests {
             ".",
             "a/../../secret",
             "a\\b",
+            "report.txt:stream",
+            "trailing.",
+            "trailing ",
+            ".ma2a-downloads/part",
+            "sub/.MA2A-DOWNLOADS/part",
+            "CON",
+            "nul.txt",
+            "sub/COM1.log",
         ] {
             assert!(existing(&workspace, escaping).is_err(), "{escaping}");
             assert!(destination(&workspace, escaping).is_err(), "{escaping}");

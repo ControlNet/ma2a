@@ -80,7 +80,9 @@ where
     let temporary = match created {
         Ok(temporary) => temporary,
         Err(error) => {
-            journal.forget(&staging).await;
+            if error != ServiceError::AlreadyExists {
+                journal.forget(&staging).await;
+            }
             return reply::reject(writer, error).await;
         }
     };

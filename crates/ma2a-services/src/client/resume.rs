@@ -127,6 +127,23 @@ impl Partial {
         self.identity
     }
 
+    /// Flushes any pending asynchronous writes to the underlying partial file.
+    ///
+    /// # Errors
+    /// Returns a local file error.
+    pub async fn flush(&mut self) -> io::Result<()> {
+        self.file.flush().await
+    }
+
+    /// Returns whether the partial file already holds at least one written byte.
+    pub async fn has_bytes(&mut self) -> bool {
+        let _flushed = self.file.flush().await;
+        self.file
+            .metadata()
+            .await
+            .is_ok_and(|metadata| metadata.len() > 0)
+    }
+
     /// Records the identity the target is about to stream, before any content arrives.
     ///
     /// # Errors

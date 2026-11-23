@@ -174,12 +174,12 @@ impl Call<'_> {
 
     pub(super) async fn agent_artifact(&self, args: AgentArtifactArgs) -> Outcome {
         let (agent, task) = names(&args.agent, &args.task)?;
-        let target = destination(&self.workspace, &args.to)?;
+        let _target = destination(&self.workspace, &args.to)?;
         let request = AgentRequest::Artifact(agent, task, args.name, 0, None);
         let (reader, _writer) = self
             .open_read(&args.endpoint, OpenBody::Agent(request))
             .await?;
-        let result = download(reader, &target).await?;
+        let result = download(reader, (&self.workspace, &args.to)).await?;
         ok(&Transferred {
             size: result.size,
             blake3: hex(&result.hash),

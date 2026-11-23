@@ -230,13 +230,17 @@ async fn artifact(
     crate::commands::agent_artifact::refuse_existing(output)?;
     let request = AgentRequest::Artifact(agent, task, name.clone(), 0, None);
     let (mut reader, _writer) = open(target.0, target.1, OpenBody::Agent(request)).await?;
-    client::transfer::download_accepted(&mut reader).await?;
+    let identity = client::transfer::download_accepted(&mut reader).await?;
     let source = format!("remote agent task {task} artifact {name}");
     let mut partial = client::resume::Partial::open(output, &source, false).await?;
+    if let Err(error) = partial.begin(identity).await {
+        let _discarded = partial.discard().await;
+        return Err(error.into());
+    }
     let downloaded = client::transfer::download_content(&mut reader, partial.sink()).await;
     let downloaded = match downloaded {
         Ok(result) => partial
-            .finish(false)
+            .finish_or_discard(false)
             .await
             .map(|()| result)
             .map_err(AppError::from),

@@ -117,7 +117,7 @@ impl AgentManager {
         }
         let manager = self.clone();
         self.0.tasks.spawn(async move {
-            if let Some(outcome) = manager.execute((task, &call)).await {
+            if let Some(outcome) = Box::pin(manager.execute((task, &call))).await {
                 fault("before_tool_result");
                 let (bytes, at_ms) = (answer(&outcome), manager.now_ms());
                 let id = call.clone();

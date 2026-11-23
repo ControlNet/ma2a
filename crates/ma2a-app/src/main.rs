@@ -1,5 +1,8 @@
 //! Installed MA2A command and singleton daemon entry point.
 
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
+
 use std::{error::Error, fmt, io, path::PathBuf, process::ExitCode};
 
 use ma2a_runtime::{
@@ -134,7 +137,7 @@ async fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    match run(cli).await {
+    match Box::pin(run(cli)).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -207,7 +210,9 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
         cli::Command::Process(arguments) => {
             commands::remote::hosted::run(&state_dir, paths, arguments).await
         }
-        cli::Command::Agent(arguments) => commands::agents::run(&state_dir, paths, arguments).await,
+        cli::Command::Agent(arguments) => {
+            Box::pin(commands::agents::run(&state_dir, paths, arguments)).await
+        }
         cli::Command::A2a {
             command: cli::A2aCommand::Serve { listen, token_file },
         } => a2a::serve(&state_dir, paths, (listen, token_file)).await,
