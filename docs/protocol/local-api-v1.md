@@ -106,7 +106,8 @@ session cannot make this Runtime serve anything.
    that time, or no later frame within 30 seconds, is treated as lost.
 
 The client keeps its side open until it receives a terminal frame. Closing the connection earlier
-cancels the operation.
+cancels the operation. A client that takes no frame for 30 seconds is treated as gone and the
+operation is cancelled; the terminal frame itself is given 5 seconds.
 
 Admission and replay:
 

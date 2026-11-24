@@ -113,15 +113,17 @@ fn data_len(frame: &Frame) -> u64 {
     })
 }
 
+/// Writes one frame within `bound`.
 async fn forward<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,
     frame: &Frame,
+    bound: Duration,
 ) -> Result<(), ServiceError> {
     let sent = async {
         writer.frame(frame.kind(), frame.payload()).await?;
         writer.flush().await
     };
-    tokio::time::timeout(FORWARD_STALL, sent)
+    tokio::time::timeout(bound, sent)
         .await
         .unwrap_or(Err(ServiceError::TimedOut))
 }
@@ -206,7 +208,7 @@ async fn upstream<CR, TW>(
         match frame {
             Some(Ok(Some(frame))) if from_client(frame.kind()) => {
                 Shared::count(&shared.to_target, &frame);
-                if forward(target_writer, &frame).await.is_err()
+                if forward(target_writer, &frame, FORWARD_STALL).await.is_err()
                     || frame.kind() == FrameKind::Cancel
                 {
                     return;
@@ -276,7 +278,13 @@ where
         }
         if !shared.client_gone.load(Ordering::Relaxed) {
             writing.writing.store(true, Ordering::Relaxed);
-            let forwarded = forward(client_writer, &frame).await;
+            // A terminal frame has the final-write bound; the operation is over either way.
+            let bound = if terminal.is_some() {
+                FINAL_WRITE_GRACE
+            } else {
+                FORWARD_STALL
+            };
+            let forwarded = forward(client_writer, &frame, bound).await;
             writing.writing.store(false, Ordering::Relaxed);
             if forwarded.is_err() {
                 shared.client_gone.store(true, Ordering::Relaxed);
@@ -292,3 +300,7 @@ where
 #[cfg(test)]
 #[path = "relay_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "relay_grace_tests.rs"]
+mod grace_tests;
