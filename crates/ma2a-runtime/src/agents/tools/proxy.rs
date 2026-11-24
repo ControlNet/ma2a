@@ -17,6 +17,8 @@ use super::{Call, Outcome, ok};
 
 /// Idle timeout of each relayed connection: ten minutes.
 const IDLE_TIMEOUT_MS: u64 = 600_000;
+/// Pause after a failed accept before trying again.
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Call<'_> {
     pub(super) async fn proxy_open(&self, args: ProxyOpen) -> Outcome {
@@ -49,6 +51,8 @@ impl Call<'_> {
                     accepted = listener.accept() => accepted,
                 };
                 let Ok((socket, _)) = accepted else {
+                    // Running out of descriptors passes; retrying at once would only spin.
+                    tokio::time::sleep(ACCEPT_BACKOFF).await;
                     continue;
                 };
                 let Ok(request_id) = RequestId::random() else {
