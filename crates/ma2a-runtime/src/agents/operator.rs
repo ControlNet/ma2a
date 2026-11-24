@@ -70,7 +70,7 @@ impl AgentSpec {
 /// Whether an Agent name cannot name its own directory: `blobs` is the artifact store beside
 /// the Agent directories, and a Windows device name opens a device there. Device names are
 /// refused on every host, so a definition means the same wherever it is copied.
-fn reserved_name(name: &str) -> bool {
+pub(super) fn reserved_name(name: &str) -> bool {
     name == "blobs" || ma2a_services::files::is_windows_reserved(name)
 }
 
@@ -106,8 +106,12 @@ impl AgentManager {
         }
     }
 
-    /// Starts an Agent: its first instance starts at once.
+    /// Starts an Agent: its first instance starts at once. A reserved name, which only a
+    /// definition stored before such names were refused can carry, is never started.
     pub(crate) async fn start(&self, agent: &AgentId) -> Result<AgentRecord, ServiceError> {
+        if reserved_name(agent.as_str()) {
+            return Err(ServiceError::InvalidInput);
+        }
         let (id, at_ms) = (agent.clone(), self.now_ms());
         let record = self
             .commit(move |repository| repository.set_agent_enabled(&id, (true, at_ms)))
@@ -157,6 +161,78 @@ impl AgentManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use ma2a_core::service::{AgentId, MAX_LOG_LIMIT, ProcessSpec, ProcessStart, ServiceError};
+    use ma2a_store::{AgentDefinition, Repository, StoreConfig};
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use super::AgentManager;
+    use crate::{
+        clock::SystemClock,
+        processes::ProcessManager,
+        store::{STORE_CAPACITY, StoreBackend, StoreClient},
+    };
+
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    #[tokio::test]
+    async fn a_reserved_agent_defined_before_the_refusal_is_never_started() -> TestResult {
+        // Given: a definition stored directly, as a Runtime that did not refuse the name did.
+        let mut nonce = [0_u8; 8];
+        getrandom::fill(&mut nonce)?;
+        let dir = std::env::temp_dir().join(format!("ma2a-reserved-{}", u64::from_le_bytes(nonce)));
+        std::fs::create_dir(&dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        #[cfg(windows)]
+        ma2a_store::protect_private_directory(&dir, "test state directory")?;
+        let config = StoreConfig::new(&dir);
+        let backend = StoreBackend::open(&config)?;
+        let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
+        let store_task = tokio::task::spawn_blocking(move || backend.run(receiver));
+        let store = StoreClient::new(sender);
+        let local = store.initialize().await?.endpoint_id;
+        let id = AgentId::new("blobs")?;
+        let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
+        let definition = AgentDefinition {
+            id: id.clone(),
+            description: String::new(),
+            start: ProcessStart::new(spec, true, MAX_LOG_LIMIT)?.to_bytes()?,
+            tools: 0,
+            max_tasks: 1,
+        };
+        Repository::open(&config)?.define_agent(&definition, 1)?;
+        let shutdown = CancellationToken::new();
+        let processes = ProcessManager::new(
+            (local, store.clone(), Arc::new(SystemClock)),
+            (&dir, None),
+            shutdown.clone(),
+        );
+        let manager = AgentManager::new(
+            (local, store.clone(), Arc::new(SystemClock)),
+            (&dir, processes),
+            shutdown,
+        );
+
+        // When
+        let started = manager.start(&id).await;
+
+        // Then
+        let enabled = manager.agent(&id).await?.map(|record| record.enabled);
+        drop(manager);
+        store.stop().await?;
+        store_task.await?;
+        let _cleanup = std::fs::remove_dir_all(&dir);
+        assert_eq!(started.err(), Some(ServiceError::InvalidInput));
+        assert_eq!(enabled, Some(false));
+        Ok(())
+    }
+
     #[test]
     fn names_the_runtime_or_windows_keeps_are_reserved() {
         for name in ["blobs", "con", "nul", "aux", "prn", "com1", "lpt9"] {

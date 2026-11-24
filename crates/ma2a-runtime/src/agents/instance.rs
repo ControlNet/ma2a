@@ -58,7 +58,7 @@ impl AgentManager {
         let Ok(Some(record)) = self.agent(agent).await else {
             return;
         };
-        if !record.enabled {
+        if !record.enabled || super::operator::reserved_name(agent.as_str()) {
             return;
         }
         if let Some(instance) = record.instance.filter(AgentInstanceRecord::is_live) {
