@@ -172,7 +172,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - Absent, null, or empty filters nothing. A filter or `pageToken` that is not a string answers `-32602`, and every parameter is checked before any task is read.
 - **Paging.**
   - `pageSize` is 1–100, default 50.
-  - `pageToken` is the last task ID of the previous page. Tasks are listed in task ID order, so the next page starts after that ID even if that task no longer matches. A token that is not a task ID answers `-32602`.
+  - `pageToken` is the last task ID of the previous page. Tasks are listed in task ID order, so the next page starts after that ID even if that task no longer matches. A token that is not a task ID in its listed lowercase form answers `-32602`.
   - `totalSize` counts every match.
 - **Detail.** Artifacts are included only with `includeArtifacts: true`. History is included only when `historyLength` is greater than 0. Without either, no task's details are read.
 

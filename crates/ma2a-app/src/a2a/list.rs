@@ -1,6 +1,7 @@
 //! `ListTasks`: every retained task of the route's Agent this caller may see, filtered,
 //! then paged by task ID.
 
+use ma2a_core::service::AgentTaskId;
 use serde_json::{Value, json};
 
 use super::{
@@ -80,9 +81,9 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
         changed_after_ms,
     };
     let token = optional(params, "pageToken")?;
-    if token.is_some_and(|token| {
-        token.len() != 32 || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
-    }) {
+    // A token is a task ID as listed, in lowercase: any other spelling would sort apart
+    // from its task.
+    if token.is_some_and(|token| AgentTaskId::parse(token).is_err()) {
         return Err(RpcError::invalid_params(
             "`pageToken` is not from this listing",
         ));
@@ -181,6 +182,16 @@ mod tests {
             code(json!({"contextId": null, "pageToken": ""})).await?,
             -32_603
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_page_token_is_a_task_id_as_listed() -> Result<(), Box<dyn std::error::Error>> {
+        // Task IDs are listed in lowercase, so an uppercase token would sort before its task.
+        let upper = format!("{}A", "0".repeat(31));
+        assert_eq!(code(json!({"pageToken": upper})).await?, -32_602);
+        let lower = format!("{}a", "0".repeat(31));
+        assert_eq!(code(json!({"pageToken": lower})).await?, -32_603);
         Ok(())
     }
 }
