@@ -86,8 +86,9 @@ pub async fn outcome<W: AsyncWrite + Unpin>(
         Err(_) => Err(ServiceError::Internal),
     };
     let _closed = tokio::time::timeout(FRAME_GRACE, close(writer)).await;
+    // An operation that failed keeps its own failure even when its outcome could not be sent.
     let end = match (sent, failure) {
-        (Err(error), _) | (Ok(()), Some(error)) => OperationEnd::Failed(error),
+        (_, Some(error)) | (Err(error), None) => OperationEnd::Failed(error),
         (Ok(()), None) => OperationEnd::Completed,
     };
     OperationReport::new(end).with_bytes(bytes_in, bytes_out)
@@ -118,7 +119,7 @@ pub(crate) async fn client_cancelled<R: AsyncRead + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use ma2a_core::service::{ServiceError, TransferResult};
+    use ma2a_core::service::{Channel, ServiceError, TransferResult};
     use tokio::io::AsyncReadExt as _;
 
     use crate::{FrameWriter, report::OperationEnd};
@@ -148,5 +149,23 @@ mod tests {
         assert_eq!(peer.read(&mut read).await.ok(), Some(1));
         let ended = tokio::time::timeout(super::FRAME_GRACE, peer.read(&mut read)).await;
         assert!(ended.is_err(), "the peer saw {ended:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_operation_keeps_its_failure_when_its_outcome_cannot_be_sent() {
+        // Given: a writer cut short by a data frame that timed out.
+        let (_peer, host) = tokio::io::duplex(1);
+        let mut writer = FrameWriter::new(host);
+        let cut = tokio::time::timeout(super::FRAME_GRACE, writer.data(Channel::Output, b"ab"));
+        assert!(cut.await.is_err() && writer.is_torn());
+
+        // When
+        let failed = Err(ServiceError::TimedOut);
+        let payload = TransferResult::encode_outcome(&failed);
+        let report =
+            super::outcome(&mut writer, (payload, Some(ServiceError::TimedOut)), (0, 0)).await;
+
+        // Then
+        assert_eq!(report.end, OperationEnd::Failed(ServiceError::TimedOut));
     }
 }

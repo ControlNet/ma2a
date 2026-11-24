@@ -151,14 +151,7 @@ impl ProcessManager {
         let budget = usize::try_from(max).unwrap_or(usize::MAX);
         let (next, sent) = match self.send_output((id, start, budget), (stop, writer)).await {
             Ok(read) => read,
-            Err((error, sent)) => {
-                let report = if writer.is_torn() {
-                    OperationReport::new(OperationEnd::Failed(error))
-                } else {
-                    finish(writer, Err(error)).await
-                };
-                return report.with_bytes(0, sent);
-            }
+            Err((error, sent)) => return finish(writer, Err(error)).await.with_bytes(0, sent),
         };
         // Everything was read once the Process ended and no byte is left after `next`.
         let ended = record.state.is_terminal() && next >= window.end;

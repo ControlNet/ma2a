@@ -174,8 +174,10 @@ pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
         return OperationReport::new(OperationEnd::Failed(ServiceError::Internal));
     };
     let wrote = tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Outcome, &payload)).await;
+    // An operation that failed keeps its own failure even when its outcome could not be sent.
     match wrote {
         Ok(Ok(())) => OperationReport::new(end),
+        _ if end != OperationEnd::Completed => OperationReport::new(end),
         Ok(Err(_)) => OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled)),
         Err(_) => OperationReport::new(OperationEnd::Failed(ServiceError::TimedOut)),
     }
