@@ -70,10 +70,14 @@ fn store_dir_error(error: ma2a_store::StoreError) -> IpcError {
     }
 }
 
+/// Names the pipe after the state directory as the file system resolves it, so every spelling
+/// of one directory (case, separators, a trailing separator, a link to it) reaches the same
+/// daemon, as its lock file does. A directory that does not exist yet keeps its spelling.
 fn name(paths: &IpcPaths) -> Result<interprocess::local_socket::Name<'static>, IpcError> {
     use std::os::windows::ffi::OsStrExt as _;
-    let bytes = paths
-        .state_dir()
+    let state_dir = std::fs::canonicalize(paths.state_dir())
+        .unwrap_or_else(|_| paths.state_dir().to_path_buf());
+    let bytes = state_dir
         .as_os_str()
         .encode_wide()
         .flat_map(u16::to_le_bytes)
@@ -142,6 +146,24 @@ mod tests {
             ma2a_store::ensure_private_directory(&level, "created level")?;
         }
         super::ensure_private_dir(&state, "state directory")?;
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
+
+    #[test]
+    fn every_spelling_of_one_state_directory_names_one_pipe()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = std::env::temp_dir().join(format!("ma2a-pipe-name-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&base);
+        let state = base.join("State");
+        std::fs::create_dir_all(&state)?;
+        let spelled = state.to_string_lossy().into_owned();
+        let named = |path: String| super::name(&super::IpcPaths::new(path)?);
+
+        let name = named(spelled.clone())?;
+        assert_eq!(named(spelled.to_lowercase())?, name);
+        assert_eq!(named(format!("{spelled}\\"))?, name);
+        assert_eq!(named(spelled.replace('\\', "/"))?, name);
         std::fs::remove_dir_all(&base)?;
         Ok(())
     }
