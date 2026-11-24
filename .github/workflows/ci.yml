@@ -60,7 +60,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cargo test --locked -p ma2a-runtime --test ipc_lifecycle
-          cargo test --locked -p ma2a-runtime --lib ipc::server
+          cargo test --locked -p ma2a-runtime --lib -- ipc::server ipc::windows
 
   quality:
     runs-on: ubuntu-latest

@@ -436,3 +436,51 @@ async fn a_listing_leaves_out_children_deeper_than_a_path_can_reach() -> TestRes
     assert!(entries.is_empty());
     Ok(())
 }
+
+/// Grants or withdraws, through `icacls`, a rule that denies everyone `rights` on `path`.
+#[cfg(windows)]
+fn deny_everyone(path: &Path, rights: Option<&str>) -> TestResult {
+    let mut command = std::process::Command::new("icacls");
+    command.arg(path);
+    match rights {
+        Some(rights) => command.args(["/deny", &format!("*S-1-1-0:({rights})")]),
+        None => command.args(["/remove:d", "*S-1-1-0"]),
+    };
+    let status = command.stdout(std::process::Stdio::null()).status()?;
+    if !status.success() {
+        return Err(format!("icacls failed on {}: {status}", path.display()).into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn a_file_whose_acl_refuses_removal_reports_permission_denied() -> TestResult {
+    // Given: a regular file that neither its own ACL nor its directory's lets anyone delete.
+    let root = TempRoot::new("acl-refused")?;
+    let file = root.path().join("kept");
+    fs::write(&file, b"x")?;
+    deny_everyone(&file, Some("D"))?;
+    deny_everyone(root.path(), Some("DC"))?;
+    let direct = fs::remove_file(&file);
+
+    // When
+    let served = serve(
+        root.path(),
+        FilesRequest::Remove(path("docs:/kept")?, false),
+        None,
+    )
+    .await;
+    deny_everyone(root.path(), None)?;
+    deny_everyone(&file, None)?;
+
+    // Then: the fixture really refuses deletion, and the service reports it as it is.
+    assert_eq!(
+        direct.err().map(|error| error.kind()),
+        Some(std::io::ErrorKind::PermissionDenied)
+    );
+    let (frames, _) = served?;
+    assert_eq!(rejection(&frames)?, ServiceError::PermissionDenied);
+    assert!(file.exists());
+    Ok(())
+}
