@@ -195,7 +195,8 @@ QUIC flow control provides backpressure.
 A program that cannot start is rejected with `spawn_failed` before any effect. Otherwise:
 
 1. The server sends `accept`.
-2. stdin flows as `data` (input) plus `end`.
+2. stdin flows as `data` (input) plus `end`. Once the child stops reading its stdin, further
+   input is dropped; input after the caller's own `end` is `invalid_input`.
 3. stdout flows as `data` (output) and stderr as `data` (error).
 4. The server sends `outcome {termination: exited(code) | signaled(sig) | unknown, reason, duration_ms,
    stdout_bytes, stderr_bytes}`.

@@ -113,6 +113,32 @@ async fn stdin_is_forwarded_until_end() -> TestResult {
 }
 
 #[tokio::test]
+async fn input_after_the_child_closes_its_stdin_is_dropped() -> TestResult {
+    // Given: a child that closes its stdin at once and exits on its own a little later.
+    let request = ExecRequest::new(script("exec 0<&-; sleep 0.2; echo ok")?, true, 10_000)?;
+    let ((mut reader, mut writer), server) = start(request, &CancellationToken::new(), 1 << 20);
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+
+    // When: the caller keeps sending input it cannot know is unwanted.
+    let chunk = vec![b'x'; MAX_DATA_CHUNK_LEN];
+    for _ in 0..4 {
+        writer.data(Channel::Input, &chunk).await?;
+    }
+    writer.end(Channel::Input).await?;
+
+    // Then: the run is not torn down; the child finishes and reports its own exit.
+    let frames = drain(&mut reader).await?;
+    assert_eq!(channel_bytes(&frames, Channel::Output)?, b"ok\n");
+    let result = process_outcome(&frames)?;
+    assert_eq!(
+        (result.termination, result.reason),
+        (Termination::Exited(0), EndReason::Completed)
+    );
+    assert_eq!(server.await?.end, OperationEnd::Completed);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_timeout_kills_the_child() -> TestResult {
     let started = std::time::Instant::now();
     let request = ExecRequest::new(script("sleep 30")?, false, 200)?;

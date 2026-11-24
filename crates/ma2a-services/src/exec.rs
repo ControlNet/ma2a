@@ -111,6 +111,8 @@ async fn inbound<R: AsyncRead + Unpin>(
     (cancel, mut finished): (oneshot::Sender<ServiceError>, oneshot::Receiver<()>),
 ) -> u64 {
     let mut input_bytes = 0_u64;
+    // Set once the child stops taking input; the caller may not know yet and keeps sending.
+    let mut closed_by_child = false;
     let failure = loop {
         let frame = tokio::select! {
             _ = &mut finished => return input_bytes,
@@ -127,8 +129,13 @@ async fn inbound<R: AsyncRead + Unpin>(
         };
         match frame.kind() {
             FrameKind::Data => {
-                let (Ok((Channel::Input, bytes)), Some(pipe)) = (frame.data(), stdin.as_mut())
-                else {
+                let Ok((Channel::Input, bytes)) = frame.data() else {
+                    break ServiceError::InvalidInput;
+                };
+                let Some(pipe) = stdin.as_mut() else {
+                    if closed_by_child {
+                        continue;
+                    }
                     break ServiceError::InvalidInput;
                 };
                 input_bytes += len64(bytes.len());
@@ -138,9 +145,13 @@ async fn inbound<R: AsyncRead + Unpin>(
                 };
                 if written.is_err() {
                     stdin = None;
+                    closed_by_child = true;
                 }
             }
-            FrameKind::End if frame.end() == Ok(Channel::Input) => stdin = None,
+            FrameKind::End if frame.end() == Ok(Channel::Input) => {
+                stdin = None;
+                closed_by_child = false;
+            }
             FrameKind::Cancel => break ServiceError::Cancelled,
             _ => break ServiceError::InvalidInput,
         }
