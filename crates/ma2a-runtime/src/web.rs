@@ -25,7 +25,7 @@ use zeroize::Zeroizing;
 pub use assets::WebAssets;
 use assets::asset_response;
 pub use auth::WebAuthService;
-pub use lifecycle::WebLifecycle;
+pub use lifecycle::{WebLifecycle, serve_connections};
 use router::WebState;
 pub use router::{WebRuntimeDependencies, WebServerConfig, build_router, build_runtime_router};
 pub use server::LoopbackWebServer;

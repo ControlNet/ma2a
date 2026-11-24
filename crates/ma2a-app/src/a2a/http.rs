@@ -24,6 +24,8 @@ use super::{
 
 /// Largest JSON-RPC request body; one message is at most 12 KiB of content.
 const MAX_REQUEST: usize = 65_536;
+/// Longest wait for a request body once its headers arrived.
+const BODY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What every route shares; deliberately not `Debug`, so the token is never formatted.
 #[derive(Clone)]
@@ -139,8 +141,11 @@ async fn remote_rpc(
 /// JSON response.
 async fn dispatch(shared: Shared, route: Route, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    let Ok(body) = axum::body::to_bytes(body, MAX_REQUEST).await else {
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    let read = tokio::time::timeout(BODY_DEADLINE, axum::body::to_bytes(body, MAX_REQUEST));
+    let body = match read.await {
+        Ok(Ok(body)) => body,
+        Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
     };
     let request = match rpc::parse(&body) {
         Ok(request) => request,

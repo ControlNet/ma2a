@@ -88,16 +88,12 @@ pub(crate) async fn serve(
     // Open streams may last as long as their tasks, so a stop waits for them only briefly.
     let stopping = tokio_util::sync::CancellationToken::new();
     let signalled = stopping.clone();
-    let serving = axum::serve(listener, http::router(shared)).with_graceful_shutdown(async move {
+    let signal = tokio::spawn(async move {
         stopped().await;
         signalled.cancel();
     });
-    let outcome = tokio::select! {
-        finished = serving => finished,
-        () = async {
-            stopping.cancelled().await;
-            tokio::time::sleep(STOP_GRACE).await;
-        } => Ok(()),
-    };
-    Ok(outcome?)
+    ma2a_runtime::web::serve_connections(listener, http::router(shared), (stopping, STOP_GRACE))
+        .await;
+    signal.abort();
+    Ok(())
 }
