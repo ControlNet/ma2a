@@ -14,6 +14,10 @@ jq -e '
   .spdxVersion == "SPDX-2.3" and
   (.creationInfo.created | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
   (.documentDescribes | type == "array" and length == 1) and
+  ([.packages[].SPDXID] | length == (unique | length)) and
+  (.documentDescribes[0] as $described
+    | [.packages[] | select(.SPDXID == $described)]
+    | length == 1 and .[0].name == "ma2a-app") and
   (.packages | all(.licenseDeclared | type == "string" and (contains("/") | not))) and
   (.packages | any(.name == "ma2a-app")) and
   (.packages | any(.name == "xtask") | not) and

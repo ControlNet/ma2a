@@ -94,6 +94,23 @@ if ./scripts/validate-release-metadata.sh "$archive" "$macro" "$report" >/dev/nu
   exit 1
 fi
 
+# The described package must resolve to exactly the application package.
+application=$(jq -r '.packages[] | select(.name == "ma2a-app") | .SPDXID' "$sbom")
+other=$(jq -r '.packages[] | select(.name == "serde") | .SPDXID' "$sbom")
+for mutation in \
+  'dangling|.documentDescribes = ["SPDXRef-Missing"]' \
+  "other|.documentDescribes = [\"$other\"]" \
+  "duplicate|.packages += [.packages[] | select(.SPDXID == \"$application\") | .name = \"copy\"]"
+do
+  label=${mutation%%|*}
+  mutated="$temporary/$label.spdx.json"
+  jq "${mutation#*|}" "$sbom" > "$mutated"
+  if ./scripts/validate-release-metadata.sh "$archive" "$mutated" "$report" >/dev/null 2>&1; then
+    printf 'SBOM with a %s described package unexpectedly passed validation\n' "$label" >&2
+    exit 1
+  fi
+done
+
 # An archive with the same name but other content does not match this SBOM.
 rebuilt="$temporary/rebuilt/$(basename "$archive")"
 mkdir -p "$(dirname "$rebuilt")"
