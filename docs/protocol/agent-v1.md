@@ -343,6 +343,10 @@ retention while it is watched ends it with outcome `unknown_task`.
 retained event after it, with no duplicates. Gaps can appear only among `progress` events that were
 pruned in between, so the first event delivered may have a `seq` above `next`.
 
+A caller treats a `watch` as malformed (`invalid_input`) when it is accepted as anything other
+than Watching, when an event's `seq` is below `next` or not above the event before it, or when its
+outcome is anything other than the Summary of an ended task.
+
 ## Artifacts
 
 **Publication.** An Agent publishes a file from its workspace with the `artifact.publish` tool. The
