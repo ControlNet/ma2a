@@ -23,11 +23,21 @@ case "$target" in
     [[ "$archive" == *.zip ]] || { printf 'Windows target requires .zip archive\n' >&2; exit 1; }
     binary=ma2a.exe
     unzip -Z1 "$archive" | tr -d '\r' > "$all_entries"
+    # Every entry is a plain file or directory: a link could stand in for the binary.
+    if unzip -Z "$archive" | grep -q '^l'; then
+      printf 'archive contains a symbolic link\n' >&2
+      exit 1
+    fi
     ;;
   *-apple-darwin|*-unknown-linux-gnu)
     [[ "$archive" == *.tar.xz ]] || { printf 'Unix target requires .tar.xz archive\n' >&2; exit 1; }
     binary=ma2a
     tar -tJf "$archive" | tr -d '\r' > "$all_entries"
+    # Every entry is a plain file or directory: a link could stand in for the binary.
+    if tar -tvJf "$archive" | cut -c1 | grep -qv '^[-d]$'; then
+      printf 'archive contains an entry that is neither a file nor a directory\n' >&2
+      exit 1
+    fi
     ;;
   *)
     printf 'unknown release target: %s\n' "$target" >&2
