@@ -152,9 +152,10 @@ impl ControlRoundQueue {
         self.active = Some(scheduled.id);
         for waiter in &mut self.waiters {
             if waiter.round_id.is_none()
-                && waiter
-                    .peer
-                    .is_none_or(|peer| scheduled.scope.contains_peer(peer))
+                && waiter.peer.map_or_else(
+                    || scheduled.scope.is_global(),
+                    |peer| scheduled.scope.contains_peer(peer),
+                )
             {
                 waiter.round_id = Some(scheduled.id);
             }

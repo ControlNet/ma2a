@@ -101,6 +101,48 @@ fn older_round_does_not_complete_a_newer_targeted_waiter() -> TestResult {
 }
 
 #[test]
+fn global_waiter_is_not_answered_by_a_targeted_round() -> TestResult {
+    // Given
+    let peer = EndpointSecret::parse(&[0x41; 32])?.endpoint_id();
+    let mut queue = ControlRoundQueue::default();
+    let active = queue
+        .request(ControlRoundScope::all(), None)
+        .ok_or("active round missing")?;
+    let (global_reply, mut global_response) = oneshot::channel();
+    assert!(
+        queue
+            .request(ControlRoundScope::all(), Some(global_reply))
+            .is_none()
+    );
+    let (peer_reply, _peer_response) = oneshot::channel();
+    assert!(
+        queue
+            .request(ControlRoundScope::peer(peer), Some(peer_reply))
+            .is_none()
+    );
+    assert!(queue.complete(active.id(), true).is_empty());
+
+    // When
+    let targeted = queue.take_pending().ok_or("targeted round missing")?;
+    let targeted_waiters = queue.complete(targeted.id(), true);
+
+    // Then
+    assert_eq!(targeted.scope(), &ControlRoundScope::peer(peer));
+    let answered = targeted_waiters
+        .iter()
+        .map(super::queue::ControlWaiter::peer)
+        .collect::<Vec<_>>();
+    assert_eq!(answered, vec![Some(peer)]);
+    let global = queue.take_pending().ok_or("global round missing")?;
+    assert_eq!(global.scope(), &ControlRoundScope::all());
+    for waiter in queue.complete(global.id(), true) {
+        waiter.send(Ok(2));
+    }
+    assert_eq!(global_response.try_recv()??, 2);
+    Ok(())
+}
+
+#[test]
 fn control_queue_health_tracks_pending_and_failed_work() -> TestResult {
     // Given
     let mut queue = ControlRoundQueue::default();

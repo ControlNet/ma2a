@@ -67,6 +67,10 @@ impl ControlRoundScope {
         self.peers.iter().next().copied()
     }
 
+    pub(crate) const fn is_global(&self) -> bool {
+        self.global
+    }
+
     pub(crate) fn contains_peer(&self, peer: EndpointId) -> bool {
         self.peers.contains(&peer)
     }
