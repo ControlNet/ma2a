@@ -22,6 +22,8 @@ pub mod shell;
 pub mod supervisor;
 pub mod transfer;
 #[cfg(windows)]
+pub mod windows_acl;
+#[cfg(windows)]
 pub mod windows_files;
 pub mod windows_security;
 

@@ -100,8 +100,8 @@ impl Anchor {
     /// Whether this account, SYSTEM, or the Administrators group owns this directory and its
     /// protected ACL lets no other account in.
     pub(super) fn is_private(&self) -> io::Result<bool> {
-        let is_user = windows_files::current_user_matcher()?;
-        let sddl = windows_files::owner_and_dacl(&self.pin)?;
+        let is_user = crate::windows_acl::current_user_matcher()?;
+        let sddl = crate::windows_acl::owner_and_dacl(&self.pin)?;
         Ok(crate::sddl::is_private(&sddl, is_user))
     }
 
