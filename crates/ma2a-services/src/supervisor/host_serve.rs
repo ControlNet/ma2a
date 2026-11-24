@@ -19,6 +19,10 @@ use crate::{FrameReader, FrameWriter};
 pub(super) type Reader = FrameReader<RecvHalf>;
 pub(super) type Writer = FrameWriter<SendHalf>;
 
+/// How long to wait after a failed accept, such as one at the descriptor limit, which would
+/// otherwise fail again at once.
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Accepts connections until `stop`.
 pub(super) async fn serve(listener: Listener, shared: Arc<Shared>, stop: CancellationToken) {
     loop {
@@ -26,7 +30,12 @@ pub(super) async fn serve(listener: Listener, shared: Arc<Shared>, stop: Cancell
             () = stop.cancelled() => return,
             accepted = listener.accept() => match accepted {
                 Ok(stream) => stream,
-                Err(_) => continue,
+                Err(_) => {
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        () = tokio::time::sleep(ACCEPT_BACKOFF) => continue,
+                    }
+                }
             },
         };
         let shared = Arc::clone(&shared);

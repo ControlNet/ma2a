@@ -24,6 +24,9 @@ mod stream;
 
 use dispatch::handle_connection;
 
+/// How long to wait after a failed accept, which could otherwise fail again at once.
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 /// Reason the local server stopped accepting connections.
@@ -159,7 +162,14 @@ impl LocalApiServer {
                 }
                 () = self.handle.stopped() => break ServerExit::RuntimeStopped,
                 accepted = platform::accept(&self.listener) => {
-                    let stream = accepted?;
+                    // A failed accept, such as one at the descriptor limit or a pipe client gone
+                    // before it was accepted, ends one connection, never the daemon.
+                    let Ok(stream) = accepted else {
+                        tokio::select! {
+                            () = cancellation.cancelled() => break ServerExit::Cancelled,
+                            () = tokio::time::sleep(ACCEPT_BACKOFF) => continue,
+                        }
+                    };
                     let Some(admission) = admit(&self.permits, &self.reserve)? else { continue };
                     let context = ConnectionContext {
                         paths: self.paths.clone(),
