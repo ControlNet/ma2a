@@ -3,6 +3,7 @@
 
 mod driver;
 mod recovery;
+mod watch;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 

@@ -158,10 +158,11 @@ impl ProcessManager {
     }
 }
 
-/// Turns the proven launch connection into an accepted `watch`.
+/// Turns a proven connection into an accepted `watch`.
 ///
-/// A supervisor that never answers holds the start no longer than any supervisor answer.
-async fn open_watch((mut reader, mut writer): Channel) -> Result<Channel, ServiceError> {
+/// A supervisor that never answers holds the start or its follower no longer than any
+/// supervisor answer.
+pub(super) async fn open_watch((mut reader, mut writer): Channel) -> Result<Channel, ServiceError> {
     let answered = tokio::time::timeout(super::attach::SUPERVISOR_ANSWER, async {
         writer
             .frame(FrameKind::Open, &SupervisorRequest::Watch.to_bytes())

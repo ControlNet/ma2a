@@ -93,15 +93,7 @@ impl ProcessManager {
                 request(address.connect(credentials).await?, SupervisorRequest::Go).await?;
             self.apply(credentials.id(), reported).await?;
         }
-        let (mut reader, mut writer) = address.connect(credentials).await?;
-        writer
-            .frame(FrameKind::Open, &SupervisorRequest::Watch.to_bytes())
-            .await?;
-        let accept = reader.expect().await?;
-        if accept.kind() != FrameKind::Accept {
-            return Err(ServiceError::Unavailable);
-        }
-        Ok((reader, writer))
+        super::start::open_watch(address.connect(credentials).await?).await
     }
 
     async fn relay_statuses(&self, id: ProcessId, (mut reader, _writer): Channel) -> Followed {
