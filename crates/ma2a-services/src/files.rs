@@ -57,7 +57,12 @@ where
             write_reply((root, path, mode, length), reader, writer).await
         }
         request => {
-            let result = blocking(move |stop| content_free(&root, &request, stop)).await;
+            // A cancel or reset stops the job; what it already did may stand, so the answer
+            // is a failed outcome rather than a refusal.
+            let result = tokio::select! {
+                result = blocking(move |stop| content_free(&root, &request, stop)) => result,
+                error = reply::client_cancelled(reader) => Err(Failure { error, partial: true }),
+            };
             content_free_reply(result, writer).await
         }
     }

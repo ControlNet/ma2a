@@ -263,7 +263,9 @@ At most 16 blocking Files jobs run at once Runtime-wide; a job reset at its dead
 until it actually finishes, so abandoned work (a huge recursive removal or listing) cannot pile up.
 A recursive removal whose stream ends first, because it was cancelled, its grant revoked, or its
 deadline passed, removes nothing more: it checks before each entry and stops, so part of the tree
-may already be gone, but no later entry is touched.
+may already be gone, but no later entry is touched. A `stat`, `list`, `mkdir`, `rename`, or
+`remove` notices the caller's `cancel` or reset while it runs and answers a failed `cancelled`
+outcome, since what it did so far may stand.
 
 ## Audit
 
