@@ -116,6 +116,9 @@ async fn control<W: AsyncWrite + Unpin>(
     Ok(writer.flush().await?)
 }
 
+/// Longest wait for a target to answer one `describe`, dial included.
+const DESCRIBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Discovers and calls services on other Endpoints through this user's Runtime.
 #[derive(Clone, Debug)]
 pub struct Caller {
@@ -141,19 +144,22 @@ impl Caller {
         after: Option<&str>,
     ) -> Result<DescribePage, Error> {
         let request = ServiceRequest::Describe(after.map(str::to_owned));
-        let mut stream = self.open((target, wire::request_id()?), request).await?;
-        loop {
+        let answered = async {
+            let mut stream = self.open((target, wire::request_id()?), request).await?;
             let frame = stream.reader.expect().await?;
             match frame.kind() {
-                FrameKind::Reject => return Err(Error::Service(frame.rejection()?)),
-                FrameKind::Outcome => {
-                    return DescribePage::decode_outcome(frame.payload())
-                        .map_err(|_| Error::Protocol("the target sent a malformed page"))?
-                        .map_err(Error::Service);
-                }
-                _ => {}
+                FrameKind::Reject => Err(Error::Service(frame.rejection()?)),
+                FrameKind::Outcome => DescribePage::decode_outcome(frame.payload())
+                    .map_err(|_| Error::Protocol("the target sent a malformed page"))?
+                    .map_err(Error::Service),
+                _ => Err(Error::Protocol(
+                    "describe is answered by one outcome or reject",
+                )),
             }
-        }
+        };
+        tokio::time::timeout(DESCRIBE_DEADLINE, answered)
+            .await
+            .unwrap_or(Err(Error::Service(ServiceError::TimedOut)))
     }
 
     /// Opens one call to a service of `target` under `request_id`: retrying with the same

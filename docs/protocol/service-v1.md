@@ -84,6 +84,9 @@ at most 16 descriptors and `next` the name to continue after, or `null`. A descr
 `[origin: 0 built-in / 1 hosted, name, description, versions, available: bool]`; a version is
 `[version, [[operation, interaction]…]]`.
 
+The caller library waits at most 30 seconds for that answer, dial included, and treats any other
+frame as a protocol error.
+
 For this caller only, discovery lists:
 
 1. every built-in family whose coarse admission the caller passes (Echo through its own policy
