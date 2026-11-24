@@ -8,6 +8,7 @@ use std::{
     ffi::OsStr,
     fs::File,
     io,
+    ops::ControlFlow,
     os::{fd::OwnedFd, unix::ffi::OsStrExt as _},
     path::{Path, PathBuf},
     sync::Arc,
@@ -88,12 +89,16 @@ impl Directory {
     }
 
     /// Visits every child name; names that are not UTF-8 are passed as `None`.
-    pub(crate) fn for_each_name(&self, mut visit: impl FnMut(Option<&str>)) -> io::Result<()> {
+    /// Visits every entry name until `visit` breaks.
+    pub(crate) fn for_each_name(
+        &self,
+        mut visit: impl FnMut(Option<&str>) -> ControlFlow<()>,
+    ) -> io::Result<()> {
         for child in at::Dir::read_from(&*self.fd).map_err(io)? {
             let child = child.map_err(io)?;
             let name = child.file_name().to_bytes();
-            if name != b"." && name != b".." {
-                visit(OsStr::from_bytes(name).to_str());
+            if name != b"." && name != b".." && visit(OsStr::from_bytes(name).to_str()).is_break() {
+                break;
             }
         }
         Ok(())

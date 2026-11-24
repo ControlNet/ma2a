@@ -9,6 +9,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     io,
+    ops::ControlFlow,
     os::windows::fs::{MetadataExt as _, OpenOptionsExt as _},
     path::{Path, PathBuf},
     sync::Arc,
@@ -108,9 +109,15 @@ impl Directory {
     }
 
     /// Visits every child name; names that are not valid Unicode are passed as `None`.
-    pub(crate) fn for_each_name(&self, mut visit: impl FnMut(Option<&str>)) -> io::Result<()> {
+    /// Visits every entry name until `visit` breaks.
+    pub(crate) fn for_each_name(
+        &self,
+        mut visit: impl FnMut(Option<&str>) -> ControlFlow<()>,
+    ) -> io::Result<()> {
         for child in fs::read_dir(&self.path)? {
-            visit(child?.file_name().to_str());
+            if visit(child?.file_name().to_str()).is_break() {
+                break;
+            }
         }
         Ok(())
     }

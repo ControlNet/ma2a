@@ -75,7 +75,7 @@ fn content_free(
 ) -> Result<FilesResult, Failure> {
     match request {
         FilesRequest::Stat(path) => Ok(ops::stat(root, path)?),
-        FilesRequest::List(path, cursor) => Ok(ops::list(root, path, cursor.as_deref())?),
+        FilesRequest::List(path, cursor) => Ok(ops::list(root, path, (cursor.as_deref(), stop))?),
         FilesRequest::Mkdir(path, parents) => ops::mkdir(root, path, *parents),
         FilesRequest::Rename(from, to, replace) => Ok(ops::rename(root, (from, to), *replace)?),
         FilesRequest::Remove(path, recursive) => ops::remove(root, path, (*recursive, stop)),

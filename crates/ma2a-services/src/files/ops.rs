@@ -1,6 +1,6 @@
 //! Content-free Files operations, run on a blocking thread.
 
-use std::{collections::BinaryHeap, io::ErrorKind, path::Path};
+use std::{collections::BinaryHeap, io::ErrorKind, ops::ControlFlow, path::Path};
 
 use ma2a_core::service::{
     DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, MAX_PATH_COMPONENTS, MAX_REMOTE_PATH_LEN,
@@ -56,7 +56,7 @@ pub(crate) fn stat(root: &Path, path: &RemotePath) -> Result<FilesResult, Servic
 pub(crate) fn list(
     root: &Path,
     path: &RemotePath,
-    cursor: Option<&str>,
+    (cursor, stop): (Option<&str>, &Stop),
 ) -> Result<FilesResult, ServiceError> {
     let directory = resolve::directory(root, path)?;
     let budget = (
@@ -64,18 +64,26 @@ pub(crate) fn list(
         path.components().iter().map(String::len).sum::<usize>(),
     );
     let mut smallest = BinaryHeap::with_capacity(MAX_LIST_PAGE + 1);
+    // A listing nobody waits for any more stops instead of visiting the rest of the directory.
     fs_error::map(directory.for_each_name(|name| {
+        if stop.is_set() {
+            return ControlFlow::Break(());
+        }
         let Some(name) = name.filter(|name| addressable(name, budget)) else {
-            return;
+            return ControlFlow::Continue(());
         };
         if cursor.is_some_and(|cursor| name <= cursor) {
-            return;
+            return ControlFlow::Continue(());
         }
         smallest.push(name.to_owned());
         if smallest.len() > MAX_LIST_PAGE + 1 {
             smallest.pop();
         }
+        ControlFlow::Continue(())
     }))?;
+    if stop.is_set() {
+        return Err(ServiceError::Cancelled);
+    }
     let mut names = smallest.into_sorted_vec();
     let more = names.len() > MAX_LIST_PAGE;
     names.truncate(MAX_LIST_PAGE);
@@ -183,7 +191,27 @@ pub(crate) fn remove(
 mod tests {
     use ma2a_core::service::{FilesResult, RemotePath, ServiceError};
 
-    use super::{Failure, Stop, addressable, remove};
+    use super::{Failure, Stop, addressable, list, remove};
+
+    #[test]
+    fn a_stopped_listing_ends_without_a_page() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("ma2a-list-stop-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dir"))?;
+        std::fs::write(root.join("dir/a"), b"a")?;
+        let path = RemotePath::parse("docs:/dir")?;
+
+        let stopped = Stop::default();
+        drop(stopped.on_drop());
+        assert_eq!(
+            list(&root, &path, (None, &stopped)),
+            Err(ServiceError::Cancelled)
+        );
+        let listed = list(&root, &path, (None, &Stop::default()));
+        assert!(matches!(listed, Ok(FilesResult::Listing(entries, None)) if entries.len() == 1));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
+    }
 
     #[test]
     fn a_stopped_recursive_removal_changes_nothing_more() -> Result<(), Box<dyn std::error::Error>>
