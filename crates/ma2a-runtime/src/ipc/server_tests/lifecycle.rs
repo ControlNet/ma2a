@@ -34,11 +34,12 @@ struct Wedged {
     slots: Arc<Semaphore>,
 }
 
-/// A business read, which queues behind the held mutation lock as any command but the
-/// handshake does.
-async fn stuck_read(client: &LocalApiClient) -> Result<Vec<u8>, crate::ipc::IpcError> {
-    let status = crate::api::decode_command(br#"{"version":1,"operation":"status"}"#)?;
-    client.call(&status).await
+/// A durable mutation, which queues behind the held mutation lock; a read never waits for it.
+async fn stuck_mutation(client: &LocalApiClient) -> Result<Vec<u8>, crate::ipc::IpcError> {
+    let create = crate::api::decode_command(
+        br#"{"version":1,"operation":"space_create","request_id":"05050505050505050505050505050505","name":"stuck"}"#,
+    )?;
+    client.call(&create).await
 }
 
 async fn wedged(name: &str) -> Result<Wedged, Box<dyn std::error::Error + Send + Sync>> {
@@ -82,7 +83,7 @@ async fn a_lifecycle_call_is_answered_while_the_business_plane_is_blocked() -> T
     let wedged = wedged("blocked-plane").await?;
     let stalled = tokio::spawn({
         let client = wedged.client.clone();
-        async move { stuck_read(&client).await }
+        async move { stuck_mutation(&client).await }
     });
 
     // When
@@ -117,7 +118,7 @@ async fn a_lifecycle_call_is_answered_when_every_business_slot_is_taken() -> Tes
             stalled.retain(|task: &tokio::task::JoinHandle<_>| !task.is_finished());
             while stalled.len() < BUSINESS_CONNECTION_LIMIT {
                 let client = wedged.client.clone();
-                stalled.push(tokio::spawn(async move { stuck_read(&client).await }));
+                stalled.push(tokio::spawn(async move { stuck_mutation(&client).await }));
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -142,7 +143,7 @@ async fn a_lifecycle_stop_is_accepted_while_the_business_plane_is_blocked() -> T
     let wedged = wedged("stop-while-blocked").await?;
     let stalled = tokio::spawn({
         let client = wedged.client.clone();
-        async move { stuck_read(&client).await }
+        async move { stuck_mutation(&client).await }
     });
 
     // When
