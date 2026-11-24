@@ -171,6 +171,14 @@ impl Partial {
         Ok(())
     }
 
+    /// Whether the destination directory held since `open` is the directory `path` names now.
+    ///
+    /// # Errors
+    /// Returns a local file error.
+    pub fn directory_is_at(&self, path: &Path) -> io::Result<bool> {
+        self.helpers.parent.0.is_at(path)
+    }
+
     /// Lends the partial file and the hash of everything in it for the content stream.
     pub const fn sink(&mut self) -> (&mut tokio::fs::File, &mut blake3::Hasher) {
         (&mut self.file, &mut self.hasher)

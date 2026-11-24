@@ -29,6 +29,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub(crate) use commit::TempFile;
 pub(crate) use content::open_regular;
 pub(crate) use resolve::destination;
+pub use resolve::is_windows_reserved;
 
 use crate::{
     FrameReader, FrameWriter, reply,

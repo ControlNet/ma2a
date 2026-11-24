@@ -13,8 +13,12 @@ use super::entry::Entry;
 pub(crate) use super::platform::Directory;
 use crate::fs_error;
 
-/// Returns whether a component cannot name a regular entry on Windows hosts.
-pub(crate) fn is_windows_reserved(component: &str) -> bool {
+/// Returns whether a component cannot name a regular entry on Windows hosts: a device name,
+/// with or without an extension, or a name ending in a dot or a space.
+///
+/// The devices are `CON`, `PRN`, `AUX`, `NUL`, and `COM`/`LPT` followed by a digit 1–9 or a
+/// superscript one, two, or three, compared without regard to ASCII case.
+pub fn is_windows_reserved(component: &str) -> bool {
     const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
     if component.ends_with('.') || component.ends_with(' ') {
         return true;
@@ -28,8 +32,17 @@ pub(crate) fn is_windows_reserved(component: &str) -> bool {
     if DEVICES.contains(&stem.as_str()) {
         return true;
     }
-    let bytes = stem.as_bytes();
-    matches!(bytes, [b'C', b'O', b'M', digit] | [b'L', b'P', b'T', digit] if (b'1'..=b'9').contains(digit))
+    let Some(number) = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+    else {
+        return false;
+    };
+    let mut digits = number.chars();
+    matches!(
+        (digits.next(), digits.next()),
+        (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+    )
 }
 
 /// Name prefixes of the staging files the Runtime itself creates in an exported directory,
@@ -218,10 +231,29 @@ mod tests {
 
     #[test]
     fn windows_device_names_and_trailing_dots_are_reserved() {
-        for reserved in ["CON", "nul.txt", "Com1", "lpt9.log", "a.", "b "] {
+        for reserved in [
+            "CON",
+            "nul.txt",
+            "Com1",
+            "lpt9.log",
+            "a.",
+            "b ",
+            "COM\u{b9}",
+            "lpt\u{b2}.txt",
+            "Com\u{b3}",
+        ] {
             assert!(is_windows_reserved(reserved), "{reserved}");
         }
-        for ordinary in ["console", "com10", "lpt0", "a.b", "nul_", "COM"] {
+        for ordinary in [
+            "console",
+            "com10",
+            "lpt0",
+            "a.b",
+            "nul_",
+            "COM",
+            "COM\u{b9}0",
+            "LPT\u{b4}",
+        ] {
             assert!(!is_windows_reserved(ordinary), "{ordinary}");
         }
     }

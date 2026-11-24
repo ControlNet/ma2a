@@ -29,7 +29,7 @@ fn components(relative: &str) -> Result<Vec<&str>, ToolError> {
         || parts.iter().any(|part| {
             part.contains(':')
                 || part.ends_with(['.', ' '])
-                || is_windows_reserved(part)
+                || ma2a_services::files::is_windows_reserved(part)
                 || ma2a_services::client::resume::is_private_directory(std::ffi::OsStr::new(part))
         })
     {
@@ -38,58 +38,57 @@ fn components(relative: &str) -> Result<Vec<&str>, ToolError> {
     Ok(parts)
 }
 
-fn is_windows_reserved(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name);
-    let upper = stem.to_ascii_uppercase();
-    matches!(
-        upper.as_str(),
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    )
-}
-
-/// Resolves an existing regular file for reading; symlinks may be followed only within the
-/// workspace.
-pub(super) fn existing(workspace: &Path, relative: &str) -> Result<PathBuf, ToolError> {
+/// Opens an existing regular file for reading; links may be followed only within the workspace,
+/// and never into a download's private directory.
+///
+/// The path is resolved again once the file is open, and the open file must be the one it then
+/// names: a directory swapped on the way between the check and the open is refused.
+pub(super) fn existing(workspace: &Path, relative: &str) -> Result<std::fs::File, ToolError> {
     let path = components(relative)?
         .into_iter()
         .fold(workspace.to_path_buf(), |path, part| path.join(part));
     let root = std::fs::canonicalize(workspace).map_err(|error| local(&error))?;
-    let resolved = std::fs::canonicalize(&path).map_err(|error| local(&error))?;
-    if !resolved.starts_with(&root) {
+    let resolved = inside(&root, &path)?;
+    // Only a regular file is read: a FIFO or device could block its reader forever.
+    let file = crate::agents::artifacts::open_regular(&resolved).map_err(|error| {
+        if error.kind() == io::ErrorKind::InvalidInput {
+            ToolError::new("invalid_tool", "the path names no regular file")
+        } else {
+            local(&error)
+        }
+    })?;
+    if !same_file(&file, &inside(&root, &path)?).map_err(|error| local(&error))? {
         return Err(outside());
     }
-    // Only a regular file is read: a FIFO or device could block its reader forever.
-    if std::fs::metadata(&resolved)
-        .map_err(|error| local(&error))?
-        .is_file()
+    Ok(file)
+}
+
+/// Resolves `path` and requires the result inside `root`, outside every private directory.
+fn inside(root: &Path, path: &Path) -> Result<PathBuf, ToolError> {
+    let resolved = std::fs::canonicalize(path).map_err(|error| local(&error))?;
+    let relative = resolved.strip_prefix(root).map_err(|_| outside())?;
+    if relative.components().any(|component| {
+        matches!(component, Component::Normal(part)
+            if ma2a_services::client::resume::is_private_directory(part))
+    }) {
+        return Err(outside());
+    }
+    Ok(resolved)
+}
+
+/// Whether the open `file` is the file `path` names now.
+fn same_file(file: &std::fs::File, path: &Path) -> io::Result<bool> {
+    #[cfg(unix)]
     {
-        Ok(resolved)
-    } else {
-        Err(ToolError::new(
-            "invalid_tool",
-            "the path names no regular file",
-        ))
+        use std::os::unix::fs::MetadataExt as _;
+        let (held, named) = (file.metadata()?, std::fs::metadata(path)?);
+        Ok((held.dev(), held.ino()) == (named.dev(), named.ino()))
+    }
+    #[cfg(windows)]
+    {
+        let named = crate::agents::artifacts::open_regular(path)?;
+        Ok(ma2a_services::windows_files::file_id(file)?
+            == ma2a_services::windows_files::file_id(&named)?)
     }
 }
 
@@ -156,6 +155,8 @@ mod tests {
             "CON",
             "nul.txt",
             "sub/COM1.log",
+            "COM\u{b9}",
+            "sub/lpt\u{b3}.txt",
         ] {
             assert!(existing(&workspace, escaping).is_err(), "{escaping}");
             assert!(destination(&workspace, escaping).is_err(), "{escaping}");
@@ -167,6 +168,13 @@ mod tests {
         {
             std::os::unix::fs::symlink(&base, workspace.join("link"))?;
             assert!(existing(&workspace, "link/secret").is_err());
+            // A link inside the workspace may not lead into a download's private directory.
+            std::fs::create_dir(workspace.join(".ma2a-downloads"))?;
+            std::fs::write(workspace.join(".ma2a-downloads/held"), b"z")?;
+            std::os::unix::fs::symlink(".ma2a-downloads", workspace.join("alias"))?;
+            assert!(existing(&workspace, "alias/held").is_err());
+            std::os::unix::fs::symlink("ok.txt", workspace.join("ok-link"))?;
+            assert!(existing(&workspace, "ok-link").is_ok());
             assert!(destination(&workspace, "link/new").is_err());
             // A FIFO would block the reader forever; directories are not files either.
             let made = std::process::Command::new("mkfifo")

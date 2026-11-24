@@ -55,11 +55,10 @@ pub(super) fn open_regular(path: &Path) -> io::Result<std::fs::File> {
     }
 }
 
-/// Copies `source` into a staging file of the blob store; returns its size, its hash, and
-/// the staging file.
-fn stage_blob(source: &Path, blobs: &Path) -> io::Result<(u64, [u8; 32], PathBuf)> {
+/// Copies the open regular file `input` into a staging file of the blob store; returns its
+/// size, its hash, and the staging file.
+fn stage_blob(mut input: std::fs::File, blobs: &Path) -> io::Result<(u64, [u8; 32], PathBuf)> {
     private_dir(blobs)?;
-    let mut input = open_regular(source)?;
     let mut suffix = [0_u8; 8];
     getrandom::fill(&mut suffix).map_err(io::Error::other)?;
     let staging = blobs.join(format!(".staging-{}", hex(&suffix)));
@@ -116,10 +115,10 @@ impl AgentManager {
     pub(super) async fn publish(
         &self,
         (task, call): (AgentTaskId, &str),
-        (name, source, media_type): (&str, PathBuf, &str),
+        (name, source, media_type): (&str, std::fs::File, &str),
     ) -> Result<ArtifactRef, ServiceError> {
         let blobs = self.blobs();
-        let staged = tokio::task::spawn_blocking(move || stage_blob(&source, &blobs))
+        let staged = tokio::task::spawn_blocking(move || stage_blob(source, &blobs))
             .await
             .map_err(|_| ServiceError::Internal)?;
         let (size, hash, staging) = staged.map_err(|error| match error.kind() {
@@ -234,7 +233,7 @@ impl AgentManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{hex, place_blob, stage_blob};
+    use super::{hex, open_regular, place_blob, stage_blob};
 
     #[test]
     fn publishing_stored_content_again_keeps_the_blob_untouched()
@@ -246,12 +245,12 @@ mod tests {
         let (source, blobs) = (dir.join("report.txt"), dir.join("blobs"));
         std::fs::write(&source, b"the same content")?;
 
-        let (size, hash, staging) = stage_blob(&source, &blobs)?;
+        let (size, hash, staging) = stage_blob(open_regular(&source)?, &blobs)?;
         place_blob(&staging, &blobs, &hash)?;
         let blob = blobs.join(hex(&hash));
         let first = std::fs::metadata(&blob)?;
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let (_, again, staging) = stage_blob(&source, &blobs)?;
+        let (_, again, staging) = stage_blob(open_regular(&source)?, &blobs)?;
         place_blob(&staging, &blobs, &again)?;
         let second = std::fs::metadata(&blob)?;
 

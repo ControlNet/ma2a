@@ -613,12 +613,17 @@ An Agent asks for a tool with a `tool` line. The daemon:
 - **Workspace paths.** `to`, `from`, and `path` (of `artifact.publish`) are relative to the
   instance workspace `<state>/agents-v1/<agent>/workspace`. Only normal components are allowed:
   no `..`, no root, no backslash, and not empty. A file read must canonicalize to a path inside the
-  canonical workspace, so a symbolic link may be followed only within it. A destination's parent
-  directories are created as needed, and none of them may be a symbolic link; a destination that
-  is a directory is refused. Downloads (`transfer.get`, `agent.artifact`) go to a partial file
-  in the private `.ma2a-downloads` directory beside the destination, whose helper names have a
-  fixed length whatever the destination is called, are verified, and are then renamed over the
-  destination, replacing an existing file. A destination named `.ma2a-downloads` is refused.
+  canonical workspace and outside every `.ma2a-downloads` directory, so a symbolic link may be
+  followed only within it and never into a download's helpers. The file is opened, the path is
+  resolved again, and the open file must be the one it names; the tool reads that open file. A
+  destination's parent directories are created as needed, and none of them may be a symbolic
+  link; a destination that is a directory is refused. Downloads (`transfer.get`, `agent.artifact`)
+  go to a partial file in the private `.ma2a-downloads` directory beside the destination, whose
+  helper names have a fixed length whatever the destination is called, are verified, and are then
+  renamed over the destination, replacing an existing file. Once the destination's directory is
+  held, the destination is checked again and must still name that directory. A destination named
+  `.ma2a-downloads` is refused. These checks keep a tool to the paths it was given; they are not a
+  boundary against the Agent itself, which runs as the same OS user.
 - **`exec.run`.** Stdin is empty, and nothing is interpreted by a shell. `timeout_ms` defaults to
   60 s and is at most 24 hours. `stdout` and `stderr` each carry at most the first 64 KiB as lossy
   UTF-8; when the whole answer would exceed the 64 KiB result bound, the longer stream is halved

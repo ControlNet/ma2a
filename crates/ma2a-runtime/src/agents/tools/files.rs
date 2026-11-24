@@ -95,9 +95,7 @@ impl Call<'_> {
     pub(super) async fn transfer_put(&self, args: TransferPut) -> Outcome {
         let source = existing(&self.workspace, &args.from)?;
         let resource = TransferResource::File(remote(&args.root, &args.path)?);
-        let mut file = crate::agents::artifacts::open_regular(&source)
-            .map(tokio::fs::File::from_std)
-            .map_err(|error| local(&error))?;
+        let mut file = tokio::fs::File::from_std(source);
         let size = file.metadata().await.map_err(|error| local(&error))?.len();
         let mode = if args.replace {
             WriteMode::Replace
@@ -144,6 +142,23 @@ pub(super) async fn download<R: AsyncRead + Unpin>(
     let mut partial = Partial::open(&target, "agent tool download", false)
         .await
         .map_err(|error| local(&error))?;
+    // The directory held is the one the checked path names once it is held, so a directory
+    // swapped between the check and the open is not written into.
+    let held = destination(workspace, relative).and_then(|checked| {
+        let parent = checked.parent().unwrap_or(workspace);
+        match partial.directory_is_at(parent) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(ToolError::new(
+                "invalid_tool",
+                "the destination directory changed while it was opened",
+            )),
+            Err(error) => Err(local(&error)),
+        }
+    });
+    if let Err(error) = held {
+        let _discarded = partial.discard().await;
+        return Err(error);
+    }
     if let Err(error) = partial.begin(identity).await {
         let _discarded = partial.discard().await;
         return Err(local(&error));
