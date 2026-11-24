@@ -103,7 +103,7 @@ impl ProcessManager {
         };
         // The workload is independent of its caller: a caller gone before the accept still
         // gets its Process, which a retry with the same RequestId then answers.
-        let accepted = writer.frame(FrameKind::Accept, &accept).await.is_ok();
+        let accepted = super::host::write_accept(writer, &accept).await;
         let outcome = if existing {
             Ok(record)
         } else {

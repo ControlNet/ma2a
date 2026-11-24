@@ -145,7 +145,7 @@ impl ProcessManager {
         let Ok(accept) = accept.encode() else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+        if !super::host::write_accept(writer, &accept).await {
             return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
         }
         let budget = usize::try_from(max).unwrap_or(usize::MAX);

@@ -49,7 +49,7 @@ impl AgentManager {
         let Ok(accept) = accept.encode() else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+        if !super::host::write_accept(writer, &accept).await {
             return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
         }
         // Only `cancel` or the end of the caller's stream can come from the caller now.

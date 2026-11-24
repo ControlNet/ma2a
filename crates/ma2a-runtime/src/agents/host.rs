@@ -135,13 +135,28 @@ impl AgentManager {
     }
 }
 
+/// Longest wait to write the frame that opens or ends an operation, so a caller that stops
+/// reading cannot hold the host.
+const FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Refuses an operation before any effect.
 pub(super) async fn refuse<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     error: ServiceError,
 ) -> OperationReport {
-    let _sent = writer.reject(error).await;
+    let _sent = tokio::time::timeout(FRAME_GRACE, writer.reject(error)).await;
     OperationReport::new(OperationEnd::Rejected(error))
+}
+
+/// Writes `accept` within [`FRAME_GRACE`]; `false` when it was not written in time.
+pub(super) async fn write_accept<W: AsyncWrite + Unpin + Send>(
+    writer: &mut FrameWriter<W>,
+    payload: &[u8],
+) -> bool {
+    matches!(
+        tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Accept, payload)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// Sends the terminal outcome of an accepted operation, bounded against a stalled peer.
@@ -149,7 +164,6 @@ pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     outcome: AgentReplyOutcome,
 ) -> OperationReport {
-    const FINAL_WRITE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
     let end = match &outcome {
         Ok(_) => OperationEnd::Completed,
         Err(error) => OperationEnd::Failed(*error),
@@ -157,11 +171,7 @@ pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
     let Ok(payload) = AgentReply::encode_outcome(&outcome) else {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Internal));
     };
-    let wrote = tokio::time::timeout(
-        FINAL_WRITE_GRACE,
-        writer.frame(FrameKind::Outcome, &payload),
-    )
-    .await;
+    let wrote = tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Outcome, &payload)).await;
     match wrote {
         Ok(Ok(())) => OperationReport::new(end),
         Ok(Err(_)) => OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled)),
@@ -178,7 +188,7 @@ async fn respond<W: AsyncWrite + Unpin + Send>(
     let Ok(accept) = accept.encode() else {
         return refuse(writer, ServiceError::Internal).await;
     };
-    if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+    if !write_accept(writer, &accept).await {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
     }
     finish(writer, outcome).await
@@ -197,5 +207,34 @@ async fn answer<W: AsyncWrite + Unpin + Send>(
             respond(writer, AgentAccept::Admitted, error).await
         }
         Err(error) => refuse(writer, error).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::service::{AgentAccept, AgentReply, ServiceError};
+    use ma2a_services::{FrameWriter, OperationEnd};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_caller_that_never_reads_cannot_hold_an_answer() {
+        // A stream with no room, whose reader never drains it.
+        let (_caller, host) = tokio::io::duplex(1);
+        let mut writer = FrameWriter::new(host);
+        let started = tokio::time::Instant::now();
+
+        let refused = super::refuse(&mut writer, ServiceError::UnknownTask).await;
+        let answered = super::respond(
+            &mut writer,
+            AgentAccept::Admitted,
+            Ok(AgentReply::Cards(Vec::new(), None)),
+        )
+        .await;
+
+        assert_eq!(
+            refused.end,
+            OperationEnd::Rejected(ServiceError::UnknownTask)
+        );
+        assert_eq!(answered.end, OperationEnd::Failed(ServiceError::Cancelled));
+        assert!(started.elapsed() <= super::FRAME_GRACE * 3);
     }
 }
