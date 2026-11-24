@@ -26,6 +26,15 @@ new Worker("https://worker.invalid/worker.js");
 new SharedWorker("//worker.invalid/shared.js");
 navigator.sendBeacon("https://beacon.invalid/", "body");
 xhr.open("GET", "https://xhr.invalid/data");
+import{a as b}from"./chunk.js";export*from`./more.js`;
+JS
+# Minified shapes that only look like references: interface text, comments, and patterns.
+cat > "$temporary/text.js" <<'JS'
+const a=[`reply from `,b(c.target_endpoint_id)],d="import "+e+`:x`;
+// import "https://comment.invalid/x.js"
+/* fetch("https://comment.invalid/y") */
+const f=/from "https:\/\/pattern.invalid"/.test(g),h=1/2/3,i=`${j(`from "a:b"`)} import 'c:d'`;
+k.from("e:f");l.import("g:h");
 JS
 
 html=$(./scripts/extract-runtime-references.pl html "$temporary/index.html")
@@ -39,6 +48,10 @@ grep -F $'asset\thttps://evil.invalid/track.png' <<<"$css" >/dev/null
 grep -F $'asset\thttps://evil.invalid/a\'b.png' <<<"$css" >/dev/null
 grep -F $'asset\t/module.js' <<<"$javascript" >/dev/null
 grep -F $'asset\t/worker.js' <<<"$javascript" >/dev/null
+grep -F $'asset\t./chunk.js' <<<"$javascript" >/dev/null
+grep -F $'asset\t./more.js' <<<"$javascript" >/dev/null
+text=$(./scripts/extract-runtime-references.pl js "$temporary/text.js")
+[[ -z "$text" ]] || { printf 'string, comment, or pattern text read as a reference:\n%s\n' "$text" >&2; exit 1; }
 for reference in \
   /api/v1/snapshot \
   https://api.invalid/data \
@@ -51,6 +64,17 @@ for reference in \
   https://xhr.invalid/data
 do
   grep -F $'network\t'"$reference" <<<"$javascript" >/dev/null
+done
+
+# The built console, when present, must carry only same-origin references.
+shopt -s nullglob
+for built in web/dist/assets/*.js; do
+  while IFS=$'\t' read -r _ reference; do
+    [[ "$reference" =~ ^\.{0,2}/[A-Za-z0-9._/-]*$ ]] || {
+      printf 'unexpected runtime reference in %s: %s\n' "$built" "$reference" >&2
+      exit 1
+    }
+  done < <(./scripts/extract-runtime-references.pl js "$built")
 done
 
 printf 'runtime reference scanner probes passed\n'

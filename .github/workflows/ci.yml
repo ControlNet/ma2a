@@ -67,6 +67,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.143,cargo-deny@0.20.2,cargo-machete@0.9.2
       - run: cargo run --locked -p xtask -- check
+      - name: Check the built console's runtime references
+        run: |
+          compgen -G 'web/dist/assets/*.js' >/dev/null || { echo 'no built console to scan' >&2; exit 1; }
+          ./scripts/test-runtime-references.sh
 
   architecture-probe:
     strategy:
