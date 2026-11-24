@@ -100,9 +100,9 @@ impl Anchor {
     /// Whether this account, SYSTEM, or the Administrators group owns this directory and its
     /// protected ACL lets no other account in.
     pub(super) fn is_private(&self) -> io::Result<bool> {
-        let user = crate::windows_security::current_process_user_sid()?.to_sddl()?;
+        let is_user = windows_files::current_user_matcher()?;
         let sddl = windows_files::owner_and_dacl(&self.pin)?;
-        Ok(crate::sddl::is_private(&sddl, &user))
+        Ok(crate::sddl::is_private(&sddl, is_user))
     }
 
     /// Opens the child file `name` without following a reparse point, never sharing deletion

@@ -13,6 +13,12 @@ use std::{fmt::Write as _, io};
 pub struct UserSid(Vec<u8>);
 
 impl UserSid {
+    /// Returns the binary SID.
+    #[cfg(windows)]
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
     /// Formats this SID in its canonical `S-R-A-…` form.
     ///
     /// # Errors

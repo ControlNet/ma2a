@@ -19,11 +19,11 @@ use windows_sys::Win32::{
     Security::{
         Authorization::{
             ConvertSecurityDescriptorToStringSecurityDescriptorW,
-            ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-            SE_FILE_OBJECT,
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+            GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
         },
-        DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        SECURITY_ATTRIBUTES,
+        DACL_SECURITY_INFORMATION, GetLengthSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SECURITY_ATTRIBUTES,
     },
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
@@ -174,6 +174,44 @@ pub fn owner_and_dacl(file: &File) -> io::Result<String> {
     sddl
 }
 
+/// Returns a predicate telling whether one SDDL SID string is the current process's user.
+///
+/// The string may be in `S-1-…` form or a two-letter alias. Windows parses it, so an alias
+/// stands for whatever account the system itself means by it.
+///
+/// # Errors
+/// Returns the operating system's error when the current user cannot be read.
+pub fn current_user_matcher() -> io::Result<impl Fn(&str) -> bool> {
+    let user = crate::windows_security::current_process_user_sid()?;
+    Ok(move |text: &str| sid_bytes(text).is_ok_and(|bytes| bytes == user.as_bytes()))
+}
+
+/// Parses one SDDL SID string, full or an alias, into its binary form.
+fn sid_bytes(text: &str) -> io::Result<Vec<u8>> {
+    if text.contains('\0') {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let wide = text
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut sid: PSID = ptr::null_mut();
+    // SAFETY: [Category 8 - FFI boundary] `wide` is a live NUL-terminated UTF-16 string and
+    // `sid` is a valid out-pointer.
+    if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &raw mut sid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: [Category 8 - FFI boundary] `sid` is the valid SID the conversion just returned.
+    let length = usize::try_from(unsafe { GetLengthSid(sid) }).unwrap_or(0);
+    // SAFETY: [Category 8 - FFI boundary] `sid` points at `length` bytes, as GetLengthSid
+    // reports for the SID the conversion allocated.
+    let bytes = unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), length) }.to_vec();
+    // SAFETY: [Category 8 - FFI boundary] `sid` was allocated with LocalAlloc by the conversion
+    // above and is freed exactly once, after its last use.
+    let _freed = unsafe { LocalFree(sid) };
+    Ok(bytes)
+}
+
 fn with_private_object<T>(
     path: &Path,
     ace_flags: &str,
@@ -297,7 +335,7 @@ mod tests {
     #[test]
     fn a_protected_directory_is_private_from_the_moment_it_exists()
     -> Result<(), Box<dyn std::error::Error>> {
-        let user = crate::windows_security::current_process_user_sid()?.to_sddl()?;
+        let user = super::current_user_matcher()?;
         let base = std::env::temp_dir().join(format!("ma2a-acl-{}", std::process::id()));
         let _stale = std::fs::remove_dir_all(&base);
         std::fs::create_dir(&base)?;
@@ -310,6 +348,11 @@ mod tests {
         let (private, inherited) = (open_directory(&path)?, open_directory(&base)?);
         let sddl = owner_and_dacl(&private)?;
         assert!(crate::sddl::is_private(&sddl, &user), "{sddl}");
+        // The user's own SID text and its system alias, where it has one, both resolve to it.
+        let full = crate::windows_security::current_process_user_sid()?.to_sddl()?;
+        assert!(user(&full));
+        assert!(!user("SY") || full == "S-1-5-18");
+        assert!(!user("S-1-5-21-1-2-3-500"));
         // A directory made the ordinary way inherits from the temporary directory.
         let sddl = owner_and_dacl(&inherited)?;
         assert!(!crate::sddl::is_private(&sddl, &user), "{sddl}");
