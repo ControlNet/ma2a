@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest"
 
-import { currentWebSession, loginAndTouchSession, logoutSession } from "./web-auth"
+import { currentWebSession, loginAndTouchSession, logoutSession, sessionIsGone } from "./web-auth"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -72,7 +72,7 @@ test("logs out the browser's current session when another tab replaced it", asyn
 })
 
 test("reports a refused logout when the cookie carries the same token", async () => {
-  // Given: the session itself is no longer valid.
+  // Given: the Runtime refuses this token, and the cookie offers no other one.
   Object.defineProperty(document, "cookie", {
     configurable: true,
     value: `ma2a_csrf=${"ab".repeat(32)}`,
@@ -81,9 +81,31 @@ test("reports a refused logout when the cookie carries the same token", async ()
     .spyOn(globalThis, "fetch")
     .mockImplementation(async (): Promise<Response> => new Response(null, { status: 403 }))
 
-  // When / Then: no retry, and the refusal is reported for the caller to sign out locally.
+  // When / Then: no retry, and the refusal is reported to the caller.
   await expect(logoutSession({ csrfToken: "ab".repeat(32) })).rejects.toThrow(
     "The Runtime did not accept",
   )
   expect(fetch).toHaveBeenCalledTimes(1)
+})
+
+test("signs the page out only when the Runtime reports the session gone", async () => {
+  // Given
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"ab".repeat(32)}`,
+  })
+  const answer = { status: 403 }
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async (): Promise<Response> => new Response(null, answer),
+  )
+
+  // When
+  const refused = await logoutSession({ csrfToken: "ab".repeat(32) }).catch((error) => error)
+  answer.status = 401
+  const gone = await logoutSession({ csrfToken: "ab".repeat(32) }).catch((error) => error)
+
+  // Then: a 403 keeps the live session; only a 401 lets the page sign out.
+  expect(sessionIsGone(refused)).toBe(false)
+  expect(sessionIsGone(gone)).toBe(true)
+  expect(sessionIsGone(new Error("offline"))).toBe(false)
 })

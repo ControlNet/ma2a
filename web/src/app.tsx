@@ -1,4 +1,3 @@
-import { HTTPError } from "ky"
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import { createRuntimeMutationClient } from "./api/mutations"
 import type { ServicesData } from "./api/services"
@@ -6,7 +5,7 @@ import {
   currentWebSession,
   loginAndTouchSession,
   logoutSession,
-  WebAuthenticationError,
+  sessionIsGone,
   type WebSession,
 } from "./api/web-auth"
 import { AppShell } from "./components/app-shell"
@@ -111,14 +110,7 @@ export function App({
           try {
             await logoutSession(session)
           } catch (error) {
-            // An expired or revoked session cannot authenticate logout; still clear local state.
-            const cause = error instanceof WebAuthenticationError ? error.cause : error
-            if (
-              !(cause instanceof HTTPError) ||
-              (cause.response.status !== 401 && cause.response.status !== 403)
-            ) {
-              throw error
-            }
+            if (!sessionIsGone(error)) throw error
           }
           controller?.stop()
           setSession(undefined)

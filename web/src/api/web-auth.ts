@@ -83,6 +83,17 @@ export async function logoutSession(session: WebSession): Promise<void> {
   }
 }
 
+/**
+ * Whether a failed logout found the session already gone, so the page may sign out.
+ *
+ * The Runtime answers 401 only for a session that no longer exists; any other refusal, 403
+ * for a stale CSRF token included, leaves the browser's session live.
+ */
+export function sessionIsGone(error: unknown): boolean {
+  const cause = error instanceof WebAuthenticationError ? error.cause : error
+  return cause instanceof HTTPError && cause.response.status === 401
+}
+
 async function postLogout(csrfToken: string): Promise<void> {
   await http.post(new URL("/api/v1/web/auth/logout", window.location.origin), {
     headers: { "x-csrf-token": csrfToken },
