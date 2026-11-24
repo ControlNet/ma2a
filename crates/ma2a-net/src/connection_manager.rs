@@ -216,12 +216,17 @@ impl ConnectionManager {
             ConnectionObservationContext::new(target, self.0.options.clock.now_ms()),
             &connection,
         );
-        self.spawn_observer(target, &connection);
+        if !self.spawn_observer(target, &connection) {
+            connection.close(0_u8.into(), b"");
+            return Err(DialFailure::cancelled());
+        }
         Ok(connection)
     }
 
-    /// Records path changes until the connection closes, holding it only weakly.
-    fn spawn_observer(&self, target: ma2a_core::EndpointId, connection: &Connection) {
+    /// Records path changes until the connection closes, holding it only weakly. Returns
+    /// `false`, starting nothing, once shutdown began: shutdown cancels before it takes the
+    /// observers under the same lock, so no observer starts after it joined them.
+    fn spawn_observer(&self, target: ma2a_core::EndpointId, connection: &Connection) -> bool {
         let manager = self.clone();
         let stable_id = connection.stable_id();
         let weak = connection.weak_handle();
@@ -233,6 +238,9 @@ impl ConnectionManager {
             .observers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.0.cancellation.is_cancelled() {
+            return false;
+        }
         while observers.try_join_next().is_some() {}
         observers.spawn(async move {
             tokio::pin!(closed);
@@ -260,6 +268,7 @@ impl ConnectionManager {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&stable_id);
         });
+        true
     }
 }
 

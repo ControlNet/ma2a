@@ -102,3 +102,36 @@ async fn a_connection_registered_after_shutdown_is_refused_and_closed() -> TestR
     router.shutdown().await.map_err(io::Error::other)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn no_observer_starts_once_shutdown_began() -> TestResult {
+    // Given: a connection registered just before shutdown, whose observer comes after the
+    // shutdown already joined the observers.
+    let router = Router::builder(test_endpoint("ma2a_manager_observer_server").await?)
+        .accept(HOLD_ALPN, Hold)
+        .spawn();
+    let manager = ConnectionManager::new(test_endpoint("ma2a_manager_observer_client").await?);
+    let connection = manager
+        .0
+        .endpoint
+        .connect(router.endpoint().addr(), HOLD_ALPN)
+        .await
+        .map_err(io::Error::other)?;
+    manager.shutdown().await;
+
+    // When
+    let started = manager.spawn_observer(router.endpoint().id().into(), &connection);
+
+    // Then
+    assert!(!started);
+    assert!(
+        manager
+            .0
+            .observers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    );
+    router.shutdown().await.map_err(io::Error::other)?;
+    Ok(())
+}
