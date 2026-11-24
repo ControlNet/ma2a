@@ -34,6 +34,9 @@ impl AgentSpec {
     /// Validates the spec into its durable definition.
     fn definition(self) -> Result<AgentDefinition, ServiceError> {
         let invalid = |_| ServiceError::InvalidInput;
+        if reserved_name(self.id.as_str()) {
+            return Err(ServiceError::InvalidInput);
+        }
         AgentCard::new(self.id.clone(), &self.description, (true, self.max_tasks))
             .map_err(invalid)?;
         let all = ToolFamily::ALL
@@ -62,6 +65,13 @@ impl AgentSpec {
             max_tasks: self.max_tasks,
         })
     }
+}
+
+/// Whether an Agent name cannot name its own directory: `blobs` is the artifact store beside
+/// the Agent directories, and a Windows device name opens a device there. Device names are
+/// refused on every host, so a definition means the same wherever it is copied.
+fn reserved_name(name: &str) -> bool {
+    name == "blobs" || ma2a_services::files::is_windows_reserved(name)
 }
 
 impl AgentManager {
@@ -142,5 +152,18 @@ impl AgentManager {
             })
             .collect();
         Ok((revision, listed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn names_the_runtime_or_windows_keeps_are_reserved() {
+        for name in ["blobs", "con", "nul", "aux", "prn", "com1", "lpt9"] {
+            assert!(super::reserved_name(name), "{name}");
+        }
+        for name in ["lead", "blob", "console", "com", "com10", "nul-agent"] {
+            assert!(!super::reserved_name(name), "{name}");
+        }
     }
 }
