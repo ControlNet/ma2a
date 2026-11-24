@@ -75,3 +75,58 @@ async fn request_body_deadline_and_rate_state_are_bounded() -> TestResult {
     assert_eq!(timed_out.status, 408);
     timeout_server.stop().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn login_refuses_before_waiting_for_the_body() -> TestResult {
+    let state = TempState::new("login-early-refusal")?;
+    let auth = WebAuthService::open(
+        StoreConfig::new(state.path()),
+        clock(3_000),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    auth.change_password(PasswordAction::Set, password())
+        .await?;
+    let server = RunningServer::start(auth, WebServerConfig::default()).await?;
+    let port = server.port();
+    let origin = format!("http://127.0.0.1:{port}");
+    // Announces a body that never arrives, so only a refusal sent before reading it can answer.
+    let stalled = |extra: &str| {
+        format!(
+            "POST /api/v1/web/auth/login HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+             Content-Type: application/json\r\nContent-Length: 10\r\n{extra}\r\n"
+        )
+        .into_bytes()
+    };
+    let answer = |request: Vec<u8>| {
+        let server = &server;
+        async move {
+            tokio::time::timeout(Duration::from_secs(2), server.request(&request))
+                .await
+                .map_err(|_| "login waited for a body before refusing")?
+        }
+    };
+
+    let cross_origin = answer(stalled("")).await?;
+    let same_origin = format!("Origin: {origin}\r\nSec-Fetch-Site: same-origin\r\n");
+    for _attempt in 0..WebServerConfig::LOGIN_ATTEMPTS {
+        server
+            .request(&request(
+                port,
+                "POST",
+                "/api/v1/web/auth/login",
+                &[
+                    ("Origin", origin.as_str()),
+                    ("Sec-Fetch-Site", "same-origin"),
+                    ("Content-Type", "application/json"),
+                ],
+                b"{}",
+            ))
+            .await?;
+    }
+    let rate_limited = answer(stalled(&same_origin)).await?;
+
+    assert_eq!(cross_origin.status, 403);
+    assert_eq!(rate_limited.status, 429);
+    server.stop().await
+}

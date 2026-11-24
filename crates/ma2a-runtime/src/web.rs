@@ -13,7 +13,7 @@ mod types;
 
 use axum::{
     Json,
-    body::Bytes,
+    body::to_bytes,
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse as _, Redirect, Response},
@@ -54,13 +54,19 @@ struct LoginRequest {
     password: String,
 }
 
-async fn login(State(state): State<WebState>, headers: HeaderMap, body: Bytes) -> Response {
-    if !headers::valid_same_origin(&headers, &state) {
+/// Refuses on headers alone before reading the body, so a client that never sends the body it
+/// announced holds a connection only after spending a login attempt.
+async fn login(State(state): State<WebState>, request: axum::extract::Request) -> Response {
+    let (parts, body) = request.into_parts();
+    if !headers::valid_same_origin(&parts.headers, &state) {
         return StatusCode::FORBIDDEN.into_response();
     }
     if !state.login_rate.allow(state.auth.now_ms()) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
+    let Ok(body) = to_bytes(body, WebServerConfig::MAX_BODY_BYTES).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
     let Ok(request) = serde_json::from_slice::<LoginRequest>(&body) else {
         return StatusCode::UNPROCESSABLE_ENTITY.into_response();
     };
