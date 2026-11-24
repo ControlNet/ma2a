@@ -199,10 +199,12 @@ const fn is_transient(error: &ClientError) -> bool {
     )
 }
 
-/// Streams one artifact's verified content into `sink`.
+/// Streams one artifact's verified content into `sink`. Content that is not what `reference`
+/// names, the size and BLAKE3 hex of the task's artifact reference, is refused: a wrong size
+/// before any byte, a wrong hash at the end.
 pub(super) async fn artifact<S: AsyncWrite + Unpin>(
     backend: &Backend,
-    (route, task, name): (&Route, &str, &str),
+    ((route, task, name), reference): ((&Route, &str, &str), (u64, &str)),
     sink: &mut S,
 ) -> Result<(), Refusal> {
     let (endpoint, agent) = parts(route)?;
@@ -212,18 +214,32 @@ pub(super) async fn artifact<S: AsyncWrite + Unpin>(
     let identity = client::transfer::download_accepted(&mut reader)
         .await
         .map_err(|error| refusal(&error))?;
+    let mismatch = || Refusal::named(ServiceError::IntegrityMismatch.name());
+    if identity.size() != reference.0 {
+        return Err(mismatch());
+    }
     let mut hasher = blake3::Hasher::new();
-    client::transfer::download_content(&mut reader, (sink, &mut hasher), (identity, 0))
-        .await
-        .map_err(|error| refusal(&error))?;
+    let result =
+        client::transfer::download_content(&mut reader, (sink, &mut hasher), (identity, 0))
+            .await
+            .map_err(|error| refusal(&error))?;
+    if !matches_reference(reference, (result.size, &result.hash)) {
+        return Err(mismatch());
+    }
     Ok(())
+}
+
+/// Whether content of `size` and `hash` is the content `reference` names; a reference whose
+/// hash is not BLAKE3 hex names no content.
+fn matches_reference((size, blake3): (u64, &str), (got, hash): (u64, &[u8; 32])) -> bool {
+    size == got && blake3::Hash::from_hex(blake3).is_ok_and(|expected| expected == *hash)
 }
 
 #[cfg(test)]
 mod tests {
     use ma2a_core::service::AgentTaskId;
 
-    use super::moves_past;
+    use super::{matches_reference, moves_past};
 
     const fn id(byte: u8) -> AgentTaskId {
         AgentTaskId::from_bytes([byte; 16])
@@ -245,5 +261,17 @@ mod tests {
         assert!(!moves(Some(3), &[4], Some(3)));
         assert!(!moves(Some(3), &[], Some(2)));
         assert!(!moves(Some(3), &[3], None));
+    }
+
+    #[test]
+    fn content_must_be_what_the_artifact_reference_names() {
+        let hash = *blake3::hash(b"result").as_bytes();
+        let hex = blake3::hash(b"result").to_hex();
+        assert!(matches_reference((6, &hex), (6, &hash)));
+        // Another size, another hash, or a reference that names no hash.
+        assert!(!matches_reference((7, &hex), (6, &hash)));
+        let other = blake3::hash(b"forged").to_hex();
+        assert!(!matches_reference((6, &other), (6, &hash)));
+        assert!(!matches_reference((6, ""), (6, &hash)));
     }
 }

@@ -153,7 +153,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 - **Remote artifact.**
   - The body is chunked, with no length.
   - It is read through Agent v1 `artifact` (Transfer v1 download frames).
-  - The body ends with an error unless the download verified.
+  - The body ends with an error unless the download verified, and unless its size and BLAKE3 are the ones the task's artifact reference names. A download of another size is refused before any byte is sent.
   - A client that disconnects ends the download at once, even while the target sends nothing.
 - An unknown task or artifact answers `404`.
 

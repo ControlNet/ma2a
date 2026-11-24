@@ -64,6 +64,11 @@ pub(super) async fn serve(
         .and_then(Value::as_str)
         .unwrap_or("application/octet-stream")
         .to_owned();
+    let blake3 = artifact
+        .get("blake3")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let is_local = matches!(route, Route::Local(_));
     let body = match route {
         Route::Local(_) => {
@@ -79,8 +84,11 @@ pub(super) async fn serve(
             let (mut writer, reader) = tokio::io::duplex(PIPE);
             let (outcome, verdict) = oneshot::channel();
             tokio::spawn(relay(outcome, async move {
-                let streamed =
-                    remote::artifact(&backend, (&route, &task, &name), &mut writer).await;
+                let reference = (
+                    (&route, task.as_str(), name.as_str()),
+                    (size, blake3.as_str()),
+                );
+                let streamed = remote::artifact(&backend, reference, &mut writer).await;
                 drop(writer);
                 streamed
             }));
