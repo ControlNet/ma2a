@@ -74,14 +74,14 @@ impl ProcessManager {
         Ok(ProcessReply::Page(page, next))
     }
 
-    /// Returns the retained output window of one Process.
-    pub(crate) async fn window(&self, id: ProcessId) -> LogWindow {
+    /// Returns the retained output window of one Process: empty when it has no log, and `io`
+    /// when a log exists but cannot be read.
+    pub(crate) async fn window(&self, id: ProcessId) -> Result<LogWindow, ServiceError> {
         let directory = log_directory(&self.directory(id));
         tokio::task::spawn_blocking(move || log::window(&directory))
             .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default()
+            .map_err(|_| ServiceError::Internal)?
+            .map_err(|_| ServiceError::Io)
     }
 
     /// Returns one Process in full, with its start and retained output window.
@@ -97,7 +97,7 @@ impl ProcessManager {
             .map(ProcessStart::from_bytes)
             .transpose()
             .map_err(|_| ServiceError::Internal)?;
-        let window = self.window(id).await;
+        let window = self.window(id).await?;
         let details = ProcessDetails::new(record.summary(), start, window);
         Ok((record, details))
     }
@@ -131,7 +131,10 @@ impl ProcessManager {
             Ok(record) => record,
             Err(error) => return refuse(writer, error).await,
         };
-        let window = self.window(id).await;
+        let window = match self.window(id).await {
+            Ok(window) => window,
+            Err(error) => return refuse(writer, error).await,
+        };
         let (start, truncated) = match resolve(from, window) {
             Ok(resolved) => resolved,
             Err(error) => return refuse(writer, error).await,
