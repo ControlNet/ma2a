@@ -135,7 +135,7 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
         Ok(stdout.flush()?)
     });
     if arguments.stdin {
-        super::exit_reading_stdin(printed);
+        super::exit_with(printed);
     }
     printed
 }

@@ -21,7 +21,7 @@ pub(crate) async fn run(paths: IpcPaths, command: ProxyCommand) -> Result<(), Ap
                 open(&paths, &destination.endpoint, OpenBody::Proxy(request)).await?;
             let local = (tokio::io::stdin(), tokio::io::stdout());
             let relayed = client::proxy::run((&mut reader, &mut writer), local).await;
-            super::exit_reading_stdin(relayed.map(drop).map_err(AppError::from))
+            super::exit_with(relayed.map(drop).map_err(AppError::from))
         }
         ProxyCommand::Forward {
             listen,

@@ -104,8 +104,9 @@ pub(crate) async fn open_as(
 /// Ends the process with `outcome`, reported as `main` reports it.
 ///
 /// A command that read stdin ends this way: a pending read of stdin cannot be cancelled and
-/// would hold the runtime open after `main` returned.
-pub(crate) fn exit_reading_stdin(outcome: Result<(), AppError>) -> ! {
+/// would hold the runtime open after `main` returned. So does the daemon, once it closed its
+/// Runtime: a blocking job stuck on a hung file system would hold it open just the same.
+pub(crate) fn exit_with(outcome: Result<(), AppError>) -> ! {
     let code = match outcome {
         Ok(()) => 0,
         Err(error) => {
@@ -124,7 +125,7 @@ pub(crate) fn unless_reading_stdin<T>(
     result: Result<T, AppError>,
 ) -> Result<T, AppError> {
     match result {
-        Err(error) if reading => exit_reading_stdin(Err(error)),
+        Err(error) if reading => exit_with(Err(error)),
         other => other,
     }
 }

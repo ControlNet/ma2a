@@ -175,8 +175,12 @@ async fn run(cli: cli::Cli) -> Result<(), AppError> {
             println!("daemon stopped");
             Ok(())
         }
-        cli::Command::Daemon => daemon::run(state_dir, paths, false).await,
-        cli::Command::DaemonDetached => daemon::run(state_dir, paths, true).await,
+        cli::Command::Daemon => {
+            commands::remote::exit_with(daemon::run(state_dir, paths, false).await)
+        }
+        cli::Command::DaemonDetached => {
+            commands::remote::exit_with(daemon::run(state_dir, paths, true).await)
+        }
         cli::Command::Status { json } => {
             call((&state_dir, paths), api::Command::snapshot_fetch(), json).await
         }
