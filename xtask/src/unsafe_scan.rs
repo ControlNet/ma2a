@@ -12,11 +12,11 @@ pub(crate) fn scan_unsafe_tokens(source: &str) -> (bool, bool) {
     let mut pending_lint_paren = false;
     let mut lint_paren_depth = 0_usize;
     while let Some((start, ch)) = chars.next() {
-        if ch.is_ascii_alphabetic() || ch == '_' {
+        if is_identifier_char(ch) && !ch.is_ascii_digit() {
             after_hash = false;
             let mut end = start + ch.len_utf8();
             while let Some(&(next_idx, next_ch)) = chars.peek() {
-                if next_ch.is_ascii_alphanumeric() || next_ch == '_' {
+                if is_identifier_char(next_ch) {
                     end = next_idx + next_ch.len_utf8();
                     chars.next();
                 } else {
@@ -65,6 +65,21 @@ pub(crate) fn scan_unsafe_tokens(source: &str) -> (bool, bool) {
         }
     }
     (has_unsafe, has_allow)
+}
+
+/// Whether `ch` can continue a Rust identifier.
+///
+/// Outside comments and literals, a non-ASCII character is either part of an identifier or one
+/// of the few non-ASCII whitespace characters Rust accepts, so every other non-ASCII character
+/// is taken as an identifier character: a keyword is never read out of a longer identifier.
+const fn is_identifier_char(ch: char) -> bool {
+    ch == '_'
+        || ch.is_ascii_alphanumeric()
+        || (!ch.is_ascii()
+            && !matches!(
+                ch,
+                '\u{85}' | '\u{200E}' | '\u{200F}' | '\u{2028}' | '\u{2029}'
+            ))
 }
 
 fn strip_rust_comments_and_strings(source: &str) -> String {
@@ -118,9 +133,17 @@ fn strip_rust_comments_and_strings(source: &str) -> String {
             }
             out.push('\'');
             i += 1;
-        } else {
+        } else if b.is_ascii() {
             out.push(char::from(b));
             i += 1;
+        } else {
+            // A non-ASCII character is kept whole, never read byte by byte.
+            let ch = source
+                .get(i..)
+                .and_then(|rest| rest.chars().next())
+                .unwrap_or(char::REPLACEMENT_CHARACTER);
+            out.push(ch);
+            i += ch.len_utf8().max(1);
         }
     }
     out
@@ -144,13 +167,13 @@ fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
 
 fn skip_raw_ident(bytes: &[u8], start: usize) -> Option<usize> {
     let first = *bytes.get(start + 2)?;
-    if !(first.is_ascii_alphabetic() || first == b'_') {
+    if !(first.is_ascii_alphabetic() || first == b'_' || !first.is_ascii()) {
         return None;
     }
     let mut j = start + 3;
     while bytes
         .get(j)
-        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || !c.is_ascii())
     {
         j += 1;
     }

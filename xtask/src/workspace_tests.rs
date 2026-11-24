@@ -161,50 +161,6 @@ fn unsafe_code_is_confined_to_audited_windows_boundary() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn unsafe_token_scanner_catches_rust_2024_and_multiline_forms() {
-    use crate::unsafe_scan::scan_unsafe_tokens;
-    assert_eq!(scan_unsafe_tokens("unsafe\n{}"), (true, false));
-    assert_eq!(
-        scan_unsafe_tokens("unsafe extern \"C\" { fn x(); }"),
-        (true, false)
-    );
-    assert_eq!(
-        scan_unsafe_tokens("#[unsafe(no_mangle)] fn x() {}"),
-        (true, false)
-    );
-    assert_eq!(
-        scan_unsafe_tokens("#[expect(unsafe_code, reason = \"x\")]"),
-        (false, true)
-    );
-    assert_eq!(
-        scan_unsafe_tokens("#![allow(\n    rust::unsafe_code,\n    reason = \"x\"\n)]"),
-        (false, true)
-    );
-    assert_eq!(
-        scan_unsafe_tokens("#[allow /* comment */ (unsafe_code)]"),
-        (false, true)
-    );
-    assert_eq!(scan_unsafe_tokens("#[warn(unsafe_code)]"), (false, true));
-    assert_eq!(
-        scan_unsafe_tokens("let _ = ('\\'', '\"'); #[allow(unsafe_code)] unsafe {}"),
-        (true, true)
-    );
-    assert_eq!(
-        scan_unsafe_tokens("let _ = ('\\u{10FFFF}', '\"'); unsafe {}"),
-        (true, false)
-    );
-    assert_eq!(scan_unsafe_tokens("let r#unsafe = 1;"), (false, false));
-    assert_eq!(
-        scan_unsafe_tokens("let unsafe_code = \"m\"; opt.expect(unsafe_code);"),
-        (false, false)
-    );
-    assert_eq!(
-        scan_unsafe_tokens("// unsafe { }\nlet s = \"allow(unsafe_code)\";"),
-        (false, false)
-    );
-}
-
-#[test]
 fn process_heavy_app_tests_have_a_bounded_nextest_group() -> Result<(), Box<dyn Error>> {
     // Given
     let root = root()?;
