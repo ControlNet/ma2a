@@ -189,11 +189,8 @@ fn a_stopping_adapter_reads_no_link_or_fifo_in_place_of_its_token() -> TestResul
 
     // Nor is a FIFO, and reading it would block the stop.
     std::fs::remove_file(&path)?;
-    rustix::fs::mkfifoat(
-        rustix::fs::CWD,
-        &path,
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-    )?;
+    let made = std::process::Command::new("mkfifo").arg(&path).status()?;
+    assert!(made.success());
     remove_if_ours(&path, "ours");
     assert!(std::fs::symlink_metadata(&path).is_ok());
     Ok(())
