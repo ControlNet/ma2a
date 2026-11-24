@@ -179,22 +179,23 @@ fn apply_windows_acl(path: &Path, kind: PathKind) -> Result<(), StoreError> {
     run_powershell(
         path,
         &format!(
-            "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$s=New-Object Security.Principal.SecurityIdentifier('S-1-5-18');$a=New-Object Security.AccessControl.{acl_type};$a.SetAccessRuleProtection($true,$false);$i=[Security.AccessControl.InheritanceFlags]'{inheritance}';$p=[Security.AccessControl.PropagationFlags]::None;$t=[Security.AccessControl.AccessControlType]::Allow;$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($u,'FullControl',$i,$p,$t)));$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl',$i,$p,$t)));$a.SetOwner($u);Set-Acl -LiteralPath $env:MA2A_ACL_PATH -AclObject $a"
+            "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$a=New-Object Security.AccessControl.{acl_type};$a.SetAccessRuleProtection($true,$false);$i=[Security.AccessControl.InheritanceFlags]'{inheritance}';$p=[Security.AccessControl.PropagationFlags]::None;$t=[Security.AccessControl.AccessControlType]::Allow;foreach($id in @($u.Value,'S-1-5-18'|Select-Object -Unique)){{$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($id)),'FullControl',$i,$p,$t)))}};$a.SetOwner($u);Set-Acl -LiteralPath $env:MA2A_ACL_PATH -AclObject $a"
         ),
         "application",
     )
 }
 
-/// Accepts exactly two explicit Allow rules, one for the current user and one for SYSTEM,
-/// each granting every `FullControl` right, under a DACL that inherits nothing, on an object
-/// owned by the current user, SYSTEM, or the Administrators group. Any other owner could
+/// Accepts one or two explicit Allow rules, each granting every `FullControl` right to the
+/// current user or SYSTEM and together covering both (one principal when running as SYSTEM),
+/// under a DACL that inherits nothing, on an object owned by the current user, SYSTEM, or the
+/// Administrators group. Any other owner could
 /// rewrite the DACL; Administrators can take ownership anyway, and elevated sessions may make
 /// it the default owner of new objects.
 #[cfg(windows)]
 fn validate_windows_acl(path: &Path) -> Result<(), StoreError> {
     run_powershell(
         path,
-        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$f=[Security.AccessControl.FileSystemRights]::FullControl;$a=Get-Acl -LiteralPath $env:MA2A_ACL_PATH;if(!$a.AreAccessRulesProtected){exit 2};$o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;if(($o-ne $u)-and($o-ne $s)-and($o-ne 'S-1-5-32-544')){exit 7};$r=@($a.Access|Where-Object {!$_.IsInherited});if($r.Count-ne 2){exit 3};$seen=@{};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};if($seen.ContainsKey($sid)){exit 6};$seen[$sid]=$true;if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band $f)-ne $f)){exit 5}}",
+        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$f=[Security.AccessControl.FileSystemRights]::FullControl;$a=Get-Acl -LiteralPath $env:MA2A_ACL_PATH;if(!$a.AreAccessRulesProtected){exit 2};$o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;if(($o-ne $u)-and($o-ne $s)-and($o-ne 'S-1-5-32-544')){exit 7};$r=@($a.Access|Where-Object {!$_.IsInherited});if(($r.Count-lt 1)-or($r.Count-gt 2)){exit 3};$seen=@{};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};$seen[$sid]=$true;if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band $f)-ne $f)){exit 5}};if(!$seen.ContainsKey($u)-or !$seen.ContainsKey($s)){exit 6}",
         "validation",
     )
 }

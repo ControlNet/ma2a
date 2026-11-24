@@ -155,10 +155,12 @@ fn validate_dacl(dacl: *mut ACL, user: PSID, system: PSID) -> Result<(), ()> {
             AclSizeInformation,
         )
     } == 0
-        || info.AceCount != 2
+        || !(1..=2).contains(&info.AceCount)
     {
         return Err(());
     }
+    // One or two grants that together cover the user and SYSTEM: when the process runs as
+    // SYSTEM the two are one principal, which may be recorded once or twice.
     let mut user_seen = false;
     let mut system_seen = false;
     for index in 0..info.AceCount {
@@ -167,13 +169,11 @@ fn validate_dacl(dacl: *mut ACL, user: PSID, system: PSID) -> Result<(), ()> {
         let is_user = unsafe { EqualSid(sid, user) } != 0;
         // SAFETY: [Category 8 - FFI boundary] `sid` and `system` reference validated live SIDs.
         let is_system = unsafe { EqualSid(sid, system) } != 0;
-        if is_user && !user_seen {
-            user_seen = true;
-        } else if is_system && !system_seen {
-            system_seen = true;
-        } else {
+        if !is_user && !is_system {
             return Err(());
         }
+        user_seen |= is_user;
+        system_seen |= is_system;
     }
     if user_seen && system_seen {
         Ok(())

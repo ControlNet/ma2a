@@ -15,6 +15,11 @@ pub(super) struct AccessRule {
     pub(super) full_control: bool,
 }
 
+/// Whether an object is owned by a trusted principal and its protected DACL holds only explicit
+/// Full Control grants that together cover the current user and SYSTEM.
+///
+/// When the process runs as SYSTEM the two are one principal, which Windows may record as one
+/// rule or two, so one or two rules are accepted, each for the user or SYSTEM.
 pub(super) fn is_owner_only(owner: Principal, protected: bool, rules: &[AccessRule]) -> bool {
     let trusted_owner = matches!(
         owner,
@@ -23,7 +28,7 @@ pub(super) fn is_owner_only(owner: Principal, protected: bool, rules: &[AccessRu
             | Principal::CurrentUserAndSystem
             | Principal::Administrators
     );
-    if !trusted_owner || !protected || rules.len() != 2 {
+    if !trusted_owner || !protected || !(1..=2).contains(&rules.len()) {
         return false;
     }
     let mut user_seen = false;
@@ -33,17 +38,10 @@ pub(super) fn is_owner_only(owner: Principal, protected: bool, rules: &[AccessRu
             return false;
         }
         match rule.principal {
-            Principal::CurrentUser | Principal::CurrentUserAndSystem if !user_seen => {
-                user_seen = true;
-            }
-            Principal::System | Principal::CurrentUserAndSystem if !system_seen => {
-                system_seen = true;
-            }
-            Principal::CurrentUser
-            | Principal::System
-            | Principal::CurrentUserAndSystem
-            | Principal::Administrators
-            | Principal::Other => return false,
+            Principal::CurrentUser => user_seen = true,
+            Principal::System => system_seen = true,
+            Principal::CurrentUserAndSystem => (user_seen, system_seen) = (true, true),
+            Principal::Administrators | Principal::Other => return false,
         }
     }
     user_seen && system_seen
@@ -187,6 +185,20 @@ mod tests {
             Principal::CurrentUserAndSystem,
             true,
             &local_system
+        ));
+        // Windows may also merge the grant to SYSTEM-as-user into one rule.
+        assert!(is_owner_only(
+            Principal::CurrentUserAndSystem,
+            true,
+            &local_system[..1]
+        ));
+        // A lone grant to the user, or one repeated, never covers SYSTEM.
+        let user_only = [user_and_system[0], user_and_system[0]];
+        assert!(!is_owner_only(Principal::CurrentUser, true, &user_only));
+        assert!(!is_owner_only(
+            Principal::CurrentUser,
+            true,
+            &user_only[..1]
         ));
     }
 }
