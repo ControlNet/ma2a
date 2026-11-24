@@ -139,19 +139,7 @@ pub(super) async fn download<R: AsyncRead + Unpin>(
     // Re-validate immediately before opening the partial file so a directory component swapped
     // into a symlink during the remote handshake cannot escape the workspace.
     let target = destination(workspace, relative)?;
-    // Once the destination's directory is held, the destination is checked again before any
-    // helper file is touched, so a directory swapped in meanwhile is left as it was.
-    let (root, path) = (workspace.to_path_buf(), relative.to_owned());
-    let mut partial = Partial::open_checked(&target, ("agent tool download", false), move || {
-        destination(&root, &path).map(drop).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "the destination changed while it was opened",
-            )
-        })
-    })
-    .await
-    .map_err(|error| local(&error))?;
+    let mut partial = partial((workspace, relative), &target).await?;
     if let Err(error) = partial.begin(identity).await {
         let _discarded = partial.discard().await;
         return Err(local(&error));
@@ -168,5 +156,50 @@ pub(super) async fn download<R: AsyncRead + Unpin>(
             let _discarded = partial.discard().await;
             Err(failed(&error))
         }
+    }
+}
+
+/// Opens the partial file of `target`. Once the destination's directory is held, `relative` is
+/// checked again before any helper file is touched, so a directory swapped in meanwhile is left
+/// as it was; that check's own error, such as an escape, is the answer.
+async fn partial(
+    (workspace, relative): (&Path, &str),
+    target: &Path,
+) -> Result<Partial, ToolError> {
+    let (root, path) = (workspace.to_path_buf(), relative.to_owned());
+    Partial::open_checked(target, ("agent tool download", false), move || {
+        destination(&root, &path)
+            .map(drop)
+            .map_err(io::Error::other)
+    })
+    .await
+    .map_err(|error| {
+        error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<ToolError>())
+            .cloned()
+            .unwrap_or_else(|| local(&error))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::partial;
+
+    #[tokio::test]
+    async fn a_destination_that_escapes_once_held_is_an_invalid_tool() -> Result<(), String> {
+        // Given: the target's directory exists, but the path checked once it is held escapes.
+        let workspace = std::env::temp_dir().join(format!("ma2a-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
+        let target = workspace.join("file");
+
+        // When
+        let opened = partial((&workspace, "../file"), &target).await;
+        let _cleanup = std::fs::remove_dir_all(&workspace);
+
+        // Then
+        let error = opened.err().ok_or("the escape was opened")?;
+        assert_eq!(error.code, "invalid_tool");
+        Ok(())
     }
 }
