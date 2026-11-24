@@ -286,3 +286,40 @@ async fn an_out_of_bounds_result_or_question_fails_the_task_instead_of_vanishing
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_second_delivery_of_a_held_task_leaves_the_live_one_alone() -> TestResult {
+    // Given: a task waiting for its creator's answer.
+    let mut runtime = Runtime::start();
+    runtime.next().await?;
+    runtime.send(&task(1, "a", "ask")).await?;
+    runtime.until(ended("a", ReportedState::Waiting)).await?;
+
+    // When: the same task is delivered again, then answered.
+    runtime.send(&task(2, "a", "echo")).await?;
+    let answer = RuntimeToAgent::Message {
+        seq: 3,
+        task: "a".to_owned(),
+        message: Message::user_text("blue"),
+    };
+    runtime.send(&answer).await?;
+
+    // Then: the waiting task got the answer and completed with it.
+    let mut completed = None;
+    runtime
+        .until(|line| match line {
+            AgentToRuntime::State {
+                task,
+                state: ReportedState::Completed,
+                message,
+                ..
+            } if task == "a" => {
+                completed = message.as_ref().map(Message::text);
+                true
+            }
+            _ => false,
+        })
+        .await?;
+    assert_eq!(completed.as_deref(), Some("blue"));
+    Ok(())
+}

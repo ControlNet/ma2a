@@ -190,8 +190,13 @@ fn dispatch<H, F>(
                 cancel,
                 calls: HashMap::new(),
             };
-            if shared.tasks().insert(task.clone(), slot).is_some() {
-                return;
+            // A second delivery of a task already held leaves the live one as it is.
+            {
+                let mut tasks = shared.tasks();
+                if tasks.contains_key(&task) {
+                    return;
+                }
+                tasks.insert(task.clone(), slot);
             }
             let handle = Task::new(
                 (task, from, message),
