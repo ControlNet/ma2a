@@ -154,6 +154,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - The body is chunked, with no length.
   - It is read through Agent v1 `artifact` (Transfer v1 download frames).
   - The body ends with an error unless the download verified.
+  - A client that disconnects ends the download at once, even while the target sends nothing.
 - An unknown task or artifact answers `404`.
 
 ### ListTasks

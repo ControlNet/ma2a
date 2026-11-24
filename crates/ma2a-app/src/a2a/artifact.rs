@@ -26,7 +26,7 @@ use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tokio_util::io::ReaderStream;
 
 use super::{
-    backend::{Backend, Route},
+    backend::{Backend, Refusal, Route},
     http::status,
     remote,
 };
@@ -78,12 +78,12 @@ pub(super) async fn serve(
         Route::Remote(..) => {
             let (mut writer, reader) = tokio::io::duplex(PIPE);
             let (outcome, verdict) = oneshot::channel();
-            tokio::spawn(async move {
+            tokio::spawn(relay(outcome, async move {
                 let streamed =
                     remote::artifact(&backend, (&route, &task, &name), &mut writer).await;
                 drop(writer);
-                let _sent = outcome.send(streamed.is_ok());
-            });
+                streamed
+            }));
             Body::from_stream(Verified {
                 content: ReaderStream::new(reader),
                 verdict,
@@ -99,6 +99,21 @@ pub(super) async fn serve(
         headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
     }
     response
+}
+
+/// Runs one remote download into a response body and reports whether it verified. A client
+/// that left ends it, even while the target sends nothing, so a stalled target does not keep
+/// the stream open for nobody.
+async fn relay(
+    mut outcome: oneshot::Sender<bool>,
+    download: impl Future<Output = Result<(), Refusal>>,
+) {
+    let streamed = tokio::select! {
+        biased;
+        () = outcome.closed() => return,
+        streamed = download => streamed,
+    };
+    let _sent = outcome.send(streamed.is_ok());
 }
 
 /// Remote content, which fails at its end unless the download verified.
@@ -143,5 +158,28 @@ async fn local(backend: &Backend, (task, name): (&str, &str), chunks: &Chunks) -
         if chunks.send(Ok(Bytes::from(chunk.content))).await.is_err() || chunk.eof {
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::oneshot;
+
+    use super::{Refusal, relay};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_left_ends_a_stalled_download() {
+        // Given: a target that never sends, and a client that left.
+        let (outcome, verdict) = oneshot::channel();
+        drop(verdict);
+
+        // When
+        let download = std::future::pending::<Result<(), Refusal>>();
+        let relayed = tokio::time::timeout(Duration::from_secs(60), relay(outcome, download)).await;
+
+        // Then
+        assert!(relayed.is_ok());
     }
 }
