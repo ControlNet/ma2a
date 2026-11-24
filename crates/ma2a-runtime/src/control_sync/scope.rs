@@ -75,7 +75,13 @@ impl ControlRoundScope {
         self.peers.contains(&peer)
     }
 
-    pub(crate) fn take_round(&mut self) -> Option<Self> {
+    /// Takes the next round: targeted peers first, unless `global_first` gives a pending global
+    /// round its turn.
+    pub(crate) fn take_round(&mut self, global_first: bool) -> Option<Self> {
+        if global_first && self.global {
+            self.global = false;
+            return Some(Self::all());
+        }
         if !self.peers.is_empty() {
             let selected = self
                 .peers

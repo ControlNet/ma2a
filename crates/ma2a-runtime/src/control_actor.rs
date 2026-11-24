@@ -17,6 +17,8 @@ mod queue;
 pub(crate) use queue::{ControlRoundQueue, ScheduledControlRound};
 
 #[cfg(test)]
+mod fairness_tests;
+#[cfg(test)]
 mod scheduling_tests;
 #[cfg(test)]
 mod source_tests;

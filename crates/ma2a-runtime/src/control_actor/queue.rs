@@ -49,6 +49,9 @@ pub(crate) struct ControlRoundQueue {
     pending: Option<ControlRoundScope>,
     waiters: Vec<ControlWaiter>,
     healthy: bool,
+    /// Whether the last round launched was targeted; a pending global round then goes next,
+    /// so targeted requests arriving during every round cannot starve it.
+    last_targeted: bool,
 }
 
 impl Default for ControlRoundQueue {
@@ -60,6 +63,7 @@ impl Default for ControlRoundQueue {
             pending: None,
             waiters: Vec::new(),
             healthy: true,
+            last_targeted: false,
         }
     }
 }
@@ -130,7 +134,7 @@ impl ControlRoundQueue {
         waiter: Option<ControlWaiter>,
     ) -> Option<ScheduledControlRound> {
         let mut pending = self.pending.take()?;
-        let scope = pending.take_round()?;
+        let scope = pending.take_round(self.last_targeted)?;
         if !pending.is_empty() {
             self.pending = Some(pending);
         }
@@ -149,6 +153,7 @@ impl ControlRoundQueue {
         };
         self.next_id = self.next_id.wrapping_add(1);
         self.rotation = self.rotation.wrapping_add(1);
+        self.last_targeted = !scheduled.scope.is_global();
         self.active = Some(scheduled.id);
         for waiter in &mut self.waiters {
             if waiter.round_id.is_none()
