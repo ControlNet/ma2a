@@ -8,7 +8,7 @@ mod relay;
 
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
-use ma2a_core::service::{EMPTY_ACCEPT, FrameKind, ProxyRequest, ProxyResult, ServiceError};
+use ma2a_core::service::{EMPTY_ACCEPT, ProxyRequest, ProxyResult, ServiceError};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -42,7 +42,7 @@ where
         Err(_) => return reply::reject(writer, ServiceError::TimedOut).await,
     };
     let started = Instant::now();
-    if let Err(error) = writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await {
+    if let Err(error) = reply::accept(writer, &EMPTY_ACCEPT, shutdown).await {
         return reply::lost(error, (0, 0));
     }
     let idle = Duration::from_millis(request.idle_timeout_ms());

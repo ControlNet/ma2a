@@ -188,3 +188,26 @@ async fn a_cancel_after_end_stops_a_relay_to_a_silent_destination() -> TestResul
     holder.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn a_caller_that_never_reads_the_accept_does_not_hold_the_proxy() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let target = tokio::spawn(async move { listener.accept().await });
+    // No room for even the accept header, and the caller never reads.
+    let (_client, (mut reader, mut writer)) = pipe_with(1);
+    let shutdown = CancellationToken::new();
+    let server = {
+        let shutdown = shutdown.clone();
+        let request = loopback(port, 10_000)?;
+        tokio::spawn(
+            async move { serve_proxy(request, &shutdown, (&mut reader, &mut writer)).await },
+        )
+    };
+    let _connected = target.await??;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    shutdown.cancel();
+    let report = tokio::time::timeout(Duration::from_secs(3), server).await??;
+    assert_eq!(report.end, OperationEnd::Failed(ServiceError::Unavailable));
+    Ok(())
+}
