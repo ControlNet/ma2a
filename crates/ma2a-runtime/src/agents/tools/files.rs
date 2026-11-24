@@ -148,7 +148,7 @@ pub(super) async fn download<R: AsyncRead + Unpin>(
         let _discarded = partial.discard().await;
         return Err(local(&error));
     }
-    match client::transfer::download_content(&mut reader, partial.sink()).await {
+    match client::transfer::download_content(&mut reader, partial.sink(), (identity, 0)).await {
         Ok(result) => {
             partial
                 .finish_or_discard(true)

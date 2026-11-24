@@ -84,7 +84,8 @@ async fn attempt(
     Ok(async {
         let identity = client::transfer::download_accepted(&mut reader).await?;
         partial.begin(identity).await?;
-        client::transfer::download_content(&mut reader, partial.sink()).await?;
+        let offset = partial.offset();
+        client::transfer::download_content(&mut reader, partial.sink(), (identity, offset)).await?;
         Ok(())
     }
     .await)

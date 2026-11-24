@@ -28,21 +28,26 @@ pub async fn download_accepted<R: AsyncRead + Unpin>(
 
 /// Streams download content into `sink`, extending `hasher`, and verifies the full hash.
 ///
-/// `hasher` must already cover every byte before the requested offset, so the check spans
-/// the whole content exactly as the target hashed it.
+/// `identity` is what the target accepted and `offset` where the stream starts, so exactly
+/// `identity.size() - offset` bytes may arrive. `hasher` must already cover every byte before
+/// `offset`, so the check spans the whole content exactly as the target hashed it.
 ///
 /// # Errors
 /// Returns the failed outcome (`content_changed` when the source moved underneath),
-/// `integrity_mismatch` when the received content does not hash to the reported value, a
-/// local write failure, or the stream failure.
+/// `integrity_mismatch` when the content runs past the accepted size or the terminal reports
+/// another size, byte count, or hash than was received, a local write failure, or the stream
+/// failure.
 pub async fn download_content<R, S>(
     reader: &mut FrameReader<R>,
     (sink, hasher): (&mut S, &mut blake3::Hasher),
+    (identity, offset): (ContentIdentity, u64),
 ) -> Result<TransferResult, ClientError>
 where
     R: AsyncRead + Unpin,
     S: AsyncWrite + Unpin,
 {
+    let mismatch = || ClientError::Failed(ServiceError::IntegrityMismatch);
+    let expected = identity.size().checked_sub(offset).ok_or_else(mismatch)?;
     let mut received = 0_u64;
     loop {
         let frame = next(reader).await?;
@@ -51,17 +56,25 @@ where
                 let (Channel::Output, bytes) = frame.data().map_err(ClientError::Stream)? else {
                     return Err(ClientError::Stream(ServiceError::InvalidInput));
                 };
+                received = u64::try_from(bytes.len())
+                    .ok()
+                    .and_then(|len| received.checked_add(len))
+                    .filter(|total| *total <= expected)
+                    .ok_or_else(mismatch)?;
                 sink.write_all(bytes).await?;
                 hasher.update(bytes);
-                received = received.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
             }
             FrameKind::Outcome => {
                 let result = decoded(TransferResult::decode_outcome(frame.payload()))?;
                 sink.flush().await?;
-                return if result.bytes == received && result.hash == *hasher.finalize().as_bytes() {
+                return if result.bytes == received
+                    && received == expected
+                    && result.size == identity.size()
+                    && result.hash == *hasher.finalize().as_bytes()
+                {
                     Ok(result)
                 } else {
-                    Err(ClientError::Failed(ServiceError::IntegrityMismatch))
+                    Err(mismatch())
                 };
             }
             _ => return Err(unexpected(&frame)),

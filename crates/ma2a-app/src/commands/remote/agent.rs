@@ -237,7 +237,8 @@ async fn artifact(
         let _discarded = partial.discard().await;
         return Err(error.into());
     }
-    let downloaded = client::transfer::download_content(&mut reader, partial.sink()).await;
+    let downloaded =
+        client::transfer::download_content(&mut reader, partial.sink(), (identity, 0)).await;
     let downloaded = match downloaded {
         Ok(result) => partial
             .finish_or_discard(false)

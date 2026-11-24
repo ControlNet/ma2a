@@ -146,7 +146,9 @@ async fn an_interrupted_download_resumes_to_the_verified_full_content() -> TestR
         client::transfer::download_accepted(&mut reader).await?,
         identity
     );
-    let result = client::transfer::download_content(&mut reader, partial.sink()).await?;
+    let offset = partial.offset();
+    let result =
+        client::transfer::download_content(&mut reader, partial.sink(), (identity, offset)).await?;
     assert_eq!((result.bytes, result.size), (250_000, 400_000));
     partial.finish(false).await?;
     assert_eq!(std::fs::read(&destination)?, source);

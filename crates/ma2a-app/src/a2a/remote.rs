@@ -185,11 +185,11 @@ pub(super) async fn artifact<S: AsyncWrite + Unpin>(
     let request = AgentRequest::Artifact(agent.clone(), task_id(task)?, name.to_owned(), 0, None);
     let (mut reader, _writer) =
         open_as(&backend.paths, (endpoint, None), OpenBody::Agent(request)).await?;
-    client::transfer::download_accepted(&mut reader)
+    let identity = client::transfer::download_accepted(&mut reader)
         .await
         .map_err(|error| refusal(&error))?;
     let mut hasher = blake3::Hasher::new();
-    client::transfer::download_content(&mut reader, (sink, &mut hasher))
+    client::transfer::download_content(&mut reader, (sink, &mut hasher), (identity, 0))
         .await
         .map_err(|error| refusal(&error))?;
     Ok(())
