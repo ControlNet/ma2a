@@ -473,7 +473,7 @@ supervisor. It is the `ma2a` executable in a hidden supervisor mode, running
 | `<state>/processes-v1/<id>/status` | atomic status record |
 | `<state>/processes-v1/<id>/log/<first cursor, 20 digits>.seg` | log segments |
 | Unix: `<state>/run-v1/p/<id>.sock` | socket, in a 0700 directory, at most 103 bytes |
-| Windows: pipe `ma2a-p-<16 hex>-<id>` | the hex is the first 16 hexadecimal characters of BLAKE3 over the `<state>/processes-v1` path |
+| Windows: pipe `ma2a-p-<16 hex>-<id>` | the hex is the first 16 hexadecimal characters of BLAKE3 over the state directory as the file system resolves it (UTF-16LE), so every spelling of one directory names the same pipe, as for the daemon's own pipe |
 
 `processes-v1` is also 0700. An existing socket name is never reclaimed.
 

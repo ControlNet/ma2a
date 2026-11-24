@@ -61,6 +61,9 @@ jobs:
         run: |
           cargo test --locked -p ma2a-runtime --test ipc_lifecycle
           cargo test --locked -p ma2a-runtime --lib -- ipc::server ipc::windows
+      - name: Check Process supervisor pipe names natively
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p ma2a-runtime --lib processes::windows_tests
 
   quality:
     runs-on: ubuntu-latest

@@ -58,6 +58,9 @@ struct Inner {
     hosting: Option<ProcessHosting>,
     processes_dir: PathBuf,
     sockets_dir: PathBuf,
+    /// What names this state directory's supervisor pipes, whichever spelling opened it.
+    #[cfg(windows)]
+    pipe_scope: String,
     shutdown: CancellationToken,
     tasks: TaskTracker,
     coordination: Mutex<Coordination>,
@@ -82,6 +85,12 @@ impl ProcessManager {
             hosting,
             processes_dir: state_dir.join(PROCESSES_DIR),
             sockets_dir: state_dir.join("run-v1").join("p"),
+            #[cfg(windows)]
+            pipe_scope: crate::ipc::directory_identity(state_dir)
+                .to_hex()
+                .get(..16)
+                .unwrap_or_default()
+                .to_owned(),
             shutdown,
             tasks: TaskTracker::new(),
             coordination: Mutex::new(Coordination::default()),
@@ -123,11 +132,7 @@ impl ProcessManager {
             .to_string_lossy()
             .into_owned();
         #[cfg(windows)]
-        let address = {
-            let scope = blake3::hash(self.0.processes_dir.as_os_str().as_encoded_bytes());
-            let scope = scope.to_hex();
-            format!("ma2a-p-{}-{id}", scope.get(..16).unwrap_or_default())
-        };
+        let address = format!("ma2a-p-{}-{id}", self.0.pipe_scope);
         SupervisorAddress::new(address)
     }
 
@@ -164,3 +169,5 @@ fn owned(record: Option<ProcessRecord>, peer: EndpointId) -> Result<ProcessRecor
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;

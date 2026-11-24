@@ -70,19 +70,26 @@ fn store_dir_error(error: ma2a_store::StoreError) -> IpcError {
     }
 }
 
-/// Names the pipe after the state directory as the file system resolves it, so every spelling
-/// of one directory (case, separators, a trailing separator, a link to it) reaches the same
-/// daemon, as its lock file does. A directory that does not exist yet keeps its spelling.
-fn name(paths: &IpcPaths) -> Result<interprocess::local_socket::Name<'static>, IpcError> {
+/// Identifies a directory as the file system resolves it, so every spelling of one directory
+/// (case, separators, a trailing separator, a link to it) gets the same identity, as its lock
+/// file does. A directory that does not exist yet keeps its spelling.
+///
+/// Every pipe derived from a state directory is named from this identity, so a daemon started
+/// under another spelling still reaches the pipes an earlier one named.
+pub(crate) fn directory_identity(path: &Path) -> blake3::Hash {
     use std::os::windows::ffi::OsStrExt as _;
-    let state_dir = std::fs::canonicalize(paths.state_dir())
-        .unwrap_or_else(|_| paths.state_dir().to_path_buf());
-    let bytes = state_dir
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let bytes = resolved
         .as_os_str()
         .encode_wide()
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>();
-    let value = format!("ma2a-{}", blake3::hash(&bytes).to_hex());
+    blake3::hash(&bytes)
+}
+
+/// Names the daemon's pipe after the identity of its state directory.
+fn name(paths: &IpcPaths) -> Result<interprocess::local_socket::Name<'static>, IpcError> {
+    let value = format!("ma2a-{}", directory_identity(paths.state_dir()).to_hex());
     Ok(value.to_ns_name::<GenericNamespaced>()?.into_owned())
 }
 

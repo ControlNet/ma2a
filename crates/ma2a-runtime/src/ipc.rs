@@ -22,6 +22,8 @@ pub use lifecycle::{
     random_launch_nonce,
 };
 pub use server::{LocalApiServer, ServerExit};
+#[cfg(windows)]
+pub(crate) use windows::directory_identity;
 
 /// Bounds the transfer of one frame's bytes once the frame has begun arriving.
 ///
