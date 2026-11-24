@@ -353,3 +353,27 @@ async fn a_stalled_upload_times_out_and_is_removed() -> TestResult {
     assert_eq!(fs::read_dir(root.path())?.count(), 0);
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_transfer_whose_accept_is_never_read_gives_up_and_cleans_up() -> TestResult {
+    // Given: callers that never read, through pipes with no room for an accept.
+    let root = TempRoot::new("unread-accept")?;
+    fs::write(root.path().join("source"), b"content")?;
+    let get = TransferRequest::Get(file("docs:/source")?, 0, None);
+    let put = TransferRequest::Put(file("docs:/landed")?, 10, WriteMode::CreateNew);
+    let (_get_client, get_server) = start((root.path(), get), std::sync::Arc::default(), 1)?;
+    let (_put_client, put_server) = start((root.path(), put), std::sync::Arc::default(), 1)?;
+
+    // When / Then: both give up after the grace, and the upload leaves no staging file.
+    for server in [get_server, put_server] {
+        assert_eq!(
+            server.await?.end,
+            OperationEnd::Failed(ServiceError::TimedOut)
+        );
+    }
+    let names = fs::read_dir(root.path())?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+    assert_eq!(names, ["source"]);
+    Ok(())
+}

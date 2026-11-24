@@ -119,7 +119,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let accepted = match TransferAccept::Put.encode() {
-        Ok(accept) => writer.frame(FrameKind::Accept, &accept).await,
+        Ok(accept) => reply::accept_within_grace(writer, &accept).await,
         Err(_) => Err(ServiceError::Internal),
     };
     let mut upload = Upload {

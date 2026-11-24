@@ -8,8 +8,8 @@ use std::{
 };
 
 use ma2a_core::service::{
-    Channel, ContentIdentity, FrameKind, MAX_DATA_CHUNK_LEN, RemotePath, ServiceError,
-    TransferAccept, TransferResult,
+    Channel, ContentIdentity, MAX_DATA_CHUNK_LEN, RemotePath, ServiceError, TransferAccept,
+    TransferResult,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -93,7 +93,7 @@ where
     let Ok(accept) = TransferAccept::Get(current).encode() else {
         return reply::reject(writer, ServiceError::Internal).await;
     };
-    if let Err(error) = writer.frame(FrameKind::Accept, &accept).await {
+    if let Err(error) = reply::accept_within_grace(writer, &accept).await {
         return reply::lost(error, (0, 0));
     }
     let source = Source {

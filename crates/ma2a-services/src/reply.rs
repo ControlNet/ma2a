@@ -33,10 +33,21 @@ pub(crate) async fn accept<W: AsyncWrite + Unpin>(
     tokio::select! {
         biased;
         () = shutdown.cancelled() => Err(ServiceError::Unavailable),
-        sent = tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Accept, payload)) => {
-            sent.unwrap_or(Err(ServiceError::TimedOut))
-        }
+        sent = accept_within_grace(writer, payload) => sent,
     }
+}
+
+/// Writes `accept` within [`FRAME_GRACE`].
+///
+/// # Errors
+/// Returns `timed_out` when the grace passes, or the write error.
+pub(crate) async fn accept_within_grace<W: AsyncWrite + Unpin>(
+    writer: &mut FrameWriter<W>,
+    payload: &[u8],
+) -> Result<(), ServiceError> {
+    tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Accept, payload))
+        .await
+        .unwrap_or(Err(ServiceError::TimedOut))
 }
 
 /// Sends `reject`, half-closes, and reports that nothing happened.

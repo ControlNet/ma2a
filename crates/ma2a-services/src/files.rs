@@ -131,9 +131,11 @@ async fn read_reply<W: AsyncWrite + Unpin>(
         Err(Failure { error, .. }) => return reply::reject(writer, error).await,
     };
     let sent = async {
-        writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await?;
+        reply::accept_within_grace(writer, &EMPTY_ACCEPT).await?;
         if !bytes.is_empty() {
-            writer.data(Channel::Output, &bytes).await?;
+            tokio::time::timeout(reply::STALL_DEADLINE, writer.data(Channel::Output, &bytes))
+                .await
+                .unwrap_or(Err(ServiceError::TimedOut))?;
         }
         Ok::<(), ServiceError>(())
     };
@@ -165,7 +167,7 @@ where
         Ok(prepared) => prepared,
         Err(Failure { error, .. }) => return reply::reject(writer, error).await,
     };
-    if let Err(error) = writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await {
+    if let Err(error) = reply::accept_within_grace(writer, &EMPTY_ACCEPT).await {
         return reply::lost(error, (0, 0));
     }
     let content = match receive_content(reader, length).await {
