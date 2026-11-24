@@ -10,7 +10,9 @@ use ma2a_store::ControlSpaceState;
 
 use crate::error::{RuntimeError, RuntimeErrorKind};
 use builder::{PAGE_HEADER_BYTES, PageBuilder};
+#[cfg(test)]
 pub(super) use pull::pull_page;
+pub(super) use pull::pull_pages;
 pub(crate) use staging::ControlChanges;
 pub(super) use staging::apply_pages;
 

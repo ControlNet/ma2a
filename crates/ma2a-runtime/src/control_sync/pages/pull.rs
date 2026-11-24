@@ -4,7 +4,56 @@ use ma2a_core::{ControlArtifactKind, ControlCursorV1, ControlPageV1};
 use ma2a_net::{ControlRejection, is_unseen};
 use ma2a_store::ControlSpaceState;
 
-use super::{PullPageRequest, builder::PageBuilder, hash_at_generation};
+use super::{
+    PullPageRequest,
+    builder::{ARTIFACT_OVERHEAD, PageBuilder},
+    hash_at_generation, response_artifact_budget,
+};
+
+/// Builds one response page for each requested Space, in request order.
+///
+/// Every page first gets an equal share of the response. What short pages leave of their share
+/// then goes, in request order, to the pages that still had more to send. An equal share of a
+/// 64-Space request is smaller than a full address record, so without this such a record would
+/// be held back on every round even when every other page is empty.
+pub(in crate::control_sync) fn pull_pages(
+    requested: &[(&ControlSpaceState, &ControlCursorV1)],
+    now_ms: u64,
+) -> Result<Vec<ControlPageV1>, ControlRejection> {
+    let share = response_artifact_budget(requested.len())?;
+    let pull = |(state, cursor): &(&ControlSpaceState, &ControlCursorV1), artifact_budget| {
+        pull_page(
+            state,
+            cursor,
+            PullPageRequest {
+                now_ms,
+                artifact_budget,
+            },
+        )
+    };
+    let mut pages = requested
+        .iter()
+        .map(|space| pull(space, share))
+        .collect::<Result<Vec<_>, _>>()?;
+    let used = pages.iter().map(page_bytes).sum::<usize>();
+    let mut unused = (share * requested.len()).saturating_sub(used);
+    for (space, page) in requested.iter().zip(&mut pages) {
+        if page.has_more() && unused > 0 {
+            let budget = page_bytes(page) + unused;
+            *page = pull(space, budget)?;
+            unused = budget.saturating_sub(page_bytes(page));
+        }
+    }
+    Ok(pages)
+}
+
+/// The bytes a page's artifacts take in its encoding, as [`PageBuilder`] counts them.
+fn page_bytes(page: &ControlPageV1) -> usize {
+    page.artifacts()
+        .iter()
+        .map(|artifact| artifact.signed_bytes().len() + ARTIFACT_OVERHEAD)
+        .sum()
+}
 
 pub(in crate::control_sync) fn pull_page(
     state: &ControlSpaceState,

@@ -15,12 +15,12 @@ use ma2a_store::{
 
 use super::{ControlRoundRequest, ControlRoundScope, prepare_round};
 
-type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
+pub(super) type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
-struct TempState(PathBuf);
+pub(super) struct TempState(pub(super) PathBuf);
 
 impl TempState {
-    fn new(label: &str) -> TestResult<Self> {
+    pub(super) fn new(label: &str) -> TestResult<Self> {
         let path =
             std::env::temp_dir().join(format!("ma2a-control-round-{label}-{}", std::process::id()));
         std::fs::create_dir(&path)?;
@@ -39,7 +39,7 @@ impl Drop for TempState {
     }
 }
 
-fn member(endpoint: EndpointId, name: &str) -> TestResult<SpaceMemberV1> {
+pub(super) fn member(endpoint: EndpointId, name: &str) -> TestResult<SpaceMemberV1> {
     Ok(SpaceMemberV1::new(
         endpoint,
         name.to_owned(),
@@ -49,6 +49,19 @@ fn member(endpoint: EndpointId, name: &str) -> TestResult<SpaceMemberV1> {
 
 /// Creates one Space shared by `local` and `peer`, holding a fresh address record of `peer`.
 fn share_space(repository: &mut Repository, local: &SpaceMemberV1, peer: &SecretKey) -> TestResult {
+    share_space_with(
+        repository,
+        (local, peer),
+        AddressEndpointDataV1::new(Vec::new())?,
+    )
+}
+
+/// Like [`share_space`], with `data` in the peer's address record.
+pub(super) fn share_space_with(
+    repository: &mut Repository,
+    (local, peer): (&SpaceMemberV1, &SecretKey),
+    data: AddressEndpointDataV1,
+) -> TestResult {
     let peer_id = EndpointId::from(peer.public());
     let created = repository.create_owned_space(&SpaceCreation::new(
         10,
@@ -65,7 +78,7 @@ fn share_space(repository: &mut Repository, local: &SpaceMemberV1, peer: &Secret
     let signed = SpaceAddressRecordV1::new(
         AddressRecordScope::new(created.space_id(), peer_id),
         AddressRecordValidity::new(1, 12, 100)?,
-        AddressEndpointDataV1::new(Vec::new())?,
+        data,
     )
     .sign(peer)?;
     let validated = ValidatedAddressRecord::parse(

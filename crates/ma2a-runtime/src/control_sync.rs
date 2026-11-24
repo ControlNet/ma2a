@@ -4,6 +4,8 @@ mod failure;
 pub(crate) use failure::ControlFailure;
 mod pages;
 #[cfg(test)]
+mod respond_tests;
+#[cfg(test)]
 mod round_tests;
 mod scheduler;
 mod scope;

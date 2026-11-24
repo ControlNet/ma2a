@@ -2137,6 +2137,7 @@ dependencies = [
  "hyper-util",
  "interprocess",
  "iroh",
+ "iroh-base",
  "iroh-tickets",
  "ma2a-agent",
  "ma2a-core",

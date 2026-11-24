@@ -47,26 +47,17 @@ pub(crate) fn respond(
     shared =
         repository.control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)?;
     pages::validate_cursor_spaces(&shared, request.cursors())?;
-    let artifact_budget = pages::response_artifact_budget(request.cursors().len())?;
-    let pages = request
+    let requested = request
         .cursors()
         .iter()
         .filter_map(|cursor| {
             shared
                 .iter()
                 .find(|state| state.chain().space_id() == cursor.space_id())
-                .map(|state| {
-                    pages::pull_page(
-                        state,
-                        cursor,
-                        pages::PullPageRequest {
-                            now_ms: input.now_ms,
-                            artifact_budget,
-                        },
-                    )
-                })
+                .map(|state| (state, cursor))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
+    let pages = pages::pull_pages(&requested, input.now_ms)?;
     let response = ControlResponseV1::new(pages)
         .and_then(|response| response.encode())
         .map_err(|_| ControlRejection::Invalid)?;
