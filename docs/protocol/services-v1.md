@@ -173,8 +173,9 @@ survives any daemon restart.
 
 Every failure, cancellation, and stall removes the staging file. Startup removes every recorded
 staging file before the Runtime serves any stream. Upload resume is not supported in v1. While an
-upload runs, its staging file is an ordinary entry of the destination directory, visible to every
-member allowed to read that root.
+upload runs, its staging file is an ordinary entry of the destination directory on the host, but no
+remote caller can list, read, or replace it: Files and Transfer leave `.ma2a-upload-*` names out of
+`list` and answer `invalid_path` for any path that names one.
 
 Progress stalls longer than 30 seconds fail with `timed_out`. Memory use is one 64 KiB frame, and
 QUIC flow control provides backpressure.

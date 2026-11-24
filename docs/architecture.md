@@ -37,8 +37,9 @@ its exact Space, signer, sequence high-water, validity interval, and target/prov
 atomic persistence. Learned revocation changes authorization immediately. Stale, rollback, forked,
 cross-Space, and identity-mismatched objects fail closed.
 
-Enrollment is the only bounded zero-Space entry path. A one-time ticket identifies an intended
-Space and Endpoint; redemption is atomic and replay-safe. Normal Echo and control operations require
+Enrollment is the only bounded zero-Space entry path. A one-time ticket names its Space and the
+owner Endpoint that issued it, and any other Endpoint holding it can redeem it once; redemption is
+atomic and replay-safe. Normal Echo and control operations require
 one complete independently authorizing shared Space.
 
 Departure uses the same bounded bootstrap path in reverse: a member asks the Space authority to

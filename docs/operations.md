@@ -56,8 +56,8 @@ restarts.
 
 ## Enrollment and Synchronization
 
-Create invitation tickets as owner-only files and transfer them through an authenticated private
-channel. Tickets are short-lived bearer secrets. After redemption, use
+`ma2a space invite` prints the ticket to stdout; pipe it straight into `ma2a space accept` or
+transfer it through an authenticated private channel. Tickets are short-lived bearer secrets. After redemption, use
 `ma2a space sync status --endpoint ENDPOINT_ID` and `ma2a space sync now --endpoint ENDPOINT_ID` to
 inspect or request bounded control synchronization. Revocation is Space-local and must name both the
 Space and Endpoint.
@@ -90,7 +90,7 @@ wizard, cloud escrow, or automatic key replication.
   shared with another incompatible daemon.
 - Web UI start requires a password: run `ma2a ui init`, then `ma2a ui start`.
 - Web UI cannot load: use the URL returned by `ma2a ui status` (replace a wildcard address with the node address); Host and Origin must satisfy the selected binding and same-origin checks.
-- Enrollment fails: confirm the ticket is unexpired, unused, intact, and intended for this Endpoint.
+- Enrollment fails: confirm the ticket is unexpired, unused, intact, and issued for the Space you are joining.
 - Echo fails after revocation: this is expected when no complete shared Space still authorizes it.
 - Private Relay is offline: verify TLS mode, certificate validity, key permissions, served-Space
   membership, provider capability, and public HTTPS reachability.

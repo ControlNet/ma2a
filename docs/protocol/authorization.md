@@ -23,6 +23,8 @@ The closed Phase 1 operation mapping is:
 | `ma2a/address/1` | signed address-record exchange | caller and target are current members |
 | `ma2a/relay/1` | relay advertisement | caller and target are current members, and private relay providers are enabled by Space policy |
 
+The eight service ALPNs (`ma2a/files/1`, `ma2a/transfer/1`, `ma2a/exec/1`, `ma2a/shell/1`, `ma2a/proxy/1`, `ma2a/process/1`, `ma2a/agent/1`, `ma2a/service/1`) map to one service-stream operation that this engine always denies; `service::authorize_service` authorizes them under the rule in [Services v1](services-v1.md#authorization).
+
 Unknown or future ALPNs and unsupported operations deny by construction.
 
 ## Control cursor
@@ -39,8 +41,8 @@ The runtime entry point accepts current verified views on every call and owns no
 
 ## Zero-Space protocol isolation
 
-A zero-Space Runtime advertises and registers only `ma2a/enrollment/1`. Iroh ALPN negotiation rejects Echo, control, metadata, address-record exchange, relay advertisement, and unknown/future normal protocols before a bidirectional stream or service-body parser is available.
+A zero-Space Runtime advertises and registers only `ma2a/enrollment/1`. Iroh ALPN negotiation rejects Echo, control, metadata, address-record exchange, relay advertisement, the service protocols, and unknown/future normal protocols before a bidirectional stream or service-body parser is available.
 
 Enrollment remains a separate bootstrap authorization path based on the signed, short-lived, single-use invite contract. Establishing transport for enrollment does not authorize any normal operation.
 
-The normal ALPN inventory is closed and maps every known normal protocol to a typed operation that requires the single runtime authorization entry point. No normal handler is registered in Todo 10; later handlers must use that mapping and entry point before reading service bodies.
+The normal ALPN inventory is closed and maps every known normal protocol to a typed operation. Every registered normal handler checks authorization before it reads a service body.

@@ -31,8 +31,9 @@ Startup fails closed unless:
 - every certificate is currently valid;
 - the private key matches the certificate;
 - on Unix, the key is owned by the effective user and has mode exactly `0600`;
-- on Windows, the key owner is the current user and its protected DACL grants explicit full control
-  only to that user and Local System.
+- on Windows, the key is owned by the current user, Local System, or the built-in Administrators
+  group, and its protected DACL grants explicit full control only to the current user and Local
+  System.
 
 The key is loaded only by the relay process, temporary key bytes are zeroized where supported, and
 key material must never be logged.

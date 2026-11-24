@@ -116,7 +116,9 @@ all with the original correlation, one frozen revision/boot, and a final marker.
 Other commands still use one response frame. Clients discard incomplete or mixed
 streams; see `docs/protocol/local-api-v1.md` for the exact fragment contract. The
 server allows 32 in-flight business connections, plus a reserve of four that answer lifecycle calls
-only, so it accepts at most 36 connections in total.
+only. A connection that upgrades gives up its business slot: a `stream_open` stream moves to a
+separate pool of 64 stream connections, and a hosted-service link or accepted call runs under the
+hosted-service limits in `docs/protocol/service-v1.md`.
 
 Two planes share this one endpoint and are kept logically apart. Business commands go through the
 versioned local API, the durable mutation-replay lock and the Runtime actor. Lifecycle calls — "are

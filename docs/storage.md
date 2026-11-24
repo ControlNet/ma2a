@@ -80,8 +80,9 @@ session bearer tokens, or raw invitation tokens. It does contain other sensitive
 
 Each key reference maps to a separate immutable file below `keys/endpoint` or
 `keys/space-authority`. A write creates a same-directory temporary file, applies owner-only
-permissions or the explicit Windows DACL, writes and syncs the bytes, atomically renames it, and
-syncs the parent directory on Unix. Rotation writes a new opaque reference rather than replacing an
+permissions or the explicit Windows DACL, writes and syncs the bytes, hard-links it to the key
+path (failing if a file already exists there), removes the temporary file, and syncs the parent
+directory on Unix. Rotation writes a new opaque reference rather than replacing an
 existing key file. Loaded bytes are held by `ProtectedSecret` and securely zeroized on drop.
 
 ## Backup

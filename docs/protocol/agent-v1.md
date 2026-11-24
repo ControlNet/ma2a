@@ -362,7 +362,8 @@ daemon:
 | missing source | `not_found` |
 | name already used by the task, or a 17th artifact | `conflict` |
 | task already terminal | `task_ended` |
-| invalid name or media type, or not a regular file | `invalid_input` |
+| invalid name or media type | `invalid_input` |
+| source that is not a regular file, or a workspace path that escapes | `invalid_tool` |
 
 The media type defaults to `application/octet-stream`.
 
@@ -548,7 +549,7 @@ exactly once.
 
 **SDK and reference Agent.** `ma2a_agent::sdk::serve` runs the stdio loop: it sends `ready`,
 skips empty and malformed lines, deduplicates by `seq`, acknowledges, and gives each task a handle
-with progress, messages, `ask`, cancellation, and tool calls as futures (call IDs `c0`, `c1`, …). A
+with progress, messages, `ask`, cancellation, and tool calls as futures (call IDs `c1`, `c2`, …). A
 handle dropped without an end reports `failed`, or `cancelled` after a cancellation request.
 The SDK checks every message against the Runtime's message bounds (`Message::is_within_bounds`:
 1–16 parts, 12,288 content bytes, no NUL) before sending it, because the Runtime ignores a whole
