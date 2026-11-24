@@ -22,7 +22,7 @@ pub(crate) fn is_private(sddl: &str, is_user: impl Fn(&str) -> bool) -> bool {
         return false;
     }
     let (flags, entries) = dacl.find('(').map_or((dacl, ""), |at| dacl.split_at(at));
-    if !is_protected(flags) {
+    if !is_protected(flags) || !(entries.is_empty() || entries.ends_with(')')) {
         return false;
     }
     entries.split_terminator(')').all(|entry| {
@@ -117,5 +117,8 @@ mod tests {
         assert!(!is_private("O:BAD:PAINO_ACCESS_CONTROL", user(None)));
         assert!(!is_private("O:BAD:PX(A;;FA;;;SY)", user(None)));
         assert!(!is_private("D:P", user(None)));
+        // Refused: an entry Windows would never leave unterminated.
+        assert!(!is_private("O:BAD:P(A;;FA;;;SY", user(None)));
+        assert!(!is_private("O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA", user(None)));
     }
 }
