@@ -393,9 +393,10 @@ existing `FILE` is never overwritten and a concurrent download to the same `FILE
 (see the resumable-download rules in `services-v1.md`).
 
 **Publication.** `artifact.publish` copies the file to a staging file in the blob directory while
-hashing it. A blob of that hash that is already stored is kept untouched, and the copy is
-discarded, so the blob's content identity never changes and a resumed download always continues.
-Otherwise the copy is renamed to the blob.
+hashing it. A blob of that hash that is already stored, and still holds that size and hash, is
+kept untouched and the copy is discarded, so the blob's content identity never changes and a
+resumed download always continues. Otherwise, including when the stored blob was damaged, the copy
+is renamed to the blob.
 
 **Collection.** Every 60 s, after expired tasks are removed, every file in the blob directory that
 no retained task references and that is at least 10 minutes old is deleted. Collection and the

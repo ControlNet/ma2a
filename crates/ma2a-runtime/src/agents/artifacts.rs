@@ -87,11 +87,23 @@ fn stage_blob(mut input: std::fs::File, blobs: &Path) -> io::Result<(u64, [u8; 3
     }
 }
 
-/// Makes a staged copy the blob of `hash`. A blob already stored is left untouched, so a
-/// resumed download of it keeps its content identity; the copy is discarded.
-fn place_blob(staging: &Path, blobs: &Path, hash: &[u8; 32]) -> io::Result<()> {
+/// Whether `blob` still holds exactly the content of `size` bytes named `hash`.
+fn holds(blob: &Path, (size, hash): (u64, &[u8; 32])) -> io::Result<bool> {
+    let mut file = open_regular(blob)?;
+    if file.metadata()?.len() != size {
+        return Ok(false);
+    }
+    let mut hasher = blake3::Hasher::new();
+    io::copy(&mut file, &mut hasher)?;
+    Ok(hasher.finalize().as_bytes() == hash)
+}
+
+/// Makes a staged copy the blob of `hash`. A sound blob already stored is left untouched, so
+/// a resumed download of it keeps its content identity, and the copy is discarded; a damaged
+/// one is replaced by the copy.
+fn place_blob(staging: &Path, blobs: &Path, (size, hash): (u64, &[u8; 32])) -> io::Result<()> {
     let blob = blobs.join(hex(hash));
-    let placed = if blob.try_exists()? {
+    let placed = if blob.try_exists()? && holds(&blob, (size, hash))? {
         std::fs::remove_file(staging)
     } else {
         std::fs::rename(staging, &blob)
@@ -140,7 +152,7 @@ impl AgentManager {
         // already stored cannot be collected before this task references it.
         let _placing = self.0.blob_lock.lock().await;
         let blobs = self.blobs();
-        tokio::task::spawn_blocking(move || place_blob(&staging, &blobs, &hash))
+        tokio::task::spawn_blocking(move || place_blob(&staging, &blobs, (size, &hash)))
             .await
             .map_err(|_| ServiceError::Internal)?
             .map_err(|_| ServiceError::Internal)?;
@@ -248,12 +260,12 @@ mod tests {
         std::fs::write(&source, b"the same content")?;
 
         let (size, hash, staging) = stage_blob(open_regular(&source)?, &blobs)?;
-        place_blob(&staging, &blobs, &hash)?;
+        place_blob(&staging, &blobs, (size, &hash))?;
         let blob = blobs.join(hex(&hash));
         let first = std::fs::metadata(&blob)?;
         std::thread::sleep(std::time::Duration::from_millis(20));
         let (_, again, staging) = stage_blob(open_regular(&source)?, &blobs)?;
-        place_blob(&staging, &blobs, &again)?;
+        place_blob(&staging, &blobs, (size, &again))?;
         let second = std::fs::metadata(&blob)?;
 
         // A resumed download names the blob by size and modification time.
@@ -265,6 +277,13 @@ mod tests {
             assert_eq!(first.ino(), second.ino());
         }
         assert!(!staging.exists(), "the second copy is discarded");
+        assert_eq!(std::fs::read_dir(&blobs)?.count(), 1);
+
+        // A stored blob damaged in place is replaced by sound bytes published again.
+        std::fs::write(&blob, b"the some content")?;
+        let (_, _, staging) = stage_blob(open_regular(&source)?, &blobs)?;
+        place_blob(&staging, &blobs, (size, &hash))?;
+        assert_eq!(std::fs::read(&blob)?, b"the same content");
         assert_eq!(std::fs::read_dir(&blobs)?.count(), 1);
         std::fs::remove_dir_all(&dir)?;
         Ok(())
