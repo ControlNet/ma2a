@@ -81,13 +81,19 @@ where
     let Some(Accepted { mut stream, answer }) = accepted else {
         return refuse(writer, ServiceError::Unavailable).await;
     };
-    let written = async {
-        stream.write_all(&answer).await?;
-        stream.flush().await
-    }
-    .await;
+    // A service that takes no answer holds the call no longer than any final write, and no
+    // longer than a stop.
+    let written = tokio::select! {
+        biased;
+        () = stop.cancelled() => None,
+        () = service_stop.cancelled() => None,
+        written = bounded(async {
+            stream.write_all(&answer).await?;
+            stream.flush().await
+        }) => written,
+    };
     fault("after_call_delivered");
-    if written.is_err() {
+    if !matches!(written, Some(Ok(()))) {
         return lost(writer, true).await;
     }
     let relayed = relay::relay_call((reader, &mut *writer), stream, (stop, &service_stop)).await;
