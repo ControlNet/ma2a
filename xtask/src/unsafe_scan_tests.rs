@@ -58,3 +58,20 @@ fn unsafe_token_scanner_catches_rust_2024_and_multiline_forms() {
         (false, false)
     );
 }
+
+#[test]
+fn whitespace_rust_accepts_beyond_ascii_separates_tokens() {
+    // Both compile: `\u{200E}` and `\u{0B}` are whitespace to Rust's lexer.
+    assert_eq!(
+        scan_unsafe_tokens("m!(r#x\u{200E}unsafe { () });"),
+        (true, false)
+    );
+    assert_eq!(
+        scan_unsafe_tokens("#[allow\u{200E}(unsafe_code)] fn g() {}"),
+        (false, true)
+    );
+    assert_eq!(
+        scan_unsafe_tokens("#[allow\u{0B}(unsafe_code)] fn g() {}"),
+        (false, true)
+    );
+}

@@ -36,7 +36,7 @@ pub(crate) fn scan_unsafe_tokens(source: &str) -> (bool, bool) {
             }
             continue;
         }
-        if ch.is_ascii_whitespace() {
+        if is_rust_whitespace(ch) {
             continue;
         }
         if pending_lint_paren {
@@ -73,13 +73,15 @@ pub(crate) fn scan_unsafe_tokens(source: &str) -> (bool, bool) {
 /// of the few non-ASCII whitespace characters Rust accepts, so every other non-ASCII character
 /// is taken as an identifier character: a keyword is never read out of a longer identifier.
 const fn is_identifier_char(ch: char) -> bool {
-    ch == '_'
-        || ch.is_ascii_alphanumeric()
-        || (!ch.is_ascii()
-            && !matches!(
-                ch,
-                '\u{85}' | '\u{200E}' | '\u{200F}' | '\u{2028}' | '\u{2029}'
-            ))
+    ch == '_' || ch.is_ascii_alphanumeric() || (!ch.is_ascii() && !is_rust_whitespace(ch))
+}
+
+/// The whitespace Rust's lexer accepts (`Pattern_White_Space`), which is wider than ASCII's.
+const fn is_rust_whitespace(ch: char) -> bool {
+    matches!(
+        ch,
+        '\t'..='\r' | ' ' | '\u{85}' | '\u{200E}' | '\u{200F}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 fn strip_rust_comments_and_strings(source: &str) -> String {
@@ -106,7 +108,7 @@ fn strip_rust_comments_and_strings(source: &str) -> String {
             }
             if b == b'r'
                 && next == Some(b'#')
-                && let Some(after) = skip_raw_ident(bytes, i)
+                && let Some(after) = skip_raw_ident(source, i)
             {
                 i = after;
                 out.push(' ');
@@ -165,19 +167,18 @@ fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
     i
 }
 
-fn skip_raw_ident(bytes: &[u8], start: usize) -> Option<usize> {
-    let first = *bytes.get(start + 2)?;
-    if !(first.is_ascii_alphabetic() || first == b'_' || !first.is_ascii()) {
+/// Skips `r#ident`; the identifier ends at the first character that cannot continue it,
+/// including non-ASCII whitespace.
+fn skip_raw_ident(source: &str, start: usize) -> Option<usize> {
+    let name = source.get(start + 2..)?;
+    let first = name.chars().next()?;
+    if !is_identifier_char(first) || first.is_ascii_digit() {
         return None;
     }
-    let mut j = start + 3;
-    while bytes
-        .get(j)
-        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || !c.is_ascii())
-    {
-        j += 1;
-    }
-    Some(j)
+    let length = name
+        .find(|ch| !is_identifier_char(ch))
+        .unwrap_or(name.len());
+    Some(start + 2 + length)
 }
 
 fn skip_raw_string(bytes: &[u8], start: usize) -> Option<usize> {
