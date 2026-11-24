@@ -98,8 +98,12 @@ fn place_blob(staging: &Path, blobs: &Path, hash: &[u8; 32]) -> io::Result<()> {
     };
     if placed.is_err() {
         let _removed = std::fs::remove_file(staging);
+        return placed;
     }
-    placed
+    // The rename must survive a crash before a task commits a reference to the blob.
+    #[cfg(unix)]
+    std::fs::File::open(blobs)?.sync_all()?;
+    Ok(())
 }
 
 impl AgentManager {
