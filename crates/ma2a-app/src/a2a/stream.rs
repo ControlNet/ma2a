@@ -136,11 +136,24 @@ impl Position {
 pub(super) fn respond(owned: Owned, lifecycle: Lifecycle) -> Response {
     let (frames, received) = mpsc::channel::<Result<Event, Infallible>>(BUFFERED);
     tokio::spawn(async move {
-        let _ended = produce(&owned, &lifecycle, &frames).await;
+        while_connected(&frames, Box::pin(produce(&owned, &lifecycle, &frames))).await;
     });
     Sse::new(ReceiverStream::new(received))
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+/// Runs `work` until it ends or the client disconnects, whichever comes first: a target
+/// that never answers the first read must not keep a disconnected client's stream alive.
+async fn while_connected<T>(
+    frames: &mpsc::Sender<Result<Event, Infallible>>,
+    work: impl Future<Output = T>,
+) {
+    tokio::select! {
+        biased;
+        () = frames.closed() => {}
+        _ended = work => {}
+    }
 }
 
 /// Sends one JSON-RPC response as an event; `false` once the client is gone.

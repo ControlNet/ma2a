@@ -6,7 +6,7 @@ use axum::response::sse::Event;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::{Next, Position, next};
+use super::{Next, Position, next, while_connected};
 use crate::a2a::{backend::ended, view::settled};
 
 #[test]
@@ -72,4 +72,21 @@ async fn a_disconnected_client_ends_the_follow_of_a_quiet_task() {
 
     // Then
     assert!(matches!(next, Ok(Next::Gone)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_disconnected_client_ends_a_stream_still_reading_its_task() {
+    // Given: a first read of the task that never answers.
+    let (frames, client) = mpsc::channel::<Result<Event, Infallible>>(1);
+
+    // When
+    drop(client);
+    let ended = tokio::time::timeout(
+        Duration::from_secs(5),
+        while_connected(&frames, std::future::pending::<()>()),
+    )
+    .await;
+
+    // Then
+    assert!(ended.is_ok());
 }

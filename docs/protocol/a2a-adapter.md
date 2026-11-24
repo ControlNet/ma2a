@@ -141,6 +141,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 
 - The first `{task}`, the state the stream starts from, and the sequence number it follows from all come from one read of the task; a message that continues a waiting task is followed from the moment it was sent instead. A local task's history holds only the events that read counted, so no event is reported twice.
 - A follow interrupted by a transient remote failure reconnects from the last delivered event.
+- A client that disconnects ends the stream at once, even while the first read of the task is still waiting for the target.
 
 ### Artifact content
 
