@@ -87,7 +87,7 @@ that no longer passes ends with outcome `unavailable`. Tasks are ended separatel
 
 | Name | Definition |
 | --- | --- |
-| `AgentId` | 1–63 bytes of `[a-z0-9-]`, starting with a lowercase letter and not ending with `-`; a CBOR text string; unique per hosting Endpoint. A Runtime defines no Agent named `blobs` or a Windows device name (`con`, `nul`, `com1`, …) on any host, and never starts one defined before this rule |
+| `AgentId` | 1–63 bytes of `[a-z0-9-]`, starting with a lowercase letter and not ending with `-`; a CBOR text string; unique per hosting Endpoint. A Runtime defines no Agent named `blobs` or a Windows device name (`con`, `nul`, `com1`, …) on any host, and never starts one defined before this rule; one found started is stopped when the Runtime starts, as if by the operator, so its unfinished tasks fail with `agent_stopped` and a new one is `reject(agent_unavailable)` |
 | `AgentTaskId` | 16 random bytes: a CBOR byte string of length 16, and 32 lowercase hexadecimal characters in text |
 | `RequestId` | the 16-byte `request_id` of the `open` header |
 | `seq` | a task's event sequence number, an unsigned 32-bit integer starting at 1 |

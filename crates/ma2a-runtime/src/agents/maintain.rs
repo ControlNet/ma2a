@@ -76,8 +76,15 @@ impl AgentManager {
             return;
         };
         for (record, _) in agents.into_iter().filter(|(record, _)| record.enabled) {
-            self.ensure_instance(&record.definition.id).await;
-            self.assign(&record.definition.id).await;
+            let id = &record.definition.id;
+            // A reserved name, started before such names were refused, can never run an
+            // instance; it is stopped, so its tasks end and it takes no new ones.
+            if super::operator::reserved_name(id.as_str()) {
+                let _stopped = self.stop(id).await;
+                continue;
+            }
+            self.ensure_instance(id).await;
+            self.assign(id).await;
         }
     }
 
