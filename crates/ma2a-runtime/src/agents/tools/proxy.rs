@@ -71,9 +71,12 @@ impl Call<'_> {
                     workspace: workspace.clone(),
                     request_id,
                 };
-                let Ok((mut reader, mut writer)) =
-                    call.open(&endpoint, OpenBody::Proxy(request.clone())).await
-                else {
+                // Opening can stall; the task's end still closes the listener meanwhile.
+                let opened = tokio::select! {
+                    () = token.cancelled() => return,
+                    opened = call.open(&endpoint, OpenBody::Proxy(request.clone())) => opened,
+                };
+                let Ok((mut reader, mut writer)) = opened else {
                     continue;
                 };
                 let stop = token.clone();

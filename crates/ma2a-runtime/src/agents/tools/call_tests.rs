@@ -61,13 +61,13 @@ impl Drop for TempState {
 struct Fixture {
     state: TempState,
     manager: AgentManager,
-    /// Streams the daemon has opened and then left silent.
+    /// Streams the daemon has taken and then left silent.
     opened: Arc<AtomicUsize>,
     daemon: tokio::task::JoinHandle<()>,
 }
 
 impl Fixture {
-    fn new(label: &str) -> TestResult<Self> {
+    fn new(label: &str, upgrade: bool) -> TestResult<Self> {
         let state = TempState::new(label)?;
         let (store, _requests) = mpsc::channel(1);
         let store = StoreClient::new(store);
@@ -90,7 +90,7 @@ impl Fixture {
         let opened = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&opened);
         let daemon = tokio::spawn(async move {
-            let _ended = silent_daemon(&listener, &counted).await;
+            let _ended = silent_daemon(&listener, (&counted, upgrade)).await;
         });
         Ok(Self {
             state,
@@ -118,8 +118,12 @@ impl Drop for Fixture {
     }
 }
 
-/// Answers the handshake, upgrades every `stream_open`, and never sends a frame on it.
-async fn silent_daemon(listener: &ipc::PlatformListener, opened: &AtomicUsize) -> TestResult {
+/// Answers the handshake and takes every `stream_open`, then never sends a frame on it: with
+/// `upgrade`, after upgrading it; without, not even the upgrade reply.
+async fn silent_daemon(
+    listener: &ipc::PlatformListener,
+    (opened, upgrade): (&AtomicUsize, bool),
+) -> TestResult {
     loop {
         let mut stream = ipc::accept(listener).await?;
         let frame = ipc::read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
@@ -137,7 +141,9 @@ async fn silent_daemon(listener: &ipc::PlatformListener, opened: &AtomicUsize) -
             payload: payload.as_bytes(),
             maximum: api::MAX_LOCAL_RESPONSE_BYTES,
         };
-        ipc::write_frame(&mut stream, reply).await?;
+        if upgrade || answer == "handshake" {
+            ipc::write_frame(&mut stream, reply).await?;
+        }
         if answer == "stream_opened" {
             opened.fetch_add(1, Ordering::Relaxed);
         }
@@ -155,7 +161,7 @@ fn target() -> String {
 #[tokio::test(start_paused = true)]
 async fn agent_get_from_a_silent_target_times_out() -> TestResult {
     // Given
-    let fixture = Fixture::new("agent-get")?;
+    let fixture = Fixture::new("agent-get", true)?;
     let call = fixture.call()?;
     let args = AgentTaskTarget {
         endpoint: target(),
@@ -178,7 +184,7 @@ async fn agent_get_from_a_silent_target_times_out() -> TestResult {
 #[tokio::test(start_paused = true)]
 async fn agent_wait_reads_no_more_views_once_its_deadline_passed() -> TestResult {
     // Given
-    let fixture = Fixture::new("agent-wait")?;
+    let fixture = Fixture::new("agent-wait", true)?;
     let call = fixture.call()?;
     let args = AgentWait {
         endpoint: target(),
@@ -204,7 +210,7 @@ async fn agent_wait_reads_no_more_views_once_its_deadline_passed() -> TestResult
 #[tokio::test]
 async fn proxy_open_to_port_zero_fails_before_listening() -> TestResult {
     // Given
-    let fixture = Fixture::new("proxy-port")?;
+    let fixture = Fixture::new("proxy-port", true)?;
     let call = fixture.call()?;
     let args = ProxyOpen {
         endpoint: target(),
@@ -221,5 +227,41 @@ async fn proxy_open_to_port_zero_fails_before_listening() -> TestResult {
         .ok_or("a listener was answered for port zero")?;
     assert_eq!(error.code, "invalid_tool");
     assert!(fixture.manager.coordination().listeners.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn ending_the_task_closes_a_proxy_listener_while_a_connection_is_opening() -> TestResult {
+    // Given: a daemon that takes each connection's stream open and never answers it.
+    let fixture = Fixture::new("proxy-opening", false)?;
+    let call = fixture.call()?;
+    let args = ProxyOpen {
+        endpoint: target(),
+        host: "localhost".to_owned(),
+        port: 80,
+    };
+    let listening = call.proxy_open(args).await.map_err(|error| error.message)?;
+    let listen: std::net::SocketAddr = listening
+        .get("listen")
+        .and_then(Value::as_str)
+        .ok_or("no listen address")?
+        .parse()?;
+    let _client = tokio::net::TcpStream::connect(listen).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fixture.opened.load(Ordering::Relaxed) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+
+    // When
+    fixture.manager.task_ended(call.task);
+
+    // Then: the listener and its work end without the open ever being answered.
+    fixture.manager.0.tasks.close();
+    tokio::time::timeout(Duration::from_secs(5), fixture.manager.0.tasks.wait())
+        .await
+        .map_err(|_| "the listener outlived its task")?;
+    assert!(tokio::net::TcpStream::connect(listen).await.is_err());
     Ok(())
 }
