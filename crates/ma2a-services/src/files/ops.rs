@@ -3,7 +3,7 @@
 use std::{collections::BinaryHeap, io::ErrorKind, path::Path};
 
 use ma2a_core::service::{
-    DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, RemotePath, ServiceError,
+    DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, MAX_PATH_COMPONENTS, RemotePath, ServiceError,
 };
 
 use super::{
@@ -158,7 +158,9 @@ pub(crate) fn remove(
     let (parent, name) = entry_parent(root, path)?;
     let entry = parent.entry(name)?.ok_or(ServiceError::NotFound)?;
     match entry.kind {
-        FileKind::Directory if recursive => parent.remove_tree(name, stop).map_err(partial)?,
+        FileKind::Directory if recursive => parent
+            .remove_tree(name, (stop, MAX_PATH_COMPONENTS))
+            .map_err(partial)?,
         FileKind::Directory => fs_error::map(parent.remove_dir(name))?,
         FileKind::File | FileKind::Symlink | FileKind::Other => {
             fs_error::map(parent.remove_entry(name))?;
@@ -202,6 +204,40 @@ mod tests {
             Ok(FilesResult::Done)
         );
         assert!(!root.join("tree").exists());
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_recursive_removal_keeps_what_lies_too_deep() -> Result<(), Box<dyn std::error::Error>> {
+        // Given: a chain of directories deeper than a removal enters, with a file near the top
+        // and one at the bottom.
+        let root = std::env::temp_dir().join(format!("ma2a-deep-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&root);
+        let deepest = (0..70).fold(root.join("tree"), |path, level| {
+            path.join(level.to_string())
+        });
+        std::fs::create_dir_all(&deepest)?;
+        std::fs::write(root.join("tree/0/near"), b"n")?;
+        std::fs::write(deepest.join("far"), b"f")?;
+
+        // When
+        let removed = remove(
+            &root,
+            &RemotePath::parse("docs:/tree")?,
+            (true, &Stop::default()),
+        );
+
+        // Then: what it reached is gone; the deep end stays, as a kept download would.
+        assert_eq!(
+            removed,
+            Err(Failure {
+                error: ServiceError::NotEmpty,
+                partial: true
+            })
+        );
+        assert!(!root.join("tree/0/near").exists());
+        assert_eq!(std::fs::read(deepest.join("far"))?, b"f");
         std::fs::remove_dir_all(&root)?;
         Ok(())
     }

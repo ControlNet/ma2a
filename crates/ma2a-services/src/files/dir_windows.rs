@@ -143,7 +143,14 @@ impl Directory {
     /// A download's private directory inside the tree is kept with everything in it, so its
     /// progress survives; the directories above it then stay too, and the removal ends with
     /// `not_empty` after removing everything else.
-    pub(crate) fn remove_tree(&self, name: &str, stop: &Stop) -> Result<(), ServiceError> {
+    ///
+    /// Only `depth` levels of directories below `name` are entered; anything deeper is kept, as
+    /// a kept download is, so the work and handles one removal holds stay bounded.
+    pub(crate) fn remove_tree(
+        &self,
+        name: &str,
+        (stop, depth): (&Stop, usize),
+    ) -> Result<(), ServiceError> {
         // Refuses a reparse point, and pins the directory while its entries are removed.
         let directory = self.child(name)?;
         for child in fs_error::map(fs::read_dir(&directory.path))? {
@@ -162,7 +169,10 @@ impl Directory {
             match directory.entry(child)? {
                 // A subdirectory left non-empty by a kept download does not stop its siblings.
                 Some(entry) if entry.kind == FileKind::Directory => {
-                    match directory.remove_tree(child, stop) {
+                    let Some(below) = depth.checked_sub(1) else {
+                        continue;
+                    };
+                    match directory.remove_tree(child, (stop, below)) {
                         Err(ServiceError::NotEmpty) => {}
                         removed => removed?,
                     }
