@@ -58,8 +58,9 @@ async fn read_retained(
         LogFrom::Cursor(cursor) => Some(cursor),
         LogFrom::Start | LogFrom::Now => None,
     };
-    let mut until = None;
+    let (mut until, mut reads) = (None, 0);
     loop {
+        reads += 1;
         let request = ProcessRequest::Logs(id, from, MAX_LOGS_READ);
         let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
         let read = hosted::logs(&mut reader, (&mut output, &mut error)).await?;
@@ -80,7 +81,7 @@ async fn read_retained(
         }
         gaps(read.gaps);
         let caught_up = until.is_some_and(|until| read.next >= until);
-        if read.ended || caught_up || !moved(reached, read.next)? {
+        if read.ended || caught_up || !moved((reads, reached), read.next)? {
             return Ok((read.next, read.ended));
         }
         reached = Some(read.next);
@@ -88,14 +89,20 @@ async fn read_retained(
     }
 }
 
-/// Whether a read that ended at `next` moved past `reached`. A cursor that does not move would
-/// only read the same output again; one that goes back is a faulty reply, since following it
-/// would print output already printed.
-const fn moved(reached: Option<u64>, next: u64) -> Result<bool, ClientError> {
+/// Most reads of retained output: a Process retains at most 16 MiB, which 16 full reads cover,
+/// so a target that keeps the cursor creeping forward further is not followed.
+const MAX_RETAINED_READS: usize = 64;
+
+/// Whether the `reads`th read, which ended at `next`, moved past `reached` and may be followed
+/// by another. A cursor that does not move would only read the same output again; one that
+/// goes back is a faulty reply, since following it would print output already printed, and so
+/// is one still moving after [`MAX_RETAINED_READS`] reads.
+const fn moved((reads, reached): (usize, Option<u64>), next: u64) -> Result<bool, ClientError> {
     match reached {
+        Some(reached) if next == reached => Ok(false),
         Some(reached) if next < reached => Err(ClientError::Stream(ServiceError::InvalidInput)),
-        Some(reached) => Ok(next > reached),
-        None => Ok(true),
+        _ if reads >= MAX_RETAINED_READS => Err(ClientError::Stream(ServiceError::InvalidInput)),
+        _ => Ok(true),
     }
 }
 
@@ -196,13 +203,22 @@ fn note(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::moved;
+    use super::{MAX_RETAINED_READS, moved};
 
     #[test]
     fn a_log_cursor_that_goes_back_is_refused() {
-        assert!(moved(None, 0).is_ok_and(|moved| moved));
-        assert!(moved(Some(10), 20).is_ok_and(|moved| moved));
-        assert!(moved(Some(10), 10).is_ok_and(|moved| !moved));
-        assert!(moved(Some(10), 9).is_err());
+        assert!(moved((1, None), 0).is_ok_and(|moved| moved));
+        assert!(moved((2, Some(10)), 20).is_ok_and(|moved| moved));
+        assert!(moved((2, Some(10)), 10).is_ok_and(|moved| !moved));
+        assert!(moved((2, Some(10)), 9).is_err());
+    }
+
+    #[test]
+    fn a_log_cursor_still_creeping_after_the_last_read_is_refused() {
+        let last = MAX_RETAINED_READS;
+        assert!(moved((last - 1, Some(10)), 11).is_ok_and(|moved| moved));
+        // A last read that ends where the one before it did is answered as it is.
+        assert!(moved((last, Some(10)), 10).is_ok_and(|moved| !moved));
+        assert!(moved((last, Some(10)), 11).is_err());
     }
 }
