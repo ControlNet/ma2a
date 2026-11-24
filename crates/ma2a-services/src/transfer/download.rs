@@ -59,9 +59,14 @@ async fn fill(source: Source, limit: u64) -> Result<(Source, usize), ServiceErro
         .unwrap_or(Err(ServiceError::Internal))
 }
 
+/// The size and BLAKE3 hash a content-addressed file must have.
+pub(super) type Content = (u64, [u8; 32]);
+
+/// Serves one Get; with `content`, the file must be exactly that size and hash, as a
+/// content-addressed blob is, and anything else fails with `integrity_mismatch`.
 pub(super) async fn serve<R, W>(
     root: PathBuf,
-    (path, offset, expected): (RemotePath, u64, Option<ContentIdentity>),
+    (path, offset, expected, content): (RemotePath, u64, Option<ContentIdentity>, Option<Content>),
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
 ) -> OperationReport
 where
@@ -78,6 +83,9 @@ where
     let current = identity(&metadata);
     if expected.is_some_and(|expected| expected != current) {
         return reply::reject(writer, ServiceError::PreconditionFailed).await;
+    }
+    if content.is_some_and(|(size, _)| size != current.size()) {
+        return reply::reject(writer, ServiceError::IntegrityMismatch).await;
     }
     if offset > current.size() {
         return reply::reject(writer, ServiceError::InvalidInput).await;
@@ -103,6 +111,9 @@ where
     };
     let sent = sent.into_inner();
     let result = match streamed {
+        Ok((_, hash)) if content.is_some_and(|(_, recorded)| recorded != hash) => {
+            Err(ServiceError::IntegrityMismatch)
+        }
         Ok((source, hash)) => verify_unchanged(source, current).map(|()| hash),
         Err(error) => Err(error),
     };

@@ -375,8 +375,10 @@ did not publish is `reject(unknown_artifact)`. Then:
 3. The outcome is the Transfer v1 result `{bytes, size, blake3}`, hashed over the whole content.
 
 As in Transfer v1, an `offset` above the size is `invalid_input`, a resumed download names the
-identity it continues, and a different identity is `reject(precondition_failed)`. The client
-verifies BLAKE3 over its final file.
+identity it continues, and a different identity is `reject(precondition_failed)`. The blob must
+still be the content the task recorded: a blob of another size is `reject(integrity_mismatch)`,
+and one whose content hashes to anything but the recorded BLAKE3 ends with a failed outcome of
+`integrity_mismatch`. The client verifies BLAKE3 over its final file.
 
 **Local reads.** The local operator reads an artifact of any task in chunks through the local API:
 `agent_task_artifact_read {task_id, name, offset}` returns at most 32,768 bytes from `offset` as

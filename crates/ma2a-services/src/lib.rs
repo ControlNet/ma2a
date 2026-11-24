@@ -33,4 +33,4 @@ pub use frame_io::{Frame, FrameReader, FrameWriter};
 pub use proxy::serve_proxy;
 pub use report::{OperationEnd, OperationReport};
 pub use shell::serve_shell;
-pub use transfer::{StagingJournal, serve_transfer};
+pub use transfer::{StagingJournal, serve_blob, serve_transfer};

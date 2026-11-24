@@ -88,7 +88,7 @@ where
         AgentRequest::Artifact(agent, task, name, offset, identity) => {
             let operation = (viewer(&agent), (task, name), (offset, identity));
             manager
-                .serve_artifact((operation, request_id, stop), (reader, writer))
+                .serve_artifact((operation, stop), (reader, writer))
                 .await
         }
     }

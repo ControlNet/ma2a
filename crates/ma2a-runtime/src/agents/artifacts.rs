@@ -10,12 +10,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use ma2a_core::{
-    RequestId,
-    service::{
-        AgentTaskId, ArtifactRef, ContentIdentity, RemotePath, RootName, ServiceError,
-        TransferRequest, TransferResource,
-    },
+use ma2a_core::service::{
+    AgentTaskId, ArtifactRef, ContentIdentity, RemotePath, RootName, ServiceError,
 };
 use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport};
 use ma2a_store::AgentTaskChange;
@@ -23,7 +19,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 
 use super::{AgentManager, convert::hex, host::refuse, private_dir, tasks::Viewer};
-use crate::stream_host::journal::StoreJournal;
 
 /// Largest artifact: 256 MiB.
 pub(super) const MAX_ARTIFACT_SIZE: u64 = 256 * 1_048_576;
@@ -157,9 +152,8 @@ impl AgentManager {
     /// Serves one artifact with exactly the Transfer v1 download frames.
     pub(super) async fn serve_artifact<R, W>(
         &self,
-        ((viewer, (task, name), (offset, identity)), request_id, stop): (
+        ((viewer, (task, name), (offset, identity)), stop): (
             ArtifactRequest<'_>,
-            RequestId,
             &CancellationToken,
         ),
         (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
@@ -183,17 +177,15 @@ impl AgentManager {
         let Ok(path) = path else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        let request = TransferRequest::Get(TransferResource::File(path), offset, identity);
-        let journal = StoreJournal {
-            store: self.0.store.clone(),
-            request_id,
-        };
+        // The blob must still be the content recorded for the task, not merely whatever bytes
+        // its file holds now.
+        let content = (artifact.size(), *artifact.blake3());
         tokio::select! {
             biased;
             () = stop.cancelled() => OperationReport::new(OperationEnd::Failed(ServiceError::Unavailable)),
-            report = ma2a_services::serve_transfer(
-                (self.blobs(), request_id),
-                (request, &journal),
+            report = ma2a_services::serve_blob(
+                self.blobs(),
+                ((path, offset, identity), content),
                 (reader, writer),
             ) => report,
         }
