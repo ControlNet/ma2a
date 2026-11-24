@@ -46,10 +46,12 @@ strip_single_prefix() {
     printf 'archive contains entries outside its single top-level directory\n' >&2
     exit 1
   fi
+  # Only the top-level directory's own record is dropped; any other directory record stays, so
+  # an extra directory, even an empty one, fails the comparison below.
   awk -v p="${prefix}/" '
     {
       rel = substr($0, length(p) + 1)
-      if (rel != "" && substr(rel, length(rel), 1) != "/") print rel
+      if (rel != "") print rel
     }
   ' "$all_entries" | sort > "$entries"
 }

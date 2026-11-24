@@ -128,7 +128,10 @@ if command -v python3 >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
   win_mixed="$temporary/mixed-x86_64-pc-windows-msvc.zip"
   win_empty_dir="$temporary/empty-dir-x86_64-pc-windows-msvc.zip"
   win_incomplete="$temporary/incomplete-x86_64-pc-windows-msvc.zip"
-  python3 - "$win_flat" "$win_mixed" "$win_empty_dir" "$win_incomplete" <<'PY'
+  win_rooted="$temporary/rooted-x86_64-pc-windows-msvc.zip"
+  win_rooted_dir="$temporary/rooted-dir-x86_64-pc-windows-msvc.zip"
+  python3 - "$win_flat" "$win_mixed" "$win_empty_dir" "$win_incomplete" "$win_rooted" \
+    "$win_rooted_dir" <<'PY'
 import sys, zipfile
 files = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "README.md", "ma2a.exe", "quickstart.md")
 with zipfile.ZipFile(sys.argv[1], "w") as zf:
@@ -145,17 +148,47 @@ with zipfile.ZipFile(sys.argv[3], "w") as zf:
 with zipfile.ZipFile(sys.argv[4], "w") as zf:
     for name in files[:-1]:
         zf.writestr(name, "x")
+for path, stray in ((sys.argv[5], False), (sys.argv[6], True)):
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("ma2a/", "")
+        for name in files:
+            zf.writestr("ma2a/" + name, "x")
+        if stray:
+            zf.writestr("ma2a/stray/", "")
 PY
-  for z in "$win_flat" "$win_mixed" "$win_empty_dir" "$win_incomplete"; do
+  for z in "$win_flat" "$win_mixed" "$win_empty_dir" "$win_incomplete" "$win_rooted" \
+    "$win_rooted_dir"; do
     printf '%s *%s\n' "$(hash_file "$z")" "$(basename "$z")" > "${z}.sha256"
   done
   ./scripts/validate-release.sh "$win_flat" x86_64-pc-windows-msvc >/dev/null
-  for bad in "$win_mixed" "$win_empty_dir" "$win_incomplete"; do
+  ./scripts/validate-release.sh "$win_rooted" x86_64-pc-windows-msvc >/dev/null
+  for bad in "$win_mixed" "$win_empty_dir" "$win_incomplete" "$win_rooted_dir"; do
     if ./scripts/validate-release.sh "$bad" x86_64-pc-windows-msvc >/dev/null 2>&1; then
       printf 'invalid Windows zip unexpectedly passed validation: %s\n' "$bad" >&2
       exit 1
     fi
   done
+fi
+
+# A single top-level directory holds only the release files, not even an empty directory.
+for layout in rooted rooted-dir; do
+  mkdir -p "$temporary/$layout/ma2a-0.1.0"
+  for name in LICENSE-APACHE LICENSE-MIT NOTICE README.md quickstart.md ma2a; do
+    printf 'x' > "$temporary/$layout/ma2a-0.1.0/$name"
+  done
+done
+mkdir "$temporary/rooted-dir/ma2a-0.1.0/stray"
+for layout in rooted rooted-dir; do
+  tar -cJf "$temporary/$layout-x86_64-unknown-linux-gnu.tar.xz" -C "$temporary/$layout" ma2a-0.1.0
+  archived="$temporary/$layout-x86_64-unknown-linux-gnu.tar.xz"
+  printf '%s *%s\n' "$(hash_file "$archived")" "$(basename "$archived")" > "${archived}.sha256"
+done
+./scripts/validate-release.sh "$temporary/rooted-x86_64-unknown-linux-gnu.tar.xz" \
+  x86_64-unknown-linux-gnu >/dev/null
+if ./scripts/validate-release.sh "$temporary/rooted-dir-x86_64-unknown-linux-gnu.tar.xz" \
+  x86_64-unknown-linux-gnu >/dev/null 2>&1; then
+  printf 'archive with an extra directory under its top-level directory unexpectedly passed\n' >&2
+  exit 1
 fi
 
 # Prefix matching must be literal, never a regex where '.' matches arbitrary characters.
