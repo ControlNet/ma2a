@@ -84,6 +84,75 @@ fn is_pure_line(line: &str, extension: &str, block_depth: &mut usize) -> bool {
             remaining = remaining.get(2..).unwrap_or_default();
             continue;
         }
+        if block_comments {
+            track_tail(remaining, extension, block_depth);
+        }
         return true;
+    }
+}
+
+/// Follows the rest of a line that holds code, so a block comment that opens after the code,
+/// and any that closes again on the same line, leaves `block_depth` as the next line sees it.
+///
+/// Quoted strings on the line are skipped, so a delimiter inside one opens nothing.
+fn track_tail(text: &str, extension: &str, block_depth: &mut usize) {
+    let nested = extension == "rs";
+    let line_slashes = extension != "css";
+    let bytes = text.as_bytes();
+    let starts = |at: usize, pair: &[u8]| bytes.get(at..at + 2) == Some(pair);
+    let mut quote = None;
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        if *block_depth > 0 {
+            if nested && starts(at, b"/*") {
+                *block_depth += 1;
+                at += 2;
+            } else if starts(at, b"*/") {
+                *block_depth -= 1;
+                at += 2;
+            } else {
+                at += 1;
+            }
+            continue;
+        }
+        if let Some(open) = quote {
+            if byte == b'\\' {
+                at += 2;
+                continue;
+            }
+            if byte == open {
+                quote = None;
+            }
+            at += 1;
+            continue;
+        }
+        if byte == b'"' || (!nested && matches!(byte, b'\'' | b'`')) {
+            quote = Some(byte);
+        } else if line_slashes && starts(at, b"//") {
+            return;
+        } else if starts(at, b"/*") {
+            *block_depth = 1;
+            at += 2;
+            continue;
+        }
+        at += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_pure_lines;
+
+    #[test]
+    fn a_block_comment_opened_after_code_is_not_counted() {
+        let rust = "fn f() { /* starts here\n   still a comment\n*/\n    g();\n}\n";
+        assert_eq!(count_pure_lines(rust, "rs"), 3);
+        // Nested comments, code after the close, and delimiters inside strings.
+        let nested = "a(); /* x /* y */\nz */ b();\nlet s = \"/*\";\nc();\n";
+        assert_eq!(count_pure_lines(nested, "rs"), 4);
+        let closed = "a(); /* x */ b();\nc();\n";
+        assert_eq!(count_pure_lines(closed, "rs"), 2);
+        let script = "a(); /* open\nb */\nconst s = '/*';\nc(); // /*\nd();\n";
+        assert_eq!(count_pure_lines(script, "ts"), 4);
     }
 }
