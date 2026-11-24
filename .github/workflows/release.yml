@@ -178,6 +178,8 @@ jobs:
       - name: Publish archive-only GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no checkout, so gh learns the repository from here.
+          GH_REPO: ${{ github.repository }}
         run: |
           release_flags=(--verify-tag --generate-notes)
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
