@@ -7,11 +7,11 @@ use super::*;
 
 const MANIFEST: &str = r#"{"description":"An example.","max_calls":2,"versions":[{"version":1,"operations":[{"name":"echo","interaction":"unary"}]},{"version":2,"operations":[{"name":"echo","interaction":"unary"},{"name":"count","interaction":"stream"}]}]}"#;
 
-fn named(operation: &str, request_id: &str) -> Value {
+pub(super) fn named(operation: &str, request_id: &str) -> Value {
     json!({"version": 1, "operation": operation, "request_id": request_id, "service": "example"})
 }
 
-fn register(request_id: &str) -> TestResult<Value> {
+pub(super) fn register(request_id: &str) -> TestResult<Value> {
     Ok(json!({
         "version": 1, "operation": "service_register", "request_id": request_id,
         "service": "example", "manifest": serde_json::from_str::<Value>(MANIFEST)?,

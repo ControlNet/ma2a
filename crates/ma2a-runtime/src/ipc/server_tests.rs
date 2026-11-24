@@ -20,6 +20,8 @@ mod failed_replay;
 mod handshake;
 #[path = "server_tests/hosted.rs"]
 mod hosted;
+#[path = "server_tests/hosted_calls.rs"]
+mod hosted_calls;
 #[path = "server_tests/large_snapshot.rs"]
 mod large_snapshot;
 #[path = "server_tests/lifecycle.rs"]

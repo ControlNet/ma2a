@@ -78,7 +78,10 @@ where
         // The service is accepting it right now: the hand-over completes or is withdrawn.
         None => delivered.await.ok(),
     };
-    let Some(Accepted { mut stream, answer }) = accepted else {
+    // The service learns the call only from `answer`: a stop before any of it is written
+    // leaves the call without effect, so it is refused rather than left unknown.
+    let stopped = stop.is_cancelled() || service_stop.is_cancelled();
+    let Some(Accepted { mut stream, answer }) = accepted.filter(|_| !stopped) else {
         return refuse(writer, ServiceError::Unavailable).await;
     };
     // A service that takes no answer holds the call no longer than any final write, and no
