@@ -22,7 +22,7 @@ pub(crate) fn is_private(sddl: &str, is_user: impl Fn(&str) -> bool) -> bool {
         return false;
     }
     let (flags, entries) = dacl.find('(').map_or((dacl, ""), |at| dacl.split_at(at));
-    if !flags.contains('P') {
+    if !is_protected(flags) {
         return false;
     }
     entries.split_terminator(')').all(|entry| {
@@ -36,6 +36,26 @@ pub(crate) fn is_private(sddl: &str, is_user: impl Fn(&str) -> bool) -> bool {
             _ => false,
         }
     })
+}
+
+/// Whether the DACL `flags` are protected and nothing else this reading does not know: `P`,
+/// with `AI` or `AR` at most. `NO_ACCESS_CONTROL`, a NULL DACL that admits everyone, is refused.
+fn is_protected(mut flags: &str) -> bool {
+    let mut protected = false;
+    while !flags.is_empty() {
+        if let Some(rest) = flags.strip_prefix('P') {
+            protected = true;
+            flags = rest;
+        } else if let Some(rest) = flags
+            .strip_prefix("AI")
+            .or_else(|| flags.strip_prefix("AR"))
+        {
+            flags = rest;
+        } else {
+            return false;
+        }
+    }
+    protected
 }
 
 #[cfg(test)]
@@ -93,6 +113,9 @@ mod tests {
         assert!(!is_private("O:BAD:P(A;;FA;;;WD)", user(None)));
         assert!(!is_private("O:BAD:P(XA;;FA;;;SY;(x))", user(None)));
         assert!(!is_private("O:BAD:NO_ACCESS_CONTROL", user(None)));
+        assert!(!is_private("O:BAD:PNO_ACCESS_CONTROL", user(None)));
+        assert!(!is_private("O:BAD:PAINO_ACCESS_CONTROL", user(None)));
+        assert!(!is_private("O:BAD:PX(A;;FA;;;SY)", user(None)));
         assert!(!is_private("D:P", user(None)));
     }
 }
