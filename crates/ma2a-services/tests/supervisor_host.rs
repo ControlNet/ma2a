@@ -181,6 +181,38 @@ async fn one_writer_relays_stdin_while_a_second_is_refused() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_writer_is_refused_at_once_while_the_first_is_blocked() -> TestResult {
+    // Given: a writer whose input fills the stdin of a child that never reads it.
+    let harness = host("sup-stdin-blocked", start("sleep 30", true)?)?;
+    harness.ask(SupervisorRequest::Go).await?;
+    let (mut first, mut first_writer) = harness.open(SupervisorRequest::Stdin(false)).await?;
+    assert_eq!(first.expect().await?.kind(), FrameKind::Accept);
+    // The input is sent in the background: once the pipe and the socket are full, these
+    // writes wait for a child that never reads.
+    let filling = tokio::spawn(async move {
+        let chunk = vec![b'x'; 65_536];
+        for _ in 0..8 {
+            if first_writer.data(DataChannel::Input, &chunk).await.is_err() {
+                break;
+            }
+        }
+        first_writer
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // When
+    let (mut second, _second_writer) = harness.open(SupervisorRequest::Stdin(false)).await?;
+    let answer = tokio::time::timeout(Duration::from_secs(2), second.expect()).await??;
+
+    // Then: the lease decides, not a wait behind the blocked write.
+    assert_eq!(answer.rejection()?, ServiceError::WriterBusy);
+    harness.ask(SupervisorRequest::Terminate(0)).await?;
+    drop((first, filling.await?));
+    harness.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stdin_writes_report_their_count_and_closing() -> TestResult {
     let harness = host("sup-stdin-op", start("cat", true)?)?;
     harness.ask(SupervisorRequest::Go).await?;

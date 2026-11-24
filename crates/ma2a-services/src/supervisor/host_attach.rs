@@ -29,14 +29,16 @@ impl<'a> Lease<'a> {
         if matches!(*shared.status.borrow(), SupervisorStatus::Awaiting) {
             return Err(ServiceError::NotRunning);
         }
+        // The lease is decided first: the stdin lock may be held by the current writer for as
+        // long as the child does not read, and a second writer must not wait behind it.
+        if !shared.lease() {
+            return Err(ServiceError::WriterBusy);
+        }
+        let lease = Self(shared);
         if shared.stdin.lock().await.is_none() {
             return Err(ServiceError::StdinClosed);
         }
-        if shared.lease() {
-            Ok(Self(shared))
-        } else {
-            Err(ServiceError::WriterBusy)
-        }
+        Ok(lease)
     }
 }
 
