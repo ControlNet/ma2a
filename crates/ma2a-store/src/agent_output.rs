@@ -130,10 +130,14 @@ fn apply_state(
         },
         _ => None,
     };
-    if state == record.summary.state || !record.summary.state.permits(state) {
+    // A message the Agent cannot write invalidates the whole report.
+    let foreign = message
+        .as_ref()
+        .is_some_and(|message| message.role() != MessageRole::Agent);
+    if foreign || state == record.summary.state || !record.summary.state.permits(state) {
         return Ok(false);
     }
-    if let Some(message) = message.filter(|message| message.role() == MessageRole::Agent) {
+    if let Some(message) = message {
         let result = (state == AgentTaskState::Completed)
             .then(|| message.to_bytes())
             .transpose()?;

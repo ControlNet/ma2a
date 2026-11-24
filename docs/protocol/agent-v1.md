@@ -508,8 +508,8 @@ like CBOR messages.
 - `task` is the 32-character hexadecimal task ID. A line about a task that this instance
   generation does not hold as `running` or `waiting` is ignored.
 - In `state`, an Agent `message` is recorded as a `message` event, and with `completed` it also
-  becomes the inline `result`. `failed` records `error` and reason `agent_failed`. An invalid
-  `message` invalidates the whole line.
+  becomes the inline `result`. `failed` records `error` and reason `agent_failed`. A `message`
+  that is invalid or not in role `agent` invalidates the whole line.
 - `error` and progress `text` are cut to 1,024 bytes at a character boundary.
 - `call` is 1–64 bytes of `[A-Za-z0-9._-]`, unique per task. A repeated `call` is ignored and
   never runs twice.

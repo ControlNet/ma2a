@@ -574,3 +574,24 @@ fn an_acknowledgement_past_every_sequence_number_only_moves_the_cursor() -> Test
     ));
     Ok(())
 }
+
+#[test]
+fn a_state_carrying_a_user_message_is_ignored_whole() -> TestResult {
+    // Given
+    let (_state, mut repository, generation, task) = running("agent-user-state")?;
+
+    // When: the Agent completes the task with a message in the user's role.
+    let completed = AgentOutputEffect::State {
+        task,
+        state: AgentTaskState::Completed,
+        message: Some(text(MessageRole::User, "wrong role")?),
+        error: None,
+    };
+    let applied = apply(&mut repository, (generation, 10), completed)?;
+
+    // Then: the invalid message voids the line, so the task is still running.
+    assert_eq!(applied, AgentOutputApplied::Ignored);
+    let record = repository.agent_task(task)?.ok_or("missing")?;
+    assert_eq!(record.summary.state, AgentTaskState::Running);
+    Ok(())
+}
