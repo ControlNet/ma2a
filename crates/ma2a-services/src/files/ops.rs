@@ -3,7 +3,8 @@
 use std::{collections::BinaryHeap, io::ErrorKind, path::Path};
 
 use ma2a_core::service::{
-    DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, MAX_PATH_COMPONENTS, RemotePath, ServiceError,
+    DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, MAX_PATH_COMPONENTS, MAX_REMOTE_PATH_LEN,
+    RemotePath, ServiceError,
 };
 
 use super::{
@@ -58,9 +59,13 @@ pub(crate) fn list(
     cursor: Option<&str>,
 ) -> Result<FilesResult, ServiceError> {
     let directory = resolve::directory(root, path)?;
+    let budget = (
+        path.components().len(),
+        path.components().iter().map(String::len).sum::<usize>(),
+    );
     let mut smallest = BinaryHeap::with_capacity(MAX_LIST_PAGE + 1);
     fs_error::map(directory.for_each_name(|name| {
-        let Some(name) = name.filter(|name| addressable(name)) else {
+        let Some(name) = name.filter(|name| addressable(name, budget)) else {
             return;
         };
         if cursor.is_some_and(|cursor| name <= cursor) {
@@ -86,10 +91,15 @@ pub(crate) fn list(
     Ok(FilesResult::Listing(entries, next))
 }
 
-/// Whether `name` can be named again in a request: it is a valid remote path component, which
-/// also keeps it within what `Decoder::text` reads.
-fn addressable(name: &str) -> bool {
+/// Whether `name`, in a directory of `(components, bytes)`, can be named again in a request: it
+/// is a valid remote path component, which also keeps it within what `Decoder::text` reads, the
+/// Runtime does not reserve it, and its path stays within the path bounds.
+fn addressable(name: &str, (components, bytes): (usize, usize)) -> bool {
     ma2a_core::service::valid_component(name)
+        && !resolve::is_runtime_reserved(name)
+        && !(cfg!(windows) && resolve::is_windows_reserved(name))
+        && components < MAX_PATH_COMPONENTS
+        && bytes.saturating_add(name.len()) <= MAX_REMOTE_PATH_LEN
 }
 
 /// Creates one directory, or every missing ancestor with `parents`.
@@ -245,14 +255,14 @@ mod tests {
     #[test]
     fn a_name_longer_than_a_path_component_is_not_addressable() {
         // 85 three-byte characters fill a component; 100 exceed it, though NTFS takes them.
-        assert!(addressable(&"\u{6587}".repeat(85)));
-        assert!(!addressable(&"\u{6587}".repeat(100)));
-        assert!(addressable(&"n".repeat(255)));
-        assert!(!addressable(&"n".repeat(256)));
-        assert!(!addressable(""));
-        assert!(!addressable("bad\nname"));
-        assert!(!addressable("bad\tname"));
-        assert!(!addressable("bad\x7fname"));
-        assert!(!addressable("bad\u{0085}name"));
+        assert!(addressable(&"\u{6587}".repeat(85), (0, 0)));
+        assert!(!addressable(&"\u{6587}".repeat(100), (0, 0)));
+        assert!(addressable(&"n".repeat(255), (0, 0)));
+        assert!(!addressable(&"n".repeat(256), (0, 0)));
+        assert!(!addressable("", (0, 0)));
+        assert!(!addressable("bad\nname", (0, 0)));
+        assert!(!addressable("bad\tname", (0, 0)));
+        assert!(!addressable("bad\x7fname", (0, 0)));
+        assert!(!addressable("bad\u{0085}name", (0, 0)));
     }
 }

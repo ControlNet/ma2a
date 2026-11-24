@@ -198,9 +198,19 @@ async fn a_name_too_long_to_address_is_left_out_of_a_listing() -> TestResult {
 #[cfg(unix)]
 #[tokio::test]
 async fn names_a_path_cannot_carry_are_left_out_and_the_rest_can_be_requested() -> TestResult {
-    // Given: ordinary Unix names a remote path component cannot carry, around addressable ones.
+    // Given: ordinary Unix names a remote path component cannot carry, and names the Runtime
+    // reserves, around addressable ones.
     let root = TempRoot::new("unaddressable")?;
-    for name in ["a", "phase:one.txt", "back\\slash", "tab\there", "z"] {
+    for name in [
+        "a",
+        "phase:one.txt",
+        "back\\slash",
+        "tab\there",
+        ".ma2a-upload-1.part",
+        ".MA2A-write-2",
+        ".ma2a-downloads",
+        "z",
+    ] {
         fs::write(root.path().join(name), b"")?;
     }
 
@@ -399,5 +409,30 @@ async fn a_recursive_removal_keeps_a_downloads_progress() -> TestResult {
     .await?;
     assert_eq!(outcome(&frames)?, Ok(FilesResult::Done));
     assert!(!root.path().join("c").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_listing_leaves_out_children_deeper_than_a_path_can_reach() -> TestResult {
+    // Given: a directory at the deepest level a path names, holding one file.
+    let root = TempRoot::new("deepest")?;
+    let levels = (0..ma2a_core::service::MAX_PATH_COMPONENTS)
+        .map(|level| level.to_string())
+        .collect::<Vec<_>>();
+    let deepest = levels
+        .iter()
+        .fold(root.path().to_path_buf(), |path, level| path.join(level));
+    fs::create_dir_all(&deepest)?;
+    fs::write(deepest.join("unreachable"), b"")?;
+
+    // When
+    let listed = path(&format!("docs:/{}", levels.join("/")))?;
+    let (frames, _) = serve(root.path(), FilesRequest::List(listed, None), None).await?;
+
+    // Then: its child would need one component more than a path carries.
+    let Ok(FilesResult::Listing(entries, None)) = outcome(&frames)? else {
+        return Err("listing".into());
+    };
+    assert!(entries.is_empty());
     Ok(())
 }
