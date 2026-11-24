@@ -46,7 +46,8 @@ for name in summary.txt run-1.log run-12.junit.xml run-1.tests.txt.unsorted; do
 done
 
 # The same evidence directory is reused whether or not its name ends in a separator.
-for spelling in "$temporary/slash/" "$temporary/slash//" "$temporary/slash"; do
+for spelling in "$temporary/slash/" "$temporary/slash//" "$temporary/slash/." \
+  "$temporary/slash/./" "$temporary/slash"; do
   mkdir -p "$temporary/slash"
   printf '' > "$temporary/slash/.ma2a-e2e-evidence"
   printf 'old' > "$temporary/slash/run-1.log"
@@ -68,6 +69,11 @@ printf 'old' > "$near/run-1.log"
 test "$(run "$near")" -eq 2
 test "$(cat "$near/run-1-notes.log")" = notes
 test "$(cat "$near/run-1.log")" = old
+
+# A spelling with no sibling to hold the claim is refused before anything is touched.
+for spelling in . .. "$temporary/slash/.."; do
+  test "$(run "$spelling")" -eq 2 || { printf '%s was accepted\n' "$spelling" >&2; exit 1; }
+done
 
 # A directory another run has claimed is refused and left as it is.
 claimed="$temporary/claimed"

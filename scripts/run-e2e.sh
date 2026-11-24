@@ -15,10 +15,20 @@ case "$runs" in
   ''|*[!0-9]*|0*|?????*)
     printf 'MA2A_E2E_RUNS must be an integer from 1 to 9999 without leading zeros\n' >&2; exit 2 ;;
 esac
-# Trailing separators are dropped, so `dir` and `dir/` name the same directory in every check.
-while [ "${output%/}" != "$output" ] && [ -n "${output%/}" ]; do
-  output=${output%/}
+# Trailing separators and `.` components are dropped, so `dir`, `dir/` and `dir/.` name the same
+# directory in every check and share one claim. A name ending in `.` or `..` has no sibling to
+# hold that claim and is refused.
+while :; do
+  case "$output" in
+    */.) output=${output%/.} ;;
+    ?*/) output=${output%/} ;;
+    *) break ;;
+  esac
 done
+case "$output" in
+  .|..|*/..)
+    printf 'MA2A_E2E_OUTPUT must name the evidence directory itself, not . or ..\n' >&2; exit 2 ;;
+esac
 command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 2; }
 # A run claims its output directory before looking into it and keeps the claim until its
 # evidence is checked, so two runs given one directory never remove or mix each other's files.
