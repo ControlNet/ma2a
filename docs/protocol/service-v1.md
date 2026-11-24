@@ -97,6 +97,10 @@ For this caller only, discovery lists:
 Because built-in names are reserved, a name alone says which of the two it is, and a page's
 `after` cursor works across both.
 
+A service is left out only when the caller is not authorized for it. If the target cannot decide,
+for example because its store is unavailable, the whole page fails with that status, so the caller
+never mistakes a service it may use for one that is not there.
+
 ## Versioning
 
 - The `open` envelope stays exactly `[1, 0]`; any other value is `version_mismatch`.

@@ -5,7 +5,7 @@
 //! every hosted service the caller may call. No Space, member, or path is disclosed.
 
 use ma2a_core::{
-    EndpointId, ServiceKind,
+    EchoError, EndpointId, ServiceKind,
     service::{
         DescribePage, MAX_DESCRIBE_PAGE, ServiceAccess, ServiceDescriptor, ServiceError, admission,
         builtin_descriptor, sorts_after,
@@ -27,27 +27,38 @@ impl HostedServices {
         let limit = u32::try_from(MAX_HOSTED_SERVICES).unwrap_or(u32::MAX);
         let (builtins, hosted) = self
             .store(move |repository| {
-                let builtins: Vec<ServiceKind> = ServiceKind::ALL
+                let allowed = |access: &ServiceAccess| {
+                    authorize(repository, (local, peer), access).map(|_| ())
+                };
+                let builtins = ServiceKind::ALL
                     .into_iter()
-                    .filter(|kind| {
-                        admission(*kind).map_or_else(
-                            || crate::services::echo::authorize(repository, local, peer).is_ok(),
-                            |access| authorize(repository, (local, peer), &access).is_ok(),
-                        )
+                    .filter_map(|kind| {
+                        let decision = admission(kind).map_or_else(
+                            || {
+                                crate::services::echo::authorize(repository, local, peer).map_err(
+                                    |error| match error {
+                                        EchoError::Unauthorized => ServiceError::Unauthorized,
+                                        _ => ServiceError::Unavailable,
+                                    },
+                                )
+                            },
+                            |access| allowed(&access),
+                        );
+                        shown(kind, decision)
                     })
-                    .collect();
-                let hosted: Vec<HostedServiceRecord> = repository
+                    .collect::<Result<Vec<_>, _>>();
+                let hosted = repository
                     .hosted_services((None, limit))?
                     .into_value()
                     .into_iter()
-                    .filter(|record| {
-                        let access = ServiceAccess::Hosted(record.name.clone());
-                        authorize(repository, (local, peer), &access).is_ok()
+                    .filter_map(|record| {
+                        let decision = allowed(&ServiceAccess::Hosted(record.name.clone()));
+                        shown(record, decision)
                     })
-                    .collect();
-                Ok((builtins, hosted))
+                    .collect::<Result<Vec<HostedServiceRecord>, _>>();
+                Ok(builtins.and_then(|builtins| Ok((builtins, hosted?))))
             })
-            .await?;
+            .await??;
         let mut descriptors = builtins
             .into_iter()
             .map(builtin_descriptor)
@@ -72,5 +83,33 @@ impl HostedServices {
             })
             .flatten();
         Ok(DescribePage::new(page, next))
+    }
+}
+
+/// What one authorization decision makes of `item` in a page: listed when allowed, left out
+/// when refused, and the page's failure otherwise, since leaving it out would tell the caller
+/// a service it may use is not there.
+fn shown<T>(item: T, decision: Result<(), ServiceError>) -> Option<Result<T, ServiceError>> {
+    match decision {
+        Ok(()) => Some(Ok(item)),
+        Err(ServiceError::Unauthorized) => None,
+        Err(error) => Some(Err(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::service::ServiceError;
+
+    use super::shown;
+
+    #[test]
+    fn only_a_refusal_leaves_a_service_out() {
+        assert_eq!(shown(1, Ok(())), Some(Ok(1)));
+        assert_eq!(shown(1, Err(ServiceError::Unauthorized)), None);
+        assert_eq!(
+            shown(1, Err(ServiceError::Unavailable)),
+            Some(Err(ServiceError::Unavailable))
+        );
     }
 }
