@@ -14,7 +14,7 @@ pub mod frame_io;
 mod fs_error;
 mod process;
 pub mod proxy;
-mod reply;
+pub mod reply;
 pub mod report;
 #[cfg(any(windows, test))]
 mod sddl;

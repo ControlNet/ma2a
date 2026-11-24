@@ -8,7 +8,7 @@ use ma2a_core::service::{
     admission,
 };
 use ma2a_net::{RecvStream, SendStream, ServiceCall};
-use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport};
+use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport, reply};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -47,8 +47,7 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
     let header = match read_open(&mut reader).await {
         Ok(header) => header,
         Err(error) => {
-            let _sent = writer.reject(error).await;
-            let _closed = writer.shutdown().await;
+            reply::reject(&mut writer, error).await;
             return;
         }
     };
@@ -135,8 +134,7 @@ async fn reject(
     (context, key): (&HostContext, OperationKey),
     error: ServiceError,
 ) {
-    let _sent = writer.reject(error).await;
-    let _closed = writer.shutdown().await;
+    reply::reject(writer, error).await;
     context
         .operations
         .record(key, OperationReport::new(OperationEnd::Rejected(error)));
@@ -212,31 +210,22 @@ async fn dispatch(
             let operation = ((peer, request_id), call, stop);
             crate::hosting::serve(&context.hosted, operation, (reader, writer)).await
         }
-        _ => {
-            let _sent = writer.reject(ServiceError::Internal).await;
-            OperationReport::new(OperationEnd::Rejected(ServiceError::Internal))
-        }
+        _ => reply::reject(writer, ServiceError::Internal).await,
     }
 }
 
-/// Answers `describe`: its one outcome, or its refusal before any effect.
+/// Answers `describe`: its one outcome, or its refusal before any effect, each written within
+/// the grace a host gives a caller that stops reading.
 async fn describe(
     writer: &mut Writer<'_>,
     page: Result<DescribePage, ServiceError>,
 ) -> OperationReport {
-    let encoded = match &page {
-        Ok(page) => DescribePage::encode_outcome(Ok(page)),
-        Err(error) => {
-            let _sent = writer.reject(*error).await;
-            return OperationReport::new(OperationEnd::Rejected(*error));
-        }
-    };
-    let Ok(payload) = encoded else {
-        let _sent = writer.reject(ServiceError::Internal).await;
-        return OperationReport::new(OperationEnd::Rejected(ServiceError::Internal));
-    };
-    if writer.frame(FrameKind::Outcome, &payload).await.is_err() {
-        return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+    match page
+        .as_ref()
+        .map(|page| DescribePage::encode_outcome(Ok(page)))
+    {
+        Ok(Ok(encoded)) => reply::outcome(writer, (Ok(encoded), None), (0, 0)).await,
+        Ok(Err(_)) => reply::reject(writer, ServiceError::Internal).await,
+        Err(error) => reply::reject(writer, *error).await,
     }
-    OperationReport::new(OperationEnd::Completed)
 }

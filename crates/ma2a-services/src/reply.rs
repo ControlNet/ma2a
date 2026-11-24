@@ -19,7 +19,7 @@ pub(crate) const STALL_DEADLINE: Duration = Duration::from_secs(30);
 /// Longest a host waits to write the frame that opens or ends an operation, and to close.
 ///
 /// A caller that stops reading cannot hold the host, its permits, or its child past this.
-pub(crate) const FRAME_GRACE: Duration = Duration::from_secs(5);
+pub const FRAME_GRACE: Duration = Duration::from_secs(5);
 
 /// Writes `accept` within [`FRAME_GRACE`], unless `shutdown` fires first.
 ///
@@ -40,7 +40,7 @@ pub(crate) async fn accept<W: AsyncWrite + Unpin>(
 }
 
 /// Sends `reject`, half-closes, and reports that nothing happened.
-pub(crate) async fn reject<W: AsyncWrite + Unpin>(
+pub async fn reject<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,
     error: ServiceError,
 ) -> OperationReport {
@@ -53,7 +53,7 @@ pub(crate) async fn reject<W: AsyncWrite + Unpin>(
 }
 
 /// Sends one encoded terminal `outcome`, half-closes, and reports its class.
-pub(crate) async fn outcome<W: AsyncWrite + Unpin>(
+pub async fn outcome<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,
     (encoded, failure): (Result<Vec<u8>, ProtocolError>, Option<ServiceError>),
     (bytes_in, bytes_out): (u64, u64),
