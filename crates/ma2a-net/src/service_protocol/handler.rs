@@ -1,13 +1,15 @@
+use std::sync::Arc;
+
 use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
 };
 use ma2a_core::{EndpointId, ServiceKind, service::ServiceError};
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::sync::{Semaphore, mpsc};
 
 use super::{
     ServiceCall, ServiceLimits, ServiceMetrics,
-    call::{ServiceStream, write_reject},
+    call::{ServiceStream, refuse},
     limit::ServiceLimiter,
 };
 
@@ -18,6 +20,8 @@ pub(crate) struct ServiceHandler {
     calls: Option<mpsc::Sender<ServiceCall>>,
     limiter: ServiceLimiter,
     metrics: ServiceMetrics,
+    /// Bounds the reject frames being written for this service across all its connections.
+    refusals: Arc<Semaphore>,
 }
 
 impl ServiceHandler {
@@ -26,11 +30,13 @@ impl ServiceHandler {
         calls: Option<mpsc::Sender<ServiceCall>>,
         metrics: ServiceMetrics,
     ) -> Self {
+        let limits = ServiceLimits::of(kind);
         Self {
             kind,
             calls,
-            limiter: ServiceLimiter::new(ServiceLimits::of(kind)),
+            limiter: ServiceLimiter::new(limits),
             metrics,
+            refusals: Arc::new(Semaphore::new(limits.global())),
         }
     }
 }
@@ -38,24 +44,19 @@ impl ServiceHandler {
 impl ProtocolHandler for ServiceHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let peer: EndpointId = connection.remote_id().into();
-        let mut rejects = JoinSet::new();
         loop {
             tokio::select! {
                 _ = connection.closed() => break,
                 stream = connection.accept_bi() => match stream {
                     Ok(halves) => {
                         if let Some(stream) = self.admit(peer, halves) {
-                            rejects.spawn(write_reject(stream, ServiceError::ConcurrencyExceeded));
+                            refuse(&self.refusals, stream, ServiceError::ConcurrencyExceeded);
                         }
                     }
                     Err(_) => break,
                 },
-                joined = rejects.join_next(), if !rejects.is_empty() => {
-                    let _completed = joined;
-                }
             }
         }
-        rejects.shutdown().await;
         Ok(())
     }
 }
@@ -71,7 +72,11 @@ impl ServiceHandler {
             self.metrics.record_saturated();
             return Some(ServiceStream::rejected(send, receive));
         };
-        let call = ServiceCall::new((peer, self.kind), (send, receive), (permit, &self.metrics));
+        let call = ServiceCall::new(
+            (peer, self.kind),
+            (send, receive),
+            (permit, &self.metrics, &self.refusals),
+        );
         let Some(calls) = self.calls.as_ref() else {
             call.reject(ServiceError::Unavailable);
             return None;

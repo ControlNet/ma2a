@@ -11,6 +11,7 @@ use ma2a_core::{
     EndpointId, ServiceKind,
     service::{FrameHeader, FrameKind, ServiceError},
 };
+use tokio::sync::Semaphore;
 
 pub use super::limit::ServicePermit;
 
@@ -124,13 +125,14 @@ pub struct ServiceCall {
     kind: ServiceKind,
     stream: ServiceStream,
     metrics: ServiceMetrics,
+    refusals: Arc<Semaphore>,
 }
 
 impl ServiceCall {
     pub(super) fn new(
         (remote_endpoint_id, kind): (EndpointId, ServiceKind),
         (send, receive): (SendStream, RecvStream),
-        (permit, metrics): (ServicePermit, &ServiceMetrics),
+        (permit, metrics, refusals): (ServicePermit, &ServiceMetrics, &Arc<Semaphore>),
     ) -> Self {
         Self {
             remote_endpoint_id,
@@ -143,6 +145,7 @@ impl ServiceCall {
                 active: Some(ActiveServiceStream::new(metrics)),
             },
             metrics: metrics.clone(),
+            refusals: Arc::clone(refusals),
         }
     }
 
@@ -167,11 +170,26 @@ impl ServiceCall {
     pub fn reject(mut self, error: ServiceError) {
         self.metrics.0.rejected.fetch_add(1, Ordering::Relaxed);
         drop((self.stream.permit.take(), self.stream.active.take()));
-        tokio::spawn(write_reject(self.stream, error));
+        refuse(&self.refusals, self.stream, error);
     }
 }
 
-pub(super) async fn write_reject(mut stream: ServiceStream, error: ServiceError) {
+/// Writes a refused stream's reject frame in the background while fewer refusals of its
+/// service than its Runtime-wide bound are being written, and otherwise resets the stream at
+/// once with no reply, so a flood of refused streams cannot pile up writers.
+pub(super) fn refuse(refusals: &Arc<Semaphore>, mut stream: ServiceStream, error: ServiceError) {
+    let Ok(permit) = Arc::clone(refusals).try_acquire_owned() else {
+        let _reset = stream.send.reset(0_u8.into());
+        let _stopped = stream.receive.stop(0_u8.into());
+        return;
+    };
+    tokio::spawn(async move {
+        write_reject(stream, error).await;
+        drop(permit);
+    });
+}
+
+async fn write_reject(mut stream: ServiceStream, error: ServiceError) {
     let _written = tokio::time::timeout(REJECT_WRITE_DEADLINE, async {
         let header = FrameHeader::new(FrameKind::Reject, 1)
             .and_then(FrameHeader::encode)

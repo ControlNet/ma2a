@@ -260,6 +260,9 @@ A stream over a bound is rejected with `concurrency_exceeded` before any byte is
 `open` frame must arrive within 15 seconds. Permits are RAII and released on every exit path.
 A peer the Runtime refuses outright, such as a non-member, gives its permit back before the
 `reject` frame is written, so refusals cannot fill a bound.
+A host writes at most as many of a family's `reject` frames for refused streams at once as the
+family's Runtime-wide bound, whatever the refusal; a stream refused beyond that is reset with no
+reply.
 A host waits at most 5 seconds to write the frame that opens or ends an operation (`accept`,
 `reject`, or `outcome`) and to close the stream, and a Process supervisor must answer within
 10 seconds, so a caller that stops reading, or a supervisor that stops answering, cannot hold a
