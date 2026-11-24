@@ -12,6 +12,7 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 - A2A callers have no Endpoint identity.
   - For this Runtime's own Agents, the adapter acts as the local operator.
   - For another Endpoint's Agents, it acts as this Endpoint. Every remote operation goes through the stream plane under this Endpoint's identity, so it needs one complete Space path to that Agent, exactly as the CLI does.
+- **Remote deadline.** A remote Agent v1 `agents`, `submit`, `send`, `get`, or `tasks` that the target does not answer within 30 s fails, and the method answers `-32603` with reason `TIMED_OUT`. A remote `cancel` is bounded by the wait of `CancelTask` instead, and a stream or an artifact download lasts while its client stays connected.
 - **Listener.** `--listen` must be a loopback address; any other address is a usage error. The default is `127.0.0.1:41241`, and port `0` picks a free port.
 - **Connections.** At most 64 connections are served at once. A request has 10 seconds to send its headers and, once authenticated, 10 more for its body (`408` otherwise).
 - **Token.** Every route requires `Authorization: Bearer TOKEN`, including the Agent Cards.

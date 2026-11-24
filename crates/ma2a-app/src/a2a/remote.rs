@@ -32,8 +32,31 @@ fn task_id(task: &str) -> Result<AgentTaskId, Refusal> {
     AgentTaskId::parse(task).map_err(|_| Refusal::named("unknown_task"))
 }
 
-/// Runs one content-free operation and answers its reply.
+/// Longest wait for a target to answer one content-free operation, so a target that never
+/// answers fails the request instead of holding one of the adapter's connections.
+const CALL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Runs `call` under `deadline`, failing as `timed_out` once it passes.
+async fn bounded<T>(
+    deadline: Duration,
+    call: impl Future<Output = Result<T, Refusal>>,
+) -> Result<T, Refusal> {
+    tokio::time::timeout(deadline, call)
+        .await
+        .unwrap_or_else(|_| Err(Refusal::named(ServiceError::TimedOut.name())))
+}
+
+/// Runs one content-free operation under [`CALL_DEADLINE`] and answers its reply.
 async fn call(
+    backend: &Backend,
+    target: (&str, Option<&str>),
+    request: AgentRequest,
+) -> Result<AgentReply, Refusal> {
+    bounded(CALL_DEADLINE, answer(backend, target, request)).await
+}
+
+/// Runs one content-free operation, however long its target takes, and answers its reply.
+async fn answer(
     backend: &Backend,
     (endpoint, request_id): (&str, Option<&str>),
     request: AgentRequest,
@@ -130,7 +153,9 @@ pub(super) async fn tasks(
 pub(super) async fn cancel(backend: &Backend, route: &Route, task: &str) -> Result<Value, Refusal> {
     let (endpoint, agent) = parts(route)?;
     let request = AgentRequest::Cancel(agent.clone(), task_id(task)?);
-    summary(&call(backend, (endpoint, None), request).await?)
+    // `CancelTask` bounds the cancel by its own wait and then answers the task as it is, so
+    // a deadline here would only turn that answer into a failure.
+    summary(&answer(backend, (endpoint, None), request).await?)
 }
 
 pub(super) async fn card(backend: &Backend, route: &Route) -> Result<(String, bool), Refusal> {
@@ -236,42 +261,5 @@ fn matches_reference((size, blake3): (u64, &str), (got, hash): (u64, &[u8; 32]))
 }
 
 #[cfg(test)]
-mod tests {
-    use ma2a_core::service::AgentTaskId;
-
-    use super::{matches_reference, moves_past};
-
-    const fn id(byte: u8) -> AgentTaskId {
-        AgentTaskId::from_bytes([byte; 16])
-    }
-
-    /// Whether a page listing `listed` and naming `next` moves past `after`.
-    fn moves(after: Option<u8>, listed: &[u8], next: Option<u8>) -> bool {
-        let listed = listed.iter().map(|byte| id(*byte));
-        moves_past(after.map(id), (listed, next.map(id)))
-    }
-
-    #[test]
-    fn a_page_must_move_past_the_cursor_sent() {
-        // The first page has nothing to move past.
-        assert!(moves(None, &[1], Some(1)));
-        assert!(moves(Some(1), &[2, 3], Some(3)));
-        assert!(moves(Some(1), &[2], None));
-        // The same cursor again, one behind it, or a task already listed.
-        assert!(!moves(Some(3), &[4], Some(3)));
-        assert!(!moves(Some(3), &[], Some(2)));
-        assert!(!moves(Some(3), &[3], None));
-    }
-
-    #[test]
-    fn content_must_be_what_the_artifact_reference_names() {
-        let hash = *blake3::hash(b"result").as_bytes();
-        let hex = blake3::hash(b"result").to_hex();
-        assert!(matches_reference((6, &hex), (6, &hash)));
-        // Another size, another hash, or a reference that names no hash.
-        assert!(!matches_reference((7, &hex), (6, &hash)));
-        let other = blake3::hash(b"forged").to_hex();
-        assert!(!matches_reference((6, &other), (6, &hash)));
-        assert!(!matches_reference((6, ""), (6, &hash)));
-    }
-}
+#[path = "remote_tests.rs"]
+mod tests;
