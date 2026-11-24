@@ -13,7 +13,7 @@ async fn committed_invitation_file_failure_cannot_mint_again_after_restart() -> 
         "version": 1, "operation": "space_invite",
         "request_id": "12121212121212121212121212121212",
         "space_id": api::encode_hex(space.as_bytes()), "ttl_ms": 60000,
-        "output_path": unwritable(&state.0)?,
+        "output_path": ticket_path(&state.0)?,
     }))?)?;
     let mut first_error = None;
     let mut runtime = Some(runtime);
@@ -29,9 +29,9 @@ async fn committed_invitation_file_failure_cannot_mint_again_after_restart() -> 
         )
         .await?;
         let paths = IpcPaths::new(&state.0)?;
-        let server = LiveServer::spawn(
+        let server = LiveServer::spawn(failing_ticket_write(
             LocalApiServer::bind_for_launch(paths.clone(), current.handle(), control, None).await?,
-        );
+        ));
         let client = LocalApiClient::new(paths.clone());
         for _ in 0..2 {
             let response = client.call(&command).await?;
@@ -80,7 +80,7 @@ async fn replay_completion_failure_preserves_pending_after_durable_invitation() 
         "version": 1, "operation": "space_invite",
         "request_id": "13131313131313131313131313131313",
         "space_id": api::encode_hex(space.as_bytes()), "ttl_ms": 60000,
-        "output_path": unwritable(&state.0)?,
+        "output_path": ticket_path(&state.0)?,
     }))?)?;
     let connection = rusqlite::Connection::open(config.database_path())?;
     connection.execute_batch("CREATE TRIGGER fail_replay_completion BEFORE UPDATE ON local_mutation_replay BEGIN SELECT RAISE(ABORT, 'test completion failure'); END;")?;
@@ -91,9 +91,9 @@ async fn replay_completion_failure_preserves_pending_after_durable_invitation() 
     )
     .await?;
     let paths = IpcPaths::new(&state.0)?;
-    let server = LiveServer::spawn(
+    let server = LiveServer::spawn(failing_ticket_write(
         LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?,
-    );
+    ));
     let client = LocalApiClient::new(paths);
     assert!(client.call(&command).await.is_err());
     connection.execute_batch("DROP TRIGGER fail_replay_completion")?;
@@ -135,12 +135,15 @@ async fn an_output_path_naming_no_file_is_refused_before_an_invitation_exists() 
         LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?,
     );
     let client = LocalApiClient::new(paths.clone());
-    // A path ending in `..` names a directory, never a file the ticket could be written to; the
-    // state directory exists already; and a missing directory cannot hold the ticket.
+    // A path ending in `..` or a separator names a directory, never a file the ticket could be
+    // written to; the state directory exists already; a missing directory cannot hold the
+    // ticket; and no file system accepts a name this long.
     let outputs = [
         ("34", state.0.join("..")),
         ("35", state.0.clone()),
         ("36", state.0.join("missing").join("ticket")),
+        ("37", state.0.join("ticket").join("")),
+        ("38", state.0.join("t".repeat(300))),
     ];
     for (request, output) in outputs {
         let command = api::decode_command(&serde_json::to_vec(&serde_json::json!({
@@ -166,13 +169,20 @@ async fn an_output_path_naming_no_file_is_refused_before_an_invitation_exists() 
     Ok(())
 }
 
-/// A path that passes every check made before the invitation is committed, in an existing
-/// directory and naming nothing yet, but whose name is longer than any file system accepts, so
-/// writing the ticket fails after the commit.
-fn unwritable(state: &std::path::Path) -> TestResult<String> {
+/// A path that passes every check made before the invitation is committed.
+fn ticket_path(state: &std::path::Path) -> TestResult<String> {
     Ok(state
-        .join("t".repeat(300))
+        .join("ticket")
         .to_str()
         .ok_or("invalid path")?
         .to_owned())
+}
+
+/// Makes the server's next ticket file write fail after its invitation is committed.
+fn failing_ticket_write(server: LocalApiServer) -> LocalApiServer {
+    server
+        .mutation_hooks
+        .fail_next_invite_write
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    server
 }

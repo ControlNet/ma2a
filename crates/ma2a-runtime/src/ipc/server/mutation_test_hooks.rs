@@ -12,9 +12,16 @@ pub(super) struct MutationTestHooks {
     /// When set, the next stream-plane dial never gets a stream, as against a peer that grants
     /// no stream credit.
     pub(super) stall_next_dial: Arc<std::sync::atomic::AtomicBool>,
+    /// When set, the next invitation ticket file fails to be written after its commit.
+    pub(super) fail_next_invite_write: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MutationTestHooks {
+    pub(super) fn take_invite_write_failure(&self) -> bool {
+        self.fail_next_invite_write
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(super) fn take_stream_loss(&self) -> bool {
         self.lose_stream_after_open
             .swap(false, std::sync::atomic::Ordering::SeqCst)

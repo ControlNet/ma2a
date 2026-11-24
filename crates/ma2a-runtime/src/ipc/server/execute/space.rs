@@ -56,14 +56,29 @@ pub(super) async fn invite(
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
     let output_path = output_path.to_owned();
     let encoded = created.ticket().encode_string().into_bytes();
-    tokio::task::spawn_blocking(move || invite_file::write_owner_only(&output_path, &encoded))
-        .await
-        .unwrap_or(Err(ProtocolError::INTERNAL))
-        .map_err(|error| ApiError::new(error).after_commit(created.revision()))?;
+    let written = if injected_write_failure(context) {
+        Err(ProtocolError::INTERNAL)
+    } else {
+        tokio::task::spawn_blocking(move || invite_file::write_owner_only(&output_path, &encoded))
+            .await
+            .unwrap_or(Err(ProtocolError::INTERNAL))
+    };
+    written.map_err(|error| ApiError::new(error).after_commit(created.revision()))?;
     Ok(
         CommandResult::space_invitation_created(committed_space(created.chain())?)
             .at_revision(created.revision()),
     )
+}
+
+/// Deterministic fault point: the ticket file fails to be written after the commit.
+#[cfg(test)]
+fn injected_write_failure(context: &ConnectionContext) -> bool {
+    context.mutation_hooks.take_invite_write_failure()
+}
+
+#[cfg(not(test))]
+const fn injected_write_failure(_context: &ConnectionContext) -> bool {
+    false
 }
 
 pub(super) async fn list(context: &ConnectionContext) -> Result<CommandResult, ProtocolError> {

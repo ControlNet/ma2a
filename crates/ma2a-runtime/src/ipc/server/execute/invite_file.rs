@@ -4,11 +4,12 @@ use ma2a_core::ProtocolError;
 
 /// Checks an invitation output path before the invitation is created, so a path no write can
 /// use is refused before anything is committed: it must name a file that does not exist yet,
-/// in an existing directory, by a name this host can create, and may not hold NUL.
+/// in an existing directory, by a name this host can create, and may not hold NUL. The name
+/// must end the path, as a trailing separator or `.` asks for a directory.
 pub(super) fn check_destination(path: &str) -> Result<(), ProtocolError> {
     let destination = std::path::Path::new(path);
     let name = destination.file_name().and_then(std::ffi::OsStr::to_str);
-    let Some(name) = name.filter(|_| !path.contains('\0')) else {
+    let Some(name) = name.filter(|name| !path.contains('\0') && path.ends_with(name)) else {
         return Err(ProtocolError::INVALID_INPUT);
     };
     if cfg!(windows) && (name.contains(':') || ma2a_services::files::is_windows_reserved(name)) {
@@ -18,12 +19,15 @@ pub(super) fn check_destination(path: &str) -> Result<(), ProtocolError> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
-    if !std::fs::metadata(parent).is_ok_and(|parent| parent.is_dir())
-        || std::fs::symlink_metadata(destination).is_ok()
-    {
+    if !std::fs::metadata(parent).is_ok_and(|parent| parent.is_dir()) {
         return Err(ProtocolError::INVALID_INPUT);
     }
-    Ok(())
+    // Only a name that is known to be free passes: any other failure, such as a name too
+    // long for the file system, would fail the write after the invitation is committed.
+    match std::fs::symlink_metadata(destination) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        _ => Err(ProtocolError::INVALID_INPUT),
+    }
 }
 
 #[cfg(unix)]
@@ -117,6 +121,9 @@ mod tests {
         assert!(check_destination("").is_err());
         assert!(check_destination(&path("..")).is_err());
         assert!(check_destination(&path("ti\0cket")).is_err());
+        assert!(check_destination(&format!("{}/", path("ticket"))).is_err());
+        assert!(check_destination(&format!("{}/.", path("ticket"))).is_err());
+        assert!(check_destination(&path(&"t".repeat(300))).is_err());
         std::fs::remove_dir_all(&directory)
     }
 
