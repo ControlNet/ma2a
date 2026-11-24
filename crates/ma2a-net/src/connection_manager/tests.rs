@@ -76,3 +76,29 @@ async fn a_connection_its_users_dropped_frees_its_active_place() -> TestResult {
     router.shutdown().await.map_err(io::Error::other)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_connection_registered_after_shutdown_is_refused_and_closed() -> TestResult {
+    // Given: a dial that completed while the manager was shutting down.
+    let router = Router::builder(test_endpoint("ma2a_manager_late_server").await?)
+        .accept(HOLD_ALPN, Hold)
+        .spawn();
+    let manager = ConnectionManager::new(test_endpoint("ma2a_manager_late_client").await?);
+    let connection = manager
+        .0
+        .endpoint
+        .connect(router.endpoint().addr(), HOLD_ALPN)
+        .await
+        .map_err(io::Error::other)?;
+    manager.shutdown().await;
+
+    // When
+    let registered = manager.register(router.endpoint().id().into(), connection.clone());
+
+    // Then: nothing outlives the shutdown that already closed everything it held.
+    assert!(registered.is_err());
+    assert_eq!(active(&manager), 0);
+    assert!(connection.close_reason().is_some());
+    router.shutdown().await.map_err(io::Error::other)?;
+    Ok(())
+}

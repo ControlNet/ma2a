@@ -198,6 +198,12 @@ impl ConnectionManager {
                 .active
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Shutdown cancels before it empties this map under the same lock, so a dial
+            // that completes after that is closed here instead of outliving the manager.
+            if self.0.cancellation.is_cancelled() {
+                connection.close(0_u8.into(), b"");
+                return Err(DialFailure::cancelled());
+            }
             if active.len() == MAX_ACTIVE_CONNECTIONS {
                 connection.close(1_u8.into(), b"");
                 return Err(DialFailure::policy_denied(
