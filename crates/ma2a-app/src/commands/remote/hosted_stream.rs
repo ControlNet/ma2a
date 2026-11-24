@@ -80,8 +80,8 @@ async fn read_retained(
             }
         }
         gaps(read.gaps);
-        let caught_up = until.is_some_and(|until| read.next >= until);
-        if read.ended || caught_up || !moved((reads, reached), read.next)? {
+        let done = read.ended || until.is_some_and(|until| read.next >= until);
+        if !another((reads, reached), (read.next, done))? {
             return Ok((read.next, read.ended));
         }
         reached = Some(read.next);
@@ -93,14 +93,21 @@ async fn read_retained(
 /// so a target that keeps the cursor creeping forward further is not followed.
 const MAX_RETAINED_READS: usize = 64;
 
-/// Whether the `reads`th read, which ended at `next`, moved past `reached` and may be followed
-/// by another. A cursor that does not move would only read the same output again; one that
-/// goes back is a faulty reply, since following it would print output already printed, and so
-/// is one still moving after [`MAX_RETAINED_READS`] reads.
-const fn moved((reads, reached): (usize, Option<u64>), next: u64) -> Result<bool, ClientError> {
+/// Whether the `reads`th read, which ended at `next` and is `done` once the Process ended or
+/// the read caught up, is followed by another from `next`.
+///
+/// A cursor that goes back is a faulty reply on every read, the last included, since following
+/// or resuming from it would print output already printed. A cursor that does not move would
+/// only read the same output again. Only a read that needs another may hit
+/// [`MAX_RETAINED_READS`], past which a cursor still moving is a faulty reply too.
+const fn another(
+    (reads, reached): (usize, Option<u64>),
+    (next, done): (u64, bool),
+) -> Result<bool, ClientError> {
     match reached {
-        Some(reached) if next == reached => Ok(false),
         Some(reached) if next < reached => Err(ClientError::Stream(ServiceError::InvalidInput)),
+        Some(reached) if next == reached => Ok(false),
+        _ if done => Ok(false),
         _ if reads >= MAX_RETAINED_READS => Err(ClientError::Stream(ServiceError::InvalidInput)),
         _ => Ok(true),
     }
@@ -203,22 +210,32 @@ fn note(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_RETAINED_READS, moved};
+    use super::{MAX_RETAINED_READS, another};
 
     #[test]
     fn a_log_cursor_that_goes_back_is_refused() {
-        assert!(moved((1, None), 0).is_ok_and(|moved| moved));
-        assert!(moved((2, Some(10)), 20).is_ok_and(|moved| moved));
-        assert!(moved((2, Some(10)), 10).is_ok_and(|moved| !moved));
-        assert!(moved((2, Some(10)), 9).is_err());
+        assert!(another((1, None), (0, false)).is_ok_and(|another| another));
+        assert!(another((2, Some(10)), (20, false)).is_ok_and(|another| another));
+        assert!(another((2, Some(10)), (10, false)).is_ok_and(|another| !another));
+        assert!(another((2, Some(10)), (9, false)).is_err());
+    }
+
+    #[test]
+    fn a_final_reply_whose_cursor_goes_back_is_refused() {
+        // A read from cursor 100 that ends the Process may not resume anyone at 90.
+        assert!(another((1, Some(100)), (90, true)).is_err());
+        assert!(another((1, Some(100)), (100, true)).is_ok_and(|another| !another));
+        assert!(another((1, None), (0, true)).is_ok_and(|another| !another));
     }
 
     #[test]
     fn a_log_cursor_still_creeping_after_the_last_read_is_refused() {
         let last = MAX_RETAINED_READS;
-        assert!(moved((last - 1, Some(10)), 11).is_ok_and(|moved| moved));
-        // A last read that ends where the one before it did is answered as it is.
-        assert!(moved((last, Some(10)), 10).is_ok_and(|moved| !moved));
-        assert!(moved((last, Some(10)), 11).is_err());
+        assert!(another((last - 1, Some(10)), (11, false)).is_ok_and(|another| another));
+        // A last read that ends where the one before it did is answered as it is, and so is
+        // one that needs no further read.
+        assert!(another((last, Some(10)), (10, false)).is_ok_and(|another| !another));
+        assert!(another((last, Some(10)), (11, true)).is_ok_and(|another| !another));
+        assert!(another((last, Some(10)), (11, false)).is_err());
     }
 }
