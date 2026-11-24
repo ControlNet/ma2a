@@ -66,15 +66,29 @@ do
   grep -F $'network\t'"$reference" <<<"$javascript" >/dev/null
 done
 
-# The built console, when present, must carry only same-origin references.
-shopt -s nullglob
-for built in web/dist/assets/*.js; do
+# Fails when a built asset holds a reference that is not same-origin, or cannot be scanned.
+scan_built() {
+  local built=$1 references reference
+  references=$(./scripts/extract-runtime-references.pl js "$built") || return 1
+  [[ -n "$references" ]] || return 0
   while IFS=$'\t' read -r _ reference; do
     [[ "$reference" =~ ^\.{0,2}/[A-Za-z0-9._/-]*$ ]] || {
       printf 'unexpected runtime reference in %s: %s\n' "$built" "$reference" >&2
-      exit 1
+      return 1
     }
-  done < <(./scripts/extract-runtime-references.pl js "$built")
+  done <<<"$references"
+}
+
+# An asset the extractor cannot read fails the scan, even though it printed nothing.
+if scan_built "$temporary/missing.js" 2>/dev/null; then
+  printf 'an unreadable asset passed the scan\n' >&2
+  exit 1
+fi
+
+# The built console, when present, must carry only same-origin references.
+shopt -s nullglob
+for built in web/dist/assets/*.js; do
+  scan_built "$built"
 done
 
 printf 'runtime reference scanner probes passed\n'
