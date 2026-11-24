@@ -141,6 +141,9 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
         "SendMessage" => {
             let inbound = inbound(params)?;
             let configuration = params.get("configuration").unwrap_or(&Value::Null);
+            // Every parameter is checked before the message is delivered, so a refusal never
+            // follows a task it already created.
+            let detail = detail(configuration, true)?;
             let summary = deliver(served, &inbound).await.map_err(refused)?;
             if configuration
                 .get("returnImmediately")
@@ -153,7 +156,6 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
                     .await
                     .map_err(refused)?;
             }
-            let detail = detail(configuration, true)?;
             let task = view::task(served, &task_id(&summary), detail)
                 .await
                 .map_err(refused)?;
@@ -167,6 +169,7 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
         }
         "CancelTask" => {
             let id = required(params, "id")?;
+            let detail = detail(params, true)?;
             let current = served
                 .backend
                 .details(served.route, id)
@@ -176,19 +179,16 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
             if state.is_some_and(ended) {
                 return Err(RpcError::not_cancelable());
             }
-            let summary = served
-                .backend
-                .cancel(served.route, id)
-                .await
-                .map_err(refused)?;
-            let waited =
-                tokio::time::timeout(CANCEL_WAIT, view::wait(served, (&summary, false), ended));
-            if let Ok(waited) = waited.await {
-                waited.map_err(refused)?;
+            // The wait covers the cancel itself: a remote target answers it only once the task
+            // ended, so past the wait the task is answered as it is.
+            let cancelled = async {
+                let summary = served.backend.cancel(served.route, id).await?;
+                view::wait(served, (&summary, false), ended).await
+            };
+            if let Ok(cancelled) = tokio::time::timeout(CANCEL_WAIT, cancelled).await {
+                cancelled.map_err(refused)?;
             }
-            view::task(served, id, detail(params, true)?)
-                .await
-                .map_err(refused)
+            view::task(served, id, detail).await.map_err(refused)
         }
         "ListTasks" => super::list::list(served, params).await,
         method if method.contains("PushNotificationConfig") => Err(RpcError::push_not_supported()),

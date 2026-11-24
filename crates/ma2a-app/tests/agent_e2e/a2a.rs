@@ -183,6 +183,16 @@ fn send_replay_and_continue(adapter: &Adapter, lead: &str) -> TestResult {
     let unknown = continuing("m-unknown", "hello", &"00".repeat(16));
     let unknown = adapter.call(sending, &unknown)?;
     assert_eq!(error_code(&unknown)?, -32_001, "{:?}", unknown.json());
+    // A malformed parameter is refused before delivery: no task is left behind, so the
+    // message ID is still free for other content.
+    let malformed = json!({
+        "message": {"messageId": "m-bad", "role": "ROLE_USER", "parts": [{"text": "echo bad"}]},
+        "configuration": {"historyLength": -1},
+    });
+    let malformed = adapter.call(sending, &malformed)?;
+    assert_eq!(error_code(&malformed)?, -32_602, "{:?}", malformed.json());
+    let fresh = adapter.result(sending, &message("m-bad", "echo other"))?;
+    assert_eq!(text(&fresh, "/task/status/message/parts/0/text"), "other");
 
     let asked = adapter.result(sending, &message("m-ask", "ask colour?"))?;
     assert_eq!(
@@ -322,6 +332,19 @@ fn subscribe_and_cancel(adapter: &Adapter, (lead, worker): (&str, &str)) -> Test
     );
     for (route, id) in [(lead, "m-long-lead"), (worker, "m-long-worker")] {
         let started = adapter.result((route, "SendMessage"), &immediate(id, "sleep 60000"))?;
+        // A malformed cancel cancels nothing.
+        let malformed = json!({"id": text(&started, "/task/id"), "historyLength": "x"});
+        let malformed = adapter.call((route, "CancelTask"), &malformed)?;
+        assert_eq!(error_code(&malformed)?, -32_602, "{:?}", malformed.json());
+        let still = adapter.result(
+            (route, "GetTask"),
+            &json!({"id": text(&started, "/task/id")}),
+        )?;
+        assert_eq!(
+            text(&still, "/status/state"),
+            "TASK_STATE_WORKING",
+            "{still}"
+        );
         let cancelled = adapter.result(
             (route, "CancelTask"),
             &json!({"id": text(&started, "/task/id")}),
