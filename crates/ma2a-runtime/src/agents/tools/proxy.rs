@@ -14,7 +14,6 @@ use ma2a_core::{
 };
 use ma2a_services::client;
 use tokio::net::TcpListener;
-use tokio_util::sync::CancellationToken;
 
 use super::{Call, Outcome, ok};
 
@@ -36,7 +35,8 @@ impl Call<'_> {
         let listen = listener
             .local_addr()
             .map_err(|error| super::workspace::local(&error))?;
-        let token = CancellationToken::new();
+        // Cancelled with its task, and with the daemon.
+        let token = self.manager.0.shutdown.child_token();
         self.manager
             .coordination()
             .listeners
@@ -53,7 +53,6 @@ impl Call<'_> {
             loop {
                 let accepted = tokio::select! {
                     () = token.cancelled() => return,
-                    () = manager.0.shutdown.cancelled() => return,
                     accepted = listener.accept() => accepted,
                 };
                 let Ok((socket, _)) = accepted else {
@@ -78,7 +77,7 @@ impl Call<'_> {
                     continue;
                 };
                 let stop = token.clone();
-                tokio::spawn(async move {
+                manager.0.tasks.spawn(async move {
                     let (read, write) = socket.into_split();
                     tokio::select! {
                         _relayed = client::proxy::run((&mut reader, &mut writer), (read, write)) => {}
