@@ -213,7 +213,7 @@ limitation.
 `/bin/sh`, or `%COMSPEC%` on Windows. `TERM` is set from `term`.
 
 - Input is `data` (input); `end` stops input while the session continues.
-- Resize is `control` with `{0: cols, 1: rows}`.
+- Resize is `control` with `[0, [cols, rows]]`.
 - Terminal output is `data` (output).
 
 The session ends when its program exits, when its lifetime (at most 24 h) expires, on caller
