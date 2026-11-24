@@ -51,7 +51,8 @@ export function App({
 
   const actions = useMemo(() => {
     if (session === undefined || controller === undefined) return undefined
-    return createRuntimeActions(createRuntimeMutationClient({ csrfToken: session.csrfToken }), () =>
+    const csrfToken = (): string => currentWebSession()?.csrfToken ?? session.csrfToken
+    return createRuntimeActions(createRuntimeMutationClient({ csrfToken }), () =>
       controller.refresh(),
     )
   }, [controller, session])

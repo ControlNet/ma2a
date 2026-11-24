@@ -23,7 +23,7 @@ test("posts a typed Space creation with same-origin CSRF and returns its result"
   })
   const create = vi.spyOn(ky, "create")
   const client = createRuntimeMutationClient({
-    csrfToken: "cd".repeat(32),
+    csrfToken: () => "cd".repeat(32),
     requestId: () => "01".repeat(16),
   })
 
@@ -53,7 +53,7 @@ test("rejects a mutation response whose result does not match the command", asyn
     }),
   )
   const client = createRuntimeMutationClient({
-    csrfToken: "cd".repeat(32),
+    csrfToken: () => "cd".repeat(32),
     requestId: () => "01".repeat(16),
   })
 
@@ -71,7 +71,7 @@ test("surfaces typed Local API rejection code and remediation instead of payload
     }),
   )
   const client = createRuntimeMutationClient({
-    csrfToken: "cd".repeat(32),
+    csrfToken: () => "cd".repeat(32),
     requestId: () => "01".repeat(16),
   })
 
@@ -91,7 +91,7 @@ test("accepts nullable remediation on Local API rejection envelopes", async () =
     }),
   )
   const client = createRuntimeMutationClient({
-    csrfToken: "cd".repeat(32),
+    csrfToken: () => "cd".repeat(32),
     requestId: () => "01".repeat(16),
   })
 
@@ -117,7 +117,7 @@ test("posts the generated Space invitation ticket contract without browser secre
     })
   })
   const client = createRuntimeMutationClient({
-    csrfToken: "cd".repeat(32),
+    csrfToken: () => "cd".repeat(32),
     requestId: () => "02".repeat(16),
   })
 
@@ -154,7 +154,7 @@ test("posts the complete generated Private Relay configuration contract", async 
     })
   })
   const client = createRuntimeMutationClient({
-    csrfToken: "cd".repeat(32),
+    csrfToken: () => "cd".repeat(32),
     requestId: () => "03".repeat(16),
   })
 
@@ -178,4 +178,34 @@ test("posts the complete generated Private Relay configuration contract", async 
     certificate_path: "/tmp/relay.cert.pem",
     private_key_path: "/tmp/relay.key.pem",
   })
+})
+
+test("reads the CSRF token for every mutation, so one replaced by another tab is used", async () => {
+  const requests: Request[] = []
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+    requests.push(new Request(input, init))
+    return Response.json({
+      version: 1,
+      request_id: "01".repeat(16),
+      revision: 12,
+      result: {
+        type: "space_created",
+        payload: { space_id: "ab".repeat(32), name: "Operations", member_count: 1 },
+      },
+    })
+  })
+  let token = "cd".repeat(32)
+  const client = createRuntimeMutationClient({
+    csrfToken: () => token,
+    requestId: () => "01".repeat(16),
+  })
+
+  await client.createSpace("Operations")
+  token = "ef".repeat(32)
+  await client.createSpace("Operations")
+
+  expect(requests.map((request) => request.headers.get("x-csrf-token"))).toEqual([
+    "cd".repeat(32),
+    "ef".repeat(32),
+  ])
 })

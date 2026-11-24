@@ -60,7 +60,8 @@ export type RuntimeMutationClient = {
 }
 
 type MutationClientOptions = {
-  readonly csrfToken: string
+  /** Read for every request, so a sign-in in another tab, which replaces it, is picked up. */
+  readonly csrfToken: () => string
   readonly requestId?: () => string
 }
 
@@ -74,7 +75,7 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
   const requestId = options.requestId ?? browserRequestId
   const http = ky.create({
     credentials: "same-origin",
-    headers: { "content-type": "application/json", "x-csrf-token": options.csrfToken },
+    headers: { "content-type": "application/json" },
     retry: 0,
     timeout: 120_000,
   })
@@ -83,7 +84,10 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
     command: Record<string, unknown>,
   ): Promise<MutationResult> => {
     const payload: unknown = await http
-      .post(new URL(path, window.location.origin), { json: command })
+      .post(new URL(path, window.location.origin), {
+        json: command,
+        headers: { "x-csrf-token": options.csrfToken() },
+      })
       .json()
     const parsed = MutationResponseSchema.safeParse(payload)
     if (parsed.success) return parsed.data.result
