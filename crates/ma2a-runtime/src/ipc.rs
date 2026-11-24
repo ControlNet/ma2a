@@ -66,6 +66,13 @@ use unix as platform;
 #[cfg(windows)]
 use windows as platform;
 
+/// The raw transport, for tests that stand a fake daemon in front of a real client.
+#[cfg(test)]
+pub(crate) use {
+    framing::{FrameRef, read_frame, write_frame},
+    platform::{PlatformListener, accept, bind},
+};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Filesystem locations reserved for one user's daemon instance.
 pub struct IpcPaths {

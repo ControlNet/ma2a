@@ -23,6 +23,8 @@ use crate::agents::convert::{from_wire, hex, task_view};
 
 /// Pause before reaching a target again that was restarting or unreachable.
 const RETRY: Duration = Duration::from_secs(1);
+/// Longest wait for one task view, like a service `describe`.
+const VIEW_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Returns whether an error only means the target cannot answer right now.
 fn transient(error: &ToolError) -> bool {
@@ -90,10 +92,11 @@ impl Call<'_> {
         endpoint: &str,
         (agent, task): (AgentId, AgentTaskId),
     ) -> Result<TaskView, ToolError> {
-        match self
-            .agent_call((endpoint, AgentRequest::Get(agent, task)))
-            .await?
-        {
+        let request = AgentRequest::Get(agent, task);
+        let answered = tokio::time::timeout(VIEW_DEADLINE, self.agent_call((endpoint, request)))
+            .await
+            .unwrap_or_else(|_| Err(status(ServiceError::TimedOut)))?;
+        match answered {
             AgentReply::Details(details) => Ok(task_view(&details)),
             _ => Err(invalid("Agent answer")),
         }

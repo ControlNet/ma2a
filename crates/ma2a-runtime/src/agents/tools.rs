@@ -6,6 +6,8 @@
 //! `RequestId`, which the stream plane's durable replay answers without a second effect.
 
 mod agent;
+#[cfg(test)]
+mod call_tests;
 mod exec;
 mod files;
 mod proxy;
