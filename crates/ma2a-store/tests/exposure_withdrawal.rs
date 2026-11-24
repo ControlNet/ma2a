@@ -11,7 +11,7 @@ use ma2a_core::{
 };
 use ma2a_store::{
     EndpointRecord, FileRootExposure, KeyKind, KeyMaterial, KeyReference, KeyStore, LocalExposure,
-    Repository, StoreConfig,
+    Repository, StoreConfig, StoreError,
 };
 use support::{TempState, TestResult, TestResultValue as TestValue};
 
@@ -73,17 +73,23 @@ fn exposed_spaces(repository: &Repository) -> TestValue<Vec<ma2a_core::SpaceId>>
         .collect())
 }
 
-#[test]
-fn leaving_a_space_withdraws_its_exposures_and_keeps_every_other() -> TestResult {
-    let state = TempState::new("exposure-withdrawal")?;
+/// Opens a Repository whose Endpoint identity is `LOCAL`.
+fn local_repository(state: &TempState) -> TestValue<Repository> {
     let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
     let key = KeyReference::parse("endpoint-main")?;
-    // This test never signs; the protected key only has to exist to record the identity.
+    // These tests never sign; the protected key only has to exist to record the identity.
     KeyStore::open(state.path())?.write(KeyMaterial::new(KeyKind::Endpoint, &key, &[0x5a; 32]))?;
     repository.set_endpoint(&EndpointRecord::new(
         ma2a_core::EndpointId::try_from(LOCAL.as_slice())?,
         key,
     ))?;
+    Ok(repository)
+}
+
+#[test]
+fn leaving_a_space_withdraws_its_exposures_and_keeps_every_other() -> TestResult {
+    let state = TempState::new("exposure-withdrawal")?;
+    let mut repository = local_repository(&state)?;
     let (mut left, secret) = joined(0x71)?;
     let (kept, _) = joined(0x72)?;
     repository.import_space_chain(&left.export_public()?)?;
@@ -114,5 +120,31 @@ fn leaving_a_space_withdraws_its_exposures_and_keeps_every_other() -> TestResult
         RootAccess::ReadOnly,
     ));
     repository.expose_service(kept.space_id(), &rebound)?;
+    Ok(())
+}
+
+#[test]
+fn a_space_this_endpoint_left_cannot_be_exposed() -> TestResult {
+    // Given: this Endpoint was removed from a Space it still has on record.
+    let state = TempState::new("exposure-after-departure")?;
+    let mut repository = local_repository(&state)?;
+    let (mut left, secret) = joined(0x73)?;
+    let departed = SpaceRevocationV1::new(ma2a_core::EndpointId::try_from(LOCAL.as_slice())?);
+    append(
+        &mut left,
+        &secret,
+        (vec![member(OWNER, true)?], vec![departed]),
+    )?;
+    repository.import_space_chain(&left.export_public()?)?;
+
+    // When
+    let exposed = repository.expose_service(left.space_id(), &LocalExposure::Exec);
+
+    // Then: no consent is recorded that a later rejoin would silently revive.
+    assert!(
+        matches!(exposed, Err(StoreError::SpaceNotFound)),
+        "{exposed:?}"
+    );
+    assert!(exposed_spaces(&repository)?.is_empty());
     Ok(())
 }

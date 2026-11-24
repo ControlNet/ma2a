@@ -380,5 +380,5 @@ write access for a member that already reads files and manages Processes. Each s
 `service expose|unexpose files|exec|shell|proxy SPACE_REF …`, and `service list` shows what it
 serves. `ops` shows active and recent operations. Consent lasts only while the serving
 Endpoint belongs to the Space: once a stored chain no longer lists it (it left or was removed),
-that Space's exposures are withdrawn atomically with the chain update, and rejoining needs fresh
-consent.
+that Space's exposures are withdrawn atomically with the chain update, `service expose` refuses
+the Space until it rejoins, and rejoining needs fresh consent.

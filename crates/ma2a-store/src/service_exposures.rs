@@ -107,20 +107,27 @@ pub struct ExposureRecord {
 }
 
 impl Repository {
-    /// Adds or updates one exposure for a Space this Runtime holds.
+    /// Adds or updates one exposure for a Space this Endpoint currently belongs to.
     ///
     /// # Errors
-    /// Returns [`StoreError::SpaceNotFound`] for an unknown Space and a conflict when a root
-    /// name is already bound to a different local directory.
+    /// Returns [`StoreError::SpaceNotFound`] for an unknown Space or one whose stored chain no
+    /// longer lists this Endpoint, and a conflict when a root name is already bound to a
+    /// different local directory.
     pub fn expose_service(
         &mut self,
         space_id: SpaceId,
         exposure: &LocalExposure,
     ) -> Result<Committed<()>, StoreError> {
         let transaction = self.immediate()?;
+        // The same membership test as `withdraw_departed`, so consent is never recorded for
+        // a Space it would withdraw.
         let space_exists = transaction
             .query_row(
-                "SELECT 1 FROM spaces WHERE space_id = ?1",
+                "SELECT 1 FROM spaces WHERE space_id = ?1
+                 AND (NOT EXISTS (SELECT 1 FROM endpoints)
+                     OR EXISTS (SELECT 1 FROM members JOIN endpoints
+                         ON members.endpoint_id = endpoints.endpoint_id
+                         WHERE members.space_id = ?1))",
                 [space_id.as_bytes().as_slice()],
                 |_| Ok(()),
             )
