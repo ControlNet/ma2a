@@ -77,7 +77,8 @@ async fn read_retained(
         }
         gaps(read.gaps);
         let caught_up = until.is_some_and(|until| read.next >= until);
-        if read.ended || caught_up || reached == Some(read.next) {
+        // A cursor that does not move forward would only read the same output again.
+        if read.ended || caught_up || reached.is_some_and(|reached| read.next <= reached) {
             return Ok((read.next, read.ended));
         }
         reached = Some(read.next);
