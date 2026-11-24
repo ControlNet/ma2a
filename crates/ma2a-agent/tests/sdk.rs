@@ -23,8 +23,13 @@ struct Runtime {
 
 impl Runtime {
     fn start() -> Self {
+        Self::with_output_room(1 << 16)
+    }
+
+    /// Starts an Agent whose output pipe holds only `room` unread bytes.
+    fn with_output_room(room: usize) -> Self {
         let (to_agent, agent_input) = tokio::io::duplex(1 << 16);
-        let (agent_output, from_agent) = tokio::io::duplex(1 << 16);
+        let (agent_output, from_agent) = tokio::io::duplex(room);
         tokio::spawn(sdk::serve_on((agent_input, agent_output), handle));
         Self {
             to_agent,
@@ -107,6 +112,12 @@ async fn handle(mut task: Task) {
         "huge-result" => {
             let text = "x".repeat(ma2a_agent::protocol::MAX_MESSAGE_BYTES + 1);
             task.complete(Some(Message::agent_text(text)));
+        }
+        "flood" => {
+            for _ in 0..1_000 {
+                task.progress("p");
+            }
+            task.complete(None);
         }
         "nul-result" => task.complete(Some(Message::agent_text("a\0b"))),
         "huge-question" => {
@@ -321,5 +332,24 @@ async fn a_second_delivery_of_a_held_task_leaves_the_live_one_alone() -> TestRes
         })
         .await?;
     assert_eq!(completed.as_deref(), Some("blue"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn progress_a_stalled_reader_has_not_taken_is_dropped_but_the_end_is_not() -> TestResult {
+    // Given: an Agent whose output nobody reads while its task reports a flood of progress.
+    let mut runtime = Runtime::with_output_room(256);
+    runtime.send(&task(1, "a", "flood")).await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // When: the reader catches up.
+    let seen = runtime.until(ended("a", ReportedState::Completed)).await?;
+
+    // Then: at most the queued bound of progress lines came through, and the end did.
+    let progress = seen
+        .iter()
+        .filter(|line| matches!(line, AgentToRuntime::Progress { .. }))
+        .count();
+    assert!(progress > 0 && progress <= 100, "{progress}");
     Ok(())
 }

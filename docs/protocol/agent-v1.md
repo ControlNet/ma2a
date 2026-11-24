@@ -553,7 +553,9 @@ handle dropped without an end reports `failed`, or `cancelled` after a cancellat
 The SDK checks every message against the Runtime's message bounds (`Message::is_within_bounds`:
 1–16 parts, 12,288 content bytes, no NUL) before sending it, because the Runtime ignores a whole
 line that carries an out-of-bounds message. An out-of-bounds result or `ask` question fails the
-task instead, and `message` returns `false` without sending.
+task instead, and `message` returns `false` without sending. A task delivered again while the
+SDK holds it is ignored, and at most 64 progress lines wait to be written: past that, new
+progress is dropped until the Runtime reads, while every other line is kept.
 `ma2a-example-agent` is a deterministic command interpreter built on it, not a language model. The
 first word of a task's text is the command:
 

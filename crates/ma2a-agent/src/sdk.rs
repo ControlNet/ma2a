@@ -19,7 +19,10 @@ use std::{
     collections::HashMap,
     future::Future,
     io,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -49,10 +52,20 @@ struct Slot {
     calls: HashMap<String, CallAnswer>,
 }
 
+/// One queued output line, and whether it is a progress line.
+type Line = (Vec<u8>, bool);
+
+/// Most progress lines queued and not yet written. Progress is transient, so past this a new
+/// one is dropped rather than letting a stalled reader grow the queue without bound; no other
+/// line is ever dropped.
+const MAX_QUEUED_PROGRESS: usize = 64;
+
 /// State shared by the loop and every task handle.
 #[derive(Debug)]
 struct Shared {
-    out: mpsc::UnboundedSender<Vec<u8>>,
+    out: mpsc::UnboundedSender<Line>,
+    /// Progress lines queued and not yet written.
+    progress: Arc<AtomicUsize>,
     tasks: Mutex<HashMap<String, Slot>>,
 }
 
@@ -69,7 +82,12 @@ impl Shared {
         if line.len() > MAX_AGENT_LINE_LEN + 1 {
             return false;
         }
-        self.out.send(line).is_ok()
+        let progress = matches!(message, AgentToRuntime::Progress { .. });
+        if progress && self.progress.fetch_add(1, Ordering::Relaxed) >= MAX_QUEUED_PROGRESS {
+            self.progress.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        self.out.send((line, progress)).is_ok()
     }
 }
 
@@ -99,12 +117,14 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let (out, lines) = mpsc::unbounded_channel();
+    let progress = Arc::new(AtomicUsize::new(0));
     let shared = Arc::new(Shared {
         out,
+        progress: Arc::clone(&progress),
         tasks: Mutex::new(HashMap::new()),
     });
     let (stop, stopped) = oneshot::channel();
-    let mut writer = tokio::spawn(write_lines(output, lines, stopped));
+    let mut writer = tokio::spawn(write_lines(output, (lines, progress), stopped));
     shared.emit(&AgentToRuntime::Ready {
         protocol: PROTOCOL_VERSION,
     });
@@ -270,7 +290,7 @@ async fn read_line<R: AsyncBufRead + Unpin>(input: &mut R) -> io::Result<Option<
 /// Writes lines as they are queued; once `stop` fires, writes what is queued and returns.
 async fn write_lines<W: AsyncWrite + Unpin>(
     mut output: W,
-    mut lines: mpsc::UnboundedReceiver<Vec<u8>>,
+    (mut lines, progress): (mpsc::UnboundedReceiver<Line>, Arc<AtomicUsize>),
     mut stop: oneshot::Receiver<()>,
 ) -> io::Result<()> {
     loop {
@@ -278,16 +298,19 @@ async fn write_lines<W: AsyncWrite + Unpin>(
             biased;
             line = lines.recv() => line,
             _stopped = &mut stop => {
-                while let Ok(line) = lines.try_recv() {
+                while let Ok((line, _)) = lines.try_recv() {
                     output.write_all(&line).await?;
                 }
                 return output.flush().await;
             }
         };
-        let Some(line) = line else {
+        let Some((line, is_progress)) = line else {
             return Ok(());
         };
         output.write_all(&line).await?;
         output.flush().await?;
+        if is_progress {
+            progress.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
