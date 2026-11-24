@@ -29,7 +29,12 @@ const MAX_READERS: usize = 8;
 
 pub(super) type Caller<'a, R, W> = (&'a mut FrameReader<R>, &'a mut FrameWriter<W>);
 /// Longest wait for a live Process's supervisor to connect and answer an opened request.
-const SUPERVISOR_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
+pub(super) const SUPERVISOR_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
+/// Longest wait for room toward a caller, so one that stops reading frees its reader slot and
+/// stdin lease.
+const CALLER_STALL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Longest wait for the supervisor's report once the caller detached.
+const DETACH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Who asks (`None` is the local operator) and what ends the operation early.
 pub(super) type Scope<'a> = (Option<EndpointId>, &'a CancellationToken);
@@ -180,7 +185,9 @@ where
                 match frame.kind() {
                     FrameKind::Data => {
                         let (channel, bytes) = frame.data()?;
-                        writer.data(channel, bytes).await?;
+                        tokio::time::timeout(CALLER_STALL, writer.data(channel, bytes))
+                            .await
+                            .map_err(|_| ServiceError::TimedOut)??;
                         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                         cursor += length;
                         bytes_out += length;
@@ -188,7 +195,12 @@ where
                     FrameKind::Control => {
                         cursor = decode_skipped(frame.payload())
                             .map_err(|_| ServiceError::Unavailable)?;
-                        writer.frame(FrameKind::Control, frame.payload()).await?;
+                        tokio::time::timeout(
+                            CALLER_STALL,
+                            writer.frame(FrameKind::Control, frame.payload()),
+                        )
+                        .await
+                        .map_err(|_| ServiceError::TimedOut)??;
                     }
                     FrameKind::Outcome => {
                         return SupervisorStatus::from_bytes(frame.payload())
@@ -217,14 +229,19 @@ where
             }
             let _detached = to_supervisor.frame(FrameKind::Cancel, &[]).await;
         };
-        tokio::pin!(downstream, upstream);
+        let grace = tokio::time::sleep(std::time::Duration::MAX);
+        tokio::pin!(downstream, upstream, grace);
         let mut detached = false;
         loop {
             tokio::select! {
                 biased;
                 () = stop.cancelled() => break Err(ServiceError::Unavailable),
                 reported = &mut downstream => break reported,
-                () = &mut upstream, if !detached => detached = true,
+                () = &mut upstream, if !detached => {
+                    detached = true;
+                    grace.as_mut().reset(tokio::time::Instant::now() + DETACH_GRACE);
+                }
+                () = &mut grace, if detached => break Err(ServiceError::Cancelled),
             }
         }
     }?;
