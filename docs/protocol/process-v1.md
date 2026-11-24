@@ -514,8 +514,8 @@ In these encodings, `from` is `0` (start), `1` (now), or `2 ‖ u64 BE` (cursor)
 
 **Child.** The child runs in its own process group on Unix. Its stdout and stderr are piped into
 the log, and its stdin is null or a pipe held for the lease. When the child ends, the rest of its
-process group is killed. The pipes are then drained for at most 5 s, the log is synced, and the
-status is recorded.
+process group is killed. The pipes are then drained for at most 5 s in all, the log is synced, and
+the status is recorded. Output a process outside the group writes after that drain is not logged.
 
 **Status record.** The record is `"MA2AST1" ‖ tag ‖ fields` and is replaced atomically: written
 to a temporary file, fsynced, renamed, and the directory synced.

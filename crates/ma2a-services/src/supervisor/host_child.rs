@@ -183,8 +183,14 @@ async fn run(
     };
     // Anything the child left in its process group ends with it.
     spawned.kill_all();
-    for pump in pumps {
-        let _drained = tokio::time::timeout(DRAIN, pump).await;
+    // Both pipes share one drain; a pump still reading after it (a process outside the group
+    // holds the pipe) is stopped, so nothing is logged after the final status.
+    let drained = tokio::time::Instant::now() + DRAIN;
+    for mut pump in pumps {
+        if tokio::time::timeout_at(drained, &mut pump).await.is_err() {
+            pump.abort();
+            let _stopped = pump.await;
+        }
     }
     shared.sync_log().await;
     #[cfg(debug_assertions)]

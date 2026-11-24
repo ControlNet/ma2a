@@ -461,3 +461,49 @@ async fn a_missing_or_stale_endpoint_is_unreachable_not_slow() -> TestResult {
     assert!(matches!(stale, Err(ServiceError::Unreachable)), "{stale:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pipes_a_grandchild_keeps_open_are_drained_once_and_never_logged_after_the_end()
+-> TestResult {
+    // Given: a child that leaves a grandchild in its own session holding stdout and stderr,
+    // which writes to both after the drain would have ended.
+    let script = "setsid sh -c 'echo pid:$$; sleep 7; echo late; echo late >&2; sleep 10' & sleep 0.5; exit 0";
+    let harness = host("sup-drain", start(script, false)?)?;
+    let started = tokio::time::Instant::now();
+    harness.ask(SupervisorRequest::Go).await?;
+
+    // When: the child exits.
+    let mut attached = harness
+        .open(SupervisorRequest::Attach(LogFrom::Start, false))
+        .await?;
+    assert_eq!(attached.0.expect().await?.kind(), FrameKind::Accept);
+    let (output, _, frames) = follow(&mut attached).await?;
+
+    // Then: both pipes share one drain, and nothing is logged after the final status.
+    let ended = started.elapsed();
+    assert!(
+        matches!(last_status(&frames)?, SupervisorStatus::Ended(..)),
+        "{frames:?}"
+    );
+    let pid = String::from_utf8(output)?
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("pid:"))
+        .ok_or("no pid")?
+        .to_owned();
+    tokio::time::sleep_until(started + Duration::from_secs(9)).await;
+    let logged = log::read(&log_directory(&harness.directory()), 0, 65_536);
+    let _killed = std::process::Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .status();
+    assert!(ended < Duration::from_secs(8), "ended after {ended:?}");
+    let late: Vec<_> = logged?
+        .records
+        .into_iter()
+        .filter(|(_, bytes)| bytes.windows(4).any(|window| window == b"late"))
+        .collect();
+    assert!(late.is_empty(), "{late:?}");
+    drop(attached);
+    harness.finish().await?;
+    Ok(())
+}
