@@ -2,10 +2,9 @@
 
 use std::time::Duration;
 
-use ma2a_core::ServiceKind;
 use ma2a_core::service::{
-    DescribePage, FrameKind, OpenBody, OpenHeader, ServiceError, ServiceRequest, TransferRequest,
-    admission,
+    DescribePage, FrameKind, OpenBody, OpenHeader, ServiceAccess, ServiceError, ServiceRequest,
+    TransferRequest, admission,
 };
 use ma2a_net::{RecvStream, SendStream, ServiceCall};
 use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport, reply};
@@ -67,20 +66,15 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
     let watch = context
         .authorizations
         .watch((peer, access.clone()), stop.clone());
+    let concealed = unauthorized(&access);
     let grant = match context
         .store
         .authorize_service((context.local, peer), access)
         .await
     {
         Ok(grant) => grant,
-        // Past admission, an Agent or a hosted service this caller may not use answers
-        // exactly like one that does not exist.
-        Err(ServiceError::Unauthorized) if kind == ServiceKind::Agent => {
-            reject(&mut writer, (&context, key), ServiceError::UnknownAgent).await;
-            return;
-        }
-        Err(ServiceError::Unauthorized) if kind == ServiceKind::Service => {
-            reject(&mut writer, (&context, key), ServiceError::UnknownService).await;
+        Err(ServiceError::Unauthorized) => {
+            reject(&mut writer, (&context, key), concealed).await;
             return;
         }
         Err(error) => {
@@ -111,6 +105,17 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
         report.end = OperationEnd::Failed(ServiceError::Unauthorized);
     }
     guard.finish(report);
+}
+
+/// The refusal a caller sees when fine authorization denies `access`. Past admission, an
+/// Agent or a hosted service this caller may not use answers exactly like one that does
+/// not exist. Discovery names neither, so a caller denied it is told so.
+const fn unauthorized(access: &ServiceAccess) -> ServiceError {
+    match access {
+        ServiceAccess::Agent(_) => ServiceError::UnknownAgent,
+        ServiceAccess::Hosted(_) => ServiceError::UnknownService,
+        _ => ServiceError::Unauthorized,
+    }
 }
 
 /// Ends a stream whose host was stopped before it could answer.
@@ -235,5 +240,26 @@ async fn describe(
         Ok(Ok(encoded)) => reply::outcome(writer, (Ok(encoded), None), (0, 0)).await,
         Ok(Err(_)) => reply::reject(writer, ServiceError::Internal).await,
         Err(error) => reply::reject(writer, *error).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::service::{AgentId, ServiceAccess, ServiceError, ServiceName};
+
+    use super::unauthorized;
+
+    #[test]
+    fn only_a_named_agent_or_service_is_concealed_as_unknown()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let agent = ServiceAccess::Agent(AgentId::new("worker")?);
+        let hosted = ServiceAccess::Hosted(ServiceName::new("example")?);
+        assert_eq!(unauthorized(&agent), ServiceError::UnknownAgent);
+        assert_eq!(unauthorized(&hosted), ServiceError::UnknownService);
+        // Discovery names nothing to conceal: a caller denied it is told so.
+        for access in [ServiceAccess::AgentAdmission, ServiceAccess::Discover] {
+            assert_eq!(unauthorized(&access), ServiceError::Unauthorized);
+        }
+        Ok(())
     }
 }

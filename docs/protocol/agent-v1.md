@@ -65,7 +65,9 @@ The check runs twice, both from durable state at call time:
 - **Fine decision**, after decoding the `open`, for the exact access of the operation. A caller
   that fails it receives `reject(unknown_agent)`, exactly like an Agent that is not defined. An
   undefined Agent, an Agent not exposed in a Space the caller shares, and an Agent the caller
-  lacks the grant for are indistinguishable.
+  lacks the grant for are indistinguishable. `agents` names no Agent, so a caller that fails its
+  fine decision, because its access was withdrawn after admission, receives
+  `reject(unauthorized)`.
 
 The operator consents with `ma2a service expose agent SPACE_REF AGENT`, once per Space and Agent.
 The Space owner grants the bit with `space grant … --agent`, repeating every other flag the member
