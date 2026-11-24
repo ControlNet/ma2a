@@ -41,7 +41,7 @@ The runtime entry point accepts current verified views on every call and owns no
 
 ## Zero-Space protocol isolation
 
-A zero-Space Runtime advertises and registers only `ma2a/enrollment/1`. Iroh ALPN negotiation rejects Echo, control, metadata, address-record exchange, relay advertisement, the service protocols, and unknown/future normal protocols before a bidirectional stream or service-body parser is available.
+A zero-Space Runtime accepts only `ma2a/enrollment/1` on a new connection. Startup registers the Echo, control, and service handlers anyway, but sets the Endpoint's negotiated ALPN list to enrollment alone; joining the first Space widens that list, and leaving the last one narrows it again. Iroh ALPN negotiation rejects Echo, control, metadata, address-record exchange, relay advertisement, the service protocols, and unknown/future normal protocols before a bidirectional stream or service-body parser is available.
 
 Enrollment remains a separate bootstrap authorization path based on the signed, short-lived, single-use invite contract. Establishing transport for enrollment does not authorize any normal operation.
 
