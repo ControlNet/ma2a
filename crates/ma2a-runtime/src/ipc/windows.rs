@@ -34,14 +34,28 @@ fn is_remote(path: &Path) -> bool {
     )
 }
 
+/// Makes sure `path` is a private directory, creating every missing level so that each one
+/// carries its protected ACL from the moment it exists.
+///
+/// A level that appears meanwhile is a lost race, not an error: whatever holds the name is then
+/// checked like any existing directory. Every other creation error is returned as it is.
 fn ensure_private_dir(path: &Path, target: &'static str) -> Result<(), IpcError> {
     if !path.is_absolute() || is_remote(path) {
         return Err(IpcError::InvalidPath);
     }
-    if !path.exists()
-        && path.parent().is_some_and(Path::exists)
-        && ma2a_services::windows_files::create_protected_dir(path).is_ok()
-    {
+    let missing = path
+        .ancestors()
+        .take_while(|level| !level.exists())
+        .collect::<Vec<_>>();
+    let mut created_leaf = false;
+    for level in missing.iter().rev() {
+        match ma2a_services::windows_files::create_protected_dir(level) {
+            Ok(()) => created_leaf = *level == path,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => created_leaf = false,
+            Err(error) => return Err(IpcError::Io(error)),
+        }
+    }
+    if created_leaf {
         return ma2a_store::protect_private_directory(path, target).map_err(store_dir_error);
     }
     ma2a_store::ensure_private_directory(path, target).map_err(store_dir_error)
@@ -107,4 +121,28 @@ pub(crate) fn authorize(stream: &PlatformStream, _paths: &IpcPaths) -> Result<()
 )]
 pub(crate) const fn remove_stale_endpoint(_paths: &IpcPaths) -> Result<(), IpcError> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn missing_levels_of_a_state_directory_are_created_private()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = std::env::temp_dir().join(format!("ma2a-cold-start-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base)?;
+        let state = base.join("one").join("two").join("state");
+        super::ensure_private_dir(&state, "state directory")?;
+        // Every level made here is private, not only the last one, and a second start accepts it.
+        for level in [
+            base.join("one"),
+            base.join("one").join("two"),
+            state.clone(),
+        ] {
+            ma2a_store::ensure_private_directory(&level, "created level")?;
+        }
+        super::ensure_private_dir(&state, "state directory")?;
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
 }

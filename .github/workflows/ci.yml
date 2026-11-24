@@ -47,6 +47,9 @@ jobs:
       - name: Check the invitation file natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-runtime --lib invite_file
+      - name: Check first-start state directories natively
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p ma2a-runtime --lib missing_levels_of_a_state_directory
       - name: Check Files tree removal natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-services --test files_host
