@@ -26,6 +26,7 @@ pub fn ensure_private_directory(path: &Path, target: &'static str) -> Result<(),
 /// Returns [`StoreError`] when the permissions cannot be applied or confirmed.
 pub fn protect_private_directory(path: &Path, target: &'static str) -> Result<(), StoreError> {
     validate_local_absolute(path)?;
+    refuse_symlink(path, target)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -69,8 +70,20 @@ pub fn protect_private_file(path: &Path, target: &'static str) -> Result<(), Sto
 }
 
 pub(crate) fn protect_new_file(path: &Path, target: &'static str) -> Result<(), StoreError> {
+    refuse_symlink(path, target)?;
     protect_file(path)?;
     validate_private_path(path, target, PathKind::File)
+}
+
+/// Changing permissions follows a symlink, so a link is refused before anything is changed.
+fn refuse_symlink(path: &Path, target: &'static str) -> Result<(), StoreError> {
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(StoreError::InsecurePermissions {
+            target,
+            detail: "path is a symlink or has the wrong file type",
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_private_file(path: &Path, target: &'static str) -> Result<(), StoreError> {

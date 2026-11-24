@@ -26,8 +26,12 @@ impl Repository {
     pub fn open(config: &StoreConfig) -> Result<Self, StoreError> {
         let key_store = KeyStore::open(config.state_dir())?;
         let database_path = config.database_path();
-        if database_path.exists() {
-            permissions::validate_private_file(&database_path, "SQLite database")?;
+        // `exists` follows a dangling symlink to "missing", and SQLite would then create its
+        // target; anything at this name, a link included, must pass validation first.
+        match std::fs::symlink_metadata(&database_path) {
+            Ok(_) => permissions::validate_private_file(&database_path, "SQLite database")?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
         let mut connection = Connection::open_with_flags(
             &database_path,

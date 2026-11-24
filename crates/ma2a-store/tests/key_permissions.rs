@@ -173,6 +173,56 @@ fn startup_rejects_loosened_key_permissions() -> TestResult {
 }
 
 #[cfg(unix)]
+#[test]
+fn startup_refuses_a_dangling_symlink_database_without_touching_its_target() -> TestResult {
+    use ma2a_store::{Repository, StoreConfig};
+
+    // Given: the database name points at a file that does not exist yet, outside the state.
+    let state = TempState::new("database-symlink")?;
+    let outside = TempState::new("database-symlink-target")?;
+    let target = outside.path().join("victim.sqlite3");
+    let config = StoreConfig::new(state.path());
+    std::os::unix::fs::symlink(&target, config.database_path())?;
+
+    // When
+    let result = Repository::open(&config);
+
+    // Then
+    assert!(
+        matches!(result, Err(StoreError::InsecurePermissions { .. })),
+        "{:?}",
+        result.err()
+    );
+    assert!(!target.exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn protecting_a_directory_never_changes_what_a_symlink_points_at() -> TestResult {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    // Given: the name to protect is a symlink to a directory with other permissions.
+    let state = TempState::new("directory-symlink")?;
+    let target = state.path().join("shared");
+    fs::create_dir(&target)?;
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755))?;
+    let link = state.path().join("link");
+    std::os::unix::fs::symlink(&target, &link)?;
+
+    // When
+    let result = ma2a_store::protect_private_directory(&link, "test directory");
+
+    // Then
+    assert!(matches!(
+        result,
+        Err(StoreError::InsecurePermissions { .. })
+    ));
+    assert_eq!(fs::metadata(&target)?.permissions().mode() & 0o777, 0o755);
+    Ok(())
+}
+
+#[cfg(unix)]
 fn assert_owner_only(path: &std::path::Path, expected: u32) -> TestResult {
     use std::{fs, os::unix::fs::PermissionsExt as _};
 
