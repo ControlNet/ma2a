@@ -36,6 +36,8 @@ impl ValidatedRelayAdvertisement {
         signed
             .verify_signature()
             .map_err(|_| RelayAdvertisementBoundaryError::InvalidSignature)?;
+        i64::try_from(advertisement.sequence())
+            .map_err(|_| RelayAdvertisementBoundaryError::Malformed)?;
         let issued_at_ms = i64::try_from(advertisement.issued_at_ms())
             .map_err(|_| RelayAdvertisementBoundaryError::Malformed)?;
         let expires_at_ms = i64::try_from(advertisement.expires_at_ms())

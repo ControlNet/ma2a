@@ -87,6 +87,8 @@ impl ValidatedAddressRecord {
         signed
             .verify_signature()
             .map_err(|_| AddressRecordBoundaryError::InvalidSignature)?;
+        i64::try_from(record.sequence())
+            .map_err(|_| AddressRecordBoundaryError::InvalidEncoding)?;
         let issued_at_ms = i64::try_from(record.issued_at_ms())
             .map_err(|_| AddressRecordBoundaryError::InvalidEncoding)?;
         let expires_at_ms = i64::try_from(record.expires_at_ms())

@@ -13,8 +13,9 @@ use ma2a_core::{
     SpaceGenesisV1, SpaceMemberV1, SpacePolicyV1,
 };
 use ma2a_store::{
-    AddressRecordTarget, AddressRecordValidation, ControlBatch, Repository, StoreConfig,
-    ValidatedAddressRecord, ValidatedRelayAdvertisement,
+    AddressRecordBoundaryError, AddressRecordTarget, AddressRecordValidation, ControlBatch,
+    RelayAdvertisementBoundaryError, Repository, StoreConfig, ValidatedAddressRecord,
+    ValidatedRelayAdvertisement,
 };
 use support::{TempState, TestResult};
 
@@ -59,6 +60,17 @@ impl Fixture {
         sequence: u64,
         port: u16,
     ) -> Result<ValidatedAddressRecord, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.parse_address(sequence, port)??)
+    }
+
+    fn parse_address(
+        &self,
+        sequence: u64,
+        port: u16,
+    ) -> Result<
+        Result<ValidatedAddressRecord, AddressRecordBoundaryError>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         let endpoint_id = self.endpoint_secret.public().into();
         let signed = SpaceAddressRecordV1::new(
             AddressRecordScope::new(self.chain.space_id(), endpoint_id),
@@ -74,7 +86,7 @@ impl Fixture {
                 &authorization,
                 NOW_MS,
             ),
-        )?)
+        ))
     }
 
     fn relay(
@@ -82,6 +94,18 @@ impl Fixture {
         sequence: u64,
         suffix: u16,
     ) -> Result<ValidatedRelayAdvertisement, Box<dyn std::error::Error + Send + Sync>> {
+        self.parse_relay(sequence, suffix)?
+            .map_err(|_| "relay advertisement validation failed".into())
+    }
+
+    fn parse_relay(
+        &self,
+        sequence: u64,
+        suffix: u16,
+    ) -> Result<
+        Result<ValidatedRelayAdvertisement, RelayAdvertisementBoundaryError>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         let signed = PrivateRelayAdvertisementV1::new(
             PrivateRelayAdvertisementScope::new(
                 self.chain.space_id(),
@@ -91,13 +115,36 @@ impl Fixture {
             PrivateRelayAdvertisementValidity::new(sequence, 10, 20)?,
         )?
         .sign(&self.endpoint_secret)?;
-        ValidatedRelayAdvertisement::parse(
+        Ok(ValidatedRelayAdvertisement::parse(
             signed.canonical_bytes(),
             &SpaceAuthorizationView::from_chain(&self.chain),
             NOW_MS,
-        )
-        .map_err(|_| "relay advertisement validation failed".into())
+        ))
     }
+}
+
+#[test]
+fn control_batch_parse_rejects_sequence_outside_storage_range() -> TestResult {
+    // Given
+    let fixture = Fixture::new("sequence-range")?;
+    let first_unstorable = u64::try_from(i64::MAX)? + 1;
+
+    for sequence in [first_unstorable, u64::MAX] {
+        // When
+        let address = fixture.parse_address(sequence, 4101)?;
+        let relay = fixture.parse_relay(sequence, 1)?;
+
+        // Then
+        assert_eq!(
+            address.err(),
+            Some(AddressRecordBoundaryError::InvalidEncoding)
+        );
+        assert_eq!(
+            relay.err(),
+            Some(RelayAdvertisementBoundaryError::Malformed)
+        );
+    }
+    Ok(())
 }
 
 #[test]
