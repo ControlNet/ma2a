@@ -294,7 +294,7 @@ The `ma2a` CLI drives every family this way:
 | `exec --endpoint ID [--stdin] [--cwd] [--env] [--timeout] -- PROGRAM ARGS…` | Exec | exits with the remote status: 124 on timeout, 130 on cancel, 128+N for signal N, 255 on shutdown |
 | `shell --endpoint ID [--lifetime] [-- PROGRAM ARGS…]` | Shell | raw local terminal; its size and resizes are forwarded |
 | `proxy connect --endpoint ID HOST PORT` | Proxy | relays stdin and stdout, e.g. as an SSH `ProxyCommand` |
-| `proxy forward --endpoint ID --listen ADDR HOST PORT` | Proxy | one stream per accepted local connection |
+| `proxy forward --endpoint ID --listen ADDR HOST PORT` | Proxy | one stream per accepted local connection, at most 64 at once |
 
 **Resumable downloads.** A download keeps its helper files in `.ma2a-downloads/`, a directory
 beside `LOCAL` that only the current account may enter. On Unix it is made with mode `0700`, and

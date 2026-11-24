@@ -39,6 +39,12 @@ fn request(destination: &ProxyDestination) -> Result<ProxyRequest, AppError> {
         .map_err(|_| AppError::Usage("PORT must be between 1 and 65535"))
 }
 
+/// Most connections forwarded at once: the size of the Runtime's local stream pool. Later ones
+/// wait in the listen backlog.
+const MAX_FORWARDED: usize = 64;
+/// Pause after a failed accept before trying again.
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Relays every accepted local connection to the destination on its own stream.
 async fn forward(
     paths: IpcPaths,
@@ -55,11 +61,24 @@ async fn forward(
         destination.port
     );
     let shared = Arc::new((paths, destination.endpoint));
+    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_FORWARDED));
     loop {
-        let (socket, peer) = listener.accept().await?;
+        let Ok(permit) = Arc::clone(&permits).acquire_owned().await else {
+            return Ok(());
+        };
+        let (socket, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                // Running out of descriptors or an aborted handshake passes; the forwarder stays.
+                eprintln!("accepting a connection failed: {error}");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
         let shared = Arc::clone(&shared);
         let request = request.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let (paths, endpoint) = shared.as_ref();
             let relayed = async {
                 let (mut reader, mut writer) =
