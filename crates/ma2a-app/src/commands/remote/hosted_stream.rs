@@ -63,7 +63,7 @@ async fn read_retained(
         reads += 1;
         let request = ProcessRequest::Logs(id, from, MAX_LOGS_READ);
         let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
-        let read = hosted::logs(&mut reader, (&mut output, &mut error)).await?;
+        let read = hosted::logs(&mut reader, (&mut output, &mut error), MAX_LOGS_READ).await?;
         drop(writer);
         if let Some(ProcessAccept::Reading {
             start,

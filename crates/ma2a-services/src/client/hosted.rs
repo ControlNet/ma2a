@@ -72,13 +72,16 @@ pub async fn call<R: AsyncRead + Unpin>(
     Ok((Some(accept), reply(&frame)?))
 }
 
-/// Reads one `logs` answer, writing stdout and stderr to their sinks as they arrive.
+/// Reads one `logs` answer of at most `max` bytes, the request's `max_bytes`, writing stdout
+/// and stderr to their sinks as they arrive.
 ///
 /// # Errors
-/// Returns the refusal, the failed outcome, a local write failure, or the stream failure.
+/// Returns the refusal, the failed outcome, a local write failure, or the stream failure; an
+/// answer longer than `max` fails before its excess reaches either sink.
 pub async fn logs<R, O, E>(
     reader: &mut FrameReader<R>,
     (output, error): (&mut O, &mut E),
+    max: u32,
 ) -> Result<LogsRead, ClientError>
 where
     R: AsyncRead + Unpin,
@@ -86,13 +89,20 @@ where
     E: AsyncWrite + Unpin,
 {
     let mut gaps = Gaps::default();
+    let mut left = usize::try_from(max).unwrap_or(usize::MAX);
     let (accept, mut frame) = match first(reader).await? {
         First::Finished(frame) => (None, frame),
         First::Accepted(frame) => (Some(accepted(&frame)?), next(reader).await?),
     };
     loop {
         match frame.kind() {
-            FrameKind::Data => deliver(&frame, (&mut *output, Some(&mut *error))).await?,
+            FrameKind::Data => {
+                let (_, bytes) = frame.data().map_err(ClientError::Stream)?;
+                left = left
+                    .checked_sub(bytes.len())
+                    .ok_or(ClientError::Stream(ServiceError::InvalidInput))?;
+                deliver(&frame, (&mut *output, Some(&mut *error))).await?;
+            }
             FrameKind::Control => {
                 gaps.record(&frame)?;
             }

@@ -13,11 +13,17 @@ use std::{
 
 use ma2a_core::service::{
     Channel, DescribePage, EMPTY_ACCEPT, FilesOutcome, FilesRequest, FilesResult, FrameKind,
-    RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome,
+    LogWindow, ProcessAccept, ProcessReply, ProcessState, RemotePath, ServiceError, WriteMode,
+    encode_call_accept, encode_call_outcome,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
-    client::{ClientError, files, process::ProcessIo, service},
+    client::{
+        ClientError, files,
+        hosted::{self, LogsRead},
+        process::ProcessIo,
+        service,
+    },
 };
 use support::{TestResult, pipe};
 use tokio::io::AsyncWrite;
@@ -170,6 +176,57 @@ async fn discovery_reads_one_page_or_its_refusal() -> TestResult {
         within(service::describe(&mut reader)).await?,
         Err(ClientError::Rejected(ServiceError::Unauthorized))
     ));
+    Ok(())
+}
+
+/// Reads one `logs` answer of `max` bytes from a target that sends `abc` on stdout and `de`
+/// on stderr, returning the read and what reached each sink.
+async fn logs_of(max: u32) -> TestResult<(Result<LogsRead, ClientError>, Vec<u8>, Vec<u8>)> {
+    let ((mut reader, _writer), (_service_reader, mut service_writer)) = pipe();
+    let accept = ProcessAccept::Reading {
+        state: ProcessState::Exited,
+        start: 0,
+        window: LogWindow::new(0, 5),
+        truncated: false,
+    };
+    service_writer
+        .frame(FrameKind::Accept, &accept.encode()?)
+        .await?;
+    service_writer.data(Channel::Output, b"abc").await?;
+    service_writer.data(Channel::Error, b"de").await?;
+    let reply = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(5, true)))?;
+    service_writer.frame(FrameKind::Outcome, &reply).await?;
+    service_writer.flush().await?;
+    let (mut output, mut error) = (Vec::new(), Vec::new());
+    let read = within(hosted::logs(&mut reader, (&mut output, &mut error), max)).await?;
+    Ok((read, output, error))
+}
+
+#[tokio::test]
+async fn a_logs_answer_longer_than_requested_is_refused_before_its_excess() -> TestResult {
+    // Given: a target that sends five bytes of output.
+    // When: they are exactly what was asked for.
+    let (read, output, error) = logs_of(5).await?;
+
+    // Then: both channels reach their sinks.
+    assert_eq!(read.map(|read| (read.next, read.ended))?, (5, true));
+    assert_eq!(
+        (output.as_slice(), error.as_slice()),
+        (&b"abc"[..], &b"de"[..])
+    );
+
+    // When: one byte fewer was asked for.
+    let (read, output, error) = logs_of(4).await?;
+
+    // Then: the frame past the limit reaches neither sink.
+    assert!(
+        matches!(read, Err(ClientError::Stream(ServiceError::InvalidInput))),
+        "{read:?}"
+    );
+    assert_eq!(
+        (output.as_slice(), error.as_slice()),
+        (&b"abc"[..], &b""[..])
+    );
     Ok(())
 }
 

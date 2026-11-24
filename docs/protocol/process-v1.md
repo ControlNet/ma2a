@@ -195,7 +195,8 @@ Process and its supervisor have ended.
    starts at `first_available` with `truncated = true`.
 2. After `accept` Reading, at most `max_bytes` content bytes follow as `data` frames on channel 1
    (stdout) or 2 (stderr), in record order. They are read in batches of at most 256 KiB, and a
-   record may be split at the budget boundary.
+   record may be split at the budget boundary. The caller refuses an answer with more, and
+   writes none of the frame that exceeds the budget.
 3. If retention removed output while reading, a `control` Skipped frame reports the new cursor
    before any further data.
 4. The outcome is Logs with `next`, the cursor to continue from. `ended` is `true` once the
