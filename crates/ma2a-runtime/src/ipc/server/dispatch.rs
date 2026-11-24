@@ -28,8 +28,11 @@ pub(super) async fn handle_connection(
     admission: super::Admission,
 ) -> Result<(), IpcError> {
     let lifecycle_only = admission.lifecycle_only;
-    platform::authorize(&stream, &context.paths)?;
+    // Windows names a pipe client only once something was read from the pipe, so the request is
+    // read, within its bound, before the caller's account is checked; nothing is decoded or
+    // answered until it is.
     let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
+    platform::authorize(&stream, &context.paths)?;
     if !lifecycle_only
         && let Ok(command) = api::decode_command(&frame.payload)
         && (command.stream_open().is_some() || command.is_hosted_upgrade())

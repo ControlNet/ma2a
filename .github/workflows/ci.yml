@@ -56,6 +56,11 @@ jobs:
       - name: Check resumable downloads natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-services --test download_directory --test download_sidecars --test client_transfer
+      - name: Check local IPC round trips natively
+        if: runner.os == 'Windows'
+        run: |
+          cargo test --locked -p ma2a-runtime --test ipc_lifecycle
+          cargo test --locked -p ma2a-runtime --lib ipc::server
 
   quality:
     runs-on: ubuntu-latest

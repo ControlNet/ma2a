@@ -108,11 +108,22 @@ where
     writer.frame(FrameKind::Control, reply.as_bytes()).await
 }
 
-/// Proves the supervisor side and verifies the daemon.
+/// Reads the daemon's opening challenge, the first frame a supervisor connection carries.
+///
+/// # Errors
+/// Returns [`ServiceError::Unauthorized`] for anything but a 32-byte Control frame.
+pub async fn read_challenge<R: AsyncRead + Unpin>(
+    reader: &mut FrameReader<R>,
+) -> Result<[u8; 32], ServiceError> {
+    <[u8; 32]>::try_from(control(reader).await?.as_slice()).map_err(|_| ServiceError::Unauthorized)
+}
+
+/// Proves the supervisor side to the daemon whose challenge `theirs` was read, and verifies it.
 ///
 /// # Errors
 /// Returns [`ServiceError::Unauthorized`] when the peer cannot prove the secret.
 pub async fn prove_supervisor<R, W>(
+    theirs: [u8; 32],
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     credentials: &Credentials,
 ) -> Result<(), ServiceError>
@@ -120,9 +131,6 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let challenge = control(reader).await?;
-    let theirs =
-        <[u8; 32]>::try_from(challenge.as_slice()).map_err(|_| ServiceError::Unauthorized)?;
     let ours = nonce()?;
     let mut answer = ours.to_vec();
     answer.extend_from_slice(credentials.mac(b"supervisor", (&theirs, &ours)).as_bytes());

@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     address::CONNECT_DEADLINE,
     host::{Lifecycle, Shared},
-    proof::prove_supervisor,
+    proof::{prove_supervisor, read_challenge},
     protocol::{ACKNOWLEDGED, SupervisorRequest},
     status::SupervisorStatus,
 };
@@ -42,14 +42,22 @@ pub(super) async fn serve(listener: Listener, shared: Arc<Shared>, stop: Cancell
     }
 }
 
-async fn connection(stream: Stream, shared: &Shared) {
+async fn connection(mut stream: Stream, shared: &Shared) {
+    // Windows names a pipe client only once something was read from the pipe, so the daemon's
+    // challenge is read before the caller's account is checked, and answered only after.
+    let deadline = tokio::time::Instant::now() + CONNECT_DEADLINE;
+    let challenge =
+        tokio::time::timeout_at(deadline, read_challenge(&mut FrameReader::new(&mut stream))).await;
+    let Ok(Ok(theirs)) = challenge else {
+        return;
+    };
     if super::address::same_user(&stream).is_err() {
         return;
     }
     let (receive, send) = stream.split();
     let (mut reader, mut writer) = (FrameReader::new(receive), FrameWriter::new(send));
-    let opened = tokio::time::timeout(CONNECT_DEADLINE, async {
-        prove_supervisor((&mut reader, &mut writer), &shared.credentials).await?;
+    let opened = tokio::time::timeout_at(deadline, async {
+        prove_supervisor(theirs, (&mut reader, &mut writer), &shared.credentials).await?;
         let frame = reader.expect().await?;
         if frame.kind() != FrameKind::Open {
             return Err(ServiceError::InvalidInput);
