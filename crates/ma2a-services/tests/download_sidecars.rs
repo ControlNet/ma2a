@@ -201,3 +201,17 @@ async fn a_staged_sidecar_cut_short_by_an_interruption_is_reclaimed() -> TestRes
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn progress_still_buffered_counts_as_bytes_held() -> TestResult {
+    let local = TempRoot::new("sidecar-progress")?;
+    let destination = local.path().join("file.bin");
+    let mut partial = Partial::open(&destination, "peer docs:/file", false).await?;
+    assert!(!partial.has_bytes().await?);
+    // Written but not yet flushed: the check writes it out before reading the length.
+    partial.sink().0.write_all(b"prefix").await?;
+    assert!(partial.has_bytes().await?);
+    assert_eq!(std::fs::read(partial_path(&destination)?)?, b"prefix");
+    partial.discard().await?;
+    Ok(())
+}

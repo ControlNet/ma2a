@@ -37,10 +37,11 @@ pub(super) async fn get(
     let outcome = match attempt(target, &resource, &mut partial).await {
         Ok(outcome) => outcome,
         Err(error) => {
-            if partial.identity().is_none() || !partial.has_bytes().await {
-                let _discarded = partial.discard().await;
-            }
-            return Err(error);
+            let invalid = partial.identity().is_none();
+            return Err(match Box::pin(settle(partial, invalid)).await {
+                Ok(()) => error,
+                Err(local) => kept(&error, &local),
+            });
         }
     };
     match outcome {
@@ -95,21 +96,34 @@ async fn attempt(
 ///
 /// Content that changed or failed verification cannot be continued, and an attempt that
 /// failed before its first byte left nothing of value.
-async fn abandon(mut partial: Partial, error: ClientError) -> AppError {
-    let worthless = partial.identity().is_none()
-        || !partial.has_bytes().await
+async fn abandon(partial: Partial, error: ClientError) -> AppError {
+    let invalid = partial.identity().is_none()
         || matches!(
             error,
             ClientError::Failed(ServiceError::ContentChanged | ServiceError::IntegrityMismatch)
         );
-    if worthless {
-        if let Err(removed) = partial.discard().await {
-            return removed.into();
-        }
-    } else {
-        let _flushed = partial.flush().await;
+    match Box::pin(settle(partial, invalid)).await {
+        Ok(()) => error.into(),
+        Err(local) => kept(&error, &local),
     }
-    error.into()
+}
+
+/// Removes `partial` when its content is `invalid` or it is known to be empty, and keeps it
+/// otherwise; a partial file that cannot be checked is kept, and the failure returned.
+async fn settle(mut partial: Partial, invalid: bool) -> io::Result<()> {
+    if invalid || !partial.has_bytes().await? {
+        partial.discard().await
+    } else {
+        Ok(())
+    }
+}
+
+/// Reports `error` together with the local failure that kept its partial download.
+fn kept(error: &dyn std::fmt::Display, local: &io::Error) -> AppError {
+    AppError::Io(io::Error::new(
+        local.kind(),
+        format!("{error}; the partial download was kept because it could not be checked: {local}"),
+    ))
 }
 
 /// Uploads `local` to `path`, published only after the target verified size and hash.

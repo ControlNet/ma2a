@@ -135,13 +135,15 @@ impl Partial {
         self.file.flush().await
     }
 
-    /// Returns whether the partial file already holds at least one written byte.
-    pub async fn has_bytes(&mut self) -> bool {
-        let _flushed = self.file.flush().await;
-        self.file
-            .metadata()
-            .await
-            .is_ok_and(|metadata| metadata.len() > 0)
+    /// Returns whether the partial file already holds at least one written byte, after writing
+    /// out everything still buffered.
+    ///
+    /// # Errors
+    /// Returns the local file error when pending writes cannot be flushed or the file's length
+    /// cannot be read, so a failed check is never taken for an empty file.
+    pub async fn has_bytes(&mut self) -> io::Result<bool> {
+        self.file.flush().await?;
+        Ok(self.file.metadata().await?.len() > 0)
     }
 
     /// Records the identity the target is about to stream, before any content arrives.
