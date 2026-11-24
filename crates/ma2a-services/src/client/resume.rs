@@ -65,20 +65,40 @@ impl Partial {
     /// Returns [`io::ErrorKind::WouldBlock`] while another download holds `destination`, or
     /// another local file error.
     pub async fn open(destination: &Path, source: &str, resume: bool) -> io::Result<Self> {
-        let destination = destination.to_path_buf();
-        let source = source.to_owned();
-        tokio::task::spawn_blocking(move || Self::open_blocking(&destination, source, resume))
-            .await
-            .map_err(io::Error::other)?
+        Self::open_checked(destination, (source, resume), || Ok(())).await
     }
 
-    fn open_blocking(destination: &Path, source: String, resume: bool) -> io::Result<Self> {
+    /// Opens like [`Partial::open`], running `check` once the destination's directory is held
+    /// and before any helper file is made, changed, or removed; an error from `check` ends the
+    /// open with nothing touched.
+    ///
+    /// # Errors
+    /// Returns the error from `check`, or one [`Partial::open`] returns.
+    pub async fn open_checked(
+        destination: &Path,
+        (source, resume): (&str, bool),
+        check: impl Fn() -> io::Result<()> + Send + 'static,
+    ) -> io::Result<Self> {
+        let destination = destination.to_path_buf();
+        let source = source.to_owned();
+        tokio::task::spawn_blocking(move || {
+            Self::open_blocking(&destination, (source, resume), &check)
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    fn open_blocking(
+        destination: &Path,
+        (source, resume): (String, bool),
+        check: &dyn Fn() -> io::Result<()>,
+    ) -> io::Result<Self> {
         let name = place::file_name(destination)?.to_os_string();
         let parent = destination
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let (helpers, lease) = Helpers::open(parent, &name)?;
+        let (helpers, lease) = Helpers::open(parent, &name, check)?;
         let part = place::partial_name(&name);
         let sidecar = suffixed(&part, ".meta");
         let staged = suffixed(&sidecar, ".tmp");
@@ -169,14 +189,6 @@ impl Partial {
         directory.rename(&self.staged, (directory, &self.sidecar))?;
         self.identity = Some(identity);
         Ok(())
-    }
-
-    /// Whether the destination directory held since `open` is the directory `path` names now.
-    ///
-    /// # Errors
-    /// Returns a local file error.
-    pub fn directory_is_at(&self, path: &Path) -> io::Result<bool> {
-        self.helpers.parent.0.is_at(path)
     }
 
     /// Lends the partial file and the hash of everything in it for the content stream.

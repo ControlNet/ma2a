@@ -39,10 +39,23 @@ impl Helpers {
     ///
     /// An existing private directory is used only when this account owns it and no other
     /// account may enter it; anything else carrying its name is refused and kept.
-    pub(super) fn open(parent: &Path, name: &OsStr) -> io::Result<(Self, Lease)> {
+    ///
+    /// `check` runs once `parent` is held and before anything is made in it; the held directory
+    /// must then still be the one `parent` names.
+    pub(super) fn open(
+        parent: &Path,
+        name: &OsStr,
+        check: &dyn Fn() -> io::Result<()>,
+    ) -> io::Result<(Self, Lease)> {
         let private = OsStr::new(PRIVATE_DIRECTORY);
         for _ in 0..ATTEMPTS {
             let anchor = Anchor::open(parent)?;
+            check()?;
+            if !anchor.is_at(parent)? {
+                return Err(io::Error::other(
+                    "the destination's directory was moved or replaced while it was opened",
+                ));
+            }
             let created = match anchor.mkdir_private(private) {
                 Ok(()) => true,
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,

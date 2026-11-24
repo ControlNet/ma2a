@@ -621,7 +621,8 @@ An Agent asks for a tool with a `tool` line. The daemon:
   go to a partial file in the private `.ma2a-downloads` directory beside the destination, whose
   helper names have a fixed length whatever the destination is called, are verified, and are then
   renamed over the destination, replacing an existing file. Once the destination's directory is
-  held, the destination is checked again and must still name that directory. A destination named
+  held, and before any helper file in it is made or changed, the destination is checked again and
+  must still name that directory. A destination named
   `.ma2a-downloads` is refused. These checks keep a tool to the paths it was given; they are not a
   boundary against the Agent itself, which runs as the same OS user.
 - **`exec.run`.** Stdin is empty, and nothing is interpreted by a shell. `timeout_ms` defaults to

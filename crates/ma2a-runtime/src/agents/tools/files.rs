@@ -1,6 +1,6 @@
 //! `files.*`, `transfer.*`, and `artifact.publish`.
 
-use std::path::Path;
+use std::{io, path::Path};
 
 use ma2a_agent::{
     protocol::ToolError,
@@ -139,26 +139,19 @@ pub(super) async fn download<R: AsyncRead + Unpin>(
     // Re-validate immediately before opening the partial file so a directory component swapped
     // into a symlink during the remote handshake cannot escape the workspace.
     let target = destination(workspace, relative)?;
-    let mut partial = Partial::open(&target, "agent tool download", false)
-        .await
-        .map_err(|error| local(&error))?;
-    // The directory held is the one the checked path names once it is held, so a directory
-    // swapped between the check and the open is not written into.
-    let held = destination(workspace, relative).and_then(|checked| {
-        let parent = checked.parent().unwrap_or(workspace);
-        match partial.directory_is_at(parent) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(ToolError::new(
-                "invalid_tool",
-                "the destination directory changed while it was opened",
-            )),
-            Err(error) => Err(local(&error)),
-        }
-    });
-    if let Err(error) = held {
-        let _discarded = partial.discard().await;
-        return Err(error);
-    }
+    // Once the destination's directory is held, the destination is checked again before any
+    // helper file is touched, so a directory swapped in meanwhile is left as it was.
+    let (root, path) = (workspace.to_path_buf(), relative.to_owned());
+    let mut partial = Partial::open_checked(&target, ("agent tool download", false), move || {
+        destination(&root, &path).map(drop).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the destination changed while it was opened",
+            )
+        })
+    })
+    .await
+    .map_err(|error| local(&error))?;
     if let Err(error) = partial.begin(identity).await {
         let _discarded = partial.discard().await;
         return Err(local(&error));
