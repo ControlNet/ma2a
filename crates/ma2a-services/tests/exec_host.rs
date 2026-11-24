@@ -234,3 +234,20 @@ async fn unstartable_programs_are_rejected_before_any_effect() -> TestResult {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn an_accept_nobody_reads_ends_the_exec_on_shutdown() -> TestResult {
+    // Given: a caller that never reads, so not even `accept` fits in its stream.
+    let shutdown = CancellationToken::new();
+    let request = ExecRequest::new(script("sleep 30")?, false, 60_000)?;
+    let ((_reader, _writer), server) = start(request, &shutdown, 1);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // When
+    shutdown.cancel();
+
+    // Then: the host stops waiting for the write and kills the child.
+    let report = tokio::time::timeout(Duration::from_secs(5), server).await??;
+    assert_eq!(report.end, OperationEnd::Failed(ServiceError::Unavailable));
+    Ok(())
+}

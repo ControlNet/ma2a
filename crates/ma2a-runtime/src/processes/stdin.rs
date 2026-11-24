@@ -16,7 +16,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use super::{
     ProcessManager,
     attach::{Caller, Scope},
-    host::{finish, refuse},
+    host::{finish, refuse, write_accept},
 };
 
 impl ProcessManager {
@@ -31,15 +31,19 @@ impl ProcessManager {
         W: AsyncWrite + Unpin + Send,
     {
         let request = SupervisorRequest::Stdin(close);
-        let (_, (mut from_supervisor, mut to_supervisor), _) =
-            match self.open_live((viewer, id), request).await {
-                Ok(opened) => opened,
-                Err(error) => return refuse(writer, error).await,
-            };
+        let opened = tokio::select! {
+            biased;
+            () = stop.cancelled() => Err(ServiceError::Cancelled),
+            opened = self.open_live((viewer, id), request) => opened,
+        };
+        let (_, (mut from_supervisor, mut to_supervisor), _) = match opened {
+            Ok(opened) => opened,
+            Err(error) => return refuse(writer, error).await,
+        };
         let Ok(accept) = ProcessAccept::Admitted.encode() else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+        if !write_accept(writer, &accept).await {
             return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
         }
         let written = async {

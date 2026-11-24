@@ -57,7 +57,7 @@ where
         return reply::reject(writer, ServiceError::SpawnFailed).await;
     };
     let mut child = process::Spawned::new(child);
-    if let Err(error) = writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await {
+    if let Err(error) = reply::accept(writer, &EMPTY_ACCEPT, shutdown).await {
         child.kill_all();
         let _reaped = child.child.wait().await;
         return reply::lost(error, (0, 0));

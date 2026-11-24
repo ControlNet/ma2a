@@ -69,8 +69,22 @@ pub(super) async fn refuse<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     error: ServiceError,
 ) -> OperationReport {
-    let _sent = writer.reject(error).await;
+    let _sent = tokio::time::timeout(FRAME_GRACE, writer.reject(error)).await;
     OperationReport::new(OperationEnd::Rejected(error))
+}
+
+/// Longest wait to write the frame that opens or ends an operation.
+const FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Writes `accept` within [`FRAME_GRACE`]; `false` when it was not written in time.
+pub(super) async fn write_accept<W: AsyncWrite + Unpin + Send>(
+    writer: &mut FrameWriter<W>,
+    payload: &[u8],
+) -> bool {
+    matches!(
+        tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Accept, payload)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// Sends the terminal outcome of an accepted operation within a bounded write grace.
@@ -78,7 +92,6 @@ pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     outcome: ProcessReplyOutcome,
 ) -> OperationReport {
-    const FINAL_WRITE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
     let end = match &outcome {
         Ok(_) => OperationEnd::Completed,
         Err(error) => OperationEnd::Failed(*error),
@@ -86,11 +99,7 @@ pub(super) async fn finish<W: AsyncWrite + Unpin + Send>(
     let Ok(payload) = ProcessReply::encode_outcome(&outcome) else {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Internal));
     };
-    let sent = tokio::time::timeout(
-        FINAL_WRITE_GRACE,
-        writer.frame(FrameKind::Outcome, &payload),
-    )
-    .await;
+    let sent = tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Outcome, &payload)).await;
     if !matches!(sent, Ok(Ok(()))) {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
     }
@@ -109,7 +118,7 @@ async fn answer<W: AsyncWrite + Unpin + Send>(
     let Ok(accept) = ProcessAccept::Admitted.encode() else {
         return refuse(writer, ServiceError::Internal).await;
     };
-    if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+    if !write_accept(writer, &accept).await {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
     }
     finish(writer, Ok(reply)).await
@@ -137,7 +146,7 @@ async fn answer_effect<W: AsyncWrite + Unpin + Send>(
     let Ok(accept) = ProcessAccept::Admitted.encode() else {
         return refuse(writer, ServiceError::Internal).await;
     };
-    if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+    if !write_accept(writer, &accept).await {
         return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
     }
     finish(writer, Err(error)).await

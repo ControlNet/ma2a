@@ -10,9 +10,7 @@ mod reap;
 
 use std::time::Duration;
 
-use ma2a_core::service::{
-    EMPTY_ACCEPT, EndReason, FrameKind, ProcessResult, ShellRequest, Termination,
-};
+use ma2a_core::service::{EMPTY_ACCEPT, EndReason, ProcessResult, ShellRequest, Termination};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::oneshot,
@@ -40,7 +38,7 @@ where
         Ok(session) => session,
         Err(error) => return reply::reject(writer, error).await,
     };
-    if let Err(error) = writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await {
+    if let Err(error) = reply::accept(writer, &EMPTY_ACCEPT, shutdown).await {
         session.close(true).await;
         return reply::lost(error, (0, 0));
     }

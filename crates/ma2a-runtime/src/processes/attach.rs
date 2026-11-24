@@ -21,13 +21,16 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     ProcessManager, credentials,
-    host::{finish, refuse, visible},
+    host::{finish, refuse, visible, write_accept},
 };
 
 /// Most readers attached to one Process at a time.
 const MAX_READERS: usize = 8;
 
 pub(super) type Caller<'a, R, W> = (&'a mut FrameReader<R>, &'a mut FrameWriter<W>);
+/// Longest wait for a live Process's supervisor to connect and answer an opened request.
+const SUPERVISOR_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Who asks (`None` is the local operator) and what ends the operation early.
 pub(super) type Scope<'a> = (Option<EndpointId>, &'a CancellationToken);
 
@@ -70,13 +73,20 @@ impl ProcessManager {
             .ok_or(ServiceError::NotRunning)?;
         // A supervisor that cannot be reached or proven is this Runtime's problem, never the
         // caller's authorization; the follower concludes a lost Process on its own.
-        let (mut reader, mut writer) = self
-            .address(id)
-            .connect(&credentials)
-            .await
-            .map_err(|_| ServiceError::Unavailable)?;
-        writer.frame(FrameKind::Open, &request.to_bytes()).await?;
-        let frame = reader.expect().await?;
+        // A supervisor that connects but never answers holds nobody past this.
+        let opened = tokio::time::timeout(SUPERVISOR_ANSWER, async {
+            let (mut reader, mut writer) = self
+                .address(id)
+                .connect(&credentials)
+                .await
+                .map_err(|_| ServiceError::Unavailable)?;
+            writer.frame(FrameKind::Open, &request.to_bytes()).await?;
+            let frame = reader.expect().await?;
+            Ok::<_, ServiceError>((reader, writer, frame))
+        })
+        .await
+        .map_err(|_| ServiceError::Unavailable)?;
+        let (reader, writer, frame) = opened?;
         match frame.kind() {
             FrameKind::Accept => Ok((record, (reader, writer), frame.into_payload())),
             FrameKind::Reject => Err(frame.rejection()?),
@@ -106,7 +116,12 @@ impl ProcessManager {
             return refuse(writer, ServiceError::ConcurrencyExceeded).await;
         };
         let request = SupervisorRequest::Attach(from, stdin);
-        let (record, supervisor, accepted) = match self.open_live((viewer, id), request).await {
+        let opened = tokio::select! {
+            biased;
+            () = stop.cancelled() => Err(ServiceError::Cancelled),
+            opened = self.open_live((viewer, id), request) => opened,
+        };
+        let (record, supervisor, accepted) = match opened {
             Ok(opened) => opened,
             Err(error) => return refuse(writer, error).await,
         };
@@ -122,7 +137,7 @@ impl ProcessManager {
         let Ok(accept) = accept.encode() else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+        if !write_accept(writer, &accept).await {
             return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
         }
         let relayed = relay(supervisor, (reader, writer), ((stdin, start), stop)).await;
