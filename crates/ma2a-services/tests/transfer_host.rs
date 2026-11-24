@@ -201,10 +201,19 @@ async fn upload(
     drain(reader).await
 }
 
-fn staging_path(root: &Path) -> String {
-    root.join(format!(".ma2a-upload-{}.part", "ab".repeat(16)))
-        .to_string_lossy()
-        .into_owned()
+/// Whether `path` names a staging file of this test's request in `root`: the request ID followed
+/// by a 16-byte nonce.
+fn is_staging_path(root: &Path, path: &str) -> bool {
+    let path = Path::new(path);
+    path.parent() == Some(root)
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(&format!(".ma2a-upload-{}", "ab".repeat(16))))
+            .and_then(|rest| rest.strip_suffix(".part"))
+            .is_some_and(|nonce| {
+                nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
 }
 
 #[tokio::test]
@@ -223,12 +232,14 @@ async fn uploads_are_journaled_before_staging_and_published_atomically() -> Test
     assert_eq!(result.size, 200_000);
     assert_eq!(server.await?.bytes_in, 200_000);
     assert_eq!(fs::read(root.path().join("new.bin"))?, payload);
-    let staging = staging_path(root.path());
+    let events = journal.events();
+    let staging = &events.first().ok_or("record")?.1;
+    assert!(is_staging_path(root.path(), staging), "{staging}");
     assert_eq!(
-        journal.events(),
+        events,
         [
             ("record", staging.clone(), false),
-            ("forget", staging, false)
+            ("forget", staging.clone(), false)
         ]
     );
 
@@ -246,6 +257,38 @@ async fn uploads_are_journaled_before_staging_and_published_atomically() -> Test
     );
     assert!(matches!(server.await?.end, OperationEnd::Rejected(_)));
     assert!(journal.events().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_entry_named_like_a_staging_file_is_never_journaled() -> TestResult {
+    let root = TempRoot::new("upload-foreign")?;
+    let foreign = root
+        .path()
+        .join(format!(".ma2a-upload-{}.part", "ab".repeat(16)));
+    fs::write(&foreign, b"not this upload's")?;
+    let mut staged = Vec::new();
+    for _ in 0..2 {
+        let journal = std::sync::Arc::new(RecordingJournal::default());
+        let request = TransferRequest::Put(file("docs:/new.bin")?, 1, WriteMode::Replace);
+        let (mut client, server) = start(
+            (root.path(), request),
+            std::sync::Arc::clone(&journal),
+            1 << 20,
+        )?;
+        let frames = upload((&mut client, b"x"), *blake3::hash(b"x").as_bytes()).await?;
+        transfer_outcome(&frames)?.map_err(|error| format!("{error:?}"))?;
+        server.await?;
+        let events = journal.events();
+        let staging = events.first().ok_or("record")?.1.clone();
+        assert!(is_staging_path(root.path(), &staging), "{staging}");
+        assert_eq!(events.last(), Some(&("forget", staging.clone(), false)));
+        staged.push(staging);
+    }
+    // Each attempt stages under its own name, never one an entry already holds.
+    assert_ne!(staged.first(), staged.get(1));
+    assert!(!staged.contains(&foreign.to_string_lossy().into_owned()));
+    assert_eq!(fs::read(&foreign)?, b"not this upload's");
     Ok(())
 }
 

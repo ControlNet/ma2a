@@ -27,9 +27,18 @@ pub(super) struct Target {
     pub(super) request_id: RequestId,
 }
 
-/// Returns the staging name used for one upload request inside its destination directory.
-pub(crate) fn staging_name(request_id: &RequestId) -> String {
-    format!(".ma2a-upload-{}.part", hex(request_id.as_bytes()))
+/// Returns a fresh staging name for one upload attempt inside its destination directory.
+///
+/// The name carries the request ID and a random nonce, so no two attempts share it and no entry
+/// already in the directory can carry it: a staging file that exists is always this attempt's.
+pub(crate) fn staging_name(request_id: &RequestId) -> Result<String, ServiceError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).map_err(|_| ServiceError::Internal)?;
+    Ok(format!(
+        ".ma2a-upload-{}{}.part",
+        hex(request_id.as_bytes()),
+        hex(&nonce)
+    ))
 }
 
 async fn blocking<T: Send + 'static>(
@@ -69,7 +78,10 @@ where
     if mode == WriteMode::CreateNew && existing.is_some() {
         return reply::reject(writer, ServiceError::AlreadyExists).await;
     }
-    let name = staging_name(&request_id);
+    let name = match staging_name(&request_id) {
+        Ok(name) => name,
+        Err(error) => return reply::reject(writer, error).await,
+    };
     let Some(staging) = parent.path().join(&name).to_str().map(str::to_owned) else {
         return reply::reject(writer, ServiceError::InvalidPath).await;
     };
@@ -80,9 +92,8 @@ where
     let temporary = match created {
         Ok(temporary) => temporary,
         Err(error) => {
-            if error != ServiceError::AlreadyExists {
-                journal.forget(&staging).await;
-            }
+            // Nothing was created: an entry already carrying this fresh name is not ours.
+            journal.forget(&staging).await;
             return reply::reject(writer, error).await;
         }
     };

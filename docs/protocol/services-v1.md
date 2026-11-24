@@ -160,8 +160,10 @@ survives any daemon restart.
 
 **Upload** `Put(resource, size, mode)`:
 
-1. The server records the staging path `.ma2a-upload-<request_id>.part` in SQLite *before*
-   creating the file.
+1. The server records the staging path `.ma2a-upload-<request_id><nonce>.part` in SQLite
+   *before* creating the file exclusively. The nonce is 16 random bytes, so each attempt has its
+   own name and no entry already in the directory carries it; when the file cannot be created,
+   the record is dropped at once.
 2. It sends `accept`.
 3. The client sends exactly `size` bytes of `data` (input), then `end`, then
    `control {commit: blake3}`.
