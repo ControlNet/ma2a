@@ -17,25 +17,41 @@ requirements. Run `cargo xtask check-pins` after changing any manifest.
 | Dependency | Exact requirement | Purpose |
 | --- | --- | --- |
 | `iroh`, `iroh-base`, `iroh-relay` | 1.1.0 | Endpoint transport and relay primitives |
+| `iroh-dns` | 1.1.0 | DNS resolver for relay tests |
 | `iroh-tickets` | 1.0.0 | Iroh-compatible ticket encoding |
-| `iroh-ping` | 1.0.0 | Narrow connectivity probe |
-| `iroh-metrics` | 1.0.1 | Transport metrics types |
-| `irpc`, `irpc-iroh` | 0.17.0 | Typed RPC composition over Iroh |
+| `n0-future` | 0.3.2 | Address lookup streams |
 | `tokio` | 1.53.3 | Async runtime |
 | `tokio-util` | 0.7.19 | Structured Runtime cancellation tokens |
+| `tokio-stream` | 0.1.19 | Event streams for the Web UI and A2A adapter |
 | `axum` | 0.8.9 | Loopback HTTP surface |
+| `tower` | 0.5.3 with `util` | HTTP service composition |
+| `hyper-util` | 0.1.20 with `server-auto`, `service`, and `tokio` | Bounded HTTP connection serving |
+| `http` | 1.5.0 | HTTP types |
 | `rusqlite` | 0.41.1 with `backup`, `bundled`, and `fallible_uint` | Embedded SQLite state, checked counters, and online backup |
-| `rustix` | 1.1.6 with `process` and `std` | Safe current-user ownership checks on Unix |
+| `rustix` | 1.1.6 with `fs`, `process`, `std`, and `termios` | Unix file, ownership, and terminal calls |
+| `portable-pty` | 0.9.0 | Shell service terminals |
 | `zeroize` | 1.9.0 with `alloc` | Zeroizing protected-key buffers |
 | `ed25519-dalek` | 3.0.0 | Space authority signatures |
-| `blake3` | 1.8.7 | Domain-separated `SpaceId` derivation |
+| `blake3` | 1.8.7 | Domain-separated `SpaceId` derivation and content digests |
 | `getrandom` | 0.4.3 | Operating-system randomness for `RequestId` |
+| `argon2` | 0.6.0 with `alloc`, `getrandom`, `password-hash`, and `zeroize` | Web UI password verifier |
+| `subtle` | 2.6.1 | Constant-time secret comparison |
+| `rustls`, `tokio-rustls` | 0.23.46 with `ring` and `std`; 0.26.4 with `ring` and `tls12` | Private relay TLS |
+| `rustls-pki-types` | 1.15.1 | Private relay certificate and key types |
+| `x509-parser` | 0.18.1 | Private relay certificate checks |
+| `rcgen` | 0.14.9 | Test certificates for relay TLS |
+| `interprocess` | 2.4.3 with `tokio` | Cross-platform local IPC |
+| `widestring`, `windows-sys` | 1.2.1, 0.61.2 | Windows security and file APIs |
+| `clap` | 4.6.6 with `derive` | CLI parsing |
+| `rpassword` | 7.5.4 | Terminal password and invite ticket input |
+| `serde`, `serde_json` | 1.0.229, 1.0.151 | JSON for the local API, Web UI, A2A adapter, and `xtask` policies |
+| `base64` | 0.22.1 | Artifact content in JSON results |
+| `sha2` | 0.11.0 | Test digests |
 | `proptest` | 1.11.0 with `std` only | Core wire and ontology property tests |
-| `interprocess` | 2.4.3 | Cross-platform local IPC |
-| `serde_json` | 1.0.151 | `xtask` JSON policy parsing |
 | `toml` | 1.1.4 | `xtask` Cargo manifest parsing |
 
-The five product crates use exact `=0.1.0` path requirements. `xtask` is a non-shipping
+The eight product crates (`ma2a-agent`, `ma2a-app`, `ma2a-core`, `ma2a-net`, `ma2a-runtime`,
+`ma2a-service`, `ma2a-services`, `ma2a-store`) use exact `=0.1.0` path requirements. `xtask` is a non-shipping
 workspace utility. `Cargo.lock` is authoritative for the complete transitive Rust inventory;
 `web/bun.lock` is authoritative for the complete frontend inventory.
 
@@ -80,7 +96,8 @@ would remove the ACME path but not the Windows one. Review it by 2027-05-20.
 Both font packages are vendored into the bundle at build time. `src/styles/fonts.css`
 declares only the latin `woff2` face of each family, so the embedded binary carries two font
 files rather than the eleven the packages ship. No stylesheet may reference a remote origin;
-`src/styles/fonts.test.ts` enforces that and the release smoke test re-proves it in a browser.
+`src/styles/fonts.test.ts` enforces that, and the release smoke test re-proves it by fetching
+every served asset and rejecting any external reference.
 
 ## Update Procedure
 
