@@ -100,9 +100,15 @@ fn place_blob(staging: &Path, blobs: &Path, hash: &[u8; 32]) -> io::Result<()> {
         let _removed = std::fs::remove_file(staging);
         return placed;
     }
-    // The rename must survive a crash before a task commits a reference to the blob.
+    // The rename must survive a crash before a task commits a reference to the blob, and so
+    // must `blobs/` itself, which the first publication creates.
     #[cfg(unix)]
-    std::fs::File::open(blobs)?.sync_all()?;
+    {
+        std::fs::File::open(blobs)?.sync_all()?;
+        if let Some(parent) = blobs.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+    }
     Ok(())
 }
 

@@ -351,7 +351,7 @@ daemon:
 1. resolves the path inside the workspace and requires a regular file, opened without blocking;
 2. copies it into a staging file in the content-addressed store `<state>/agents-v1/blobs/` (mode
    `0700`), hashing it with BLAKE3 as it goes;
-3. fsyncs the copy, renames it to `<blake3 hex>` and, on Unix, fsyncs `blobs/` before the reference commits, so identical content is stored once;
+3. fsyncs the copy, renames it to `<blake3 hex>` and, on Unix, fsyncs `blobs/` and the directory holding it before the reference commits, so identical content is stored once;
 4. records the artifact reference and an `artifact` event, while the task is not terminal, and
    the tool call's answer in the same commit, so a restart never runs a recorded publication
    again (which would find its own name taken).
