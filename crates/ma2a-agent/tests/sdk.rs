@@ -119,6 +119,12 @@ async fn handle(mut task: Task) {
             }
             task.complete(None);
         }
+        "flood-messages" => {
+            let sent = (0..1_000)
+                .filter(|_| task.message(Message::agent_text("m")))
+                .count();
+            task.complete(Some(Message::agent_text(sent.to_string())));
+        }
         "nul-result" => task.complete(Some(Message::agent_text("a\0b"))),
         "huge-question" => {
             let text = "x".repeat(ma2a_agent::protocol::MAX_MESSAGE_BYTES + 1);
@@ -351,5 +357,36 @@ async fn progress_a_stalled_reader_has_not_taken_is_dropped_but_the_end_is_not()
         .filter(|line| matches!(line, AgentToRuntime::Progress { .. }))
         .count();
     assert!(progress > 0 && progress <= 100, "{progress}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn messages_a_stalled_reader_has_not_taken_are_refused_but_the_end_is_not() -> TestResult {
+    // Given: an Agent whose output nobody reads while its task sends a flood of messages.
+    let mut runtime = Runtime::with_output_room(256);
+    runtime.send(&task(1, "a", "flood-messages")).await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // When: the reader catches up.
+    let mut seen = Vec::new();
+    let completed = loop {
+        match runtime.next().await? {
+            AgentToRuntime::State {
+                state: ReportedState::Completed,
+                message,
+                ..
+            } => break message.map(|message| message.text()),
+            line => seen.push(line),
+        }
+    };
+
+    // Then: only a bounded backlog of messages waited, each one `message` reported as sent
+    // came through, and the end did.
+    let messages = seen
+        .iter()
+        .filter(|line| matches!(line, AgentToRuntime::Message { .. }))
+        .count();
+    assert!(messages > 0 && messages <= 100, "{messages}");
+    assert_eq!(completed, Some(messages.to_string()));
     Ok(())
 }

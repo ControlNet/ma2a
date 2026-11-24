@@ -13,6 +13,7 @@
 //! # }
 //! ```
 
+mod lines;
 mod task;
 
 use std::{
@@ -28,17 +29,16 @@ use std::{
 
 use serde_json::Value;
 use tokio::{
-    io::{
-        AsyncBufRead, AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, BufReader,
-    },
+    io::{AsyncRead, AsyncWrite, BufReader},
     sync::{mpsc, oneshot, watch},
 };
 
+use lines::{read_line, write_lines};
 pub use task::Task;
 
 use crate::protocol::{
-    AgentToRuntime, MAX_AGENT_LINE_LEN, MAX_RUNTIME_LINE_LEN, Message, PROTOCOL_VERSION,
-    RuntimeToAgent, ToolError, decode_line, encode_line,
+    AgentToRuntime, MAX_AGENT_LINE_LEN, Message, PROTOCOL_VERSION, RuntimeToAgent, ToolError,
+    decode_line, encode_line,
 };
 
 /// What one open tool call resolves to.
@@ -52,13 +52,13 @@ struct Slot {
     calls: HashMap<String, CallAnswer>,
 }
 
-/// One queued output line, and whether it is a progress line.
-type Line = (Vec<u8>, bool);
+/// One queued output line, and the count of queued lines of its kind when that kind is bounded.
+type Line = (Vec<u8>, Option<Arc<AtomicUsize>>);
 
-/// Most progress lines queued and not yet written. Progress is transient, so past this a new
-/// one is dropped rather than letting a stalled reader grow the queue without bound; no other
-/// line is ever dropped.
-const MAX_QUEUED_PROGRESS: usize = 64;
+/// Most progress lines, and separately most task messages, queued and not yet written. Past
+/// this a new one is refused rather than letting a stalled reader grow the queue without
+/// bound; acknowledgements, state reports, and tool calls are never refused.
+const MAX_QUEUED: usize = 64;
 
 /// State shared by the loop and every task handle.
 #[derive(Debug)]
@@ -66,6 +66,8 @@ struct Shared {
     out: mpsc::UnboundedSender<Line>,
     /// Progress lines queued and not yet written.
     progress: Arc<AtomicUsize>,
+    /// Task messages queued and not yet written.
+    messages: Arc<AtomicUsize>,
     tasks: Mutex<HashMap<String, Slot>>,
 }
 
@@ -82,12 +84,18 @@ impl Shared {
         if line.len() > MAX_AGENT_LINE_LEN + 1 {
             return false;
         }
-        let progress = matches!(message, AgentToRuntime::Progress { .. });
-        if progress && self.progress.fetch_add(1, Ordering::Relaxed) >= MAX_QUEUED_PROGRESS {
-            self.progress.fetch_sub(1, Ordering::Relaxed);
+        let bounded = match message {
+            AgentToRuntime::Progress { .. } => Some(&self.progress),
+            AgentToRuntime::Message { .. } => Some(&self.messages),
+            _ => None,
+        };
+        if let Some(queued) = bounded
+            && queued.fetch_add(1, Ordering::Relaxed) >= MAX_QUEUED
+        {
+            queued.fetch_sub(1, Ordering::Relaxed);
             return false;
         }
-        self.out.send((line, progress)).is_ok()
+        self.out.send((line, bounded.cloned())).is_ok()
     }
 }
 
@@ -117,14 +125,14 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let (out, lines) = mpsc::unbounded_channel();
-    let progress = Arc::new(AtomicUsize::new(0));
     let shared = Arc::new(Shared {
         out,
-        progress: Arc::clone(&progress),
+        progress: Arc::new(AtomicUsize::new(0)),
+        messages: Arc::new(AtomicUsize::new(0)),
         tasks: Mutex::new(HashMap::new()),
     });
     let (stop, stopped) = oneshot::channel();
-    let mut writer = tokio::spawn(write_lines(output, (lines, progress), stopped));
+    let mut writer = tokio::spawn(write_lines(output, lines, stopped));
     shared.emit(&AgentToRuntime::Ready {
         protocol: PROTOCOL_VERSION,
     });
@@ -254,63 +262,6 @@ fn dispatch<H, F>(
             if let Some(answer) = answer {
                 let _answered = answer.send(outcome);
             }
-        }
-    }
-}
-
-/// Reads one line without its newline, or `None` at end of input; a line over the bound
-/// is consumed and returned empty, so it is skipped.
-async fn read_line<R: AsyncBufRead + Unpin>(input: &mut R) -> io::Result<Option<Vec<u8>>> {
-    let mut line = Vec::new();
-    let mut overflow = false;
-    loop {
-        let buffer = input.fill_buf().await?;
-        if buffer.is_empty() {
-            // A last line without its newline still counts as one line.
-            return Ok((!line.is_empty() || overflow).then_some(line));
-        }
-        let (chunk, done) = buffer
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or((buffer.len(), false), |end| (end, true));
-        if !overflow {
-            line.extend_from_slice(buffer.get(..chunk).unwrap_or_default());
-            if line.len() > MAX_RUNTIME_LINE_LEN {
-                overflow = true;
-                line = Vec::new();
-            }
-        }
-        input.consume(if done { chunk + 1 } else { chunk });
-        if done {
-            return Ok(Some(line));
-        }
-    }
-}
-
-/// Writes lines as they are queued; once `stop` fires, writes what is queued and returns.
-async fn write_lines<W: AsyncWrite + Unpin>(
-    mut output: W,
-    (mut lines, progress): (mpsc::UnboundedReceiver<Line>, Arc<AtomicUsize>),
-    mut stop: oneshot::Receiver<()>,
-) -> io::Result<()> {
-    loop {
-        let line = tokio::select! {
-            biased;
-            line = lines.recv() => line,
-            _stopped = &mut stop => {
-                while let Ok((line, _)) = lines.try_recv() {
-                    output.write_all(&line).await?;
-                }
-                return output.flush().await;
-            }
-        };
-        let Some((line, is_progress)) = line else {
-            return Ok(());
-        };
-        output.write_all(&line).await?;
-        output.flush().await?;
-        if is_progress {
-            progress.fetch_sub(1, Ordering::Relaxed);
         }
     }
 }

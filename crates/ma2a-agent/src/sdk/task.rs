@@ -83,7 +83,8 @@ impl Task {
 
     /// Adds one Agent message to the conversation; returns whether it was sent.
     ///
-    /// A message outside [`Message::is_within_bounds`] is not sent.
+    /// A message outside [`Message::is_within_bounds`] is not sent, and neither is one while
+    /// 64 earlier messages still wait for the Runtime to read them.
     pub fn message(&self, message: Message) -> bool {
         message.is_within_bounds()
             && self.shared.emit(&AgentToRuntime::Message {
