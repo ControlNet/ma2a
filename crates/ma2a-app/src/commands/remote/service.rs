@@ -1,13 +1,13 @@
 //! `ma2a service discover` and `call`: another Endpoint's services, used as this Endpoint.
 
-use std::io::Write as _;
+use std::{io::Write as _, time::Duration};
 
 use ma2a_core::service::{
-    DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceName,
-    ServiceOrigin, ServiceRequest, ServiceVersion,
+    DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceError,
+    ServiceName, ServiceOrigin, ServiceRequest, ServiceVersion,
 };
 use ma2a_runtime::ipc::IpcPaths;
-use ma2a_services::client::{process::ProcessIo, service};
+use ma2a_services::client::{ClientError, process::ProcessIo, service};
 use serde_json::{Value, json};
 
 use super::{open, open_as, process::interrupted};
@@ -34,15 +34,31 @@ fn descriptor_value(descriptor: &ServiceDescriptor) -> Value {
     })
 }
 
+/// Longest wait for one discovery page, so a target that never answers fails the command.
+const PAGE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Runs `read` under `deadline`, failing as `timed_out` once it passes.
+async fn bounded<T>(
+    deadline: Duration,
+    read: impl Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    tokio::time::timeout(deadline, read)
+        .await
+        .unwrap_or_else(|_| Err(ClientError::Stream(ServiceError::TimedOut).into()))
+}
+
 async fn page(
     (paths, endpoint): (&IpcPaths, &str),
     after: Option<String>,
 ) -> Result<DescribePage, AppError> {
-    let body = OpenBody::Service(ServiceRequest::Describe(after));
-    let (mut reader, writer) = open(paths, endpoint, body).await?;
-    let page = service::describe(&mut reader).await;
-    drop(writer);
-    Ok(page?)
+    bounded(PAGE_DEADLINE, async {
+        let body = OpenBody::Service(ServiceRequest::Describe(after));
+        let (mut reader, writer) = open(paths, endpoint, body).await?;
+        let page = service::describe(&mut reader).await;
+        drop(writer);
+        Ok(page?)
+    })
+    .await
 }
 
 /// Prints one page of what `endpoint` serves this Endpoint.
@@ -138,4 +154,27 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
         super::exit_with(printed);
     }
     printed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppError, PAGE_DEADLINE, bounded};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_page_that_never_comes_fails_as_timed_out() {
+        // Given: a target that never answers.
+        let read = bounded(
+            PAGE_DEADLINE,
+            std::future::pending::<Result<(), AppError>>(),
+        );
+
+        // When
+        let answered = tokio::time::timeout(PAGE_DEADLINE * 2, read).await;
+
+        // Then
+        assert!(matches!(
+            answered,
+            Ok(Err(AppError::Protocol(message))) if message.starts_with("timed_out")
+        ));
+    }
 }
