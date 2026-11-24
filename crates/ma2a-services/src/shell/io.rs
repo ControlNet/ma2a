@@ -128,6 +128,8 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
     };
     let mut exit: Option<Termination> = None;
     let mut drain_until: Option<Instant> = None;
+    // A closed output answers every receive at once; it is not polled again.
+    let mut output_closed = false;
     loop {
         let chunk = tokio::select! {
             biased;
@@ -141,12 +143,13 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
                 continue;
             }
             () = tokio::time::sleep_until(drain_until.unwrap_or_else(Instant::now)), if drain_until.is_some() => break,
-            chunk = output.recv() => chunk,
+            chunk = output.recv(), if !output_closed => chunk,
         };
         let Some(chunk) = chunk else {
             if exit.is_some() {
                 break;
             }
+            output_closed = true;
             drain_until = Some(drain_until.unwrap_or_else(|| Instant::now() + EXIT_DRAIN_GRACE));
             continue;
         };
