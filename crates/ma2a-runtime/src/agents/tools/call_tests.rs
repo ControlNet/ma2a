@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use ma2a_agent::tools::{AgentTaskTarget, ProxyOpen};
+use ma2a_agent::tools::{AgentTaskTarget, AgentWait, ProxyOpen};
 use ma2a_core::{
     RequestId,
     service::{AgentId, AgentTaskId},
@@ -171,6 +171,32 @@ async fn agent_get_from_a_silent_target_times_out() -> TestResult {
         return Err("agent.get waited on a target that never answers".into());
     };
     assert_eq!(error.code, "timed_out");
+    assert_eq!(fixture.opened.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn agent_wait_reads_no_more_views_once_its_deadline_passed() -> TestResult {
+    // Given
+    let fixture = Fixture::new("agent-wait")?;
+    let call = fixture.call()?;
+    let args = AgentWait {
+        endpoint: target(),
+        agent: "helper".to_owned(),
+        task: AgentTaskId::random()?.to_string(),
+        timeout_ms: Some(1_000),
+    };
+    let began = tokio::time::Instant::now();
+
+    // When
+    let answered = tokio::time::timeout(Duration::from_secs(120), call.agent_wait(args)).await;
+
+    // Then: the one view read begun before the deadline is the last.
+    let Ok(Err(error)) = answered else {
+        return Err("agent.wait did not end with the view read's failure".into());
+    };
+    assert_eq!(error.code, "timed_out");
+    assert_eq!(began.elapsed(), Duration::from_secs(30));
     assert_eq!(fixture.opened.load(Ordering::Relaxed), 1);
     Ok(())
 }

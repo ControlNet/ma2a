@@ -645,9 +645,10 @@ An Agent asks for a tool with a `tool` line. The daemon:
   `from_agent`, and its message must have role `user`. `agent.wait` follows the task with `watch`
   until it ends or `timeout_ms` passes (default and maximum 300,000), then answers its full view,
   which may still be live at the deadline. While waiting, `unavailable`, `unreachable`,
-  `timed_out`, `outcome_unknown`, and `cancelled` are retried every second. Each read of the
-  task's view, in `agent.get` and `agent.wait`, is `timed_out` when the target has not answered
-  within 30 s.
+  `timed_out`, `outcome_unknown`, and `cancelled` are retried every second until `timeout_ms`
+  passes. Each read of the task's view, in `agent.get` and `agent.wait`, is `timed_out` when the
+  target has not answered within 30 s. A view read that ends after the deadline is the last one:
+  its view or its error is the answer, so a wait ends at most 30 s after `timeout_ms`.
 
 **Derived RequestId.** A call that opens a mutation (`transfer.put`, `exec.run`, `process.start`,
 `process.terminate`, `agent.submit`, `agent.send`, `agent.cancel`) uses

@@ -141,13 +141,17 @@ impl Call<'_> {
             .min(MAX_AGENT_WAIT_MS);
         let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout);
         let mut after = 0;
+        // A view read begun before the deadline may end after it; it is then the last one.
+        let retry =
+            || tokio::time::sleep_until((tokio::time::Instant::now() + RETRY).min(deadline));
         loop {
+            let view = self.view(&args.endpoint, (agent.clone(), task)).await;
             let now = tokio::time::Instant::now();
-            let view = match self.view(&args.endpoint, (agent.clone(), task)).await {
+            let view = match view {
                 Ok(view) => view,
                 // A target that is restarting or unreachable is waited for, not given up on.
                 Err(error) if transient(&error) && now < deadline => {
-                    tokio::time::sleep(RETRY.min(deadline - now)).await;
+                    retry().await;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -168,7 +172,7 @@ impl Call<'_> {
             })
             .await;
             match watched {
-                Ok(Err(error)) if transient(&error) => tokio::time::sleep(RETRY).await,
+                Ok(Err(error)) if transient(&error) => retry().await,
                 Ok(Err(error)) => return Err(error),
                 _ => {}
             }
