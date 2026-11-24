@@ -85,6 +85,30 @@ async fn an_interactive_session_echoes_input_and_reports_its_exit() -> TestResul
 }
 
 #[tokio::test]
+async fn a_program_that_closes_its_terminal_runs_until_it_exits() -> TestResult {
+    // Given: a program that closes its terminal, then keeps running past the exit drain.
+    let request = session(
+        "sh",
+        &["-c", "exec </dev/null >/dev/null 2>&1; sleep 1; exit 7"],
+        60_000,
+    )?;
+    let ((mut reader, _writer), server) = start(request, &CancellationToken::new());
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+
+    // When
+    let frames = within(drain(&mut reader)).await??;
+
+    // Then: its own exit ends the session, not the closed output.
+    let result = outcome(&frames)?;
+    assert_eq!(
+        (result.termination, result.reason),
+        (Termination::Exited(7), EndReason::Completed)
+    );
+    assert_eq!(server.await?.end, OperationEnd::Completed);
+    Ok(())
+}
+
+#[tokio::test]
 async fn resize_reaches_the_terminal() -> TestResult {
     let request = session("sh", &["-c", "sleep 0.5; stty size"], 60_000)?;
     let ((mut reader, mut writer), server) = start(request, &CancellationToken::new());

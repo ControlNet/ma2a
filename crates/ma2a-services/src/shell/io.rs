@@ -139,6 +139,9 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             }
             termination = &mut *exited, if exit.is_none() => {
                 exit = Some(termination.unwrap_or(Termination::Unknown));
+                if output_closed {
+                    break;
+                }
                 drain_until = Some(Instant::now() + EXIT_DRAIN_GRACE);
                 continue;
             }
@@ -149,8 +152,8 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             if exit.is_some() {
                 break;
             }
+            // A program may close its terminal and keep running; the session ends when it exits.
             output_closed = true;
-            drain_until = Some(drain_until.unwrap_or_else(|| Instant::now() + EXIT_DRAIN_GRACE));
             continue;
         };
         let written = tokio::select! {
