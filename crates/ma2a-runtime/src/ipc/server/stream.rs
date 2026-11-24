@@ -27,7 +27,7 @@ use super::{ConnectionContext, IpcError, platform::PlatformStream};
 
 mod replay;
 
-/// Longest wait for the client's `open` after the upgrade.
+/// Longest wait for the client's `open` after the upgrade, and for the target to take it.
 const OPEN_DEADLINE: Duration = Duration::from_secs(15);
 
 /// Upgrades the connection, or answers a local API error and closes it.
@@ -186,9 +186,15 @@ async fn run<R, W>(
     };
     let (send, receive) = remote.halves();
     let mut target = (FrameReader::new(receive), FrameWriter::new(send));
-    let opened = target.1.frame(FrameKind::Open, open).await.is_ok()
-        && target.1.flush().await.is_ok()
-        && !injected_loss(context);
+    // A target that gives no room for the request cannot hold the client's slot.
+    let open_write = async {
+        target.1.frame(FrameKind::Open, open).await?;
+        target.1.flush().await
+    };
+    let opened = matches!(
+        tokio::time::timeout(OPEN_DEADLINE, open_write).await,
+        Ok(Ok(()))
+    ) && !injected_loss(context);
     let relayed = if opened {
         relay(
             (client_reader, client_writer),

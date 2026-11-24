@@ -20,6 +20,9 @@ pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// How long the last frame and the shutdown toward a client may take; a client that stopped
 /// reading must not hold an ended operation open.
 pub(crate) const FINAL_WRITE_GRACE: Duration = Duration::from_secs(5);
+/// How long one frame toward the target may wait for room, as long as a host waits for progress;
+/// a target that takes nothing for longer is stalled and gets cancelled.
+const FORWARD_STALL: Duration = Duration::from_secs(30);
 
 /// Whether a frame toward the client is being written right now.
 ///
@@ -101,8 +104,13 @@ async fn forward<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,
     frame: &Frame,
 ) -> Result<(), ServiceError> {
-    writer.frame(frame.kind(), frame.payload()).await?;
-    writer.flush().await
+    let sent = async {
+        writer.frame(frame.kind(), frame.payload()).await?;
+        writer.flush().await
+    };
+    tokio::time::timeout(FORWARD_STALL, sent)
+        .await
+        .unwrap_or(Err(ServiceError::TimedOut))
 }
 
 /// State both directions of one relay update.
@@ -197,11 +205,11 @@ async fn upstream<CR, TW>(
                 if !matches!(other, Some(Ok(Some(_)))) {
                     shared.client_gone.store(true, Ordering::Relaxed);
                 }
-                let _cancelled = async {
+                let cancel = async {
                     target_writer.frame(FrameKind::Cancel, &[]).await?;
                     target_writer.flush().await
-                }
-                .await;
+                };
+                let _cancelled = tokio::time::timeout(CANCEL_GRACE, cancel).await;
                 return;
             }
         }

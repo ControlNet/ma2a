@@ -100,7 +100,9 @@ session cannot make this Runtime serve anything.
    (`docs/protocol/services-v1.md`) verbatim in both directions and no further local API frames.
 2. The client sends exactly one `open` frame. Its request ID, target, and service must equal the
    upgrade's; otherwise it receives `reject(invalid_input)`.
-3. The Runtime dials the target on the family ALPN and relays frames with one-frame buffers.
+3. The Runtime dials the target on the family ALPN and relays frames with one-frame buffers. A
+   target that takes no `open` within 15 seconds, or no later frame within 30 seconds, is treated
+   as lost.
 
 The client keeps its side open until it receives a terminal frame. Closing the connection earlier
 cancels the operation.
