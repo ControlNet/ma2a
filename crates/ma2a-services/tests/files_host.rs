@@ -436,3 +436,34 @@ async fn a_listing_leaves_out_children_deeper_than_a_path_can_reach() -> TestRes
     assert!(entries.is_empty());
     Ok(())
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn a_read_only_file_that_cannot_be_removed_reports_permission_denied() -> TestResult {
+    // Given: a read-only file, which Windows refuses to delete.
+    let root = TempRoot::new("read-only")?;
+    let file = root.path().join("kept");
+    fs::write(&file, b"x")?;
+    let mut permissions = fs::metadata(&file)?.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&file, permissions.clone())?;
+
+    // When
+    let (frames, _) = serve(
+        root.path(),
+        FilesRequest::Remove(path("docs:/kept")?, false),
+        None,
+    )
+    .await?;
+
+    // Then: the refusal is reported as it is, and the file stays.
+    assert_eq!(rejection(&frames)?, ServiceError::PermissionDenied);
+    assert!(file.exists());
+    #[expect(
+        clippy::permissions_set_readonly_false,
+        reason = "Windows has no other mode bits; this only lets the test remove its file"
+    )]
+    permissions.set_readonly(false);
+    fs::set_permissions(&file, permissions)?;
+    Ok(())
+}

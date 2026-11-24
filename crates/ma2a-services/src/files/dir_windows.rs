@@ -16,8 +16,8 @@ use std::{
 
 use ma2a_core::service::{FileKind, ServiceError};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 
 use super::{entry::Entry, stop::Stop};
@@ -123,10 +123,16 @@ impl Directory {
         fs::remove_file(self.at(name))
     }
 
-    /// Removes a non-directory entry; a directory symbolic link is removed as a directory.
+    /// Removes a non-directory entry; a directory symbolic link or junction is removed as a
+    /// directory. Any other refusal, such as a read-only file's, is reported as it is.
     pub(crate) fn remove_entry(&self, name: &str) -> io::Result<()> {
         match fs::remove_file(self.at(name)) {
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            Err(error)
+                if error.kind() == io::ErrorKind::PermissionDenied
+                    && fs::symlink_metadata(self.at(name)).is_ok_and(|entry| {
+                        entry.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
+                    }) =>
+            {
                 fs::remove_dir(self.at(name))
             }
             result => result,
