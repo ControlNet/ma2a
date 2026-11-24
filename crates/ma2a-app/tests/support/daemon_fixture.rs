@@ -54,6 +54,8 @@ const POLL: Duration = Duration::from_millis(20);
 
 /// A private state directory, and the daemon this test is responsible for.
 pub(crate) struct DaemonFixture {
+    /// What the test calls this daemon; it names the daemon in diagnostics only.
+    name: String,
     state_dir: PathBuf,
     owned: Option<Child>,
     detached: bool,
@@ -62,10 +64,13 @@ pub(crate) struct DaemonFixture {
 
 impl DaemonFixture {
     /// Creates a private state directory and starts nothing.
+    ///
+    /// The directory name stays short and leaves `name` out: a Process supervisor's socket
+    /// lives several levels below it, and a Unix socket path holds at most 103 bytes.
     pub(crate) fn idle(name: &str) -> TestValue<Self> {
         let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
         let state_dir =
-            std::env::temp_dir().join(format!("ma2a-{name}-{}-{serial}", std::process::id()));
+            std::env::temp_dir().join(format!("ma2a-{:x}-{serial}", std::process::id()));
         fs::create_dir(&state_dir)?;
         #[cfg(unix)]
         {
@@ -75,6 +80,7 @@ impl DaemonFixture {
         #[cfg(windows)]
         ma2a_store::protect_private_directory(&state_dir, "test state directory")?;
         Ok(Self {
+            name: name.to_owned(),
             state_dir,
             owned: None,
             detached: false,
@@ -152,7 +158,7 @@ impl DaemonFixture {
                 stop_child(&mut child);
                 let recorded = fs::read_to_string(self.state_dir.join("foreground-daemon.log"))
                     .unwrap_or_default();
-                Err(format!("{error}: {}", recorded.trim()).into())
+                Err(format!("{}: {error}: {}", self.name, recorded.trim()).into())
             }
         }
     }
@@ -268,10 +274,11 @@ impl Drop for DaemonFixture {
             return;
         }
         if let Err(error) = self.teardown() {
-            eprintln!("daemon fixture teardown failed: {error}");
+            eprintln!("daemon fixture {} teardown failed: {error}", self.name);
             assert!(
                 std::thread::panicking(),
-                "daemon fixture teardown failed: {error}"
+                "daemon fixture {} teardown failed: {error}",
+                self.name
             );
         }
     }

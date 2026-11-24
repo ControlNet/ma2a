@@ -29,12 +29,15 @@ const MIB: u32 = 1_048_576;
 struct TempState(PathBuf);
 
 impl TempState {
+    /// Creates a directory with a short name: a supervisor's socket lives several levels below
+    /// it, and a Unix socket path holds at most 103 bytes. `label` names it in diagnostics only.
     fn new(label: &str) -> TestResult<Self> {
         use std::os::unix::fs::PermissionsExt as _;
-        let mut nonce = [0_u8; 8];
+        let mut nonce = [0_u8; 4];
         getrandom::fill(&mut nonce)?;
-        let nonce = u64::from_le_bytes(nonce);
-        let path = std::env::temp_dir().join(format!("ma2a-pm-{label}-{nonce:016x}"));
+        let nonce = u32::from_le_bytes(nonce);
+        let path = std::env::temp_dir().join(format!("ma2a-{nonce:08x}"));
+        eprintln!("{label}: state directory {}", path.display());
         std::fs::create_dir(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
         Ok(Self(path))
