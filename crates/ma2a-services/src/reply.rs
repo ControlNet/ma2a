@@ -46,10 +46,18 @@ pub async fn reject<W: AsyncWrite + Unpin>(
 ) -> OperationReport {
     let _sent = tokio::time::timeout(FRAME_GRACE, async {
         let _sent = writer.reject(error).await;
-        writer.shutdown().await
+        close(writer).await;
     })
     .await;
     OperationReport::new(OperationEnd::Rejected(error))
+}
+
+/// Half-closes the stream, unless a frame was cut short: the peer must then see a reset, which
+/// the stream's owner sends, and never a clean end after half a frame.
+pub async fn close<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>) {
+    if !writer.is_torn() {
+        let _closed = writer.shutdown().await;
+    }
 }
 
 /// Sends one encoded terminal `outcome`, half-closes, and reports its class.
@@ -66,7 +74,7 @@ pub async fn outcome<W: AsyncWrite + Unpin>(
         }
         Err(_) => Err(ServiceError::Internal),
     };
-    let _closed = tokio::time::timeout(FRAME_GRACE, writer.shutdown()).await;
+    let _closed = tokio::time::timeout(FRAME_GRACE, close(writer)).await;
     let end = match (sent, failure) {
         (Err(error), _) | (Ok(()), Some(error)) => OperationEnd::Failed(error),
         (Ok(()), None) => OperationEnd::Completed,
@@ -100,13 +108,14 @@ pub(crate) async fn client_cancelled<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use ma2a_core::service::{ServiceError, TransferResult};
+    use tokio::io::AsyncReadExt as _;
 
     use crate::{FrameWriter, report::OperationEnd};
 
     #[tokio::test(start_paused = true)]
     async fn a_terminal_nobody_reads_is_given_up_after_the_grace() {
         // Given: a stream with no room, whose reader never drains it.
-        let (_peer, host) = tokio::io::duplex(1);
+        let (mut peer, host) = tokio::io::duplex(1);
         let mut writer = FrameWriter::new(host);
         let payload = TransferResult::encode_outcome(&Ok(TransferResult::new(0, 0, [0; 32])));
 
@@ -122,5 +131,11 @@ mod tests {
             rejected.end,
             OperationEnd::Rejected(ServiceError::Unavailable)
         );
+
+        // And: the frame cut short is never followed by a clean end.
+        let mut read = [0_u8; 8];
+        assert_eq!(peer.read(&mut read).await.ok(), Some(1));
+        let ended = tokio::time::timeout(super::FRAME_GRACE, peer.read(&mut read)).await;
+        assert!(ended.is_err(), "the peer saw {ended:?}");
     }
 }

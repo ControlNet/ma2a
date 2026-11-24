@@ -105,7 +105,7 @@ where
         }
         Terminal::Lost => lost(writer, relayed.client_present).await,
     };
-    let _closed = bounded(writer.shutdown()).await;
+    let _closed = bounded(ma2a_services::reply::close(writer)).await;
     report.with_bytes(relayed.to_target, relayed.from_target)
 }
 
@@ -199,7 +199,7 @@ async fn refuse<W: AsyncWrite + Unpin + Send>(
     error: ServiceError,
 ) -> OperationReport {
     let _sent = bounded(writer.reject(error)).await;
-    let _closed = bounded(writer.shutdown()).await;
+    let _closed = bounded(ma2a_services::reply::close(writer)).await;
     OperationReport::new(OperationEnd::Rejected(error))
 }
 
