@@ -134,15 +134,19 @@ fn apply_state(
         return Ok(false);
     }
     if let Some(message) = message.filter(|message| message.role() == MessageRole::Agent) {
-        if state == AgentTaskState::Completed {
-            transaction.execute(
-                "UPDATE agent_tasks SET result = ?2 WHERE task_id = ?1",
-                params![task.as_bytes().as_slice(), message.to_bytes()?],
-            )?;
-        }
+        let result = (state == AgentTaskState::Completed)
+            .then(|| message.to_bytes())
+            .transpose()?;
         let body = AgentEventBody::Message(message);
+        // A message past the event bound failed the task instead: it is no result either.
         if record_durable_event(transaction, task, (body, at_ms))?.is_none() {
             return Ok(true);
+        }
+        if let Some(result) = result {
+            transaction.execute(
+                "UPDATE agent_tasks SET result = ?2 WHERE task_id = ?1",
+                params![task.as_bytes().as_slice(), result],
+            )?;
         }
     }
     // A state change is a durable event too: an Agent that only alternates between

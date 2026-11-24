@@ -97,9 +97,11 @@ impl Repository {
             return finish(transaction, (task, false), AgentTaskChange::Ended);
         }
         let body = AgentEventBody::Message(message.clone());
-        if let Some(seq) = record_durable_event(&transaction, task, (body, at_ms))? {
-            deliver_to_holder(&transaction, &record, &AgentDelivery::Message(task, seq))?;
-        }
+        let Some(seq) = record_durable_event(&transaction, task, (body, at_ms))? else {
+            // Past the event bound the message was dropped and the task failed instead.
+            return finish(transaction, (task, true), AgentTaskChange::Ended);
+        };
+        deliver_to_holder(&transaction, &record, &AgentDelivery::Message(task, seq))?;
         finish(transaction, (task, true), AgentTaskChange::Changed)
     }
 

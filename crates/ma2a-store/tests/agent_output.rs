@@ -361,6 +361,53 @@ fn a_task_over_its_durable_event_bound_fails_with_limit() -> TestResult {
 }
 
 #[test]
+fn a_result_past_the_durable_event_bound_is_neither_kept_nor_reported_as_sent() -> TestResult {
+    // Given: a task with room for no more durable events (`queued` and `running` hold two).
+    let (_state, mut repository, generation, task) = running("agent-result-bound")?;
+    let bound = u64::from(ma2a_store::MAX_DURABLE_EVENTS);
+    for cursor in 0..bound - 2 {
+        let note = AgentOutputEffect::Message(task, text(MessageRole::Agent, "note")?);
+        apply(&mut repository, (generation, 10 + cursor), note)?;
+    }
+
+    // When: the Agent completes it with a result message, which would be the event past it.
+    let completed = AgentOutputEffect::State {
+        task,
+        state: AgentTaskState::Completed,
+        message: Some(text(MessageRole::Agent, "done")?),
+        error: None,
+    };
+    apply(&mut repository, (generation, 10 + bound), completed)?;
+
+    // Then: the task failed at its limit and holds no result.
+    let record = repository.agent_task(task)?.ok_or("missing")?;
+    assert_eq!(record.summary.state, AgentTaskState::Failed);
+    assert_eq!(record.summary.reason, Some(AgentTaskReason::Limit));
+    assert_eq!(record.result, None);
+    Ok(())
+}
+
+#[test]
+fn a_message_sent_past_the_durable_event_bound_reports_the_task_ended() -> TestResult {
+    // Given: a task with room for no more durable events.
+    let (_state, mut repository, generation, task) = running("agent-send-bound")?;
+    let bound = u64::from(ma2a_store::MAX_DURABLE_EVENTS);
+    for cursor in 0..bound - 2 {
+        let note = AgentOutputEffect::Message(task, text(MessageRole::Agent, "note")?);
+        apply(&mut repository, (generation, 10 + cursor), note)?;
+    }
+
+    // When: the creator sends the message past it.
+    let sent = repository
+        .send_agent_message(task, (&text(MessageRole::User, "more")?, 900))?
+        .into_value();
+
+    // Then: the sender learns the task ended instead of that its message went through.
+    assert!(matches!(sent, AgentTaskChange::Ended(_)), "{sent:?}");
+    Ok(())
+}
+
+#[test]
 fn state_changes_count_toward_the_durable_event_bound() -> TestResult {
     let (_state, mut repository, generation, task) = running("agent-state-bound")?;
     let bound = u64::from(ma2a_store::MAX_DURABLE_EVENTS);
