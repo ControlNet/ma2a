@@ -154,8 +154,10 @@ impl ManagedWebServer {
 /// Serves `router` on `listener` until `stop`: at most 64 connections at once, each with
 /// 10 seconds to send its request headers.
 ///
-/// Every connection task is owned, so a stop also closes SSE and incomplete requests: after
-/// `grace` for them to finish, the rest are aborted.
+/// A stop shuts every connection down gracefully: an idle keep-alive connection closes at
+/// once, and one with a request in flight closes after its response. Every connection task is
+/// owned, so a stop also closes SSE and incomplete requests: after `grace` for them to finish,
+/// the rest are aborted.
 pub async fn serve_connections(
     listener: tokio::net::TcpListener,
     router: axum::Router,
@@ -189,6 +191,7 @@ pub async fn serve_connections(
         let router = router
             .clone()
             .layer(axum::Extension(axum::extract::ConnectInfo(peer)));
+        let stop = stop.clone();
         connections.spawn(async move {
             let _permit = permit;
             let mut builder =
@@ -198,12 +201,16 @@ pub async fn serve_connections(
                 .http1()
                 .timer(hyper_util::rt::TokioTimer::new())
                 .header_read_timeout(HEADER_READ_TIMEOUT);
-            let _result = builder
-                .serve_connection(
-                    hyper_util::rt::TokioIo::new(stream),
-                    hyper_util::service::TowerToHyperService::new(router),
-                )
-                .await;
+            let connection = builder.serve_connection(
+                hyper_util::rt::TokioIo::new(stream),
+                hyper_util::service::TowerToHyperService::new(router),
+            );
+            tokio::pin!(connection);
+            tokio::select! {
+                _served = connection.as_mut() => return,
+                () = stop.cancelled() => connection.as_mut().graceful_shutdown(),
+            }
+            let _result = connection.await;
         });
     }
     drop(listener);
