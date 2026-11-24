@@ -135,3 +135,41 @@ async fn no_observer_starts_once_shutdown_began() -> TestResult {
     router.shutdown().await.map_err(io::Error::other)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn closed_connections_not_yet_observed_do_not_hold_the_active_bound() -> TestResult {
+    // Given: the active map is full of connections that closed before their observers ran.
+    let router = Router::builder(test_endpoint("ma2a_manager_prune_server").await?)
+        .accept(HOLD_ALPN, Hold)
+        .spawn();
+    let manager = ConnectionManager::new(test_endpoint("ma2a_manager_prune_client").await?);
+    let closed = manager
+        .0
+        .endpoint
+        .connect(router.endpoint().addr(), HOLD_ALPN)
+        .await
+        .map_err(io::Error::other)?;
+    closed.close(0_u8.into(), b"");
+    manager
+        .0
+        .active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend((0..super::MAX_ACTIVE_CONNECTIONS).map(|key| (key, closed.weak_handle())));
+    let live = manager
+        .0
+        .endpoint
+        .connect(router.endpoint().addr(), HOLD_ALPN)
+        .await
+        .map_err(io::Error::other)?;
+
+    // When
+    let registered = manager.register(router.endpoint().id().into(), live);
+
+    // Then
+    assert!(registered.is_ok(), "{registered:?}");
+    assert_eq!(active(&manager), 1);
+    manager.shutdown().await;
+    router.shutdown().await.map_err(io::Error::other)?;
+    Ok(())
+}

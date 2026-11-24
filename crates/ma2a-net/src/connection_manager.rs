@@ -205,6 +205,13 @@ impl ConnectionManager {
                 return Err(DialFailure::cancelled());
             }
             if active.len() == MAX_ACTIVE_CONNECTIONS {
+                // An observer removes its connection only once it runs after the close.
+                active.retain(|_, weak| {
+                    weak.upgrade()
+                        .is_some_and(|live| live.close_reason().is_none())
+                });
+            }
+            if active.len() == MAX_ACTIVE_CONNECTIONS {
                 connection.close(1_u8.into(), b"");
                 return Err(DialFailure::policy_denied(
                     "active connection bound reached",
