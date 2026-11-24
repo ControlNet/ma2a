@@ -9,8 +9,8 @@ mod support;
 use std::time::Duration;
 
 use ma2a_core::service::{
-    EndReason, ExecRequest, ProcessSpec, ProxyHost, ProxyRequest, ServiceError, ShellRequest,
-    TerminalSize, Termination,
+    EMPTY_ACCEPT, EndReason, ExecRequest, FrameKind, ProcessSpec, ProxyHost, ProxyRequest,
+    ServiceError, ShellRequest, TerminalSize, Termination, failed_outcome,
 };
 use ma2a_services::{
     client::{
@@ -178,6 +178,50 @@ async fn a_proxied_connection_is_byte_exact_in_both_directions() -> TestResult {
     assert_eq!(
         (result.bytes_to_target, result.bytes_from_target),
         (1 << 20, (1 << 20) + 1)
+    );
+    Ok(())
+}
+
+/// A local connection that the other end aborted with a reset.
+struct Reset;
+
+impl tokio::io::AsyncRead for Reset {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
+    }
+}
+
+#[tokio::test]
+async fn a_reset_local_connection_cancels_the_proxy_instead_of_ending_its_input() -> TestResult {
+    // Given: an accepted proxy whose destination stays silent.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(256);
+    target_writer
+        .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+        .await?;
+
+    // When: the local client aborts its connection.
+    let caller = client::proxy::run((&mut reader, &mut writer), (Reset, Vec::new()));
+    let target = async {
+        let frame = target_reader.expect().await?;
+        target_writer
+            .frame(
+                FrameKind::Outcome,
+                &failed_outcome(ServiceError::Cancelled)?,
+            )
+            .await?;
+        TestResult::Ok(frame.kind())
+    };
+    let (result, seen) = within(async { tokio::join!(caller, target) }).await?;
+
+    // Then: the target is told to cancel at once, not that input ended cleanly.
+    assert_eq!(seen?, FrameKind::Cancel);
+    assert!(
+        matches!(result, Err(ClientError::Failed(ServiceError::Cancelled))),
+        "{result:?}"
     );
     Ok(())
 }

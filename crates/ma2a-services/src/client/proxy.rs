@@ -42,7 +42,8 @@ where
     }
 }
 
-/// Local → destination, then `end` at local EOF, and a `cancel` once the local side is lost.
+/// Local → destination, then `end` at local EOF, and a `cancel` once the local side is lost or
+/// fails.
 async fn upstream<W, LR>(writer: &mut FrameWriter<W>, mut local_read: LR, lost: &Notify)
 where
     W: AsyncWrite + Unpin,
@@ -58,7 +59,12 @@ where
             }
             read = local_read.read(&mut buffer) => read,
         };
-        let Ok(read @ 1..) = read else {
+        // A failed local read is a lost local side, not the end of its input.
+        let Ok(read) = read else {
+            let _cancelled = cancel(writer).await;
+            return;
+        };
+        if read == 0 {
             let ended = async {
                 writer.end(Channel::Input).await?;
                 writer.flush().await
@@ -70,7 +76,7 @@ where
                 let _cancelled = cancel(writer).await;
             }
             return;
-        };
+        }
         let forwarded = writer
             .data(Channel::Input, buffer.get(..read).unwrap_or_default())
             .await;
