@@ -54,7 +54,10 @@ async fn read_retained(
     (id, mut from): (ProcessId, LogFrom),
 ) -> Result<(u64, bool), AppError> {
     let (mut output, mut error) = (tokio::io::stdout(), tokio::io::stderr());
-    let mut reached = None;
+    let mut reached = match from {
+        LogFrom::Cursor(cursor) => Some(cursor),
+        LogFrom::Start | LogFrom::Now => None,
+    };
     let mut until = None;
     loop {
         let request = ProcessRequest::Logs(id, from, MAX_LOGS_READ);
@@ -77,12 +80,22 @@ async fn read_retained(
         }
         gaps(read.gaps);
         let caught_up = until.is_some_and(|until| read.next >= until);
-        // A cursor that does not move forward would only read the same output again.
-        if read.ended || caught_up || reached.is_some_and(|reached| read.next <= reached) {
+        if read.ended || caught_up || !moved(reached, read.next)? {
             return Ok((read.next, read.ended));
         }
         reached = Some(read.next);
         from = LogFrom::Cursor(read.next);
+    }
+}
+
+/// Whether a read that ended at `next` moved past `reached`. A cursor that does not move would
+/// only read the same output again; one that goes back is a faulty reply, since following it
+/// would print output already printed.
+const fn moved(reached: Option<u64>, next: u64) -> Result<bool, ClientError> {
+    match reached {
+        Some(reached) if next < reached => Err(ClientError::Stream(ServiceError::InvalidInput)),
+        Some(reached) => Ok(next > reached),
+        None => Ok(true),
     }
 }
 
@@ -179,4 +192,17 @@ fn gaps(gaps: Gaps) {
 /// One status line on stderr, apart from the Process's own output on stdout.
 fn note(message: &str) {
     let _written = writeln!(std::io::stderr().lock(), "ma2a: {message}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::moved;
+
+    #[test]
+    fn a_log_cursor_that_goes_back_is_refused() {
+        assert!(moved(None, 0).is_ok_and(|moved| moved));
+        assert!(moved(Some(10), 20).is_ok_and(|moved| moved));
+        assert!(moved(Some(10), 10).is_ok_and(|moved| !moved));
+        assert!(moved(Some(10), 9).is_err());
+    }
 }
