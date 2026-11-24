@@ -5,13 +5,22 @@
 #[path = "support/host.rs"]
 mod support;
 
-use std::time::Duration;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use ma2a_core::service::{
-    Channel, DescribePage, FrameKind, ServiceError, encode_call_accept, encode_call_outcome,
+    Channel, DescribePage, EMPTY_ACCEPT, FilesOutcome, FilesRequest, FilesResult, FrameKind,
+    RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome,
 };
-use ma2a_services::client::{ClientError, process::ProcessIo, service};
+use ma2a_services::{
+    FrameReader, FrameWriter,
+    client::{ClientError, files, process::ProcessIo, service},
+};
 use support::{TestResult, pipe};
+use tokio::io::AsyncWrite;
 
 async fn within<T>(future: impl std::future::Future<Output = T>) -> TestResult<T> {
     Ok(tokio::time::timeout(Duration::from_secs(30), future).await?)
@@ -161,5 +170,70 @@ async fn discovery_reads_one_page_or_its_refusal() -> TestResult {
         within(service::describe(&mut reader)).await?,
         Err(ClientError::Rejected(ServiceError::Unauthorized))
     ));
+    Ok(())
+}
+
+/// A pipe that fails on every write.
+struct Broken;
+
+impl AsyncWrite for Broken {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        _buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Runs a three-byte write whose body cannot be sent against a target that accepts it and
+/// then answers `outcome`.
+async fn write_without_body(
+    outcome: &FilesOutcome,
+) -> TestResult<Result<(FilesResult, Vec<u8>), ClientError>> {
+    let mut replies = FrameWriter::new(Vec::new());
+    replies.frame(FrameKind::Accept, &EMPTY_ACCEPT).await?;
+    replies
+        .frame(FrameKind::Outcome, &FilesResult::encode_outcome(outcome)?)
+        .await?;
+    replies.flush().await?;
+    let replies = replies.into_inner();
+    let request = FilesRequest::Write(RemotePath::parse("docs:/a")?, WriteMode::Replace, 3);
+    let io = (
+        &mut FrameReader::new(replies.as_slice()),
+        &mut FrameWriter::new(Broken),
+    );
+    within(files::run(io, &request, b"abc")).await
+}
+
+#[tokio::test]
+async fn a_write_whose_body_was_not_sent_never_reports_success() -> TestResult {
+    // Given: a target that accepts a write and then claims the full size was written, while
+    // the body never left the caller.
+    let written = write_without_body(&Ok(FilesResult::Written(3))).await?;
+
+    // Then: the failed send decides.
+    assert!(
+        matches!(written, Err(ClientError::Stream(_))),
+        "{written:?}"
+    );
+
+    // And: a failure the target reports still explains why.
+    let failed = write_without_body(&Err(ServiceError::Io)).await?;
+    assert!(
+        matches!(failed, Err(ClientError::Failed(ServiceError::Io))),
+        "{failed:?}"
+    );
     Ok(())
 }

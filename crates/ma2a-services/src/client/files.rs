@@ -6,7 +6,7 @@ use ma2a_core::service::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::{ClientError, First, decoded, first, next, unexpected};
+use super::{ClientError, First, decoded, failed, first, next, unexpected};
 use crate::{FrameReader, FrameWriter};
 
 /// Runs one Files request whose `open` was written, returning its result and any content read.
@@ -58,18 +58,27 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    if matches!(request, FilesRequest::Write(..)) {
-        let sent = async {
+    let sent = if matches!(request, FilesRequest::Write(..)) {
+        async {
             for chunk in content.chunks(MAX_DATA_CHUNK_LEN) {
                 writer.data(Channel::Input, chunk).await?;
             }
             writer.end(Channel::Input).await?;
             writer.flush().await
-        };
-        // A target that stopped reading still reports its terminal, which explains why.
-        let _sent: Result<(), ServiceError> = sent.await;
+        }
+        .await
+    } else {
+        Ok(())
+    };
+    let frame = next(reader).await?;
+    // A target that stopped reading still reports its terminal, which explains why; any other
+    // answer to a body that was not sent in full is not believed.
+    match sent {
+        Err(error) if !(frame.kind() == FrameKind::Outcome && failed(&frame).is_err()) => {
+            Err(ClientError::Stream(error))
+        }
+        _ => Ok(frame),
     }
-    next(reader).await
 }
 
 fn finished(
