@@ -56,8 +56,9 @@ async fn a_terminal_read_within_the_grace_is_kept_when_the_client_never_takes_it
         FrameKind::Cancel
     );
 
-    // When: the target reports its terminal within the grace, which then runs out while the
-    // terminal is still on its way to the client.
+    // When: the target reports its terminal a second into the grace, which then runs out
+    // while the terminal is still on its way to the client, before that write's own bound.
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
     let outcome = failed_outcome(ServiceError::Cancelled).expect("outcome");
     target_writer
         .frame(FrameKind::Outcome, &outcome)
