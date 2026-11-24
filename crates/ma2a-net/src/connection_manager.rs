@@ -4,7 +4,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use iroh::{Endpoint, endpoint::Connection};
+use iroh::{
+    Endpoint,
+    endpoint::{Connection, WeakConnectionHandle},
+};
 use iroh_base::RelayUrl;
 use n0_future::StreamExt as _;
 use tokio::task::JoinSet;
@@ -28,7 +31,9 @@ struct ManagerInner {
     options: ConnectionManagerOptions,
     telemetry: ConnectionTelemetry,
     cancellation: DialCancellation,
-    active: Mutex<BTreeMap<usize, Connection>>,
+    /// Weak handles only: a connection closes once its last user drops it, which frees its
+    /// place here, and the manager never keeps one open by itself.
+    active: Mutex<BTreeMap<usize, WeakConnectionHandle>>,
     observers: Mutex<JoinSet<()>>,
     configured_relays: tokio::sync::Mutex<BTreeSet<RelayUrl>>,
 }
@@ -154,7 +159,10 @@ impl ConnectionManager {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             std::mem::take(&mut *active)
         };
-        for connection in connections.into_values() {
+        for connection in connections
+            .values()
+            .filter_map(WeakConnectionHandle::upgrade)
+        {
             connection.close(0_u8.into(), b"");
         }
         let mut observers = {
@@ -196,19 +204,24 @@ impl ConnectionManager {
                     "active connection bound reached",
                 ));
             }
-            active.insert(stable_id, connection.clone());
+            active.insert(stable_id, connection.weak_handle());
         }
         self.0.telemetry.record_connection(
             ConnectionObservationContext::new(target, self.0.options.clock.now_ms()),
             &connection,
         );
-        self.spawn_observer(target, connection.clone());
+        self.spawn_observer(target, &connection);
         Ok(connection)
     }
 
-    fn spawn_observer(&self, target: ma2a_core::EndpointId, connection: Connection) {
+    /// Records path changes until the connection closes, holding it only weakly.
+    fn spawn_observer(&self, target: ma2a_core::EndpointId, connection: &Connection) {
         let manager = self.clone();
         let stable_id = connection.stable_id();
+        let weak = connection.weak_handle();
+        let mut events = connection.path_events();
+        // Registered while the caller still holds the connection, so it sees the close.
+        let closed = weak.closed();
         let mut observers = self
             .0
             .observers
@@ -216,12 +229,23 @@ impl ConnectionManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while observers.try_join_next().is_some() {}
         observers.spawn(async move {
-            let mut events = connection.path_events();
-            while events.next().await.is_some() {
-                manager.0.telemetry.record_connection(
-                    ConnectionObservationContext::new(target, manager.0.options.clock.now_ms()),
-                    &connection,
-                );
+            tokio::pin!(closed);
+            loop {
+                tokio::select! {
+                    _ = &mut closed => break,
+                    event = events.next() => {
+                        let (Some(_), Some(connection)) = (event, weak.upgrade()) else {
+                            break;
+                        };
+                        manager.0.telemetry.record_connection(
+                            ConnectionObservationContext::new(
+                                target,
+                                manager.0.options.clock.now_ms(),
+                            ),
+                            &connection,
+                        );
+                    }
+                }
             }
             manager
                 .0
@@ -241,3 +265,6 @@ impl fmt::Debug for ConnectionManager {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+mod tests;
