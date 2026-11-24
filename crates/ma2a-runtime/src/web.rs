@@ -179,13 +179,10 @@ async fn asset(State(state): State<WebState>, request: axum::extract::Request) -
         return Redirect::temporary("/login").into_response();
     }
     if path != "login" {
-        let authenticated = if let Some(bearer) = cookie(request.headers()) {
-            state.auth.authenticate(bearer).await.is_ok()
-        } else {
-            false
-        };
-        if !authenticated {
-            return Redirect::temporary("/login").into_response();
+        match authenticated_read(&state, request.headers()).await {
+            Ok(()) => {}
+            Err(StatusCode::UNAUTHORIZED) => return Redirect::temporary("/login").into_response(),
+            Err(status) => return status.into_response(),
         }
     }
     let requested = if path.is_empty() || !path.contains('.') {
@@ -194,6 +191,26 @@ async fn asset(State(state): State<WebState>, request: axum::extract::Request) -
         path
     };
     asset_response(&state.assets, requested)
+}
+
+/// Authenticates a read. Only a request without a live session is 401; an internal failure is
+/// 500, so a browser never signs out a session that is still valid.
+async fn authenticated_read(state: &WebState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    let bearer = cookie(headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    state
+        .auth
+        .authenticate(bearer)
+        .await
+        .map(drop)
+        .map_err(read_status)
+}
+
+/// The status a read answers when its session check fails.
+const fn read_status(failure: AuthFailure) -> StatusCode {
+    match failure {
+        AuthFailure::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        AuthFailure::Unauthorized | AuthFailure::Conflict => StatusCode::UNAUTHORIZED,
+    }
 }
 
 fn cookie(headers: &HeaderMap) -> Option<&str> {

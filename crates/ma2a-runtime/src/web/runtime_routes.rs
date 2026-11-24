@@ -6,7 +6,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use super::{WebState, cookie};
+use super::{WebState, authenticated_read, cookie, read_status};
 
 mod agents;
 mod events;
@@ -29,11 +29,8 @@ struct SnapshotStamp {
 }
 
 pub(super) async fn snapshot(State(state): State<WebState>, headers: HeaderMap) -> Response {
-    let Some(bearer) = cookie(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if state.auth.authenticate(bearer).await.is_err() {
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(status) = authenticated_read(&state, &headers).await {
+        return status.into_response();
     }
     match fetch_snapshot(&state).await {
         Ok((stamp, payload)) => snapshot_stream::response(stamp, payload),
@@ -116,10 +113,7 @@ async fn payload(
     headers: &HeaderMap,
     (request, result): (&Value, &str),
 ) -> Result<Value, StatusCode> {
-    let bearer = cookie(headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    if state.auth.authenticate(bearer).await.is_err() {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    authenticated_read(state, headers).await?;
     let command = crate::api::decode_command(request.to_string().as_bytes())
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let runtime = state

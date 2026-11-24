@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::{SnapshotStamp, WebState, cookie};
+use super::{SnapshotStamp, WebState, cookie, read_status};
 
 const EVENT_QUEUE_CAPACITY: usize = 8;
 pub(super) const EVENT_CHANNEL_CAPACITY: usize = EVENT_QUEUE_CAPACITY + 1;
@@ -51,8 +51,8 @@ pub(crate) async fn events(
     let Some(bearer) = cookie(&headers).map(str::to_owned) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if state.auth.validate(&bearer).await.is_err() {
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(failure) = state.auth.validate(&bearer).await {
+        return read_status(failure).into_response();
     }
     let Ok(permit) = Arc::clone(&state.event_connections).try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
@@ -206,15 +206,11 @@ async fn authenticated_stamp(
     bearer: &str,
     fetch: impl std::future::Future<Output = Result<SnapshotStamp, StatusCode>>,
 ) -> Result<SnapshotStamp, StatusCode> {
-    auth.validate(bearer)
-        .await
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    auth.validate(bearer).await.map_err(read_status)?;
     let current = fetch.await?;
     // The awaited IPC read may include a session revocation committed after the
     // initial check. Do not publish that projection under the stale admission.
-    auth.validate(bearer)
-        .await
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    auth.validate(bearer).await.map_err(read_status)?;
     Ok(current)
 }
 
