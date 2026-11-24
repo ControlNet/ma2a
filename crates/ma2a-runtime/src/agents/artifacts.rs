@@ -100,10 +100,12 @@ fn holds(blob: &Path, (size, hash): (u64, &[u8; 32])) -> io::Result<bool> {
 
 /// Makes a staged copy the blob of `hash`. A sound blob already stored is left untouched, so
 /// a resumed download of it keeps its content identity, and the copy is discarded; a damaged
-/// one is replaced by the copy.
+/// one is replaced by the copy. Downloads never follow a link to a blob, so only a regular
+/// file can be sound; anything else in its place is replaced too.
 fn place_blob(staging: &Path, blobs: &Path, (size, hash): (u64, &[u8; 32])) -> io::Result<()> {
     let blob = blobs.join(hex(hash));
-    let placed = if blob.try_exists()? && holds(&blob, (size, hash))? {
+    let regular = std::fs::symlink_metadata(&blob).is_ok_and(|entry| entry.file_type().is_file());
+    let placed = if regular && holds(&blob, (size, hash))? {
         std::fs::remove_file(staging)
     } else {
         std::fs::rename(staging, &blob)
@@ -246,46 +248,5 @@ impl AgentManager {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{hex, open_regular, place_blob, stage_blob};
-
-    #[test]
-    fn publishing_stored_content_again_keeps_the_blob_untouched()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut nonce = [0_u8; 8];
-        getrandom::fill(&mut nonce)?;
-        let dir = std::env::temp_dir().join(format!("ma2a-blobs-{}", hex(&nonce)));
-        std::fs::create_dir_all(&dir)?;
-        let (source, blobs) = (dir.join("report.txt"), dir.join("blobs"));
-        std::fs::write(&source, b"the same content")?;
-
-        let (size, hash, staging) = stage_blob(open_regular(&source)?, &blobs)?;
-        place_blob(&staging, &blobs, (size, &hash))?;
-        let blob = blobs.join(hex(&hash));
-        let first = std::fs::metadata(&blob)?;
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let (_, again, staging) = stage_blob(open_regular(&source)?, &blobs)?;
-        place_blob(&staging, &blobs, (size, &again))?;
-        let second = std::fs::metadata(&blob)?;
-
-        // A resumed download names the blob by size and modification time.
-        assert_eq!((size, again), (16, hash));
-        assert_eq!(first.modified()?, second.modified()?);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt as _;
-            assert_eq!(first.ino(), second.ino());
-        }
-        assert!(!staging.exists(), "the second copy is discarded");
-        assert_eq!(std::fs::read_dir(&blobs)?.count(), 1);
-
-        // A stored blob damaged in place is replaced by sound bytes published again.
-        std::fs::write(&blob, b"the some content")?;
-        let (_, _, staging) = stage_blob(open_regular(&source)?, &blobs)?;
-        place_blob(&staging, &blobs, (size, &hash))?;
-        assert_eq!(std::fs::read(&blob)?, b"the same content");
-        assert_eq!(std::fs::read_dir(&blobs)?.count(), 1);
-        std::fs::remove_dir_all(&dir)?;
-        Ok(())
-    }
-}
+#[path = "tests/artifacts.rs"]
+mod tests;
