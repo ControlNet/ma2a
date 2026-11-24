@@ -110,8 +110,8 @@ impl ProcessManager {
             fault("after_created");
             self.bring_up(credentials, start).await
         };
-        if !accepted {
-            return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+        if let Err(error) = accepted {
+            return OperationReport::new(OperationEnd::Failed(error));
         }
         fault("before_response");
         finish(

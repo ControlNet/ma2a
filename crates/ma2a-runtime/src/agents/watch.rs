@@ -26,7 +26,8 @@ where
         () = stop.cancelled() => Err(ServiceError::Unavailable),
         done = tokio::time::timeout(WRITE_DEADLINE, work) => match done {
             Ok(Ok(())) => Ok(()),
-            _ => Err(ServiceError::Cancelled),
+            Ok(Err(_)) => Err(ServiceError::Cancelled),
+            Err(_) => Err(ServiceError::TimedOut),
         },
     }
 }
@@ -49,8 +50,8 @@ impl AgentManager {
         let Ok(accept) = accept.encode() else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        if !super::host::write_accept(writer, &accept).await {
-            return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+        if let Err(error) = super::host::write_accept(writer, &accept).await {
+            return OperationReport::new(OperationEnd::Failed(error));
         }
         // Only `cancel` or the end of the caller's stream can come from the caller now.
         let caller_gone = async {

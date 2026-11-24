@@ -43,8 +43,8 @@ impl ProcessManager {
         let Ok(accept) = ProcessAccept::Admitted.encode() else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        if !write_accept(writer, &accept).await {
-            return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+        if let Err(error) = write_accept(writer, &accept).await {
+            return OperationReport::new(OperationEnd::Failed(error));
         }
         let written = async {
             // The supervisor's one answer, read once whether it comes early or after `end`.

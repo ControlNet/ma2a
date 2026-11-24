@@ -142,8 +142,8 @@ impl ProcessManager {
         let Ok(accept) = accept.encode() else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        if !write_accept(writer, &accept).await {
-            return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+        if let Err(error) = write_accept(writer, &accept).await {
+            return OperationReport::new(OperationEnd::Failed(error));
         }
         let relayed = relay(supervisor, (reader, writer), ((stdin, start), stop)).await;
         let (reported, cursor, bytes) = match relayed {

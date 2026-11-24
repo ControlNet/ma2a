@@ -145,8 +145,8 @@ impl ProcessManager {
         let Ok(accept) = accept.encode() else {
             return refuse(writer, ServiceError::Internal).await;
         };
-        if !super::host::write_accept(writer, &accept).await {
-            return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+        if let Err(error) = super::host::write_accept(writer, &accept).await {
+            return OperationReport::new(OperationEnd::Failed(error));
         }
         let budget = usize::try_from(max).unwrap_or(usize::MAX);
         let (next, sent) = match self.send_output((id, start, budget), (stop, writer)).await {

@@ -148,15 +148,17 @@ pub(super) async fn refuse<W: AsyncWrite + Unpin + Send>(
     OperationReport::new(OperationEnd::Rejected(error))
 }
 
-/// Writes `accept` within [`FRAME_GRACE`]; `false` when it was not written in time.
+/// Writes `accept` within [`FRAME_GRACE`]: `timed_out` when the caller did not take it in
+/// time, `cancelled` when the stream failed.
 pub(super) async fn write_accept<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     payload: &[u8],
-) -> bool {
-    matches!(
-        tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Accept, payload)).await,
-        Ok(Ok(()))
-    )
+) -> Result<(), ServiceError> {
+    match tokio::time::timeout(FRAME_GRACE, writer.frame(FrameKind::Accept, payload)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(ServiceError::Cancelled),
+        Err(_) => Err(ServiceError::TimedOut),
+    }
 }
 
 /// Sends the terminal outcome of an accepted operation, bounded against a stalled peer.
@@ -188,8 +190,8 @@ async fn respond<W: AsyncWrite + Unpin + Send>(
     let Ok(accept) = accept.encode() else {
         return refuse(writer, ServiceError::Internal).await;
     };
-    if !write_accept(writer, &accept).await {
-        return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled));
+    if let Err(error) = write_accept(writer, &accept).await {
+        return OperationReport::new(OperationEnd::Failed(error));
     }
     finish(writer, outcome).await
 }
@@ -236,5 +238,20 @@ mod tests {
         );
         assert_eq!(answered.end, OperationEnd::Failed(ServiceError::Cancelled));
         assert!(started.elapsed() <= super::FRAME_GRACE * 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_accept_the_caller_never_takes_is_recorded_as_timed_out() {
+        let (_caller, host) = tokio::io::duplex(1);
+        let mut writer = FrameWriter::new(host);
+
+        let answered = super::respond(
+            &mut writer,
+            AgentAccept::Admitted,
+            Ok(AgentReply::Cards(Vec::new(), None)),
+        )
+        .await;
+
+        assert_eq!(answered.end, OperationEnd::Failed(ServiceError::TimedOut));
     }
 }
