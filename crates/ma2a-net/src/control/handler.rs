@@ -86,11 +86,11 @@ impl ProtocolHandler for ControlHandler {
             return Ok(());
         };
         let (mut send, mut receive) = stream?;
-        let Some(_permit) = self.limiter.try_acquire(peer) else {
+        let Some(permit) = self.limiter.try_acquire(peer) else {
             connection.close(1_u8.into(), b"");
             return Ok(());
         };
-        let _active_stream = ActiveControlStream::new(&self.metrics);
+        let active_stream = ActiveControlStream::new(&self.metrics);
         let (call, admission, request, response) = ControlCall::channel(peer);
         if timeout(CONTROL_IO_TIMEOUT, calls.send(call))
             .await
@@ -122,7 +122,15 @@ impl ProtocolHandler for ControlHandler {
             Ok(Ok(Err(rejection))) => Err(rejection),
             Ok(Err(_)) | Err(_) => Err(ControlRejection::Unavailable),
         };
-        write_response(&mut send, result).await?;
+        // A peer that never grants flow-control credit cannot hold a slot past the deadline.
+        let Ok(written) = timeout(CONTROL_IO_TIMEOUT, write_response(&mut send, result)).await
+        else {
+            connection.close(1_u8.into(), b"");
+            return Ok(());
+        };
+        written?;
+        // The answer is written; waiting for the peer to take it holds no slot.
+        drop((permit, active_stream));
         let _closed = timeout(CONTROL_IO_TIMEOUT, connection.closed()).await;
         Ok(())
     }

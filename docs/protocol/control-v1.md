@@ -12,7 +12,7 @@ Iroh authenticates the remote Endpoint ID before Runtime parses the control requ
 
 The initiator opens one bidirectional stream, writes one canonical request of at most 1,048,576 bytes, and finishes its send side. The responder reads to EOF with the same cap.
 
-The response frame is `status:u8 || body_len:u32 big-endian || body`. Status zero carries one canonical `ControlResponseV1`; nonzero status carries an empty body. Stable rejection statuses are unauthorized `1`, invalid `2`, and unavailable `255`. Connect, stream admission, reads, writes, mailbox delivery, and replies have ten-second I/O deadlines.
+The response frame is `status:u8 || body_len:u32 big-endian || body`. Status zero carries one canonical `ControlResponseV1`; nonzero status carries an empty body. Stable rejection statuses are unauthorized `1`, invalid `2`, and unavailable `255`. Connect, stream admission, reads, writes, mailbox delivery, and replies have ten-second I/O deadlines. A responder frees the peer's admission slot once its response is written, before it waits for the peer to close.
 
 ## Canonical request
 

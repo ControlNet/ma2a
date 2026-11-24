@@ -57,3 +57,47 @@ async fn global_limit_exhaustion_closes_stream_before_body_read() -> TestResult 
     router.shutdown().await.map_err(io::Error::other)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn an_answered_peer_that_keeps_its_connection_holds_no_slot() -> TestResult {
+    // Given: every call is rejected, and the peer reads its answer but never closes.
+    let server = test_endpoint("ma2a_control_slot_release_server").await?;
+    let (calls, mut received_calls) = mpsc::channel(1);
+    let handler = ControlHandler::new(Some(calls), ControlMetrics::default());
+    let limiter = handler.limiter.clone();
+    let rejecting = tokio::spawn(async move {
+        while let Some(call) = received_calls.recv().await {
+            crate::ControlCall::reject(call, crate::ControlRejection::Unauthorized);
+        }
+    });
+    let router = Router::builder(server)
+        .accept(CONTROL_ALPN, handler)
+        .spawn();
+    let client = test_endpoint("ma2a_control_slot_release_client").await?;
+    let connection = client
+        .connect(router.endpoint().addr(), CONTROL_ALPN)
+        .await
+        .map_err(io::Error::other)?;
+    let (mut send, mut receive) = connection.open_bi().await.map_err(io::Error::other)?;
+    send.finish().map_err(io::Error::other)?;
+    let mut status = [0_u8; 1];
+    receive
+        .read_exact(&mut status)
+        .await
+        .map_err(io::Error::other)?;
+
+    // When: the connection stays open well inside the handler's ten-second wait for it.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Then: every slot is free again.
+    let permits = (0..CONTROL_GLOBAL_LIMIT)
+        .map(|_| limiter.try_acquire(EndpointSecret::generate().endpoint_id()))
+        .collect::<Option<Vec<_>>>();
+    assert!(permits.is_some());
+    drop(permits);
+    connection.close(0_u8.into(), b"");
+    client.close().await;
+    router.shutdown().await.map_err(io::Error::other)?;
+    rejecting.abort();
+    Ok(())
+}
