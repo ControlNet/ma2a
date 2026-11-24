@@ -30,27 +30,69 @@ pub(super) fn check_destination(path: &str) -> Result<(), ProtocolError> {
     }
 }
 
+/// A fresh name to stage the ticket under, beside its destination.
+fn staging_name() -> Result<String, ProtocolError> {
+    use std::fmt::Write as _;
+    let request = ma2a_core::RequestId::random().map_err(|_| ProtocolError::INTERNAL)?;
+    let mut name = String::from(".ma2a-invite-stage-");
+    for byte in request.as_bytes() {
+        let _written = write!(name, "{byte:02x}");
+    }
+    Ok(name)
+}
+
+/// Writes the ticket into an owner-only staging file in the destination's directory and links
+/// it into place without replacing anything. Until the link, the destination name is never
+/// touched, so a failed or interrupted write leaves it unpublished and cleanup removes only the
+/// staging file, never a file someone else put at the destination.
 #[cfg(unix)]
 pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
-    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _, path::Path};
     check_destination(path)?;
+    let destination = Path::new(path);
+    let staged = destination.with_file_name(staging_name()?);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)
+        .open(&staged)
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let written = file
+    let published = file
         .write_all(contents)
         .and_then(|()| file.write_all(b"\n"))
-        .and_then(|()| file.sync_all());
-    if written.is_err() {
-        // A ticket cut short is no ticket: the file this call created goes again.
-        drop(file);
-        let _removed = std::fs::remove_file(path);
-        return Err(ProtocolError::INTERNAL);
+        .and_then(|()| file.sync_all())
+        .map_err(|_| ProtocolError::INTERNAL)
+        .and_then(|()| publish(&staged, destination).map_err(|_| ProtocolError::INVALID_INPUT));
+    drop(file);
+    let _removed = std::fs::remove_file(&staged);
+    published
+}
+
+/// Gives `staged` the name `destination` only if nothing has it. A hard link claims the name
+/// atomically; a file system without hard links falls back to a no-clobber rename.
+#[cfg(unix)]
+fn publish(staged: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::hard_link(staged, destination) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+            rename_no_clobber(staged, destination).map_err(|_| error)
+        }
+        linked => linked,
     }
-    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+fn rename_no_clobber(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE).map_err(std::io::Error::from)
+}
+
+/// Other Unix hosts have no no-clobber rename, and a plain one could replace a file.
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
+))]
+fn rename_no_clobber(_from: &std::path::Path, _to: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 /// Writes the ticket into a protected staging directory and moves it into place without
@@ -58,9 +100,8 @@ pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), Protoc
 /// and cleanup all go through its final path, so they all happen in that one directory.
 #[cfg(windows)]
 pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
-    use std::{fmt::Write as _, io::Write as _, path::Path};
+    use std::{io::Write as _, path::Path};
 
-    use ma2a_core::RequestId;
     use ma2a_services::windows_files;
 
     check_destination(path)?;
@@ -75,12 +116,7 @@ pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), Protoc
         .unwrap_or_else(|| Path::new("."));
     let (_pin, directory) =
         windows_files::pin_directory(parent).map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let request = RequestId::random().map_err(|_| ProtocolError::INTERNAL)?;
-    let mut dir_name = String::from(".ma2a-invite-stage-");
-    for byte in request.as_bytes() {
-        let _written = write!(dir_name, "{byte:02x}");
-    }
-    let staging = directory.join(dir_name);
+    let staging = directory.join(staging_name()?);
     windows_files::create_protected_dir(&staging).map_err(|_| ProtocolError::INVALID_INPUT)?;
     let staged = staging.join("ticket");
     let published = (|| {
@@ -127,7 +163,6 @@ mod tests {
         std::fs::remove_dir_all(&directory)
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_ticket_is_published_once_and_no_staging_is_left() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -138,7 +173,13 @@ mod tests {
         let path = output.to_str().ok_or("path")?;
         super::write_owner_only(path, b"secret")?;
         assert_eq!(std::fs::read(&output)?, b"secret\n");
-        // An existing file is never replaced, and the staging directory is gone either way.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&output)?.permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // An existing file is never replaced, and no staging entry is left either way.
         assert!(super::write_owner_only(path, b"other").is_err());
         assert_eq!(std::fs::read(&output)?, b"secret\n");
         let names = std::fs::read_dir(&base)?
