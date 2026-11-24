@@ -3,10 +3,24 @@
 use ma2a_core::ProtocolError;
 
 /// Checks an invitation output path before the invitation is created, so a path no write can
-/// use is refused before anything is committed: it must name a file, and may not hold NUL.
+/// use is refused before anything is committed: it must name a file that does not exist yet,
+/// in an existing directory, by a name this host can create, and may not hold NUL.
 pub(super) fn check_destination(path: &str) -> Result<(), ProtocolError> {
     let destination = std::path::Path::new(path);
-    if path.is_empty() || path.contains('\0') || destination.file_name().is_none() {
+    let name = destination.file_name().and_then(std::ffi::OsStr::to_str);
+    let Some(name) = name.filter(|_| !path.contains('\0')) else {
+        return Err(ProtocolError::INVALID_INPUT);
+    };
+    if cfg!(windows) && (name.contains(':') || ma2a_services::files::is_windows_reserved(name)) {
+        return Err(ProtocolError::INVALID_INPUT);
+    }
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if !std::fs::metadata(parent).is_ok_and(|parent| parent.is_dir())
+        || std::fs::symlink_metadata(destination).is_ok()
+    {
         return Err(ProtocolError::INVALID_INPUT);
     }
     Ok(())
@@ -22,9 +36,17 @@ pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), Protoc
         .mode(0o600)
         .open(path)
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    file.write_all(contents)
+    let written = file
+        .write_all(contents)
         .and_then(|()| file.write_all(b"\n"))
-        .map_err(|_| ProtocolError::INTERNAL)
+        .and_then(|()| file.sync_all());
+    if written.is_err() {
+        // A ticket cut short is no ticket: the file this call created goes again.
+        drop(file);
+        let _removed = std::fs::remove_file(path);
+        return Err(ProtocolError::INTERNAL);
+    }
+    Ok(())
 }
 
 /// Writes the ticket into a protected staging directory and moves it into place without
@@ -80,12 +102,22 @@ mod tests {
     use super::check_destination;
 
     #[test]
-    fn only_a_path_naming_a_file_is_accepted() {
-        assert!(check_destination("ticket").is_ok());
-        assert!(check_destination("dir/ticket").is_ok());
+    fn only_a_new_file_in_an_existing_directory_is_accepted() -> Result<(), std::io::Error> {
+        let directory =
+            std::env::temp_dir().join(format!("ma2a-invite-check-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(directory.join("taken"), b"")?;
+        let path = |name: &str| directory.join(name).to_string_lossy().into_owned();
+
+        assert!(check_destination(&path("ticket")).is_ok());
+        assert!(check_destination(&path("taken")).is_err());
+        assert!(check_destination(&path("missing/ticket")).is_err());
+        assert!(check_destination(&path("taken/ticket")).is_err());
         assert!(check_destination("").is_err());
-        assert!(check_destination("dir/..").is_err());
-        assert!(check_destination("ti\0cket").is_err());
+        assert!(check_destination(&path("..")).is_err());
+        assert!(check_destination(&path("ti\0cket")).is_err());
+        std::fs::remove_dir_all(&directory)
     }
 
     #[cfg(windows)]
