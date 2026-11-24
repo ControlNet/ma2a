@@ -5,6 +5,7 @@ use crate::{ProtocolError, space_codec::Decoder};
 use super::{
     FileMetadata, MAX_LIST_PAGE, MAX_PATH_COMPONENT_LEN, ServiceError,
     cbor::{self, Writer},
+    valid_component,
 };
 
 /// One directory entry name and its metadata.
@@ -102,18 +103,22 @@ impl FilesResult {
         Ok(match (length, decoder.uint()?) {
             (2, 0) => Self::Metadata(FileMetadata::decode(decoder)?),
             (3, 1) => {
+                // Every name, the cursor included, is one a later request can name again.
+                let component = |name: String| {
+                    valid_component(&name)
+                        .then_some(name)
+                        .ok_or(ProtocolError::INVALID_INPUT)
+                };
                 let count = decoder.array(MAX_LIST_PAGE)?;
                 let entries = (0..count)
                     .map(|_| {
                         decoder.array_exact(2)?;
-                        let name = decoder.text(MAX_PATH_COMPONENT_LEN)?.to_owned();
+                        let name = component(decoder.text(MAX_PATH_COMPONENT_LEN)?.to_owned())?;
                         Ok(DirEntry::new(name, FileMetadata::decode(decoder)?))
                     })
                     .collect::<Result<Vec<_>, ProtocolError>>()?;
-                Self::Listing(
-                    entries,
-                    cbor::optional_text(decoder, MAX_PATH_COMPONENT_LEN)?,
-                )
+                let cursor = cbor::optional_text(decoder, MAX_PATH_COMPONENT_LEN)?;
+                Self::Listing(entries, cursor.map(component).transpose()?)
             }
             (3, 2) => Self::Read(cbor::u32_value(decoder)?, decoder.boolean()?),
             (2, 3) => Self::Written(decoder.uint()?),

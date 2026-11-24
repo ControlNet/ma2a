@@ -161,6 +161,22 @@ fn outcomes_accepts_and_controls_roundtrip() -> TestResult {
 }
 
 #[test]
+fn a_listing_names_only_entries_a_request_can_name() -> TestResult {
+    let metadata = FileMetadata::new(FileKind::File, 1);
+    let listing = |name: &str, cursor: Option<&str>| {
+        let entry = DirEntry::new(name.to_owned(), metadata);
+        let page = Ok(FilesResult::Listing(vec![entry], cursor.map(str::to_owned)));
+        FilesResult::encode_outcome(&page).map(|encoded| FilesResult::decode_outcome(&encoded))
+    };
+    assert!(listing("a", Some("a"))?.is_ok());
+    for name in ["..", "a\nb"] {
+        assert!(listing(name, None)?.is_err(), "{name:?}");
+        assert!(listing("a", Some(name))?.is_err(), "cursor {name:?}");
+    }
+    Ok(())
+}
+
+#[test]
 fn resumed_download_must_name_its_identity_and_rename_stays_in_one_root() -> TestResult {
     let resource = TransferResource::File(path("docs:/f")?);
     let header = OpenHeader::new(

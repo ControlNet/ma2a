@@ -12,9 +12,9 @@ use std::{
 };
 
 use ma2a_core::service::{
-    Channel, DescribePage, EMPTY_ACCEPT, FilesOutcome, FilesRequest, FilesResult, FrameKind,
-    LogWindow, ProcessAccept, ProcessReply, ProcessState, RemotePath, ServiceError, WriteMode,
-    encode_call_accept, encode_call_outcome,
+    Channel, DescribePage, DirEntry, EMPTY_ACCEPT, FileKind, FileMetadata, FilesOutcome,
+    FilesRequest, FilesResult, FrameKind, LogWindow, ProcessAccept, ProcessReply, ProcessState,
+    RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
@@ -252,6 +252,26 @@ impl AsyncWrite for Broken {
     ) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
+}
+
+#[tokio::test]
+async fn a_listing_entry_no_request_can_name_is_refused() -> TestResult {
+    let request = FilesRequest::List(RemotePath::parse("docs:/")?, None);
+    for (name, valid) in [("a", true), ("..", false), ("a\nb", false)] {
+        // Given: a target that lists one entry under `name`.
+        let ((mut reader, mut writer), (_service_reader, mut service_writer)) = pipe();
+        let entry = DirEntry::new(name.to_owned(), FileMetadata::new(FileKind::File, 1));
+        let page = FilesResult::encode_outcome(&Ok(FilesResult::Listing(vec![entry], None)))?;
+        service_writer.frame(FrameKind::Outcome, &page).await?;
+        service_writer.flush().await?;
+
+        // When
+        let listed = within(files::run((&mut reader, &mut writer), &request, &[])).await?;
+
+        // Then
+        assert_eq!(listed.is_ok(), valid, "{name:?}: {listed:?}");
+    }
+    Ok(())
 }
 
 /// Runs a three-byte write whose body cannot be sent against a target that accepts it and
