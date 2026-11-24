@@ -98,7 +98,14 @@ where
     S: AsyncRead + Unpin,
 {
     let frame = match first(reader).await? {
-        First::Finished(frame) => return decoded(TransferResult::decode_outcome(frame.payload())),
+        // A replayed upload answers with its outcome at once; it must still be this content.
+        First::Finished(frame) => {
+            let result = decoded(TransferResult::decode_outcome(frame.payload()))?;
+            let hash = hash_source((source, size))
+                .await
+                .map_err(ClientError::Local)?;
+            return matching(result, (size, hash));
+        }
         First::Accepted(frame) => frame,
     };
     if TransferAccept::decode(frame.payload()) != Ok(TransferAccept::Put) {
@@ -139,10 +146,40 @@ where
         return Err(unexpected(&frame));
     }
     let result = decoded(TransferResult::decode_outcome(frame.payload()))?;
-    match local {
-        Some(hash) if hash == result.hash && result.size == size => Ok(result),
-        _ => Err(ClientError::Failed(ServiceError::IntegrityMismatch)),
+    let hash = local.ok_or(ClientError::Failed(ServiceError::IntegrityMismatch))?;
+    matching(result, (size, hash))
+}
+
+/// Accepts a committed result only for exactly `size` bytes with `hash`, every one received.
+fn matching(
+    result: TransferResult,
+    (size, hash): (u64, [u8; 32]),
+) -> Result<TransferResult, ClientError> {
+    if result.size == size && result.bytes == size && result.hash == hash {
+        Ok(result)
+    } else {
+        Err(ClientError::Failed(ServiceError::IntegrityMismatch))
     }
+}
+
+/// Hashes exactly `size` bytes of `source`; a shorter source is an error.
+async fn hash_source<S: AsyncRead + Unpin>(
+    (source, size): (&mut S, u64),
+) -> std::io::Result<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
+    let mut remaining = size;
+    while remaining > 0 {
+        let want = usize::try_from(remaining.min(MAX_DATA_CHUNK_LEN as u64)).unwrap_or(0);
+        let chunk = buffer.get_mut(..want).unwrap_or_default();
+        let read = source.read(chunk).await?;
+        if read == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        hasher.update(chunk.get(..read).unwrap_or_default());
+        remaining -= u64::try_from(read).unwrap_or(remaining);
+    }
+    Ok(*hasher.finalize().as_bytes())
 }
 
 /// Sends the content and `end`; the outer error is a stream failure, the inner a local one.
