@@ -227,9 +227,34 @@ fn publish(staged: &Path, destination: &Path, token: &str) -> Result<(), AppErro
 /// Removes `path` only while it still holds `token`: another adapter that wrote its own token
 /// there since keeps it when this one stops.
 pub(super) fn remove_if_ours(path: &Path, token: &str) {
-    if std::fs::read(path).is_ok_and(|held| held == token.as_bytes()) {
+    if holds(path, token).unwrap_or(false) {
         let _removed = std::fs::remove_file(path);
     }
+}
+
+/// Whether `path` is a regular file, not a link, holding exactly `token`. Nothing past one byte
+/// more than the token is read, and a FIFO put there cannot block the stop.
+fn holds(path: &Path, token: &str) -> std::io::Result<bool> {
+    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{Mode, OFlags};
+        let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+        std::fs::File::from(rustix::fs::open(path, flags, Mode::empty())?)
+    };
+    #[cfg(not(unix))]
+    let file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Ok(false);
+    }
+    let limit = u64::try_from(token.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut held = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit), &mut held)?;
+    Ok(held == token.as_bytes())
 }
 
 #[cfg(test)]

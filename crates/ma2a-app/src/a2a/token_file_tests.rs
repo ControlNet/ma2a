@@ -176,6 +176,31 @@ fn a_stopping_adapter_leaves_a_token_another_adapter_wrote_since() -> TestResult
 
 #[cfg(unix)]
 #[test]
+fn a_stopping_adapter_reads_no_link_or_fifo_in_place_of_its_token() -> TestResult {
+    let scratch = Scratch::new("token-swapped")?;
+    let path = scratch.path().join("a2a-token");
+    let elsewhere = scratch.path().join("elsewhere");
+    std::fs::write(&elsewhere, "ours")?;
+    std::os::unix::fs::symlink(&elsewhere, &path)?;
+
+    // A link to a file holding the token is not the token file.
+    remove_if_ours(&path, "ours");
+    assert!(std::fs::symlink_metadata(&path).is_ok());
+
+    // Nor is a FIFO, and reading it would block the stop.
+    std::fs::remove_file(&path)?;
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        &path,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )?;
+    remove_if_ours(&path, "ours");
+    assert!(std::fs::symlink_metadata(&path).is_ok());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn a_claim_keeps_the_directory_its_path_resolved_to() -> TestResult {
     // Given: a token file claimed through a link to `a`.
     let scratch = Scratch::new("repointed")?;
