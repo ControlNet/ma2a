@@ -66,7 +66,8 @@ fn resolve(directory: &Path) -> io::Result<PathBuf> {
         {
             let mut plain = PathBuf::from(format!("{}:", char::from(disk)));
             plain.extend(components);
-            if std::fs::canonicalize(&plain)? == resolved {
+            // A plain spelling Win32 normalizes differently keeps the verbatim path.
+            if std::fs::canonicalize(&plain).is_ok_and(|plain| plain == resolved) {
                 return Ok(plain);
             }
         }
