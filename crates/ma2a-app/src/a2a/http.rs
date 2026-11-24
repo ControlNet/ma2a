@@ -161,23 +161,16 @@ async fn dispatch(shared: Shared, route: Route, request: Request) -> Response {
         base: &base,
     };
     let streamed = match request.method.as_str() {
-        "SendStreamingMessage" => Some(start_streaming(served, &request.params).await),
-        "SubscribeToTask" => Some(start_subscription(served, &request.params).await),
+        "SendStreamingMessage" => Some(start_streaming(served, &request).await),
+        "SubscribeToTask" => Some(start_subscription(served, &request).await),
         _ => None,
     };
     let answer = match streamed {
-        Some(Ok((method, task, (until_waiting, sent_at)))) => {
+        Some(Ok(lifecycle)) => {
             let owned = Owned {
                 backend: shared.backend.clone(),
                 route: route.clone(),
                 base,
-            };
-            let lifecycle = Lifecycle {
-                id: request.id,
-                method,
-                task,
-                until_waiting,
-                sent_at,
             };
             return stream::respond(owned, lifecycle);
         }
@@ -191,13 +184,13 @@ async fn dispatch(shared: Shared, route: Route, request: Request) -> Response {
     json_response(StatusCode::OK, &response)
 }
 
-/// The method, the task, and how its stream closes: once the task waits as well as when it
-/// ends, and the sequence number a continuing message was sent at.
-type Started = Result<(&'static str, String, (bool, Option<u32>)), rpc::RpcError>;
-
 /// Delivers a streamed message; the stream then follows its task until it settles.
-async fn start_streaming(served: Served<'_>, params: &Value) -> Started {
-    let inbound = methods::inbound(params)?;
+async fn start_streaming(
+    served: Served<'_>,
+    request: &rpc::Request,
+) -> Result<Lifecycle, rpc::RpcError> {
+    let inbound = methods::inbound(&request.params)?;
+    let (_, detail) = methods::configuration(&request.params)?;
     let summary = methods::deliver(served, &inbound)
         .await
         .map_err(|refusal| rpc::RpcError::refused("SendStreamingMessage", &refusal))?;
@@ -209,13 +202,23 @@ async fn start_streaming(served: Served<'_>, params: &Value) -> Started {
         .task
         .is_some()
         .then(|| super::view::last_seq(&summary));
-    Ok(("SendStreamingMessage", task.to_owned(), (true, sent_at)))
+    Ok(Lifecycle {
+        id: request.id.clone(),
+        method: "SendStreamingMessage",
+        task: task.to_owned(),
+        history: detail.history,
+        until_waiting: true,
+        sent_at,
+    })
 }
 
 /// Checks a subscription names a task that has not ended; the stream follows it until it
 /// does.
-async fn start_subscription(served: Served<'_>, params: &Value) -> Started {
-    let task = rpc::required(params, "id")?;
+async fn start_subscription(
+    served: Served<'_>,
+    request: &rpc::Request,
+) -> Result<Lifecycle, rpc::RpcError> {
+    let task = rpc::required(&request.params, "id")?;
     let details = served
         .backend
         .details(served.route, task)
@@ -228,7 +231,14 @@ async fn start_subscription(served: Served<'_>, params: &Value) -> Started {
     if super::backend::ended(state) {
         return Err(rpc::RpcError::unsupported("the task has already ended"));
     }
-    Ok(("SubscribeToTask", task.to_owned(), (false, None)))
+    Ok(Lifecycle {
+        id: request.id.clone(),
+        method: "SubscribeToTask",
+        task: task.to_owned(),
+        history: None,
+        until_waiting: false,
+        sent_at: None,
+    })
 }
 
 async fn local_artifact(

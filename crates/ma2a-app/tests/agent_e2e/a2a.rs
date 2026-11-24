@@ -229,6 +229,46 @@ fn send_replay_and_continue(adapter: &Adapter, lead: &str) -> TestResult {
     Ok(())
 }
 
+/// Both sends check `configuration.historyLength` before delivering anything, and both
+/// answer the task with at most that many history messages.
+fn history_limits(adapter: &Adapter, lead: &str) -> TestResult {
+    for method in ["SendMessage", "SendStreamingMessage"] {
+        let id = format!("m-negative-{method}");
+        let malformed = json!({
+            "message": {"messageId": id, "role": "ROLE_USER", "parts": [{"text": "echo bad"}]},
+            "configuration": {"historyLength": -1},
+        });
+        let malformed = adapter.call((lead, method), &malformed)?;
+        assert_eq!(error_code(&malformed)?, -32_602, "{method}");
+        // Nothing was delivered, so the message ID is still free for other content.
+        let fresh = adapter.result((lead, "SendMessage"), &message(&id, "echo other"))?;
+        assert_eq!(text(&fresh, "/task/status/message/parts/0/text"), "other");
+        for limit in [0, 1] {
+            let limited = json!({
+                "message": {
+                    "messageId": format!("m-limit-{limit}-{method}"),
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "echo limited"}],
+                },
+                "configuration": {"historyLength": limit},
+            });
+            let answer = adapter.call((lead, method), &limited)?;
+            let task = if method == "SendMessage" {
+                answer.json()?.pointer("/result/task").cloned()
+            } else {
+                let events = answer.events()?;
+                events
+                    .first()
+                    .and_then(|first| first.pointer("/result/task").cloned())
+            };
+            let task = task.ok_or("no task")?;
+            let history = task.get("history").and_then(Value::as_array).map(Vec::len);
+            assert_eq!(history, Some(limit), "{method}: {task}");
+        }
+    }
+    Ok(())
+}
+
 /// A stopped local Agent is unavailable, not a conflict.
 fn stopped_agent(adapter: &Adapter, lab: &AgentLab, lead: &str) -> TestResult {
     lab.a.run_ok(&["agent", "stop", "lead"])?;
@@ -381,6 +421,7 @@ fn a2a_clients_use_local_and_remote_agents() -> TestResult {
     let routes = ("/agents/lead", worker.as_str());
     cards_and_access(&adapter, routes)?;
     send_replay_and_continue(&adapter, routes.0)?;
+    history_limits(&adapter, routes.0)?;
     stream_get_and_list(&adapter, &lab, routes)?;
     local_artifact(&adapter, &lab, routes.0)?;
     subscribe_and_cancel(&adapter, routes)?;

@@ -28,6 +28,8 @@ pub(super) struct Lifecycle {
     pub(super) id: Value,
     pub(super) method: &'static str,
     pub(super) task: String,
+    /// Most history messages the first frame's task carries.
+    pub(super) history: Option<usize>,
     /// Close once the task waits for input, not only once it ended.
     pub(super) until_waiting: bool,
     /// For a message to a waiting task: follow from the sequence number it was sent at,
@@ -154,7 +156,7 @@ async fn produce(
         Err(refusal) => return send(frames, &refused(refusal)).await.then_some(()),
     };
     let detail = Detail {
-        history: None,
+        history: lifecycle.history,
         artifacts: true,
     };
     // The first frame, the state, and the cursor all come from one snapshot, so the stream

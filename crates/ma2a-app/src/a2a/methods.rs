@@ -138,6 +138,14 @@ pub(super) fn detail(params: &Value, artifacts: bool) -> Result<Detail, RpcError
     })
 }
 
+/// The `configuration` of `SendMessage` or `SendStreamingMessage` and the detail it asks
+/// for. Both check it before delivering anything, so a refusal never follows a task it
+/// already created.
+pub(super) fn configuration(params: &Value) -> Result<(&Value, Detail), RpcError> {
+    let configuration = params.get("configuration").unwrap_or(&Value::Null);
+    Ok((configuration, detail(configuration, true)?))
+}
+
 /// Answers one method that is not a stream.
 pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<Value, RpcError> {
     let method = request.method.as_str();
@@ -146,10 +154,7 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
     match method {
         "SendMessage" => {
             let inbound = inbound(params)?;
-            let configuration = params.get("configuration").unwrap_or(&Value::Null);
-            // Every parameter is checked before the message is delivered, so a refusal never
-            // follows a task it already created.
-            let detail = detail(configuration, true)?;
+            let (configuration, detail) = configuration(params)?;
             let summary = deliver(served, &inbound).await.map_err(refused)?;
             if configuration
                 .get("returnImmediately")
