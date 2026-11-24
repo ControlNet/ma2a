@@ -5,7 +5,7 @@ use ma2a_net::ControlRejection;
 
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
-const ARTIFACT_OVERHEAD: usize = 5;
+pub(super) const ARTIFACT_OVERHEAD: usize = 5;
 #[cfg(test)]
 pub(super) const RESPONSE_HEADER_BYTES: usize = 6;
 pub(super) const PAGE_HEADER_BYTES: usize = 35;

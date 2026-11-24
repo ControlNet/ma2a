@@ -131,10 +131,15 @@ pub(crate) fn load_lookup(
     })
 }
 
+/// Spaces sent in one request: one fewer than the wire allows, so each response page's share of
+/// the batch still holds the largest signed artifact, a full address record, and no valid record
+/// is held back on every round by the size of its page's share.
+pub(crate) const SPACES_PER_REQUEST: usize = MAX_CONTROL_SPACES_PER_REQUEST - 1;
+
 /// Prepares every request of one round.
 ///
-/// One request carries at most [`MAX_CONTROL_SPACES_PER_REQUEST`] Spaces, so a peer sharing
-/// more Spaces receives several. The queue takes every peer's first request before any peer's
+/// One request carries at most [`SPACES_PER_REQUEST`] Spaces, so a peer sharing more Spaces
+/// receives several. The queue takes every peer's first request before any peer's
 /// second, so a peer with many Spaces never delays the others.
 pub(crate) fn prepare_round(
     repository: &Repository,
@@ -163,7 +168,7 @@ pub(crate) fn prepare_round(
         .into_iter()
         .map(|(peer, shared)| {
             shared
-                .chunks(MAX_CONTROL_SPACES_PER_REQUEST)
+                .chunks(SPACES_PER_REQUEST)
                 .map(|chunk| peer_request(peer, chunk, input))
                 .collect::<Result<std::collections::VecDeque<_>, _>>()
         })

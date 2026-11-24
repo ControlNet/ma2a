@@ -143,6 +143,17 @@ mod codec_budget_tests {
     use crate::control_sync::pages::builder::PageBuilder;
 
     #[test]
+    fn a_full_request_leaves_every_response_page_room_for_a_full_address_record() {
+        let budget = response_artifact_budget(crate::control_sync::SPACES_PER_REQUEST)
+            .expect("a full request has a budget");
+        assert!(
+            budget
+                >= ma2a_core::MAX_ADDRESS_RECORD_LEN
+                    + crate::control_sync::pages::builder::ARTIFACT_OVERHEAD
+        );
+    }
+
+    #[test]
     fn two_response_pages_fit_the_production_codec_limit() -> Result<(), ma2a_core::ProtocolError> {
         // Given
         let budget = response_artifact_budget(2).expect("two response pages have a budget");
