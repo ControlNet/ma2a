@@ -75,3 +75,18 @@ fn whitespace_rust_accepts_beyond_ascii_separates_tokens() {
         (false, true)
     );
 }
+
+#[test]
+fn raw_identifiers_still_name_lint_attributes() {
+    // Rust 2024 accepts each of these, and each one lifts `#![deny(unsafe_code)]`.
+    for source in [
+        "#[r#allow(unsafe_code)] fn a() {}",
+        "#[allow(r#unsafe_code)] fn b() {}",
+        "#[r#expect(unsafe_code)] fn c() {}",
+        "#[warn(rust::r#unsafe_code)] fn d() {}",
+    ] {
+        assert_eq!(scan_unsafe_tokens(source), (false, true), "{source}");
+    }
+    // `r#unsafe` is an identifier, never the keyword.
+    assert_eq!(scan_unsafe_tokens("let r#unsafe = 1;"), (false, false));
+}

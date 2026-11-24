@@ -1,7 +1,7 @@
 //! Lexical scanner for `unsafe` keywords and `allow`/`expect`/`warn(unsafe_code)` attributes.
 
-/// Scans Rust source outside comments, literals, and raw identifiers for any `unsafe` keyword
-/// token and any `#[allow|expect|warn(...)]` attribute mentioning `unsafe_code`.
+/// Scans Rust source outside comments and literals for any `unsafe` keyword token (`r#unsafe` is
+/// not one) and any `#[allow|expect|warn(...)]` attribute mentioning `unsafe_code`.
 pub(crate) fn scan_unsafe_tokens(source: &str) -> (bool, bool) {
     let stripped = strip_rust_comments_and_strings(source);
     let mut has_unsafe = false;
@@ -110,8 +110,15 @@ fn strip_rust_comments_and_strings(source: &str) -> String {
                 && next == Some(b'#')
                 && let Some(after) = skip_raw_ident(source, i)
             {
-                i = after;
+                // `r#unsafe` is an identifier, never the keyword. Any other raw identifier keeps
+                // its name, since `r#allow` and `r#unsafe_code` still name a lint attribute.
+                let name = source.get(i + 2..after).unwrap_or_default();
                 out.push(' ');
+                if name != "unsafe" {
+                    out.push_str(name);
+                    out.push(' ');
+                }
+                i = after;
                 continue;
             }
             out.push(char::from(b));
