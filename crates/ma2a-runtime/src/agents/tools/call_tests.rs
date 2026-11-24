@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use ma2a_agent::tools::AgentTaskTarget;
+use ma2a_agent::tools::{AgentTaskTarget, ProxyOpen};
 use ma2a_core::{
     RequestId,
     service::{AgentId, AgentTaskId},
@@ -172,5 +172,28 @@ async fn agent_get_from_a_silent_target_times_out() -> TestResult {
     };
     assert_eq!(error.code, "timed_out");
     assert_eq!(fixture.opened.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn proxy_open_to_port_zero_fails_before_listening() -> TestResult {
+    // Given
+    let fixture = Fixture::new("proxy-port")?;
+    let call = fixture.call()?;
+    let args = ProxyOpen {
+        endpoint: target(),
+        host: "localhost".to_owned(),
+        port: 0,
+    };
+
+    // When
+    let opened = call.proxy_open(args).await;
+
+    // Then
+    let error = opened
+        .err()
+        .ok_or("a listener was answered for port zero")?;
+    assert_eq!(error.code, "invalid_tool");
+    assert!(fixture.manager.coordination().listeners.is_empty());
     Ok(())
 }

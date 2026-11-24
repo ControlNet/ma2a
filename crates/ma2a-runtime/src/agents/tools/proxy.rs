@@ -4,7 +4,10 @@
 //! A listener lives in this daemon only: it ends with its task, and also when the daemon
 //! stops, after which a re-executed call is answered from its recorded result.
 
-use ma2a_agent::tools::{ProxyListening, ProxyOpen};
+use ma2a_agent::{
+    protocol::ToolError,
+    tools::{ProxyListening, ProxyOpen},
+};
 use ma2a_core::{
     RequestId,
     service::{OpenBody, ProxyHost, ProxyRequest},
@@ -23,7 +26,10 @@ const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100
 impl Call<'_> {
     pub(super) async fn proxy_open(&self, args: ProxyOpen) -> Outcome {
         let host = ProxyHost::new(&args.host)
-            .map_err(|_| ma2a_agent::protocol::ToolError::new("invalid_tool", "invalid host"))?;
+            .map_err(|_| ToolError::new("invalid_tool", "invalid host"))?;
+        // Refused before anything listens, so an invalid destination is never answered.
+        let request = ProxyRequest::new(host, args.port, IDLE_TIMEOUT_MS)
+            .map_err(|_| ToolError::new("invalid_tool", "invalid port"))?;
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .map_err(|error| super::workspace::local(&error))?;
@@ -38,7 +44,7 @@ impl Call<'_> {
             .or_default()
             .push(token.clone());
         let manager = self.manager.clone();
-        let (endpoint, port, task) = (args.endpoint, args.port, self.task);
+        let (endpoint, task) = (args.endpoint, self.task);
         let workspace = self.workspace.clone();
         let agent = self.agent.clone();
         // Each accepted connection is opened on behalf of the `proxy.open` call.
@@ -66,12 +72,8 @@ impl Call<'_> {
                     workspace: workspace.clone(),
                     request_id,
                 };
-                let request = ProxyRequest::new(host.clone(), port, IDLE_TIMEOUT_MS);
-                let Ok(request) = request else {
-                    return;
-                };
                 let Ok((mut reader, mut writer)) =
-                    call.open(&endpoint, OpenBody::Proxy(request)).await
+                    call.open(&endpoint, OpenBody::Proxy(request.clone())).await
                 else {
                     continue;
                 };
