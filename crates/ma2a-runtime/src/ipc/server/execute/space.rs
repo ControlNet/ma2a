@@ -40,6 +40,8 @@ pub(super) async fn invite(
 ) -> Result<CommandResult, ApiError> {
     let (space_id, ttl_ms, output_path) =
         command.space_invite().ok_or(ProtocolError::INVALID_INPUT)?;
+    // Refused before the invitation is committed, so a bad path never costs a revision.
+    invite_file::check_destination(output_path)?;
     let created = context
         .handle
         .create_enrollment_invite_committed(

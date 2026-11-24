@@ -174,6 +174,32 @@ pub fn owner_and_dacl(file: &File) -> io::Result<String> {
     sddl
 }
 
+/// Opens the directory `path` and holds it so it cannot be renamed or removed while the handle
+/// lives, and returns the handle with the directory's final path.
+///
+/// Everything later done by that path stays in this very directory: the handle does not share
+/// deletion, so Windows refuses to move the directory or any ancestor while it is open.
+///
+/// # Errors
+/// Returns the operating system's error, or `NotADirectory` when `path` names something else.
+pub fn pin_directory(path: &Path) -> io::Result<(File, PathBuf)> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let handle = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    if !handle.metadata()?.is_dir() {
+        return Err(io::ErrorKind::NotADirectory.into());
+    }
+    let resolved = final_path(&handle)?;
+    Ok((handle, resolved))
+}
+
 /// Returns a predicate telling whether one SDDL SID string is the current process's user.
 ///
 /// The string may be in `S-1-…` form or a two-letter alias. Windows parses it, so an alias

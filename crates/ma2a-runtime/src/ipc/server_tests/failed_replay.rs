@@ -115,3 +115,46 @@ async fn replay_completion_failure_preserves_pending_after_durable_invitation() 
     runtime.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_output_path_naming_no_file_is_refused_before_an_invitation_exists() -> TestResult {
+    let state = TempState::new()?;
+    let config = StoreConfig::new(&state.0);
+    let runtime = Runtime::start(config.clone()).await?;
+    let space = runtime
+        .handle()
+        .create_owned_space("early".to_owned())
+        .await?;
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server = LiveServer::spawn(
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?,
+    );
+    let client = LocalApiClient::new(paths.clone());
+    // A path ending in `..` names a directory, never a file the ticket could be written to.
+    let output = state.0.join("..");
+    let command = api::decode_command(&serde_json::to_vec(&serde_json::json!({
+        "version": 1, "operation": "space_invite",
+        "request_id": "34343434343434343434343434343434",
+        "space_id": api::encode_hex(space.as_bytes()), "ttl_ms": 60000,
+        "output_path": output.to_str().ok_or("invalid path")?,
+    }))?)?;
+    let value: serde_json::Value = serde_json::from_slice(&client.call(&command).await?)?;
+    assert_eq!(
+        value.get("error").and_then(serde_json::Value::as_str),
+        Some("invalid_input")
+    );
+    let connection = rusqlite::Connection::open(config.database_path())?;
+    let count: u64 =
+        connection.query_row("SELECT COUNT(*) FROM invitations", [], |row| row.get(0))?;
+    assert_eq!(count, 0, "a refused path must not commit an invitation");
+    server.cancel().await?;
+    paths.remove_stale_endpoint()?;
+    runtime.shutdown().await?;
+    Ok(())
+}
