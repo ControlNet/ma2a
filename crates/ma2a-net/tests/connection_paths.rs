@@ -102,16 +102,27 @@ async fn fresh_endpoint_dials_exact_target_record_and_observes_direct_path() -> 
     client.shutdown().await?;
     server.shutdown().await?;
 
-    let (restarted_server_enrollment, _restarted_server_enrollment_rx) =
-        tokio::sync::mpsc::channel(1);
-    let (restarted_server_control, _restarted_server_control_rx) = tokio::sync::mpsc::channel(1);
-    let restarted_server = RuntimeEndpoint::bind_with_lookup(
-        EndpointSecret::parse(&[0x51; 32])?,
-        SpaceAddressLookup::default(),
-        EndpointBindOptions::new(restarted_server_enrollment, Some(bind_port))
-            .with_control(restarted_server_control, true),
-    )
-    .await?;
+    // The shut-down server's socket is released in the background, so the same port may still
+    // be busy for a moment; the rebind is retried for up to two seconds.
+    let mut attempts = 0_u32;
+    let (restarted_server, _restarted_server_receivers) = loop {
+        let (enrollment, enrollment_rx) = tokio::sync::mpsc::channel(1);
+        let (control, control_rx) = tokio::sync::mpsc::channel(1);
+        let bound = RuntimeEndpoint::bind_with_lookup(
+            EndpointSecret::parse(&[0x51; 32])?,
+            SpaceAddressLookup::default(),
+            EndpointBindOptions::new(enrollment, Some(bind_port)).with_control(control, true),
+        )
+        .await;
+        match bound {
+            Ok(endpoint) => break (endpoint, (enrollment_rx, control_rx)),
+            Err(_busy) if attempts < 40 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
     let restarted_lookup = SpaceAddressLookup::with_clock(std::sync::Arc::new(FixedClock));
     restarted_lookup.replace_authorizations(vec![fixture.authorization])?;
     restarted_lookup.cache(validated)?;
