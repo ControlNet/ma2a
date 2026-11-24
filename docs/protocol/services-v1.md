@@ -319,9 +319,10 @@ file system itself decides which spellings name one destination: whatever the vo
 normalization rules, one destination has one writer, and two destinations the volume keeps apart
 never wait for each other.
 Before the first content byte, the download durably records the source (target Endpoint and
-remote path) and the content identity in `HASH.ma2a-part.meta`. `--resume` continues only a
-partial file whose sidecar names the same source, and it re-hashes the local prefix so
-verification still covers the whole content. If the target answers `precondition_failed` (the
+remote path, in its canonical spelling) and the content identity in `HASH.ma2a-part.meta`.
+`--resume` continues only a partial file whose sidecar names the same source, and it re-hashes
+the local prefix so verification still covers the whole content. A resumed download answered
+with another identity fails and keeps its sidecar as it was. If the target answers `precondition_failed` (the
 source changed), the download restarts once from zero. A partial file whose content changed or
 failed verification is removed. While a download runs, it holds an OS lock on its lock file,
 so a second download to the same `LOCAL` fails at once instead of writing alongside it; the

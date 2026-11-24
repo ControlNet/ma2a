@@ -169,10 +169,19 @@ impl Partial {
     /// Records the identity the target is about to stream, before any content arrives.
     ///
     /// # Errors
-    /// Returns a local file error.
+    /// Returns a local file error, or `InvalidData` when content is already kept and `identity`
+    /// is not the one it began with.
     pub async fn begin(&mut self, identity: ContentIdentity) -> io::Result<()> {
         if self.identity == Some(identity) {
             return Ok(());
+        }
+        // Kept content belongs to the identity it began with; content of another one cannot
+        // continue it, and its sidecar stays as it was.
+        if self.offset > 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the target resumed a download of different content",
+            ));
         }
         let text = format!(
             "{SIDECAR_MAGIC}\n{}\n{}\n{}\n",

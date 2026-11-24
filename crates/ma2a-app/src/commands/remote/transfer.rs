@@ -16,15 +16,17 @@ pub(super) async fn get(
     (path, local): (&str, &Path),
     (resume, force): (bool, bool),
 ) -> Result<(), AppError> {
-    let resource = TransferResource::File(remote_path(path)?);
+    let remote = remote_path(path)?;
+    // The sidecar binds a partial file to the exact target Endpoint and remote path, in its one
+    // canonical spelling, so `docs:/a//b` resumes what `docs:/a/b` began.
+    let source = format!("{} {remote}", target.1);
+    let resource = TransferResource::File(remote);
     if !force && tokio::fs::try_exists(local).await? {
         return Err(AppError::Invalid(
             "the local file exists; pass --force to replace it".to_owned(),
         ));
     }
     crate::daemon_control::require(target.0).await?;
-    // The sidecar binds a partial file to the exact target Endpoint and remote path.
-    let source = format!("{} {path}", target.1);
     let mut partial = Partial::open(local, &source, resume)
         .await
         .map_err(|error| {

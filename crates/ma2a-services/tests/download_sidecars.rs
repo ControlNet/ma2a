@@ -215,3 +215,33 @@ async fn progress_still_buffered_counts_as_bytes_held() -> TestResult {
     partial.discard().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn kept_content_is_never_continued_with_content_of_another_identity() -> TestResult {
+    use ma2a_core::service::ContentIdentity;
+
+    // Given: a download that kept a prefix of one identity.
+    let local = TempRoot::new("sidecar-identity")?;
+    let destination = local.path().join("report");
+    let mut first = Partial::open(&destination, "peer docs:/file", false).await?;
+    first.begin(ContentIdentity::new(100, 1)).await?;
+    first.sink().0.write_all(b"prefix").await?;
+    first.sink().0.flush().await?;
+    drop(first);
+
+    // When: its resumption is answered with another identity.
+    let mut resumed = Partial::open(&destination, "peer docs:/file", true).await?;
+    assert_eq!(resumed.offset(), 6);
+    let other = resumed.begin(ContentIdentity::new(200, 2)).await;
+
+    // Then: it is refused, and the kept prefix still belongs to the first identity.
+    assert_eq!(
+        other.map_err(|error| error.kind()),
+        Err(ErrorKind::InvalidData)
+    );
+    drop(resumed);
+    let again = Partial::open(&destination, "peer docs:/file", true).await?;
+    assert_eq!(again.identity(), Some(ContentIdentity::new(100, 1)));
+    again.discard().await?;
+    Ok(())
+}
