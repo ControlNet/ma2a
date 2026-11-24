@@ -84,7 +84,7 @@ pub use hosted_request::{
 };
 pub use names::{
     MAX_PATH_COMPONENT_LEN, MAX_PATH_COMPONENTS, MAX_PROXY_HOST_LEN, MAX_REMOTE_PATH_LEN,
-    MAX_ROOT_NAME_LEN, ProxyHost, RemotePath, RootName,
+    MAX_ROOT_NAME_LEN, ProxyHost, RemotePath, RootName, valid_component,
 };
 pub use open::{EMPTY_ACCEPT, OpenBody, OpenHeader};
 pub use process::{

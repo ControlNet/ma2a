@@ -121,7 +121,10 @@ impl fmt::Display for RemotePath {
     }
 }
 
-fn valid_component(component: &str) -> bool {
+/// Whether `component` can be one component of a [`RemotePath`]: non-empty, at most
+/// [`MAX_PATH_COMPONENT_LEN`] bytes, neither `.` nor `..`, and free of control characters and of
+/// `/`, `\`, and `:`.
+pub fn valid_component(component: &str) -> bool {
     !component.is_empty()
         && component.len() <= MAX_PATH_COMPONENT_LEN
         && component != "."

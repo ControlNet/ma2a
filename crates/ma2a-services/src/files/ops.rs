@@ -3,8 +3,7 @@
 use std::{collections::BinaryHeap, io::ErrorKind, path::Path};
 
 use ma2a_core::service::{
-    DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, MAX_PATH_COMPONENT_LEN, RemotePath,
-    ServiceError,
+    DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, RemotePath, ServiceError,
 };
 
 use super::resolve::{self, Directory};
@@ -46,8 +45,10 @@ pub(crate) fn stat(root: &Path, path: &RemotePath) -> Result<FilesResult, Servic
 ///
 /// Memory stays bounded by the page: only the smallest `MAX_LIST_PAGE + 1` names are kept.
 /// Names that cannot be addressed remotely are skipped, before paging, so every page and
-/// cursor decodes: names that are not valid UTF-8, and names longer than a path component may
-/// be, which a Windows volume allows (255 UTF-16 units can take up to 765 UTF-8 bytes).
+/// cursor decodes and every listed name can be requested again: names that are not valid UTF-8,
+/// names that are not a valid path component (control characters, `\`, `:`), and names longer
+/// than a path component may be, which a Windows volume allows (255 UTF-16 units can take up to
+/// 765 UTF-8 bytes).
 pub(crate) fn list(
     root: &Path,
     path: &RemotePath,
@@ -82,9 +83,10 @@ pub(crate) fn list(
     Ok(FilesResult::Listing(entries, next))
 }
 
-/// Whether `name` fits in one remote path component and can be decoded by `Decoder::text`.
+/// Whether `name` can be named again in a request: it is a valid remote path component, which
+/// also keeps it within what `Decoder::text` reads.
 fn addressable(name: &str) -> bool {
-    !name.is_empty() && name.len() <= MAX_PATH_COMPONENT_LEN && !name.chars().any(char::is_control)
+    ma2a_core::service::valid_component(name)
 }
 
 /// Creates one directory, or every missing ancestor with `parents`.

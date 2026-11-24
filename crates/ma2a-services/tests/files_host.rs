@@ -197,6 +197,39 @@ async fn a_name_too_long_to_address_is_left_out_of_a_listing() -> TestResult {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn names_a_path_cannot_carry_are_left_out_and_the_rest_can_be_requested() -> TestResult {
+    // Given: ordinary Unix names a remote path component cannot carry, around addressable ones.
+    let root = TempRoot::new("unaddressable")?;
+    for name in ["a", "phase:one.txt", "back\\slash", "tab\there", "z"] {
+        fs::write(root.path().join(name), b"")?;
+    }
+
+    // When
+    let (frames, _) = serve(root.path(), FilesRequest::List(path("docs:/")?, None), None).await?;
+
+    // Then: only addressable names are listed, and each one can be named in a request.
+    let Ok(FilesResult::Listing(entries, None)) = outcome(&frames)? else {
+        return Err("listing".into());
+    };
+    let names = entries
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["a", "z"]);
+    for name in names {
+        let (frames, _) = serve(
+            root.path(),
+            FilesRequest::Stat(path(&format!("docs:/{name}"))?),
+            None,
+        )
+        .await?;
+        assert!(matches!(outcome(&frames)?, Ok(FilesResult::Metadata(_))));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn symlinks_are_reported_but_never_followed() -> TestResult {
     let root = TempRoot::new("symlink")?;
     let outside = TempRoot::new("outside")?;
