@@ -39,6 +39,18 @@ pub(super) async fn mutation(State(state): State<WebState>, request: Request) ->
     let Some(runtime) = state.runtime.as_ref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    // Sessions may have been revoked while the body arrived; the admission above is stale then.
+    let current = match super::cookie(&headers) {
+        Some(bearer) => state
+            .auth
+            .validate(bearer)
+            .await
+            .map_err(super::read_status),
+        None => Err(StatusCode::UNAUTHORIZED),
+    };
+    if let Err(status) = current {
+        return status.into_response();
+    }
     let revoke_sessions = operation == "session_revoke_all";
     super::gateway::call(runtime, &command).await.map_or_else(
         |()| StatusCode::SERVICE_UNAVAILABLE.into_response(),

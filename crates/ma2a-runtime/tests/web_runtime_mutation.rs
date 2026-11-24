@@ -190,3 +190,65 @@ async fn mutation_request(
         .oneshot(request.body(Body::from(body))?)
         .await?)
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_revoked_while_the_body_arrives_dispatches_nothing() -> TestResult {
+    // Given: a Runtime client that reaches no Runtime, so any dispatch answers 503.
+    let state = TempState::new("runtime-mutation-revoked")?;
+    let auth = ma2a_runtime::web::WebAuthService::open(
+        StoreConfig::new(state.path()),
+        clock(1_000) as Arc<dyn ma2a_runtime::web::Clock>,
+        WebAuthConfig::default(),
+    )
+    .await?;
+    auth.change_password(
+        PasswordAction::Set,
+        Zeroizing::new("web-runtime-passphrase-9!".to_owned()),
+    )
+    .await?;
+    let session = auth
+        .login(Zeroizing::new("web-runtime-passphrase-9!".to_owned()))
+        .await?;
+    let router = build_runtime_router(
+        WebRuntimeDependencies::new(
+            auth.clone(),
+            WebAssets::new(&[("index.html", b"ok")]),
+            LocalApiClient::new(IpcPaths::new(state.path().join("unavailable"))?),
+        ),
+        WebServerConfig::default(),
+        43_210,
+    )
+    .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12_345))));
+    let (body, chunks) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(1);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/sessions/revoke-all")
+        .header("host", "127.0.0.1:43210")
+        .header("origin", "http://127.0.0.1:43210")
+        .header("sec-fetch-site", "same-origin")
+        .header("content-type", "application/json")
+        .header("cookie", format!("ma2a_session={}", session.bearer()))
+        .header("x-csrf-token", session.csrf_token())
+        .body(Body::from_stream(
+            tokio_stream::wrappers::ReceiverStream::new(chunks),
+        ))?;
+    let response = tokio::spawn(router.oneshot(request));
+
+    // When: the handler reads the body only after admitting the session; once it has taken the
+    // first half, the session is revoked, and only then does the rest arrive.
+    body.send(Ok(
+        br#"{"version":1,"operation":"session_revoke_all","#.to_vec()
+    ))
+    .await?;
+    drop(body.reserve().await?);
+    auth.revoke_all_sessions().await?;
+    body.send(Ok(
+        br#""request_id":"00112233445566778899aabbccddeeff"}"#.to_vec()
+    ))
+    .await?;
+    drop(body);
+
+    // Then
+    assert_eq!(response.await??.status(), StatusCode::UNAUTHORIZED);
+    Ok(())
+}
