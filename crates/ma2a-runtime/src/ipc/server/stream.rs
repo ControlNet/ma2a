@@ -149,6 +149,20 @@ const fn injected_loss(_context: &ConnectionContext) -> bool {
     false
 }
 
+#[cfg(test)]
+async fn injected_stall(context: &ConnectionContext) {
+    if context.mutation_hooks.take_dial_stall() {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(not(test))]
+#[expect(
+    clippy::unused_async,
+    reason = "the test build stalls here; production code awaits nothing"
+)]
+async fn injected_stall(_context: &ConnectionContext) {}
+
 fn reject_frame(error: ServiceError) -> Vec<u8> {
     crate::stream_plane::relay::encoded(FrameKind::Reject, &[error.code()]).unwrap_or_default()
 }
@@ -169,10 +183,19 @@ async fn run<R, W>(
     W: AsyncWrite + Unpin,
 {
     let guard = context.handle.operations().start(key);
-    let dialed = match context.handle.service_client().await {
-        Ok(client) => client.open(key.peer, key.kind).await,
-        Err(_) => Err(ServiceError::Unavailable),
+    // Dialing and writing `open` share one deadline, so a peer that grants no stream holds
+    // neither the client's slot nor its reservation; nothing has reached it before `open`.
+    let deadline = tokio::time::Instant::now() + OPEN_DEADLINE;
+    let dial = async {
+        injected_stall(context).await;
+        match context.handle.service_client().await {
+            Ok(client) => client.open(key.peer, key.kind).await,
+            Err(_) => Err(ServiceError::Unavailable),
+        }
     };
+    let dialed = tokio::time::timeout_at(deadline, dial)
+        .await
+        .unwrap_or(Err(ServiceError::TimedOut));
     let mut remote = match dialed {
         Ok(remote) => remote,
         Err(error) => {
@@ -192,7 +215,7 @@ async fn run<R, W>(
         target.1.flush().await
     };
     let opened = matches!(
-        tokio::time::timeout(OPEN_DEADLINE, open_write).await,
+        tokio::time::timeout_at(deadline, open_write).await,
         Ok(Ok(()))
     ) && !injected_loss(context);
     let relayed = if opened {

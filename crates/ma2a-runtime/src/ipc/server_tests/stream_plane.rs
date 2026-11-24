@@ -190,6 +190,24 @@ async fn a_stream_lost_after_open_is_settled_as_unknown_and_never_retried() -> T
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_target_that_grants_no_stream_is_refused_and_releases_its_request() -> TestResult {
+    // Given: a target that never grants the dial a stream.
+    let pair = Pair::start("stream-stall").await?;
+    pair.hooks
+        .stall_next_dial
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // When
+    let stalled = pair.files(id(0x72)?, mkdir("docs:/later")?).await?;
+
+    // Then: nothing reached the target, so the request is refused and may run again.
+    assert_eq!(stalled.rejection(), Ok(ServiceError::TimedOut));
+    let retried = pair.files(id(0x72)?, mkdir("docs:/later")?).await?;
+    assert_eq!(outcome(&retried)?, Ok(FilesResult::Done));
+    pair.stop().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_mutation_releases_its_request_and_reads_never_reserve() -> TestResult {
     let pair = Pair::start("stream-release").await?;
     let outside = pair.files(id(0x81)?, mkdir("other:/x")?).await?;
