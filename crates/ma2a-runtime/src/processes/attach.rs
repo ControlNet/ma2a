@@ -211,23 +211,28 @@ where
             }
         };
         let upstream = async {
-            // Returning detaches: the supervisor then reports where the Process is.
+            // Returning detaches: the supervisor then reports where the Process is. Input the
+            // Process does not take within the stall bound detaches too, so a caller's detach
+            // is never stuck behind it.
             while let Ok(Some(frame)) = reader.next().await {
                 let forwarded = match (frame.kind(), frame.data(), frame.end()) {
                     (FrameKind::Data, Ok((DataChannel::Input, bytes)), _) if stdin => {
                         bytes_in += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                        to_supervisor.data(DataChannel::Input, bytes).await
+                        let write = to_supervisor.data(DataChannel::Input, bytes);
+                        tokio::time::timeout(CALLER_STALL, write).await
                     }
                     (FrameKind::End, _, Ok(DataChannel::Input)) if stdin => {
-                        to_supervisor.end(DataChannel::Input).await
+                        let write = to_supervisor.end(DataChannel::Input);
+                        tokio::time::timeout(CALLER_STALL, write).await
                     }
                     _ => break,
                 };
-                if forwarded.is_err() {
+                if !matches!(forwarded, Ok(Ok(()))) {
                     break;
                 }
             }
-            let _detached = to_supervisor.frame(FrameKind::Cancel, &[]).await;
+            let cancel = to_supervisor.frame(FrameKind::Cancel, &[]);
+            let _detached = tokio::time::timeout(DETACH_GRACE, cancel).await;
         };
         let grace = tokio::time::sleep(std::time::Duration::MAX);
         tokio::pin!(downstream, upstream, grace);

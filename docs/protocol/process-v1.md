@@ -214,9 +214,10 @@ Process and its supervisor have ended.
      `completed`;
    - when the caller sends `cancel`, closes, or loses its stream, or sends any frame it may not
      send, the attachment detaches with Detached `cancelled`.
-   A caller that takes no output for 30 seconds ends it with a failed `timed_out` outcome, and a
-   supervisor that has not reported 5 seconds after the caller detached ends it with a failed
-   `cancelled` outcome, so neither holds the reader slot or the stdin lease.
+   A caller that takes no output for 30 seconds ends it with a failed `timed_out` outcome. Input
+   the Process does not take within 30 seconds detaches the attachment. A supervisor that has not
+   taken the detach within 5 seconds, or reported 5 seconds after that, ends it with a failed
+   `cancelled` outcome, so none of them holds the reader slot or the stdin lease.
 4. The Detached summary is the Process as it now is, and `cursor` is the position reached.
 
 With `stdin = true`, the attachment also takes the single stdin writer lease. `data` on channel 0
