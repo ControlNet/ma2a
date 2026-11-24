@@ -50,3 +50,40 @@ test("restores the current session CSRF token from its strict host cookie", () =
   // Then
   expect(session).toEqual({ csrfToken: "cd".repeat(32) })
 })
+
+test("logs out the browser's current session when another tab replaced it", async () => {
+  // Given: this page holds the first session's token; the cookie now carries a newer session.
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+  const tokens: (string | null)[] = []
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+    const token = new Request(input, init).headers.get("x-csrf-token")
+    tokens.push(token)
+    return new Response(null, { status: token === "cd".repeat(32) ? 204 : 403 })
+  })
+
+  // When
+  await logoutSession({ csrfToken: "ab".repeat(32) })
+
+  // Then: the stale token is refused and the current session is logged out.
+  expect(tokens).toEqual(["ab".repeat(32), "cd".repeat(32)])
+})
+
+test("reports a refused logout when the cookie carries the same token", async () => {
+  // Given: the session itself is no longer valid.
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"ab".repeat(32)}`,
+  })
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (): Promise<Response> => new Response(null, { status: 403 }))
+
+  // When / Then: no retry, and the refusal is reported for the caller to sign out locally.
+  await expect(logoutSession({ csrfToken: "ab".repeat(32) })).rejects.toThrow(
+    "The Runtime did not accept",
+  )
+  expect(fetch).toHaveBeenCalledTimes(1)
+})

@@ -140,11 +140,18 @@ async fn authenticated_mutation(
     let csrf =
         headers::single_header_value(headers, &header::HeaderName::from_static("x-csrf-token"))
             .ok_or_else(|| StatusCode::FORBIDDEN.into_response())?;
+    // An internal failure is not a refusal: the session may still be valid, and a browser that
+    // read 403 as signed out would show a login page for a live session.
     state
         .auth
         .authenticate_mutation(bearer, csrf)
         .await
-        .map_err(|_| StatusCode::FORBIDDEN.into_response())
+        .map_err(|failure| match failure {
+            AuthFailure::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            AuthFailure::Unauthorized | AuthFailure::Conflict => {
+                StatusCode::FORBIDDEN.into_response()
+            }
+        })
 }
 
 async fn asset(State(state): State<WebState>, request: axum::extract::Request) -> Response {

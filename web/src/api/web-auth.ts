@@ -1,4 +1,4 @@
-import ky from "ky"
+import ky, { HTTPError } from "ky"
 import { z } from "zod"
 
 const LoginResponseSchema = z
@@ -60,10 +60,31 @@ export async function loginAndTouchSession(password: string): Promise<WebSession
 
 export async function logoutSession(session: WebSession): Promise<void> {
   try {
-    await http.post(new URL("/api/v1/web/auth/logout", window.location.origin), {
-      headers: { "x-csrf-token": session.csrfToken },
-    })
+    await postLogout(session.csrfToken)
   } catch (error) {
+    // Another tab may have signed in again since this page loaded, replacing the session cookie
+    // with one whose CSRF token this page never saw. The browser's current session is still
+    // valid then, so log it out with the token its cookie carries instead of reporting success.
+    const current = currentWebSession()
+    if (
+      error instanceof HTTPError &&
+      error.response.status === 403 &&
+      current !== undefined &&
+      current.csrfToken !== session.csrfToken
+    ) {
+      try {
+        await postLogout(current.csrfToken)
+        return
+      } catch (retry) {
+        throw new WebAuthenticationError(retry)
+      }
+    }
     throw new WebAuthenticationError(error)
   }
+}
+
+async function postLogout(csrfToken: string): Promise<void> {
+  await http.post(new URL("/api/v1/web/auth/logout", window.location.origin), {
+    headers: { "x-csrf-token": csrfToken },
+  })
 }
