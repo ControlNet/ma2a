@@ -12,7 +12,12 @@ trap 'rm -rf "$temporary"' EXIT
 
 cargo deny list --format json --layout crate > "$temporary/rust.json"
 (cd web && bun pm licenses --json --prod) > "$temporary/frontend.json"
+# The tools name workspace crates and frontend packages by absolute path; the report names
+# them relative to the checkout, so it does not depend on, or disclose, where it was built.
 jq -n \
+  --arg root "$PWD/" \
   --slurpfile rust "$temporary/rust.json" \
   --slurpfile frontend "$temporary/frontend.json" \
-  '{schema_version: 1, rust: $rust[0], frontend: $frontend[0]}' > "$output"
+  'def relative: if type == "string" then (. / $root | join("")) else . end;
+   def clean: walk(if type == "object" then with_entries(.key |= relative) else relative end);
+   {schema_version: 1, rust: ($rust[0] | clean), frontend: ($frontend[0] | clean)}' > "$output"
