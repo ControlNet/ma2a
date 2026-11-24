@@ -232,7 +232,7 @@ where
                 }
             }
             let cancel = to_supervisor.frame(FrameKind::Cancel, &[]);
-            let _detached = tokio::time::timeout(DETACH_GRACE, cancel).await;
+            matches!(tokio::time::timeout(DETACH_GRACE, cancel).await, Ok(Ok(())))
         };
         let grace = tokio::time::sleep(std::time::Duration::MAX);
         tokio::pin!(downstream, upstream, grace);
@@ -242,7 +242,11 @@ where
                 biased;
                 () = stop.cancelled() => break Err(ServiceError::Unavailable),
                 reported = &mut downstream => break reported,
-                () = &mut upstream, if !detached => {
+                delivered = &mut upstream, if !detached => {
+                    // A detach the supervisor did not take has used up the grace already.
+                    if !delivered {
+                        break Err(ServiceError::Cancelled);
+                    }
                     detached = true;
                     grace.as_mut().reset(tokio::time::Instant::now() + DETACH_GRACE);
                 }
