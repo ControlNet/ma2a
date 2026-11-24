@@ -189,6 +189,10 @@ fn apply_effect(
             Ok(AgentOutputApplied::Instance)
         }
         AgentOutputEffect::Ack(seq) => {
+            // No delivery has a number beyond what SQLite stores, so such an ack names none.
+            let Ok(seq) = i64::try_from(seq) else {
+                return Ok(AgentOutputApplied::Ignored);
+            };
             transaction.execute(
                 "UPDATE agent_instances SET acked_seq = ?3 WHERE agent_id = ?1 AND generation = ?2
                  AND acked_seq < ?3 AND ?3 < next_seq",

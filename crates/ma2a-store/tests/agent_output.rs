@@ -548,3 +548,29 @@ fn an_artifact_publication_answers_its_tool_call_in_the_same_commit() -> TestRes
     );
     Ok(())
 }
+
+#[test]
+fn an_acknowledgement_past_every_sequence_number_only_moves_the_cursor() -> TestResult {
+    // Given
+    let (_state, mut repository, generation, task) = running("agent-huge-ack")?;
+
+    // When: the Agent acknowledges a number no SQLite integer holds.
+    let acked = apply(
+        &mut repository,
+        (generation, 10),
+        AgentOutputEffect::Ack(u64::MAX),
+    )?;
+
+    // Then: it acknowledges nothing, and the next line applies.
+    assert_eq!(acked, AgentOutputApplied::Ignored);
+    assert_eq!(repository.agent_outbox((&agent()?, generation))?.len(), 1);
+    assert!(matches!(
+        apply(
+            &mut repository,
+            (generation, 11),
+            state(task, AgentTaskState::Waiting)
+        )?,
+        AgentOutputApplied::Task(_)
+    ));
+    Ok(())
+}
