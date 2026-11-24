@@ -61,8 +61,9 @@ pub(crate) async fn events(
     // the baseline was read ends the stream before anything is sent.
     let baseline = match authenticated_stamp(&state.auth, &bearer, fetch_stamp(&state)).await {
         Ok(baseline) => baseline,
-        Err(StatusCode::UNAUTHORIZED) => return StatusCode::UNAUTHORIZED.into_response(),
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        // A session-check failure keeps its own status, as at the first check; an unavailable
+        // projection is already 503.
+        Err(status) => return status.into_response(),
     };
     let (sender, receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
     if baseline.revision == query.since {
