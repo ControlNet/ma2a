@@ -40,6 +40,18 @@ fn part(part: &Value) -> Result<MessagePart, RpcError> {
     ))
 }
 
+/// The optional ID `field` of a message; absent, null, or empty names nothing, and any other
+/// value than a string is refused rather than read as absent, which would start a new task.
+fn named<'a>(message: &'a Value, field: &str) -> Result<Option<&'a str>, RpcError> {
+    match message.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(id)) => Ok(Some(id.as_str()).filter(|id| !id.is_empty())),
+        Some(_) => Err(RpcError::invalid_params(&format!(
+            "`message.{field}` is a string"
+        ))),
+    }
+}
+
 /// Reads `params.message` of `SendMessage` or `SendStreamingMessage`.
 pub(super) fn inbound(params: &Value) -> Result<Inbound, RpcError> {
     let message = params
@@ -61,13 +73,7 @@ pub(super) fn inbound(params: &Value) -> Result<Inbound, RpcError> {
         .collect::<Result<Vec<_>, _>>()?;
     let parsed = AgentMessage::new(MessageRole::User, parts)
         .map_err(|_| RpcError::invalid_params("a message carries 1-16 parts within 12 KiB"))?;
-    let named = |field: &str| {
-        message
-            .get(field)
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-    };
-    let task = match (named("taskId"), named("contextId")) {
+    let task = match (named(message, "taskId")?, named(message, "contextId")?) {
         (Some(task), Some(context)) if task != context => {
             return Err(RpcError::invalid_params("a task's contextId is its own id"));
         }
@@ -194,5 +200,39 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
         method if method.contains("PushNotificationConfig") => Err(RpcError::push_not_supported()),
         "GetExtendedAgentCard" => Err(RpcError::no_extended_card()),
         _ => Err(RpcError::method_not_found()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::inbound;
+
+    fn params(field: &str, value: &Value) -> Value {
+        let mut message =
+            json!({"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": "hi"}]});
+        if let Some(object) = message.as_object_mut() {
+            object.insert(field.to_owned(), value.clone());
+        }
+        json!({"message": message})
+    }
+
+    #[test]
+    fn a_message_continues_the_task_it_names() {
+        let task =
+            |field: &str, value: Value| inbound(&params(field, &value)).map(|read| read.task);
+        assert_eq!(task("taskId", json!("t-1")), Ok(Some("t-1".to_owned())));
+        assert_eq!(task("contextId", json!("t-1")), Ok(Some("t-1".to_owned())));
+        assert_eq!(task("taskId", json!("")), Ok(None));
+        assert_eq!(task("taskId", Value::Null), Ok(None));
+    }
+
+    #[test]
+    fn a_task_id_that_is_not_a_string_is_refused() {
+        for field in ["taskId", "contextId"] {
+            let read = inbound(&params(field, &json!(7))).map(|read| read.task);
+            assert!(read.is_err_and(|error| error.code == -32_602), "{field}");
+        }
     }
 }

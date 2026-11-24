@@ -104,7 +104,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - Resending the same message to the same route replays the original operation and answers the same task.
   - Reusing a `messageId` for a different message conflicts, and answers `-32603` with reason `CONFLICT`.
   - The same `messageId` sent to two routes names two operations.
-- `taskId` or `contextId` names the task a message continues; when both are present they must be equal. A message without either creates a task.
+- `taskId` or `contextId` names the task a message continues; when both are present they must be equal. A message without either, or with them null or empty, creates a task. Any value other than a string answers `-32602`.
 
 ### Tasks
 
