@@ -98,6 +98,40 @@ fn update(event: &Value, (task, current, base): (&str, &str, &str)) -> Option<Va
     }
 }
 
+/// Where a followed stream stands.
+struct Position {
+    /// The state the stream last showed.
+    current: String,
+    /// The states the stream closes on.
+    finishes: fn(&str) -> bool,
+    /// The newest event the first frame already showed.
+    shown: u64,
+}
+
+impl Position {
+    /// Whether the stream closes with its first frame. An ended task never changes again;
+    /// after a message to a waiting task, only a state reached since then counts.
+    fn closes_at_once(&self, sent_at: Option<u32>) -> bool {
+        ended(&self.current) || (sent_at.is_none() && (self.finishes)(&self.current))
+    }
+
+    /// The update one followed event becomes, and whether the stream closes with it. An
+    /// event the first frame already showed still moves the state, but is not sent again.
+    fn forward(&mut self, event: &Value, (task, base): (&str, &str)) -> (Option<Value>, bool) {
+        let state = text(event, "/kind") == "state";
+        if state {
+            text(event, "/state").clone_into(&mut self.current);
+        }
+        let seq = event.get("seq").and_then(Value::as_u64).unwrap_or_default();
+        let update = if seq > self.shown {
+            update(event, (task, &self.current, base))
+        } else {
+            None
+        };
+        (update, state && (self.finishes)(&self.current))
+    }
+}
+
 /// Starts the stream: the task as it is now, then its updates.
 pub(super) fn respond(owned: Owned, lifecycle: Lifecycle) -> Response {
     let (frames, received) = mpsc::channel::<Result<Event, Infallible>>(BUFFERED);
@@ -165,31 +199,25 @@ async fn produce(
         Ok(first) => first,
         Err(refusal) => return send(frames, &refused(refusal)).await.then_some(()),
     };
-    let finishes = |state: &str| {
-        if lifecycle.until_waiting {
-            settled(state)
+    let shown = view::last_seq(&details);
+    let mut position = Position {
+        current: text(&details, "/task/state").to_owned(),
+        finishes: if lifecycle.until_waiting {
+            settled
         } else {
-            ended(state)
-        }
+            ended
+        },
+        shown: u64::from(shown),
     };
-    let mut current = text(&details, "/task/state").to_owned();
-    let settled_now = lifecycle.sent_at.is_none() && finishes(&current);
+    let settled_now = position.closes_at_once(lifecycle.sent_at);
     if !send(frames, &success(id, &json!({"task": first}))).await || settled_now {
         return Some(());
     }
-    let after = lifecycle
-        .sent_at
-        .unwrap_or_else(|| view::last_seq(&details));
+    let after = lifecycle.sent_at.unwrap_or(shown);
     let (events, mut received) = mpsc::unbounded_channel();
     let following = owned.backend.follow((&owned.route, (task, after)), &events);
     tokio::pin!(following);
-    let mut forward = |event: Value| {
-        if text(&event, "/kind") == "state" {
-            text(&event, "/state").clone_into(&mut current);
-        }
-        let last = text(&event, "/kind") == "state" && finishes(&current);
-        (update(&event, (task, &current, &owned.base)), last)
-    };
+    let mut forward = |event: Value| position.forward(&event, (task, &owned.base));
     let followed = loop {
         let event = match next(&mut received, following.as_mut(), frames).await {
             Next::Event(event) => event,
@@ -222,30 +250,5 @@ async fn produce(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{convert::Infallible, time::Duration};
-
-    use axum::response::sse::Event;
-    use tokio::sync::mpsc;
-
-    use super::{Next, next};
-
-    #[tokio::test]
-    async fn a_disconnected_client_ends_the_follow_of_a_quiet_task() {
-        // Given: a follow that never ends and no event to forward.
-        let (frames, client) = mpsc::channel::<Result<Event, Infallible>>(1);
-        let (_events, mut received) = mpsc::unbounded_channel();
-        let following = std::pin::pin!(std::future::pending());
-
-        // When
-        drop(client);
-        let next = tokio::time::timeout(
-            Duration::from_secs(5),
-            next(&mut received, following, &frames),
-        )
-        .await;
-
-        // Then
-        assert!(matches!(next, Ok(Next::Gone)));
-    }
-}
+#[path = "stream_tests.rs"]
+mod tests;

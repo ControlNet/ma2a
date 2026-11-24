@@ -220,12 +220,21 @@ fn send_replay_and_continue(adapter: &Adapter, lead: &str) -> TestResult {
     let streamed = adapter
         .call((lead, "SendStreamingMessage"), &reply)?
         .events()?;
-    let end = streamed.last().ok_or("empty stream")?;
-    assert_eq!(
-        text(end, "/result/statusUpdate/status/state"),
-        "TASK_STATE_COMPLETED",
-        "{streamed:?}"
-    );
+    // The first frame already shows the end when the Agent finished before the stream read
+    // the task; either way nothing follows the end.
+    let state = |event: &Value| {
+        let update = text(event, "/result/statusUpdate/status/state");
+        if update.is_empty() {
+            text(event, "/result/task/status/state")
+        } else {
+            update
+        }
+    };
+    let end = streamed
+        .iter()
+        .position(|event| state(event) == "TASK_STATE_COMPLETED")
+        .ok_or_else(|| format!("no end: {streamed:?}"))?;
+    assert_eq!(end + 1, streamed.len(), "{streamed:?}");
     Ok(())
 }
 
