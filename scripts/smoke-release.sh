@@ -112,6 +112,7 @@ while [[ ${#asset_queue[@]} -gt 0 ]]; do
       *.js) expected_type='text/javascript' ;;
       *.css) expected_type='text/css' ;;
       *.svg) expected_type='image/svg+xml' ;;
+      *.woff2) expected_type='font/woff2' ;;
       *) expected_type='application/octet-stream' ;;
     esac
     [[ "$content_type" == "$expected_type"* ]] || {
