@@ -253,6 +253,8 @@ exposes only signal names. Sessions never survive a restart.
 
 A stream over a bound is rejected with `concurrency_exceeded` before any byte is read. The
 `open` frame must arrive within 15 seconds. Permits are RAII and released on every exit path.
+A peer the Runtime refuses outright, such as a non-member, gives its permit back before the
+`reject` frame is written, so refusals cannot fill a bound.
 A host waits at most 5 seconds to write the frame that opens or ends an operation (`accept`,
 `reject`, or `outcome`) and to close the stream, and a Process supervisor must answer within
 10 seconds, so a caller that stops reading, or a supervisor that stops answering, cannot hold a

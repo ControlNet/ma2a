@@ -82,8 +82,8 @@ pub struct ServiceStream {
     send: SendStream,
     receive: RecvStream,
     _connection: Option<Connection>,
-    _permit: Option<ServicePermit>,
-    _active: Option<ActiveServiceStream>,
+    permit: Option<ServicePermit>,
+    active: Option<ActiveServiceStream>,
 }
 
 impl ServiceStream {
@@ -97,8 +97,8 @@ impl ServiceStream {
             send,
             receive,
             _connection: None,
-            _permit: None,
-            _active: None,
+            permit: None,
+            active: None,
         }
     }
 
@@ -111,8 +111,8 @@ impl ServiceStream {
             send,
             receive,
             _connection: Some(connection),
-            _permit: None,
-            _active: None,
+            permit: None,
+            active: None,
         }
     }
 }
@@ -139,8 +139,8 @@ impl ServiceCall {
                 send,
                 receive,
                 _connection: None,
-                _permit: Some(permit),
-                _active: Some(ActiveServiceStream::new(metrics)),
+                permit: Some(permit),
+                active: Some(ActiveServiceStream::new(metrics)),
             },
             metrics: metrics.clone(),
         }
@@ -162,9 +162,11 @@ impl ServiceCall {
         self.stream
     }
 
-    /// Rejects the stream without reading it; the reject frame is written in the background.
-    pub fn reject(self, error: ServiceError) {
+    /// Rejects the stream without reading it; the reject frame is written in the background,
+    /// and the stream gives its concurrency place back first, so a refused peer holds none.
+    pub fn reject(mut self, error: ServiceError) {
         self.metrics.0.rejected.fetch_add(1, Ordering::Relaxed);
+        drop((self.stream.permit.take(), self.stream.active.take()));
         tokio::spawn(write_reject(self.stream, error));
     }
 }

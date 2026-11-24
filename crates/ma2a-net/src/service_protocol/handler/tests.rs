@@ -123,7 +123,8 @@ async fn runtime_rejection_never_hands_the_stream_to_runtime_code() -> TestResul
     // When
     call.reject(ServiceError::Unauthorized);
 
-    // Then
+    // Then: its place is free before the peer has even read the refusal.
+    assert_eq!(metrics.snapshot().active_streams, 0);
     assert_eq!(
         read_reject(&mut receive).await?,
         Some(ServiceError::Unauthorized)
