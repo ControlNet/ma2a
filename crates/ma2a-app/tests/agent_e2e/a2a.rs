@@ -282,6 +282,21 @@ fn stream_get_and_list(
         &json!({"status": "TASK_STATE_COMPLETED"}),
     )?;
     assert_eq!(text(&listed, "/tasks/0/id"), fetched, "{listed}");
+    let with_artifacts = adapter.result(
+        (worker, "ListTasks"),
+        &json!({"status": "TASK_STATE_COMPLETED", "includeArtifacts": true}),
+    )?;
+    assert_eq!(
+        text(&with_artifacts, "/tasks/0/artifacts/0/name"),
+        "fetched.bin"
+    );
+    assert!(
+        with_artifacts
+            .pointer("/tasks/0/history")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(Vec::is_empty),
+        "{with_artifacts}"
+    );
     let unknown = adapter.call((worker, "GetTask"), &json!({"id": "00".repeat(16)}))?;
     assert_eq!(error_code(&unknown)?, -32_001);
     let push = adapter.call((lead, "CreateTaskPushNotificationConfig"), &json!({}))?;

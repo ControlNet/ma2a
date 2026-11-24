@@ -111,7 +111,11 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
         .collect();
     let more = start + page.len() < matching.len();
     let artifacts = params.get("includeArtifacts").and_then(Value::as_bool) == Some(true);
-    let detail = detail(params, artifacts)?;
+    // A listing includes history only when `historyLength` asks for it.
+    let detail = Detail {
+        history: Some(detail(params, artifacts)?.history.unwrap_or(0)),
+        artifacts,
+    };
     let mut tasks = Vec::with_capacity(page.len());
     for summary in &page {
         // History and artifacts need each task's details; a bare page needs none.
