@@ -82,6 +82,8 @@ jobs:
         run: |
           compgen -G 'web/dist/assets/*.js' >/dev/null || { echo 'no built console to scan' >&2; exit 1; }
           ./scripts/test-runtime-references.sh
+      - name: Check the license report does not name its checkout
+        run: ./scripts/test-license-report.sh
 
   architecture-probe:
     strategy:
