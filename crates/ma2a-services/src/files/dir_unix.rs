@@ -19,7 +19,7 @@ use rustix::{
     io::Errno,
 };
 
-use super::entry::Entry;
+use super::{entry::Entry, stop::Stop};
 use crate::{client::resume::is_private_directory, fs_error};
 
 const DIRECTORY: OFlags = OFlags::RDONLY
@@ -121,10 +121,13 @@ impl Directory {
     /// A download's private directory inside the tree is kept with everything in it, so its
     /// progress survives; the directories above it then stay too, and the removal ends with
     /// `not_empty` after removing everything else.
-    pub(crate) fn remove_tree(&self, name: &str) -> Result<(), ServiceError> {
+    pub(crate) fn remove_tree(&self, name: &str, stop: &Stop) -> Result<(), ServiceError> {
         let directory = self.child(name)?;
         // Entries are removed while the directory is read, so memory stays bounded.
         for child in fs_error::map(at::Dir::read_from(&*directory.fd).map_err(io))? {
+            if stop.is_set() {
+                return Err(ServiceError::Cancelled);
+            }
             let child = fs_error::map(child.map_err(io))?;
             let bytes = child.file_name().to_bytes();
             // A non-UTF-8 name cannot be addressed remotely; it keeps the directory non-empty.
@@ -137,7 +140,7 @@ impl Directory {
             match directory.entry(child)? {
                 // A subdirectory left non-empty by a kept download does not stop its siblings.
                 Some(entry) if entry.kind == FileKind::Directory => {
-                    match directory.remove_tree(child) {
+                    match directory.remove_tree(child, stop) {
                         Err(ServiceError::NotEmpty) => {}
                         removed => removed?,
                     }
@@ -145,6 +148,9 @@ impl Directory {
                 Some(_) => fs_error::map(directory.remove_file(child))?,
                 None => {}
             }
+        }
+        if stop.is_set() {
+            return Err(ServiceError::Cancelled);
         }
         fs_error::map(self.remove_dir(name))
     }

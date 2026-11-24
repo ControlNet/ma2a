@@ -16,6 +16,7 @@ mod platform;
 #[cfg(windows)]
 pub(crate) mod rename_windows;
 mod resolve;
+mod stop;
 
 use std::path::PathBuf;
 
@@ -34,6 +35,7 @@ use crate::{
     report::{OperationReport, len64},
 };
 use ops::Failure;
+use stop::Stop;
 
 /// Serves one Files request inside the canonical local directory of its exported root.
 pub async fn serve_files<R, W>(
@@ -47,26 +49,30 @@ where
 {
     match request {
         FilesRequest::Read(path, offset, length) => {
-            let result = blocking(move || content::read(&root, &path, (offset, length))).await;
+            let result = blocking(move |_| content::read(&root, &path, (offset, length))).await;
             read_reply(result, writer).await
         }
         FilesRequest::Write(path, mode, length) => {
             write_reply((root, path, mode, length), reader, writer).await
         }
         request => {
-            let result = blocking(move || content_free(&root, &request)).await;
+            let result = blocking(move |stop| content_free(&root, &request, stop)).await;
             content_free_reply(result, writer).await
         }
     }
 }
 
-fn content_free(root: &std::path::Path, request: &FilesRequest) -> Result<FilesResult, Failure> {
+fn content_free(
+    root: &std::path::Path,
+    request: &FilesRequest,
+    stop: &Stop,
+) -> Result<FilesResult, Failure> {
     match request {
         FilesRequest::Stat(path) => Ok(ops::stat(root, path)?),
         FilesRequest::List(path, cursor) => Ok(ops::list(root, path, cursor.as_deref())?),
         FilesRequest::Mkdir(path, parents) => ops::mkdir(root, path, *parents),
         FilesRequest::Rename(from, to, replace) => Ok(ops::rename(root, (from, to), *replace)?),
-        FilesRequest::Remove(path, recursive) => ops::remove(root, path, *recursive),
+        FilesRequest::Remove(path, recursive) => ops::remove(root, path, (*recursive, stop)),
         FilesRequest::Read(..) | FilesRequest::Write(..) => Err(ServiceError::Internal.into()),
     }
 }
@@ -78,15 +84,19 @@ fn content_free(root: &std::path::Path, request: &FilesRequest) -> Result<FilesR
 const MAX_BLOCKING_JOBS: usize = 16;
 static BLOCKING_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_BLOCKING_JOBS);
 
+/// Runs `work` on a blocking thread. Once this future is dropped before the job ends, as when
+/// the stream is cancelled or its grant revoked, `work` sees its [`Stop`] set.
 async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, Failure> + Send + 'static,
+    work: impl FnOnce(&Stop) -> Result<T, Failure> + Send + 'static,
 ) -> Result<T, Failure> {
+    let stop = Stop::default();
+    let _stops = stop.on_drop();
     let Ok(permit) = BLOCKING_JOBS.acquire().await else {
         return Err(ServiceError::Internal.into());
     };
     tokio::task::spawn_blocking(move || {
         let _held = permit;
-        work()
+        work(&stop)
     })
     .await
     .unwrap_or_else(|_| Err(ServiceError::Internal.into()))
@@ -144,7 +154,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let prepared = blocking(move || Ok(content::prepare_write(&root, &path, mode)?)).await;
+    let prepared = blocking(move |_| Ok(content::prepare_write(&root, &path, mode)?)).await;
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(Failure { error, .. }) => return reply::reject(writer, error).await,
@@ -157,7 +167,7 @@ where
         Err(error) => return outcome(writer, Err(error), (0, 0)).await,
     };
     let received = len64(content.len());
-    let written = blocking(move || Ok(content::commit_write(prepared, &content, mode)?)).await;
+    let written = blocking(move |_| Ok(content::commit_write(prepared, &content, mode)?)).await;
     let result = written
         .map(FilesResult::Written)
         .map_err(|failure| failure.error);

@@ -6,7 +6,10 @@ use ma2a_core::service::{
     DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, RemotePath, ServiceError,
 };
 
-use super::resolve::{self, Directory};
+use super::{
+    resolve::{self, Directory},
+    stop::Stop,
+};
 use crate::fs_error;
 
 /// A failed operation and whether some of its effect may already have happened.
@@ -144,15 +147,18 @@ pub(crate) fn rename(
 }
 
 /// Removes a file, link, or empty directory; `recursive` removes a directory tree.
+///
+/// A recursive removal stops before its next change once `stop` is set, failing with
+/// `cancelled` and reporting that part of the tree may already be gone.
 pub(crate) fn remove(
     root: &Path,
     path: &RemotePath,
-    recursive: bool,
+    (recursive, stop): (bool, &Stop),
 ) -> Result<FilesResult, Failure> {
     let (parent, name) = entry_parent(root, path)?;
     let entry = parent.entry(name)?.ok_or(ServiceError::NotFound)?;
     match entry.kind {
-        FileKind::Directory if recursive => parent.remove_tree(name).map_err(partial)?,
+        FileKind::Directory if recursive => parent.remove_tree(name, stop).map_err(partial)?,
         FileKind::Directory => fs_error::map(parent.remove_dir(name))?,
         FileKind::File | FileKind::Symlink | FileKind::Other => {
             fs_error::map(parent.remove_entry(name))?;
@@ -163,7 +169,42 @@ pub(crate) fn remove(
 
 #[cfg(test)]
 mod tests {
-    use super::addressable;
+    use ma2a_core::service::{FilesResult, RemotePath, ServiceError};
+
+    use super::{Failure, Stop, addressable, remove};
+
+    #[test]
+    fn a_stopped_recursive_removal_changes_nothing_more() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = std::env::temp_dir().join(format!("ma2a-stop-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("tree/inner"))?;
+        std::fs::write(root.join("tree/a"), b"a")?;
+        std::fs::write(root.join("tree/inner/b"), b"b")?;
+        let path = RemotePath::parse("docs:/tree")?;
+
+        // Once its caller stopped waiting, the removal stops before its first change.
+        let stopped = Stop::default();
+        drop(stopped.on_drop());
+        assert_eq!(
+            remove(&root, &path, (true, &stopped)),
+            Err(Failure {
+                error: ServiceError::Cancelled,
+                partial: true
+            })
+        );
+        assert_eq!(std::fs::read(root.join("tree/a"))?, b"a");
+        assert_eq!(std::fs::read(root.join("tree/inner/b"))?, b"b");
+
+        // Otherwise the whole tree goes.
+        assert_eq!(
+            remove(&root, &path, (true, &Stop::default())),
+            Ok(FilesResult::Done)
+        );
+        assert!(!root.join("tree").exists());
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
+    }
 
     #[test]
     fn a_name_longer_than_a_path_component_is_not_addressable() {

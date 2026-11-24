@@ -20,7 +20,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 
-use super::entry::Entry;
+use super::{entry::Entry, stop::Stop};
 use crate::{client::resume::is_private_directory, fs_error};
 
 /// One pinned directory inside an exported root.
@@ -143,10 +143,13 @@ impl Directory {
     /// A download's private directory inside the tree is kept with everything in it, so its
     /// progress survives; the directories above it then stay too, and the removal ends with
     /// `not_empty` after removing everything else.
-    pub(crate) fn remove_tree(&self, name: &str) -> Result<(), ServiceError> {
+    pub(crate) fn remove_tree(&self, name: &str, stop: &Stop) -> Result<(), ServiceError> {
         // Refuses a reparse point, and pins the directory while its entries are removed.
         let directory = self.child(name)?;
         for child in fs_error::map(fs::read_dir(&directory.path))? {
+            if stop.is_set() {
+                return Err(ServiceError::Cancelled);
+            }
             let child = fs_error::map(child)?.file_name();
             // A name that is not valid Unicode cannot be addressed remotely; it keeps the
             // directory non-empty, as on Unix.
@@ -159,7 +162,7 @@ impl Directory {
             match directory.entry(child)? {
                 // A subdirectory left non-empty by a kept download does not stop its siblings.
                 Some(entry) if entry.kind == FileKind::Directory => {
-                    match directory.remove_tree(child) {
+                    match directory.remove_tree(child, stop) {
                         Err(ServiceError::NotEmpty) => {}
                         removed => removed?,
                     }
@@ -170,6 +173,9 @@ impl Directory {
         }
         // The pin denies deletion, so it is released before the directory itself goes.
         drop(directory);
+        if stop.is_set() {
+            return Err(ServiceError::Cancelled);
+        }
         fs_error::map(self.remove_dir(name))
     }
 

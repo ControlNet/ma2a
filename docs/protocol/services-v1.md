@@ -254,6 +254,9 @@ A stream over a bound is rejected with `concurrency_exceeded` before any byte is
 `open` frame must arrive within 15 seconds. Permits are RAII and released on every exit path.
 At most 16 blocking Files jobs run at once Runtime-wide; a job reset at its deadline keeps its slot
 until it actually finishes, so abandoned work (a huge recursive removal or listing) cannot pile up.
+A recursive removal whose stream ends first, because it was cancelled, its grant revoked, or its
+deadline passed, removes nothing more: it checks before each entry and stops, so part of the tree
+may already be gone, but no later entry is touched.
 
 ## Audit
 
