@@ -157,7 +157,9 @@ async fn produce(
         history: None,
         artifacts: true,
     };
-    let first = match view::task(served, task, detail).await {
+    // The first frame, the state, and the cursor all come from one snapshot, so the stream
+    // neither repeats an event the frame shows nor closes on a state it does not.
+    let first = match view::of(served, &details, detail).await {
         Ok(first) => first,
         Err(refusal) => return send(frames, &refused(refusal)).await.then_some(()),
     };

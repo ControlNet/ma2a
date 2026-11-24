@@ -139,7 +139,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 | `progress` | `statusUpdate` with the current state and the progress text as an agent message |
 | `artifact` | `artifactUpdate` with the artifact, `append: false`, `lastChunk: true` |
 
-- The adapter follows events from the task's newest sequence number, so no event is reported twice.
+- The first `{task}`, the state the stream starts from, and the sequence number it follows from all come from one read of the task; a message that continues a waiting task is followed from the moment it was sent instead. A local task's history holds only the events that read counted, so no event is reported twice.
 - A follow interrupted by a transient remote failure reconnects from the last delivered event.
 
 ### Artifact content

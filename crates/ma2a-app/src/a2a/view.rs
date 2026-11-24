@@ -61,32 +61,60 @@ async fn history(served: Served<'_>, details: &Value) -> Result<Vec<Value>, Refu
         .map(|input| mapping::message(input, (task, "input")))
         .into_iter()
         .collect();
-    let (mut after, mut more) = (0_u64, true);
-    while more {
-        let fields = fields([("task_id", json!(task)), ("after", json!(after))]);
+    // Only the events the details counted, so the history agrees with the state beside it.
+    let last = u64::from(last_seq(details));
+    let mut after = Some(0);
+    while let Some(from) = after.filter(|from| *from < last) {
+        let fields = fields([("task_id", json!(task)), ("after", json!(from))]);
         let page = served.backend.local("agent_task_events", fields).await?;
-        for event in page
-            .get("events")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let seq = event.get("seq").and_then(Value::as_u64).unwrap_or(after);
-            after = seq;
-            if let Some(message) = event.get("message").filter(|message| !message.is_null()) {
-                history.push(mapping::message(message, (task, &format!("m{seq}"))));
-            }
-        }
-        more = page.get("more").and_then(Value::as_bool).unwrap_or(false);
+        after = add_page(&mut history, &page, (task, from, last));
     }
     Ok(history)
+}
+
+/// Adds the messages of one page of a task's events after `after`, up to the event `last`, to
+/// `history`; returns where the next page starts, while one is left to read.
+fn add_page(
+    history: &mut Vec<Value>,
+    page: &Value,
+    (task, after, last): (&str, u64, u64),
+) -> Option<u64> {
+    let mut after = after;
+    for event in page
+        .get("events")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let seq = event.get("seq").and_then(Value::as_u64).unwrap_or(after);
+        if seq > last {
+            return None;
+        }
+        after = seq;
+        if let Some(message) = event.get("message").filter(|message| !message.is_null()) {
+            history.push(mapping::message(message, (task, &format!("m{seq}"))));
+        }
+    }
+    page.get("more")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        .then_some(after)
 }
 
 /// One task as an A2A `Task`.
 pub(super) async fn task(served: Served<'_>, id: &str, detail: Detail) -> Result<Value, Refusal> {
     let details = served.backend.details(served.route, id).await?;
-    let history = history(served, &details).await?;
-    Ok(mapping::task(&details, (&history, served.base), detail))
+    of(served, &details, detail).await
+}
+
+/// The task one snapshot of its details shows, as an A2A `Task`.
+pub(super) async fn of(
+    served: Served<'_>,
+    details: &Value,
+    detail: Detail,
+) -> Result<Value, Refusal> {
+    let history = history(served, details).await?;
+    Ok(mapping::task(details, (&history, served.base), detail))
 }
 
 /// Waits until a task whose summary is `summary` reaches a state `until` accepts.
@@ -120,5 +148,34 @@ pub(super) async fn wait(
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::add_page;
+
+    #[test]
+    fn history_stops_at_the_last_event_the_details_counted() {
+        // Given: a page holding a message the details did not count yet.
+        let message = json!({"role": "agent", "parts": [{"text": "hi"}]});
+        let page = json!({"events": [
+            {"seq": 1, "message": message},
+            {"seq": 2, "message": null},
+            {"seq": 3, "message": message},
+        ], "more": true});
+
+        // When
+        let mut history = Vec::new();
+        let next = add_page(&mut history, &page, ("t", 0, 2));
+
+        // Then
+        assert_eq!(history.len(), 1);
+        assert_eq!(next, None);
+        let mut whole = Vec::new();
+        assert_eq!(add_page(&mut whole, &page, ("t", 0, 3)), Some(3));
+        assert_eq!(whole.len(), 2);
     }
 }
