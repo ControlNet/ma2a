@@ -25,7 +25,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let frame = match first(reader).await? {
-        First::Finished(frame) => return finished(&frame, Vec::new()),
+        First::Finished(frame) => return finished(&frame, request, Vec::new()),
         First::Accepted(_) => next_after_accept(reader, writer, (request, content)).await?,
     };
     let mut read = Vec::new();
@@ -41,7 +41,7 @@ where
                 }
                 read.extend_from_slice(bytes);
             }
-            FrameKind::Outcome => return finished(&frame, read),
+            FrameKind::Outcome => return finished(&frame, request, read),
             _ => return Err(unexpected(&frame)),
         }
         frame = next(reader).await?;
@@ -72,12 +72,72 @@ where
     next(reader).await
 }
 
-fn finished(frame: &crate::Frame, read: Vec<u8>) -> Result<(FilesResult, Vec<u8>), ClientError> {
+fn finished(
+    frame: &crate::Frame,
+    request: &FilesRequest,
+    read: Vec<u8>,
+) -> Result<(FilesResult, Vec<u8>), ClientError> {
     let result = decoded(FilesResult::decode_outcome(frame.payload()))?;
-    if let FilesResult::Read(length, _) = result
-        && usize::try_from(length).ok() != Some(read.len())
-    {
-        return Err(ClientError::Stream(ServiceError::IntegrityMismatch));
-    }
+    answers(request, &result, read.len()).map_err(ClientError::Stream)?;
     Ok((result, read))
+}
+
+/// Checks that `result` answers `request`: the operation's own result, the full write, and
+/// content only for a read, exactly as long as the read reports.
+fn answers(request: &FilesRequest, result: &FilesResult, read: usize) -> Result<(), ServiceError> {
+    let counted = match (request, result) {
+        (FilesRequest::Read(_, _, max), FilesResult::Read(length, _)) => {
+            length <= max && usize::try_from(*length).ok() == Some(read)
+        }
+        (FilesRequest::Write(_, _, length), FilesResult::Written(size)) => {
+            read == 0 && u64::from(*length) == *size
+        }
+        (FilesRequest::Stat(_), FilesResult::Metadata(_))
+        | (FilesRequest::List(..), FilesResult::Listing(..))
+        | (
+            FilesRequest::Mkdir(..) | FilesRequest::Rename(..) | FilesRequest::Remove(..),
+            FilesResult::Done,
+        ) => read == 0,
+        _ => return Err(ServiceError::InvalidInput),
+    };
+    if counted {
+        Ok(())
+    } else {
+        Err(ServiceError::IntegrityMismatch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::service::{FilesRequest, FilesResult, RemotePath, ServiceError, WriteMode};
+
+    use super::answers;
+
+    #[test]
+    fn a_result_must_answer_its_own_request_in_full() -> Result<(), Box<dyn std::error::Error>> {
+        let path = RemotePath::parse("docs:/a")?;
+        let write = FilesRequest::Write(path.clone(), WriteMode::Replace, 3);
+        let read = FilesRequest::Read(path.clone(), 0, 4);
+        let stat = FilesRequest::Stat(path);
+
+        assert_eq!(answers(&write, &FilesResult::Written(3), 0), Ok(()));
+        assert_eq!(answers(&read, &FilesResult::Read(2, true), 2), Ok(()));
+        assert_eq!(
+            answers(&write, &FilesResult::Written(0), 0),
+            Err(ServiceError::IntegrityMismatch)
+        );
+        assert_eq!(
+            answers(&read, &FilesResult::Read(5, true), 5),
+            Err(ServiceError::IntegrityMismatch)
+        );
+        assert_eq!(
+            answers(&stat, &FilesResult::Done, 0),
+            Err(ServiceError::InvalidInput)
+        );
+        assert_eq!(
+            answers(&write, &FilesResult::Done, 0),
+            Err(ServiceError::InvalidInput)
+        );
+        Ok(())
+    }
 }
