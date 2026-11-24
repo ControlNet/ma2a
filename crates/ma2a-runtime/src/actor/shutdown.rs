@@ -24,6 +24,9 @@ impl Actor {
         };
         // A failure closing one resource must not skip joining the others.
         let endpoint_closed = self.endpoint.shutdown().await;
+        // Nobody drains the observations once the loop has stopped; closing the
+        // channel releases an observer that is waiting for room to send.
+        self.relay_observations.close();
         let observer_stopped = self.relay_observer.await;
         let observation = self.store.observe(&self.state).await;
         let clean_shutdown = if clean
