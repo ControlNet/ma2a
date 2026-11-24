@@ -237,6 +237,6 @@ async fn run<R, W>(
             OperationEnd::Failed(ServiceError::OutcomeUnknown)
         }
     };
-    let _closed = bounded(client_writer.shutdown()).await;
+    let _closed = bounded(ma2a_services::reply::close(client_writer)).await;
     guard.finish(OperationReport::new(end).with_bytes(relayed.to_target, relayed.from_target));
 }

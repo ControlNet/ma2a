@@ -11,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 use super::super::{CallIo, fault};
-use crate::stream_plane::relay::{CANCEL_GRACE, ClientWrite, Relayed, Terminal, relay};
+use crate::stream_plane::relay::{CANCEL_GRACE, ClientWrite, Relayed, relay};
 
 /// Bytes buffered between the caller's frames and the relay.
 const PUMP_BUFFER: usize = 128 * 1024;
@@ -86,7 +86,7 @@ where
                 // Dropping the relay may cut a frame toward the caller short; then nothing
                 // may follow it on that stream.
                 return Relayed {
-                    terminal: Terminal::Lost,
+                    terminal: writing.terminal(),
                     to_target: 0,
                     from_target: 0,
                     client_present: !ending.left.load(Ordering::Relaxed) && !writing.torn(),

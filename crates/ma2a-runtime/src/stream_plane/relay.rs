@@ -4,7 +4,10 @@
 //! The relay decides nothing about replay; it only reports how the target ended.
 
 use std::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -24,17 +27,27 @@ pub(crate) const FINAL_WRITE_GRACE: Duration = Duration::from_secs(5);
 /// a target that takes nothing for longer is stalled and gets cancelled.
 const FORWARD_STALL: Duration = Duration::from_secs(30);
 
-/// Whether a frame toward the client is being written right now.
+/// What an owner that drops a relay can still learn from it: whether a frame toward the client
+/// is being written right now, and the target's terminal once it was read.
 ///
-/// A relay dropped while this is set may have left the client's stream inside a frame, so
-/// nothing may be appended to that stream afterwards.
+/// A relay dropped while a write is under way may have left the client's stream inside a
+/// frame, so nothing may be appended to that stream afterwards. A terminal read before the
+/// drop stays known even when forwarding it to the client never finished.
 #[derive(Debug, Default)]
-pub(crate) struct ClientWrite(AtomicBool);
+pub(crate) struct ClientWrite {
+    writing: AtomicBool,
+    terminal: OnceLock<Terminal>,
+}
 
 impl ClientWrite {
     /// Returns whether the client's stream may end inside a frame.
     pub(crate) fn torn(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.writing.load(Ordering::Relaxed)
+    }
+
+    /// Returns the target's terminal if it was read, or [`Terminal::Lost`].
+    pub(crate) fn terminal(&self) -> Terminal {
+        self.terminal.get().cloned().unwrap_or(Terminal::Lost)
     }
 }
 
@@ -164,7 +177,7 @@ where
                 cancelling = true;
                 grace.as_mut().reset(tokio::time::Instant::now() + CANCEL_GRACE);
             }
-            () = &mut grace, if cancelling => break Terminal::Lost,
+            () = &mut grace, if cancelling => break writing.terminal(),
         }
     };
     Relayed {
@@ -255,13 +268,16 @@ where
             }
             _ => return Terminal::Lost,
         };
+        if let Some(terminal) = &terminal {
+            let _kept = writing.terminal.set(terminal.clone());
+        }
         if matches!(terminal, Some(Terminal::Outcome { .. })) {
             before_outcome();
         }
         if !shared.client_gone.load(Ordering::Relaxed) {
-            writing.0.store(true, Ordering::Relaxed);
+            writing.writing.store(true, Ordering::Relaxed);
             let forwarded = forward(client_writer, &frame).await;
-            writing.0.store(false, Ordering::Relaxed);
+            writing.writing.store(false, Ordering::Relaxed);
             if forwarded.is_err() {
                 shared.client_gone.store(true, Ordering::Relaxed);
                 shared.client_lost.notify_one();

@@ -117,7 +117,8 @@ Admission and replay:
   never reserve.
 - **Not started.** A target `reject` or a failed dial releases the reservation.
 - **Completed.** A target `outcome` is recorded. The same request later receives that exact
-  frame again without contacting the target.
+  frame again without contacting the target. A terminal the Runtime has read is recorded even
+  when a client that cancelled and stopped reading never takes it within the cancel grace.
 - **Indeterminate.** A stream lost after `open` was written is recorded as a failed
   `outcome(outcome_unknown)`, which is also the answer for a reservation left by a previous
   Runtime process.
