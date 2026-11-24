@@ -69,6 +69,15 @@ test "$(run "$near")" -eq 2
 test "$(cat "$near/run-1-notes.log")" = notes
 test "$(cat "$near/run-1.log")" = old
 
+# A directory another run has claimed is refused and left as it is.
+claimed="$temporary/claimed"
+mkdir "$claimed" "$claimed.lock"
+printf '' > "$claimed/.ma2a-e2e-evidence"
+printf 'theirs' > "$claimed/run-1.log"
+test "$(run "$claimed")" -eq 2
+test "$(cat "$claimed/run-1.log")" = theirs
+test -d "$claimed.lock" || { printf 'another run'"'"'s claim was removed\n' >&2; exit 1; }
+
 # Without the marker, nothing is touched.
 unmarked="$temporary/unmarked"
 mkdir "$unmarked"

@@ -20,6 +20,25 @@ while [ "${output%/}" != "$output" ] && [ -n "${output%/}" ]; do
   output=${output%/}
 done
 command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 2; }
+# A run claims its output directory before looking into it and keeps the claim until its
+# evidence is checked, so two runs given one directory never remove or mix each other's files.
+# Runs given different directories still take turns on the shared JUnit report below.
+claim="$output.lock"
+claimed=false
+held=false
+release() { if [ "$held" = true ]; then rmdir "$lock" 2>/dev/null || true; held=false; fi; }
+cleanup() {
+  release
+  if [ "$claimed" = true ]; then rmdir "$claim" 2>/dev/null || true; claimed=false; fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT; trap 'cleanup; exit 143' TERM; trap 'cleanup; exit 129' HUP
+mkdir -p "$(dirname "$output")"
+if ! mkdir "$claim" 2>/dev/null; then
+  printf '%s is in use by another E2E run; remove %s if none is active\n' "$output" "$claim" >&2
+  exit 2
+fi
+claimed=true
 # An existing output directory is reused only when it is empty, or carries this script's marker
 # and holds nothing but files this script writes. Exactly the files found in that check are
 # removed, so a mistyped MA2A_E2E_OUTPUT, a file someone added to an evidence directory, or one
@@ -85,10 +104,6 @@ metadata_json=$(cargo metadata --locked --format-version 1 --no-deps)
 target=$(printf '%s\n' "$metadata_json" | jq -er '.target_directory' | tr -d '\r')
 junit="$target/nextest/ci/junit.xml"
 lock="$target/ma2a-e2e-junit.lock"
-held=false
-release() { if [ "$held" = true ]; then rmdir "$lock" 2>/dev/null || true; held=false; fi; }
-trap release EXIT
-trap 'release; exit 130' INT; trap 'release; exit 143' TERM; trap 'release; exit 129' HUP
 acquire() {
   mkdir -p "$target"
   waited=0
