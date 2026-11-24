@@ -42,7 +42,7 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 
 ## Agent Card
 
-A card is served for a defined local Agent, found through `agent_list`, even while it is stopped. For a remote Agent, the card is served only if Agent v1 `agents` lists it for this Endpoint. Otherwise the card route answers `404`.
+A card is served for a defined local Agent, found through `agent_list`, even while it is stopped. For a remote Agent, the card is served only if Agent v1 `agents` lists it for this Endpoint. The adapter reads at most 64 pages of that list and stops at a page that does not move past the cursor sent. Otherwise the card route answers `404`.
 
 | Field | Value |
 | --- | --- |
@@ -160,6 +160,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 `ListTasks` answers `{tasks, nextPageToken, pageSize, totalSize}`.
 
 - **Source.** It reads every page of the route's tasks: `agent_task_list` locally, Agent v1 `tasks` remotely.
+  It stops after 41 pages, enough for every task a Runtime retains. A remote page that does not move past the cursor sent fails the call, so a target cannot keep the listing going.
 - **Filters**, all optional:
   - `contextId`: the task;
   - `status`: an A2A `TaskState`;

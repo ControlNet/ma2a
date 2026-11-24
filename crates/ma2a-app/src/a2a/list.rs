@@ -44,10 +44,14 @@ impl Filter<'_> {
     }
 }
 
+/// Most task pages read: a Runtime retains at most 256 unfinished and 1,024 finished tasks,
+/// 32 to a page, so a target paging further is not believed.
+const MAX_TASK_PAGES: usize = (256 + 1_024) / ma2a_core::service::MAX_TASK_PAGE + 1;
+
 /// Every task of the route's Agent, across all pages.
 async fn all(served: Served<'_>) -> Result<Vec<Value>, Refusal> {
     let (mut all, mut after) = (Vec::new(), None::<String>);
-    loop {
+    for _ in 0..MAX_TASK_PAGES {
         let (tasks, next) = served.backend.tasks(served.route, after.as_deref()).await?;
         all.extend(tasks);
         after = next;
@@ -55,6 +59,7 @@ async fn all(served: Served<'_>) -> Result<Vec<Value>, Refusal> {
             return Ok(all);
         }
     }
+    Err(Refusal::named("internal"))
 }
 
 pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, RpcError> {

@@ -90,6 +90,16 @@ pub(super) async fn details(
     summary(&call(backend, (endpoint, None), request).await?)
 }
 
+/// Whether a page lies strictly after the cursor sent, and so does the cursor it names next; a
+/// target answering otherwise would keep a listing going forever.
+fn moves_past(
+    after: Option<AgentTaskId>,
+    (mut listed, next): (impl Iterator<Item = AgentTaskId>, Option<AgentTaskId>),
+) -> bool {
+    after
+        .is_none_or(|after| listed.all(|task| task > after) && next.is_none_or(|next| next > after))
+}
+
 pub(super) async fn tasks(
     backend: &Backend,
     route: &Route,
@@ -104,10 +114,14 @@ pub(super) async fn tasks(
     )
     .await?
     {
-        AgentReply::Page(tasks, next) => Ok((
-            tasks.iter().map(agent_task_value).collect(),
-            next.map(|task| task.to_string()),
-        )),
+        AgentReply::Page(tasks, next)
+            if moves_past(after, (tasks.iter().map(|task| task.id), next)) =>
+        {
+            Ok((
+                tasks.iter().map(agent_task_value).collect(),
+                next.map(|task| task.to_string()),
+            ))
+        }
         _ => Err(Refusal::named("internal")),
     }
 }
@@ -122,17 +136,27 @@ pub(super) async fn cancel(backend: &Backend, route: &Route, task: &str) -> Resu
 pub(super) async fn card(backend: &Backend, route: &Route) -> Result<(String, bool), Refusal> {
     let (endpoint, agent) = parts(route)?;
     let mut after = None;
-    loop {
-        let request = AgentRequest::Agents(after.take());
+    for _ in 0..MAX_CARD_PAGES {
+        let request = AgentRequest::Agents(after.clone());
         let AgentReply::Cards(cards, next) = call(backend, (endpoint, None), request).await? else {
             return Err(Refusal::named("internal"));
         };
         if let Some(card) = cards.iter().find(|card| card.id == *agent) {
             return Ok((card.description.clone(), card.available));
         }
-        after = Some(next.ok_or_else(|| Refusal::named("unknown_agent"))?);
+        let next = next.ok_or_else(|| Refusal::named("unknown_agent"))?;
+        // A target that does not move past the cursor sent is not followed.
+        if after.as_ref().is_some_and(|after| &next <= after) {
+            return Err(Refusal::named("internal"));
+        }
+        after = Some(next);
     }
+    Err(Refusal::named("unknown_agent"))
 }
+
+/// Most Agent card pages read to find one Agent: 1,024 Agents, more than a Runtime is expected
+/// to host.
+const MAX_CARD_PAGES: usize = 64;
 
 /// Follows a task until it ended, reconnecting while the target restarts; stops early
 /// once nobody receives `events` any more.
@@ -193,4 +217,33 @@ pub(super) async fn artifact<S: AsyncWrite + Unpin>(
         .await
         .map_err(|error| refusal(&error))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::service::AgentTaskId;
+
+    use super::moves_past;
+
+    const fn id(byte: u8) -> AgentTaskId {
+        AgentTaskId::from_bytes([byte; 16])
+    }
+
+    /// Whether a page listing `listed` and naming `next` moves past `after`.
+    fn moves(after: Option<u8>, listed: &[u8], next: Option<u8>) -> bool {
+        let listed = listed.iter().map(|byte| id(*byte));
+        moves_past(after.map(id), (listed, next.map(id)))
+    }
+
+    #[test]
+    fn a_page_must_move_past_the_cursor_sent() {
+        // The first page has nothing to move past.
+        assert!(moves(None, &[1], Some(1)));
+        assert!(moves(Some(1), &[2, 3], Some(3)));
+        assert!(moves(Some(1), &[2], None));
+        // The same cursor again, one behind it, or a task already listed.
+        assert!(!moves(Some(3), &[4], Some(3)));
+        assert!(!moves(Some(3), &[], Some(2)));
+        assert!(!moves(Some(3), &[3], None));
+    }
 }
