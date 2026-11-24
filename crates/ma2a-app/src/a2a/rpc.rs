@@ -203,6 +203,16 @@ pub(super) fn required<'a>(params: &'a Value, name: &str) -> Result<&'a str, Rpc
         .ok_or_else(|| RpcError::invalid_params(&format!("`{name}` is required")))
 }
 
+/// The optional string parameter `name`. Absent, null, or empty names nothing, and any
+/// other value than a string is refused rather than read as absent.
+pub(super) fn optional<'a>(params: &'a Value, name: &str) -> Result<Option<&'a str>, RpcError> {
+    match params.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.as_str()).filter(|value| !value.is_empty())),
+        Some(_) => Err(RpcError::invalid_params(&format!("`{name}` is a string"))),
+    }
+}
+
 /// The optional non-negative integer parameter `name`.
 pub(super) fn count(params: &Value, name: &str) -> Result<Option<usize>, RpcError> {
     match params.get(name) {

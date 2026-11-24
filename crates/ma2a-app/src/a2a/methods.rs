@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use super::{
     backend::{Refusal, ended},
     mapping::Detail,
-    rpc::{self, RpcError, count, required},
+    rpc::{self, RpcError, count, optional, required},
     view::{self, Served, settled},
 };
 
@@ -40,18 +40,6 @@ fn part(part: &Value) -> Result<MessagePart, RpcError> {
     ))
 }
 
-/// The optional ID `field` of a message; absent, null, or empty names nothing, and any other
-/// value than a string is refused rather than read as absent, which would start a new task.
-fn named<'a>(message: &'a Value, field: &str) -> Result<Option<&'a str>, RpcError> {
-    match message.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(id)) => Ok(Some(id.as_str()).filter(|id| !id.is_empty())),
-        Some(_) => Err(RpcError::invalid_params(&format!(
-            "`message.{field}` is a string"
-        ))),
-    }
-}
-
 /// Reads `params.message` of `SendMessage` or `SendStreamingMessage`.
 pub(super) fn inbound(params: &Value) -> Result<Inbound, RpcError> {
     let message = params
@@ -73,7 +61,11 @@ pub(super) fn inbound(params: &Value) -> Result<Inbound, RpcError> {
         .collect::<Result<Vec<_>, _>>()?;
     let parsed = AgentMessage::new(MessageRole::User, parts)
         .map_err(|_| RpcError::invalid_params("a message carries 1-16 parts within 12 KiB"))?;
-    let task = match (named(message, "taskId")?, named(message, "contextId")?) {
+    // A task ID that is not a string is refused, not read as absent, which would start a task.
+    let task = match (
+        optional(message, "taskId")?,
+        optional(message, "contextId")?,
+    ) {
         (Some(task), Some(context)) if task != context => {
             return Err(RpcError::invalid_params("a task's contextId is its own id"));
         }
