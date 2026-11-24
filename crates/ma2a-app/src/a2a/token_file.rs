@@ -244,8 +244,22 @@ fn holds(path: &Path, token: &str) -> std::io::Result<bool> {
         let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
         std::fs::File::from(rustix::fs::open(path, flags, Mode::empty())?)
     };
-    #[cfg(not(unix))]
-    let file = std::fs::File::open(path)?;
+    // The entry itself is opened, never what a link swapped in after the check points to.
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Ok(false);
+        }
+        file
+    };
     if !file.metadata()?.is_file() {
         return Ok(false);
     }
