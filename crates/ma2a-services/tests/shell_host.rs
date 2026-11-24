@@ -109,6 +109,24 @@ async fn a_program_that_closes_its_terminal_runs_until_it_exits() -> TestResult 
 }
 
 #[tokio::test]
+async fn a_caller_that_stops_reading_does_not_hold_an_exited_session_open() -> TestResult {
+    // Given: a program that writes more than the caller's stream holds and then exits, and a
+    // caller that never reads.
+    let request = session("sh", &["-c", "head -c 3000 /dev/zero; exit 0"], 60_000)?;
+    let (_client, (mut reader, mut writer)) = pipe_with(256);
+    let shutdown = CancellationToken::new();
+    let server =
+        tokio::spawn(
+            async move { serve_shell(request, &shutdown, (&mut reader, &mut writer)).await },
+        );
+
+    // Then: the session ends soon after the exit instead of waiting for its 60 s lifetime.
+    let report = tokio::time::timeout(Duration::from_secs(15), server).await??;
+    assert_ne!(report.end, OperationEnd::Failed(ServiceError::TimedOut));
+    Ok(())
+}
+
+#[tokio::test]
 async fn resize_reaches_the_terminal() -> TestResult {
     let request = session("sh", &["-c", "sleep 0.5; stty size"], 60_000)?;
     let ((mut reader, mut writer), server) = start(request, &CancellationToken::new());

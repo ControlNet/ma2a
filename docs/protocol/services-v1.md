@@ -203,6 +203,8 @@ A program that cannot start is rejected with `spawn_failed` before any effect. O
 `reason` is `completed`, `timed_out`, `cancelled` (caller cancel or stream loss), or `shutdown`.
 On Unix the child runs in its own process group, and the whole group is killed at the end of every
 run: after exit (with a 250 ms output drain), on timeout, cancellation, loss, and Runtime shutdown.
+The drain also bounds a caller that is not reading: output it has not taken 250 ms after the exit
+is dropped, and so is a frame still being written, which leaves the stream without an outcome.
 The group ID is captured at spawn. On Windows only the direct child is killed; this is a documented
 limitation.
 
@@ -216,14 +218,15 @@ limitation.
 - Resize is `control` with `[0, [cols, rows]]`.
 - Terminal output is `data` (output).
 
-The session ends when its program exits, when its lifetime (at most 24 h) expires, on caller
-cancel or loss, and on Runtime shutdown. At the end every process the session started is ended,
-including jobs a job-control shell moved into other process groups: the leader's group receives
-SIGHUP (interactive shells forward it to their jobs), then SIGKILL, and on Linux every remaining
-process of the terminal session is found in `/proc` and killed. A program that leaves the session
-itself (`setsid`) is not reached, and on hosts without `/proc` a job that ignores SIGHUP in another
-group may survive. A program ended by a signal reports termination `unknown`, because the PTY layer
-exposes only signal names. Sessions never survive a restart.
+The session ends when its program exits (after the same 250 ms output drain as Exec), when its
+lifetime (at most 24 h) expires, on caller cancel or loss, and on Runtime shutdown. At the end every
+process the session started is ended, including jobs a job-control shell moved into other process
+groups: the leader's group receives SIGHUP (interactive shells forward it to their jobs), then
+SIGKILL, and on Linux every remaining process of the terminal session is found in `/proc` and
+killed. A program that leaves the session itself (`setsid`) is not reached, and on hosts without
+`/proc` a job that ignores SIGHUP in another group may survive. A program ended by a signal reports
+termination `unknown`, because the PTY layer exposes only signal names. Sessions never survive a
+restart.
 
 ## Proxy v1
 

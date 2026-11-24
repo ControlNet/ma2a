@@ -130,7 +130,7 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
     let mut drain_until: Option<Instant> = None;
     // A closed output answers every receive at once; it is not polled again.
     let mut output_closed = false;
-    loop {
+    'session: loop {
         let chunk = tokio::select! {
             biased;
             (reason, error) = &mut stop => {
@@ -156,13 +156,23 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             output_closed = true;
             continue;
         };
-        let written = tokio::select! {
-            biased;
-            (reason, error) = &mut stop => {
-                (ended.reason, ended.stream_error) = (reason, error);
-                break;
+        let write = writer.data(Channel::Output, &chunk);
+        tokio::pin!(write);
+        // A caller that stops reading cannot hold the session open past the drain after exit.
+        let written = loop {
+            tokio::select! {
+                biased;
+                (reason, error) = &mut stop => {
+                    (ended.reason, ended.stream_error) = (reason, error);
+                    break 'session;
+                }
+                termination = &mut *exited, if exit.is_none() => {
+                    exit = Some(termination.unwrap_or(Termination::Unknown));
+                    drain_until = Some(Instant::now() + EXIT_DRAIN_GRACE);
+                }
+                () = tokio::time::sleep_until(drain_until.unwrap_or_else(Instant::now)), if drain_until.is_some() => break 'session,
+                written = &mut write => break written,
             }
-            written = writer.data(Channel::Output, &chunk) => written,
         };
         if let Err(error) = written {
             (ended.reason, ended.stream_error) = (EndReason::Cancelled, Some(error));

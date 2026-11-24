@@ -95,7 +95,7 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
     };
     let mut exit: Option<std::io::Result<ExitStatus>> = None;
     let mut drain_until: Option<Instant> = None;
-    loop {
+    'run: loop {
         if exit.is_some() && stdout.is_none() && stderr.is_none() {
             break;
         }
@@ -133,14 +133,24 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             Channel::Error | Channel::Input => buffers.1.get(..read),
         }
         .unwrap_or_default();
-        let written = tokio::select! {
-            biased;
-            (reason, error) = &mut stop => {
-                run.reason = reason;
-                run.stream_error = error;
-                break;
+        let write = writer.data(channel, bytes);
+        tokio::pin!(write);
+        // A caller that stops reading cannot hold the run open past the drain after exit.
+        let written = loop {
+            tokio::select! {
+                biased;
+                (reason, error) = &mut stop => {
+                    run.reason = reason;
+                    run.stream_error = error;
+                    break 'run;
+                }
+                status = spawned.child.wait(), if exit.is_none() => {
+                    exit = Some(status);
+                    drain_until = Some(Instant::now() + EXIT_DRAIN_GRACE);
+                }
+                () = tokio::time::sleep_until(drain_until.unwrap_or_else(Instant::now)), if drain_until.is_some() => break 'run,
+                written = &mut write => break written,
             }
-            written = writer.data(channel, bytes) => written,
         };
         if let Err(error) = written {
             run.reason = EndReason::Cancelled;

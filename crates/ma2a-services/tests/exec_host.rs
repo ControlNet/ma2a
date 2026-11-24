@@ -251,3 +251,16 @@ async fn an_accept_nobody_reads_ends_the_exec_on_shutdown() -> TestResult {
     assert_eq!(report.end, OperationEnd::Failed(ServiceError::Unavailable));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_caller_that_stops_reading_does_not_hold_an_exited_run_open() -> TestResult {
+    // Given: a child that writes more than the caller's stream holds and then exits, and a
+    // caller that never reads.
+    let request = ExecRequest::new(script("head -c 100000 /dev/zero; exit 0")?, false, 60_000)?;
+    let ((_reader, _writer), server) = start(request, &CancellationToken::new(), 1024);
+
+    // Then: the run ends soon after the exit instead of waiting for its 60 s lifetime.
+    let report = tokio::time::timeout(Duration::from_secs(15), server).await??;
+    assert_ne!(report.end, OperationEnd::Failed(ServiceError::TimedOut));
+    Ok(())
+}
