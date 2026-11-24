@@ -187,7 +187,7 @@ fn apply_windows_acl(path: &Path, kind: PathKind) -> Result<(), StoreError> {
 
 /// Accepts one or two explicit Allow rules, each granting every `FullControl` right to the
 /// current user or SYSTEM and together covering both (one principal when running as SYSTEM),
-/// under a DACL that inherits nothing, on an object owned by the current user, SYSTEM, or the
+/// under a protected DACL that holds no inherited rule either, on an object owned by the current user, SYSTEM, or the
 /// Administrators group. Any other owner could
 /// rewrite the DACL; Administrators can take ownership anyway, and elevated sessions may make
 /// it the default owner of new objects.
@@ -195,7 +195,7 @@ fn apply_windows_acl(path: &Path, kind: PathKind) -> Result<(), StoreError> {
 fn validate_windows_acl(path: &Path) -> Result<(), StoreError> {
     run_powershell(
         path,
-        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$f=[Security.AccessControl.FileSystemRights]::FullControl;$a=Get-Acl -LiteralPath $env:MA2A_ACL_PATH;if(!$a.AreAccessRulesProtected){exit 2};$o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;if(($o-ne $u)-and($o-ne $s)-and($o-ne 'S-1-5-32-544')){exit 7};$r=@($a.Access|Where-Object {!$_.IsInherited});if(($r.Count-lt 1)-or($r.Count-gt 2)){exit 3};$seen=@{};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};$seen[$sid]=$true;if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band $f)-ne $f)){exit 5}};if(!$seen.ContainsKey($u)-or !$seen.ContainsKey($s)){exit 6}",
+        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$f=[Security.AccessControl.FileSystemRights]::FullControl;$a=Get-Acl -LiteralPath $env:MA2A_ACL_PATH;if(!$a.AreAccessRulesProtected){exit 2};$o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;if(($o-ne $u)-and($o-ne $s)-and($o-ne 'S-1-5-32-544')){exit 7};if(@($a.Access|Where-Object {$_.IsInherited}).Count-gt 0){exit 8};$r=@($a.Access);if(($r.Count-lt 1)-or($r.Count-gt 2)){exit 3};$seen=@{};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};$seen[$sid]=$true;if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band $f)-ne $f)){exit 5}};if(!$seen.ContainsKey($u)-or !$seen.ContainsKey($s)){exit 6}",
         "validation",
     )
 }
