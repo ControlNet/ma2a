@@ -47,7 +47,7 @@ pub(super) async fn serve(call: ServiceCall, context: HostContext) {
     let header = match read_open(&mut reader).await {
         Ok(header) => header,
         Err(error) => {
-            reply::reject(&mut writer, error).await;
+            refuse(&mut writer, error).await;
             return;
         }
     };
@@ -119,6 +119,14 @@ fn stopped(writer: &mut Writer<'_>, error: ServiceError) -> OperationReport {
     OperationReport::new(OperationEnd::Failed(error))
 }
 
+/// Sends `reject`; one cut short by its deadline leaves the stream reset, never cleanly ended.
+async fn refuse(writer: &mut Writer<'_>, error: ServiceError) {
+    reply::reject(writer, error).await;
+    if writer.is_torn() {
+        let _reset = writer.get_mut().reset(0_u8.into());
+    }
+}
+
 async fn read_open(reader: &mut Reader<'_>) -> Result<OpenHeader, ServiceError> {
     let frame = tokio::time::timeout(OPEN_DEADLINE, reader.expect())
         .await
@@ -134,7 +142,7 @@ async fn reject(
     (context, key): (&HostContext, OperationKey),
     error: ServiceError,
 ) {
-    reply::reject(writer, error).await;
+    refuse(writer, error).await;
     context
         .operations
         .record(key, OperationReport::new(OperationEnd::Rejected(error)));
