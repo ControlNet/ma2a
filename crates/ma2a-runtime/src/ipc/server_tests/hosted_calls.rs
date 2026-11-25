@@ -2,9 +2,11 @@
 
 use ma2a_core::{
     EndpointId, RequestId,
-    service::{FrameKind, HostedCall, OperationName, ServiceError, ServiceName},
+    service::{
+        FrameKind, HostedCall, OperationName, ServiceError, ServiceName, encode_call_outcome,
+    },
 };
-use ma2a_services::{FrameReader, FrameWriter, OperationReport};
+use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport};
 use tokio::{
     io::{AsyncReadExt as _, DuplexStream, ReadHalf, WriteHalf},
     task::JoinHandle,
@@ -114,5 +116,25 @@ async fn a_call_stopped_while_its_service_accepts_it_is_refused_untouched() -> T
     let mut heard = Vec::new();
     service.read_to_end(&mut heard).await?;
     assert!(heard.is_empty(), "{heard:?}");
+    announced.harness.stop().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_successful_outcome_the_caller_never_takes_is_not_audited_as_completed() -> TestResult {
+    // Given: a caller that reads nothing, through a stream with no room.
+    let announced = announce("hosted-untaken-outcome", 1).await?;
+    let service = announced.deliver(false)?;
+    let (mut service_read, service_write) = tokio::io::split(service);
+    let mut answer = [0_u8; 7];
+    service_read.read_exact(&mut answer).await?;
+    let mut to_runtime = FrameWriter::new(service_write);
+
+    // When: the service ends the call successfully.
+    let outcome = encode_call_outcome(Ok(b"done"))?;
+    to_runtime.frame(FrameKind::Outcome, &outcome).await?;
+    let report = announced.serving.await??;
+
+    // Then: the audit says the outcome was never delivered.
+    assert_eq!(report.end, OperationEnd::Failed(ServiceError::TimedOut));
     announced.harness.stop().await
 }

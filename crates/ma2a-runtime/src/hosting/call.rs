@@ -103,9 +103,12 @@ where
     drop(slot);
     let report = match relayed.terminal {
         Terminal::Rejected(error) => OperationReport::new(OperationEnd::Rejected(error)),
-        Terminal::Outcome { failure, .. } => {
-            OperationReport::new(failure.map_or(OperationEnd::Completed, OperationEnd::Failed))
-        }
+        // A success the caller never received did not complete for it.
+        Terminal::Outcome { failure, .. } => OperationReport::new(match failure {
+            Some(error) => OperationEnd::Failed(error),
+            None if writer.terminal_sent() => OperationEnd::Completed,
+            None => OperationEnd::Failed(ServiceError::TimedOut),
+        }),
         Terminal::Lost => lost(writer, relayed.client_present).await,
     };
     let _closed = bounded(ma2a_services::reply::close(writer)).await;
