@@ -167,6 +167,16 @@ fn inspect_manifest(
             }
         }
     }
+    // Cargo deprecates [replace] in favour of [patch], so any entry is refused, wherever it points.
+    if let Some(replacements) = document.get("replace").and_then(Value::as_table) {
+        let relative = manifest.strip_prefix(policy.root).unwrap_or(manifest);
+        for name in replacements.keys() {
+            violations.push(format!(
+                "{}: dependency `{name}` in [replace] is refused; use [patch]",
+                relative.display()
+            ));
+        }
+    }
     Ok(())
 }
 

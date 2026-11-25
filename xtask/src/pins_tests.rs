@@ -170,6 +170,27 @@ fn rejects_patch_outside_workspace_members() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn rejects_any_replace_entry() -> Result<(), Box<dyn Error>> {
+    // Given
+    let fixture = Fixture::with_manifest_tail(
+        "\"=0.1.0\"",
+        "\n[replace]\n\"external:0.1.0\" = { path = \"../external\" }\n",
+    )?;
+
+    // When
+    let violations = violations(&fixture);
+
+    // Then
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("`external:0.1.0` in [replace]")),
+        "a replaced dependency must fail: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn rejects_unpinned_or_malformed_web_dependency_sections() -> Result<(), Box<dyn Error>> {
     for (section, value) in [
         ("optionalDependencies", "{ \"probe\": \"^1.0.0\" }"),

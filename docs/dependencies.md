@@ -2,7 +2,7 @@
 
 MA2A resolves dependencies once, commits both lockfiles, and requires exact direct version
 requirements, in `[patch]` tables and in every dependency section of `web/package.json` too; a
-git source is refused. Run `cargo xtask check-pins` after changing any manifest.
+git source and any `[replace]` entry are refused. Run `cargo xtask check-pins` after changing any manifest.
 
 ## Toolchains
 
