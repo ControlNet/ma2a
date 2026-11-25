@@ -1,4 +1,4 @@
-use ma2a_core::{EchoError, EchoResponse, EndpointId, RequestId, SpaceId};
+use ma2a_core::{EndpointId, RequestId, SpaceId};
 use tokio::sync::oneshot;
 
 use super::ShutdownAck;
@@ -91,7 +91,7 @@ pub(crate) enum Command {
         request_id: RequestId,
         target: EndpointId,
         payload: Vec<u8>,
-        reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
+        reply: oneshot::Sender<super::echo::OutboundEchoResult>,
     },
     Shutdown(oneshot::Sender<ShutdownAck>),
 }

@@ -17,7 +17,7 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PROMPT: Duration = Duration::from_secs(5);
 
 struct OfflineOwner {
-    _dirs: [TempState; 2],
+    dirs: [TempState; 2],
     member: Runtime,
     owner: EndpointId,
     spaces: Vec<SpaceId>,
@@ -68,7 +68,7 @@ async fn member_of_offline_owner(label: &str, count: u8) -> TestResult<OfflineOw
     let owner_id = owner.handle().status().await?.endpoint_id;
     owner.shutdown().await?;
     Ok(OfflineOwner {
-        _dirs: dirs,
+        dirs,
         member,
         owner: owner_id,
         spaces,
@@ -158,5 +158,67 @@ async fn a_departure_past_the_pending_bound_is_refused_at_once() -> TestResult {
     assert!(pending.iter().all(|leaving| !leaving.is_finished()));
     timeout(PROMPT, fixture.member.handle().status()).await??;
     timeout(PROMPT, fixture.member.shutdown()).await??;
+    Ok(())
+}
+
+/// A local Echo the Runtime refuses before sending anything leaves its request ID free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_local_echo_past_the_pending_bound_releases_its_request_id() -> TestResult {
+    // Given: as many Echo calls as are allowed wait on an owner that stopped answering, and
+    // the local API serves the member.
+    let fixture = member_of_offline_owner("echo-ipc-bound", 1).await?;
+    let state = &fixture.dirs[1].0;
+    let control = crate::current_user::CurrentUserRuntime::open_at(
+        state,
+        std::sync::Arc::new(crate::web::SystemClock::default()),
+        crate::web::WebAuthConfig::default(),
+    )
+    .await?;
+    let paths = crate::ipc::IpcPaths::new(state)?;
+    let server = crate::ipc::LocalApiServer::bind_for_launch(
+        paths.clone(),
+        fixture.member.handle(),
+        control,
+        None,
+    )
+    .await?;
+    let serving = tokio_util::sync::CancellationToken::new();
+    let serve = tokio::spawn(server.serve(serving.child_token()));
+    let mut pending = Vec::new();
+    for marker in 0..u8::try_from(super::echo::MAX_PENDING_OUTBOUND_ECHOES)? {
+        let (handle, owner) = (fixture.member.handle(), fixture.owner);
+        let request_id = RequestId::try_from([marker; 16].as_slice())?;
+        pending.push(tokio::spawn(async move {
+            handle.echo(request_id, owner, b"hi").await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // When: one more Echo is asked for over the local API.
+    let request_id = RequestId::try_from([0xee; 16].as_slice())?;
+    let request = serde_json::json!({
+        "version": 1, "operation": "echo_call",
+        "request_id": crate::api::encode_hex(request_id.as_bytes()),
+        "target_endpoint_id": crate::api::encode_hex(fixture.owner.as_bytes()), "payload": "hi",
+    });
+    let command = crate::api::decode_command(&serde_json::to_vec(&request)?)?;
+    let client = crate::ipc::LocalApiClient::new(paths.clone());
+    let answer: serde_json::Value =
+        serde_json::from_slice(&timeout(PROMPT, client.call(&command)).await??)?;
+
+    // Then: it is refused with no effect, so its request ID is not taken.
+    let replay = fixture.member.handle().mutation_replay(request_id).await?;
+    serving.cancel();
+    serve.await??;
+    paths.remove_stale_endpoint()?;
+    timeout(PROMPT, fixture.member.shutdown()).await??;
+    assert_eq!(
+        answer.get("error"),
+        Some(&serde_json::json!("conflict")),
+        "{answer}"
+    );
+    assert_eq!(answer.get("remediation"), Some(&serde_json::Value::Null));
+    assert_eq!(replay, None);
+    drop(pending);
     Ok(())
 }

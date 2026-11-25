@@ -12,6 +12,27 @@ use crate::{EchoAuditRecord, services::echo::EchoDispatchInput};
 /// meet it.
 pub(crate) const MAX_PENDING_OUTBOUND_ECHOES: usize = 32;
 
+/// What an outbound Echo answers: its response at the revision of its audit, or why it has none.
+pub(crate) type OutboundEchoResult =
+    Result<ma2a_store::Committed<EchoResponse<'static>>, OutboundEchoError>;
+
+/// Why an outbound Echo has no response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutboundEchoError {
+    /// Refused before it was admitted: nothing was sent, audited, or committed.
+    NotAdmitted(EchoError),
+    /// Admitted, and failed.
+    Failed(EchoError),
+}
+
+impl From<OutboundEchoError> for EchoError {
+    fn from(error: OutboundEchoError) -> Self {
+        match error {
+            OutboundEchoError::NotAdmitted(error) | OutboundEchoError::Failed(error) => error,
+        }
+    }
+}
+
 impl Actor {
     pub(super) async fn handle_echo_call(&mut self, call: EchoCall) {
         let peer = call.remote_endpoint_id();
@@ -38,10 +59,11 @@ impl Actor {
     pub(super) fn spawn_outbound_echo(
         &mut self,
         request: OutboundEchoRequest,
-        reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
+        reply: oneshot::Sender<OutboundEchoResult>,
     ) {
         if self.outbound_echoes >= MAX_PENDING_OUTBOUND_ECHOES {
-            let _unsent = reply.send(Err(EchoError::ConcurrencyExceeded));
+            let refused = OutboundEchoError::NotAdmitted(EchoError::ConcurrencyExceeded);
+            let _unsent = reply.send(Err(refused));
             return;
         }
         self.outbound_echoes += 1;
@@ -99,7 +121,7 @@ impl Actor {
                 let result = revision.map_or(Err(EchoError::Unavailable), |revision| {
                     result.map(|value| ma2a_store::Committed::new(revision, value))
                 });
-                let _unsent = reply.send(result);
+                let _unsent = reply.send(result.map_err(OutboundEchoError::Failed));
             }
         }
     }
@@ -170,7 +192,7 @@ pub(super) enum EchoTaskCompletion {
     Outbound {
         audit: Option<EchoAuditRecord>,
         result: Result<EchoResponse<'static>, EchoError>,
-        reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
+        reply: oneshot::Sender<OutboundEchoResult>,
     },
 }
 
@@ -181,7 +203,7 @@ enum EchoTaskResponse {
     ),
     Outbound(
         Result<EchoResponse<'static>, EchoError>,
-        oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
+        oneshot::Sender<OutboundEchoResult>,
     ),
 }
 
@@ -195,7 +217,7 @@ pub(super) struct OutboundEchoRequest {
 
 async fn run_outbound(
     input: OutboundEchoInput,
-    reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
+    reply: oneshot::Sender<OutboundEchoResult>,
 ) -> EchoTaskCompletion {
     let started = Instant::now();
     let result = async {

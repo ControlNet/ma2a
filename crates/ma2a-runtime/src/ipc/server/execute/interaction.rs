@@ -1,6 +1,6 @@
 use ma2a_core::{EchoError, ProtocolError};
 
-use crate::api::{Command, CommandResult, ControlSyncView, EchoReplyView};
+use crate::api::{ApiError, Command, CommandResult, ControlSyncView, EchoReplyView};
 
 use super::ConnectionContext;
 
@@ -49,13 +49,18 @@ pub(super) async fn control_sync_trigger(
 pub(super) async fn echo(
     context: &ConnectionContext,
     command: &Command,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
+    use crate::actor::OutboundEchoError::{Failed, NotAdmitted};
     let (request_id, target, payload) = command.echo_call().ok_or(ProtocolError::INVALID_INPUT)?;
     let committed = context
         .handle
         .echo_committed(request_id, target, payload.as_bytes())
         .await
-        .map_err(echo_protocol_error)?;
+        .map_err(|error| match error {
+            // Nothing was sent or audited, so the request ID is free to run again.
+            NotAdmitted(error) => ApiError::new(echo_protocol_error(error)).without_effects(),
+            Failed(error) => ApiError::new(echo_protocol_error(error)),
+        })?;
     let response = committed.value();
     let echoed =
         std::str::from_utf8(response.payload()).map_err(|_| ProtocolError::INVALID_INPUT)?;

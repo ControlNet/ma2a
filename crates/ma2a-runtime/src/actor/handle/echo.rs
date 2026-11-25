@@ -30,9 +30,10 @@ impl RuntimeHandle {
         request_id: ma2a_core::RequestId,
         target: EndpointId,
         payload: &[u8],
-    ) -> Result<ma2a_store::Committed<ma2a_core::EchoResponse<'static>>, ma2a_core::EchoError> {
+    ) -> crate::actor::OutboundEchoResult {
+        use crate::actor::OutboundEchoError::{Failed, NotAdmitted};
         if payload.len() > ma2a_core::MAX_ECHO_PAYLOAD_LEN {
-            return Err(ma2a_core::EchoError::InvalidInput);
+            return Err(NotAdmitted(ma2a_core::EchoError::InvalidInput));
         }
         let (reply, response) = oneshot::channel();
         self.commands
@@ -43,10 +44,10 @@ impl RuntimeHandle {
                 reply,
             })
             .await
-            .map_err(|_| ma2a_core::EchoError::Cancelled)?;
+            .map_err(|_| NotAdmitted(ma2a_core::EchoError::Cancelled))?;
         response
             .await
-            .map_err(|_| ma2a_core::EchoError::Cancelled)?
+            .map_err(|_| Failed(ma2a_core::EchoError::Cancelled))?
     }
 
     /// Returns the bounded payload-free Echo audit snapshot.

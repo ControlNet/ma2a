@@ -61,6 +61,7 @@ mod services;
 mod shutdown;
 mod snapshot;
 pub(crate) use command::Command;
+pub(crate) use echo::{OutboundEchoError, OutboundEchoResult};
 pub use handle::RuntimeHandle;
 pub(crate) use handle_relay::RelayRuntimeStatus;
 pub(crate) use shutdown::ShutdownAck;
