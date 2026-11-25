@@ -114,11 +114,6 @@ pub(super) fn rejection() -> Vec<u8> {
     stored(&Err(status(ServiceError::ConcurrencyExceeded)))
 }
 
-/// The stored answer of a call that its task's end, at the tool-call limit, left unanswered.
-pub(super) fn ended() -> Vec<u8> {
-    stored(&Err(status(ServiceError::TaskEnded)))
-}
-
 /// Derives the `RequestId` of one call from its task and call identifier.
 fn call_request(task: AgentTaskId, call: &str) -> Result<RequestId, ServiceError> {
     let mut hasher = blake3::Hasher::new_derive_key("ma2a agent tool call v1");
@@ -241,5 +236,13 @@ mod tests {
         assert!(huge.len() <= MAX_TOOL_RESULT_LEN);
         let decoded: serde_json::Value = serde_json::from_slice(&huge).unwrap_or_default();
         assert_eq!(decoded.pointer("/error/code"), Some(&json!("too_large")));
+    }
+
+    #[test]
+    fn the_store_answers_a_call_its_task_ended_as_this_runtime_would() {
+        let ended = super::stored(&Err(super::status(
+            ma2a_core::service::ServiceError::TaskEnded,
+        )));
+        assert_eq!(ended, ma2a_store::TASK_ENDED_ANSWER);
     }
 }

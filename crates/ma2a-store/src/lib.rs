@@ -75,7 +75,9 @@ pub use agent_tasks::{
     AgentTaskCreation, MAX_LIVE_TASKS, MAX_LIVE_TASKS_PER_CREATOR, MAX_RETAINED_TASKS,
     MAX_RETAINED_TASKS_PER_CREATOR, NewAgentTask,
 };
-pub use agent_tools::{AgentToolCall, MAX_OPEN_TOOL_CALLS_PER_TASK, MAX_TOOL_CALLS_PER_TASK};
+pub use agent_tools::{
+    AgentToolCall, MAX_OPEN_TOOL_CALLS_PER_TASK, MAX_TOOL_CALLS_PER_TASK, TASK_ENDED_ANSWER,
+};
 pub use agents::AgentDefine;
 pub use committed::Committed;
 pub use config::StoreConfig;

@@ -99,7 +99,6 @@ impl Live {
             name: name.to_owned(),
             request: serde_json::to_vec(args)?,
             rejection: b"{\"error\":{\"code\":\"concurrency_exceeded\"}}".to_vec(),
-            ended: b"{\"error\":{\"code\":\"task_ended\"}}".to_vec(),
         };
         Repository::open(&self.config)?.apply_agent_output(&output, effect)?;
         Ok(())

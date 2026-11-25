@@ -56,8 +56,7 @@ pub(crate) fn record_durable_event(
     (body, at_ms): (AgentEventBody, u64),
 ) -> Result<Option<u32>, StoreError> {
     if durable_events(transaction, task)? >= MAX_DURABLE_EVENTS {
-        let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
-        set_state(transaction, (task, at_ms), limit)?;
+        crate::agent_tools::fail_at_limit(transaction, (task, at_ms))?;
         return Ok(None);
     }
     append_event(transaction, task, (body, at_ms)).map(Some)

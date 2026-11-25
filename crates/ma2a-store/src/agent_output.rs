@@ -11,7 +11,7 @@ use crate::{
     AgentTaskRecord, Committed, Repository, StoreError,
     agent_actions::record_durable_event,
     agent_log::{MAX_DURABLE_EVENTS, append_event, durable_events, held, load_task, set_state},
-    agent_tools::record_tool_call,
+    agent_tools::{fail_at_limit, record_tool_call},
     repository::increment_revision,
     service_exposures::current_revision,
 };
@@ -61,8 +61,7 @@ pub enum AgentOutputEffect {
     Message(AgentTaskId, AgentMessage),
     /// The Agent reported progress.
     Progress(AgentTaskId, String),
-    /// The Agent asked for a tool; `rejection` answers it when the task has too many open, and
-    /// `ended` when it is past the task's limit.
+    /// The Agent asked for a tool; `rejection` answers it when the task has too many open.
     ToolCall {
         /// The task.
         task: AgentTaskId,
@@ -74,9 +73,6 @@ pub enum AgentOutputEffect {
         request: Vec<u8>,
         /// The result to record at once when the call cannot run now.
         rejection: Vec<u8>,
-        /// The result to record for the call past the task's limit, and for every call still
-        /// open when it ends the task.
-        ended: Vec<u8>,
     },
 }
 
@@ -142,8 +138,7 @@ fn apply_state(
     // A state change is a durable event too: an Agent that only alternates between
     // running and waiting reaches the same bound as one that only sends messages.
     if !state.is_terminal() && durable_events(transaction, task)? >= MAX_DURABLE_EVENTS {
-        let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
-        set_state(transaction, (task, at_ms), limit)?;
+        fail_at_limit(transaction, (task, at_ms))?;
         return Ok(true);
     }
     if state == AgentTaskState::Failed {
@@ -240,9 +235,8 @@ fn apply_effect(
             name,
             request,
             rejection,
-            ended,
         } => held(transaction, task, output)?.map_or(Ok(AgentOutputApplied::Ignored), |record| {
-            let call = (call, name, request, (rejection, ended));
+            let call = (call, name, request, rejection);
             record_tool_call(transaction, (&record, at_ms), call)
         }),
     }

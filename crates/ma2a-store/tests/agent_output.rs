@@ -175,12 +175,11 @@ fn tool(task: AgentTaskId, call: &str) -> AgentOutputEffect {
         name: "exec.run".to_owned(),
         request: b"{}".to_vec(),
         rejection: b"{\"error\":\"concurrency_exceeded\"}".to_vec(),
-        ended: ENDED.to_vec(),
     }
 }
 
 /// The stored answer of a call its task's end left without a result.
-const ENDED: &[u8] = b"{\"error\":\"task_ended\"}";
+const ENDED: &[u8] = ma2a_store::TASK_ENDED_ANSWER;
 
 #[test]
 fn tool_calls_run_once_are_bounded_and_answer_their_instance() -> TestResult {
@@ -312,6 +311,21 @@ fn the_call_past_the_limit_fails_the_task_and_answers_every_waiting_call() -> Te
     Ok(())
 }
 
+/// Asserts the call was answered as ended by its task's end, and that answer delivered.
+fn answered_as_ended(
+    repository: &Repository,
+    (generation, task, call): (u64, AgentTaskId, &str),
+) -> TestResult {
+    let answered = repository.tool_call((task, call))?.ok_or("missing call")?;
+    assert_eq!(answered.result.as_deref(), Some(ENDED), "{call}");
+    let delivered = repository
+        .agent_outbox((&agent()?, generation))?
+        .into_iter()
+        .any(|entry| entry.delivery == AgentDelivery::ToolResult(task, call.to_owned()));
+    assert!(delivered, "{call} was not delivered");
+    Ok(())
+}
+
 #[test]
 fn output_breaking_a_durable_bound_only_moves_the_cursor() -> TestResult {
     let (_state, mut repository, generation, task) = running("agent-unbound")?;
@@ -321,7 +335,6 @@ fn output_breaking_a_durable_bound_only_moves_the_cursor() -> TestResult {
         name: "agent.submit".to_owned(),
         request: vec![b'x'; 16_385],
         rejection: b"{\"error\":\"concurrency_exceeded\"}".to_vec(),
-        ended: ENDED.to_vec(),
     };
     let unnamed = AgentOutputEffect::ToolCall {
         task,
@@ -329,7 +342,6 @@ fn output_breaking_a_durable_bound_only_moves_the_cursor() -> TestResult {
         name: String::new(),
         request: b"{}".to_vec(),
         rejection: b"{\"error\":\"concurrency_exceeded\"}".to_vec(),
-        ended: ENDED.to_vec(),
     };
     for (cursor, effect) in [(11, oversized), (12, unnamed)] {
         assert_eq!(
@@ -471,6 +483,7 @@ fn a_message_sent_past_the_durable_event_bound_reports_the_task_ended() -> TestR
 #[test]
 fn state_changes_count_toward_the_durable_event_bound() -> TestResult {
     let (_state, mut repository, generation, task) = running("agent-state-bound")?;
+    apply(&mut repository, (generation, 5), tool(task, "open"))?;
     let bound = u64::from(ma2a_store::MAX_DURABLE_EVENTS);
     for cursor in 0..bound {
         let to = if cursor % 2 == 0 {
@@ -484,7 +497,8 @@ fn state_changes_count_toward_the_durable_event_bound() -> TestResult {
     assert_eq!(record.summary.state, AgentTaskState::Failed);
     assert_eq!(record.summary.reason, Some(AgentTaskReason::Limit));
     assert!(record.summary.last_seq <= ma2a_store::MAX_DURABLE_EVENTS + 1);
-    Ok(())
+    // The call still open when the task failed is answered, not left waiting.
+    answered_as_ended(&repository, (generation, task, "open"))
 }
 
 #[test]
@@ -576,20 +590,23 @@ fn one_pass_stops_assigning_once_its_own_deliveries_reach_the_outbox_bound() -> 
 #[test]
 fn an_artifact_over_the_event_bound_is_not_published() -> TestResult {
     let (_state, mut repository, generation, task) = running("agent-artifact-bound")?;
+    apply(&mut repository, (generation, 5), tool(task, "publish"))?;
     // `queued` and `running` already hold two durable events.
     for cursor in 0..u64::from(ma2a_store::MAX_DURABLE_EVENTS) - 2 {
         let note = AgentOutputEffect::Message(task, text(MessageRole::Agent, "note")?);
         apply(&mut repository, (generation, 10 + cursor), note)?;
     }
+    let late = artifact("late.txt", 1)?;
     let published = repository
-        .add_agent_artifact(task, (&artifact("late.txt", 1)?, 900))?
+        .publish_agent_artifact((task, ("publish", b"{\"ok\":1}")), (&late, 900))?
         .into_value();
     assert!(
         matches!(published, AgentTaskChange::Ended(_)),
         "{published:?}"
     );
     assert!(repository.agent_artifacts(task)?.is_empty());
-    Ok(())
+    // The publishing call itself is answered: its task ended, so no later result reaches it.
+    answered_as_ended(&repository, (generation, task, "publish"))
 }
 
 /// A publication and the tool call's answer commit together, so a crash between them can

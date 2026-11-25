@@ -326,6 +326,8 @@ is recorded as its own `message` event, immediately before the `state` event.
   most 256 of them: a `message`, `artifact`, or non-terminal `state` event that would exceed this
   fails the task with reason `limit` instead. A terminal `state` event is always recorded, so the
   end of a task is never lost. An artifact whose event would exceed the bound is not published.
+  A task failed this way has its open tool calls answered `task_ended` (see
+  [Tool bridge](#tool-bridge)).
 - **Progress.** Only the newest 64 `progress` events of a task are retained; older ones are
   deleted when a new one is recorded. The newest progress text is also kept in Details.
 
@@ -700,9 +702,10 @@ completed call keeps its first result.
 larger one is replaced by the error `too_large`.
 
 **Concurrency.** A task may make at most 256 tool calls; the next one fails the task with `limit`.
-That call never runs. It and every call of the task still open are answered at once with
-`task_ended`, in the same transaction, so the Agent is never left waiting for a result; a result
-that arrives later for one of those open calls is dropped. At most 8 calls of one task may be open
+That call never runs. Whenever a task fails with `limit`, at this bound or at the durable-event
+bound, every call of the task still open, this one included, is answered `task_ended` in the same
+transaction, so the Agent is never left waiting for a tool result; a result that arrives later for
+one of those calls is dropped. At most 8 calls of one task may be open
 at once; a call made while 8 are open is answered at once with `concurrency_exceeded`. A result is
 delivered only while the task is live and its instance still holds it. A call whose task ended
 before it ran is answered `task_ended`.

@@ -55,20 +55,20 @@ fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<CallRow> {
     ))
 }
 
-/// One tool call as the Agent made it: its identifier, tool name, and canonical request, and
-/// the answers recorded at once when it cannot run, too many being open or past the limit.
-type NewToolCall = (String, String, Vec<u8>, (Vec<u8>, Vec<u8>));
+/// The stored answer of every call a task's failure at one of its limits leaves open: the
+/// `task_ended` tool error exactly as the Runtime encodes it.
+pub const TASK_ENDED_ANSWER: &[u8] =
+    br#"{"error":{"code":"task_ended","message":"the task has already ended"}}"#;
 
 /// Records one tool call of a task the calling instance holds.
 ///
 /// A call made while the task has too many open is answered at once with `rejection`. The
-/// call past the task's limit never runs: it fails the task, and it and every call still open
-/// are answered at once with `ended`, because no result is delivered once the task ended and
-/// the instance would otherwise wait for them forever.
+/// call past the task's limit never runs: it fails the task, which answers it with every call
+/// still open (see [`fail_at_limit`]).
 pub(crate) fn record_tool_call(
     transaction: &Transaction<'_>,
     (record, at_ms): (&AgentTaskRecord, u64),
-    (call, name, request, (rejection, ended)): NewToolCall,
+    (call, name, request, rejection): (String, String, Vec<u8>, Vec<u8>),
 ) -> Result<AgentOutputApplied, StoreError> {
     let task = record.summary.id;
     let existing: Option<Vec<u8>> = transaction
@@ -89,16 +89,7 @@ pub(crate) fn record_tool_call(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let limited = total >= MAX_TOOL_CALLS_PER_TASK;
-    let mut answered = if limited {
-        end_open_calls(transaction, task, (&ended, at_ms))?
-    } else {
-        Vec::new()
-    };
-    let answer = if limited {
-        Some(ended.as_slice())
-    } else {
-        (open >= MAX_OPEN_TOOL_CALLS_PER_TASK).then_some(rejection.as_slice())
-    };
+    let rejected = !limited && open >= MAX_OPEN_TOOL_CALLS_PER_TASK;
     transaction.execute(
         "INSERT INTO agent_tool_calls (task_id, call_id, name, request, result, created_at_ms,
          completed_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -107,55 +98,59 @@ pub(crate) fn record_tool_call(
             call,
             name,
             request,
-            answer,
+            rejected.then_some(rejection.as_slice()),
             at_ms,
-            answer.map(|_| at_ms),
+            rejected.then_some(at_ms),
         ],
     )?;
-    if answer.is_some() {
-        answered.push(call.clone());
-    }
-    for answered in answered {
-        deliver_to_holder(
-            transaction,
-            record,
-            &AgentDelivery::ToolResult(task, answered),
-        )?;
-    }
     if limited {
-        let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
-        set_state(transaction, (task, at_ms), limit)?;
+        fail_at_limit(transaction, (task, at_ms))?;
         return Ok(AgentOutputApplied::Task(Box::new(
             load_task(transaction, task)?.ok_or(StoreError::SchemaMismatch {
                 detail: "a limited Agent task could not be read back",
             })?,
         )));
     }
-    if answer.is_some() {
+    if rejected {
+        deliver_to_holder(
+            transaction,
+            record,
+            &AgentDelivery::ToolResult(task, call.clone()),
+        )?;
         return Ok(AgentOutputApplied::ToolRejected(task, call));
     }
     Ok(AgentOutputApplied::ToolCall(task, call))
 }
 
-/// Answers every open call of `task` with `ended`; returns their identifiers, oldest first.
-fn end_open_calls(
+/// Fails a task at one of its limits.
+///
+/// No result is delivered once a task ended, so every call of it still open is answered with
+/// [`TASK_ENDED_ANSWER`] here, oldest first, and that answer is delivered to the instance
+/// holding the task: it would otherwise wait for those calls forever. A result that arrives
+/// later for one of them finds it answered and is dropped.
+pub(crate) fn fail_at_limit(
     transaction: &Transaction<'_>,
-    task: AgentTaskId,
-    (ended, at_ms): (&[u8], u64),
-) -> Result<Vec<String>, StoreError> {
-    let mut statement = transaction.prepare(
-        "SELECT call_id FROM agent_tool_calls WHERE task_id = ?1 AND result IS NULL
-         ORDER BY created_at_ms, call_id",
-    )?;
-    let open = statement
-        .query_map([task.as_bytes().as_slice()], |row| row.get(0))?
-        .collect::<Result<Vec<String>, _>>()?;
-    transaction.execute(
-        "UPDATE agent_tool_calls SET result = ?2, completed_at_ms = max(?3, created_at_ms)
-         WHERE task_id = ?1 AND result IS NULL",
-        params![task.as_bytes().as_slice(), ended, at_ms],
-    )?;
-    Ok(open)
+    (task, at_ms): (AgentTaskId, u64),
+) -> Result<(), StoreError> {
+    if let Some(record) = load_task(transaction, task)? {
+        let mut statement = transaction.prepare(
+            "SELECT call_id FROM agent_tool_calls WHERE task_id = ?1 AND result IS NULL
+             ORDER BY created_at_ms, call_id",
+        )?;
+        let open = statement
+            .query_map([task.as_bytes().as_slice()], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        transaction.execute(
+            "UPDATE agent_tool_calls SET result = ?2, completed_at_ms = max(?3, created_at_ms)
+             WHERE task_id = ?1 AND result IS NULL",
+            params![task.as_bytes().as_slice(), TASK_ENDED_ANSWER, at_ms],
+        )?;
+        for call in open {
+            deliver_to_holder(transaction, &record, &AgentDelivery::ToolResult(task, call))?;
+        }
+    }
+    let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
+    set_state(transaction, (task, at_ms), limit)
 }
 
 impl Repository {

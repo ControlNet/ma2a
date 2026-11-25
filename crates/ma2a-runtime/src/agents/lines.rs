@@ -7,10 +7,7 @@ use ma2a_agent::protocol::{
 use ma2a_core::service::{AgentTaskId, AgentTaskState, MAX_TASK_NOTE_LEN};
 use ma2a_store::AgentOutputEffect;
 
-use super::{
-    convert::from_wire,
-    tools::{ended, rejection},
-};
+use super::{convert::from_wire, tools::rejection};
 
 /// Cuts output into lines and knows the output position just past each one.
 #[derive(Debug)]
@@ -144,7 +141,6 @@ fn decoded(message: AgentToRuntime) -> Option<AgentOutputEffect> {
         } => AgentOutputEffect::ToolCall {
             task: task(&id)?,
             rejection: rejection(),
-            ended: ended(),
             request: serde_json::to_vec(&args)
                 .ok()
                 .filter(|request| request.len() <= MAX_TOOL_ARGS_LEN)?,
