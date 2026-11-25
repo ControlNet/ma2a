@@ -7,6 +7,8 @@ mod membership;
 mod mutation_replay;
 mod relay_state;
 mod runner;
+#[cfg(test)]
+mod runner_tests;
 mod services;
 
 use ma2a_store::{KeyStore, Repository};

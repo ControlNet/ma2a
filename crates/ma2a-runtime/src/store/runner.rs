@@ -5,11 +5,15 @@ use super::{StoreBackend, StoreCommand, local_control, mutation_replay};
 
 impl StoreBackend {
     pub(crate) fn run(mut self, mut commands: mpsc::Receiver<StoreCommand>) {
-        while let Some(command) = commands.blocking_recv() {
-            if self.dispatch(command) {
-                break;
-            }
-        }
+        while let Some(command) = commands.blocking_recv()
+            && !self.dispatch(command)
+        {}
+        // A caller may already hold room in the queue without having handed its
+        // request over. Dropping the receiver now would leave that request in the
+        // channel with nobody to answer it, so close first and refuse every request
+        // until the last such caller is done.
+        commands.close();
+        while commands.blocking_recv().is_some() {}
     }
 
     #[expect(clippy::too_many_lines, reason = "store command ordering is explicit")]
