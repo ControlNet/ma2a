@@ -1,17 +1,20 @@
 //! Caller side of Proxy v1: one local byte stream bound to one remote TCP destination.
 
+use std::{
+    future::Future,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
+
 use ma2a_core::service::{
     Channel, EndReason, FrameKind, MAX_DATA_CHUNK_LEN, ProxyResult, ServiceError,
 };
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     sync::Notify,
 };
 
 use super::{
-    ClientError, First, decoded, empty_accept, first, next,
+    ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next,
     sinks::{settled, write_flushed},
     unexpected,
 };
@@ -21,23 +24,28 @@ use crate::{FrameReader, FrameWriter};
 ///
 /// Local EOF becomes `end`, and the destination's `end` shuts down the local write side, so
 /// each direction closes independently and byte for byte. The two directions never wait on
-/// each other. A failed local read or write cancels the relay instead.
+/// each other. Completing `cancel` sends `cancel` and still reads the target's terminal
+/// outcome; a failed local read or write cancels the relay and reports that local error.
 ///
 /// # Errors
 /// Returns the refusal (`connection_refused`, `unreachable`, `dns_failed`, `timed_out`, or an
 /// authorization failure), the stream failure, the failed local write or read, or the failed
 /// outcome.
-pub async fn run<R, W, LR, LW>(
+pub async fn run<R, W, LR, LW, C>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     (local_read, local_write): (LR, LW),
+    cancel: C,
 ) -> Result<ProxyResult, ClientError>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send,
     LR: AsyncRead + Unpin,
     LW: AsyncWrite + Unpin,
+    C: Future<Output = ()>,
 {
-    match first(reader).await? {
+    tokio::pin!(cancel);
+    let (answer, sender) = first_or_cancel((reader, writer), cancel.as_mut()).await?;
+    match answer {
         First::Finished(frame) => return decoded(ProxyResult::decode_outcome(frame.payload())),
         First::Accepted(frame) => empty_accept(&frame)?,
     }
@@ -46,11 +54,18 @@ where
     let mut unread = None;
     let answer = {
         let downstream = downstream(reader, local_write, (&lost, &sent));
-        let upstream = upstream(writer, local_read, (&lost, &sent, &mut unread));
-        tokio::pin!(downstream, upstream);
-        tokio::select! {
-            answer = &mut downstream => answer,
-            () = &mut upstream => downstream.await,
+        tokio::pin!(downstream);
+        // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
+        match sender {
+            Sender::Cancelled(rest) => drained(downstream.as_mut(), rest).await,
+            Sender::Open(writer) => {
+                let upstream = upstream(writer, (local_read, cancel), (&lost, &sent, &mut unread));
+                tokio::pin!(upstream);
+                tokio::select! {
+                    answer = &mut downstream => answer,
+                    () = &mut upstream => downstream.await,
+                }
+            }
         }
     };
     settled(answer, unread)
@@ -59,22 +74,28 @@ where
 /// The bytes the caller sent toward the destination, and whether it sent its `end`.
 type Sent = (AtomicU64, AtomicBool);
 
-/// Local → destination, then `end` at local EOF, and a `cancel` once the local side is lost or
-/// fails; records what it sent in `sent`, and a failed local read in `unread`.
-async fn upstream<W, LR>(
+/// Local → destination, then `end` at local EOF, and a `cancel` once cancelled or the local
+/// side is lost or fails; records what it sent in `sent`, and a failed local read in `unread`.
+async fn upstream<W, LR, C>(
     writer: &mut FrameWriter<W>,
-    mut local_read: LR,
+    (mut local_read, cancel): (LR, C),
     (lost, (sent, input_ended), unread): (&Notify, &Sent, &mut Option<std::io::Error>),
 ) where
     W: AsyncWrite + Unpin,
     LR: AsyncRead + Unpin,
+    C: Future<Output = ()>,
 {
+    tokio::pin!(cancel);
     let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
     loop {
         let read = tokio::select! {
             biased;
             () = lost.notified() => {
-                let _cancelled = cancel(writer).await;
+                let _cancelled = send_cancel(writer).await;
+                return;
+            }
+            () = &mut cancel => {
+                let _cancelled = send_cancel(writer).await;
                 return;
             }
             read = local_read.read(&mut buffer) => read,
@@ -84,7 +105,7 @@ async fn upstream<W, LR>(
             Ok(read) => read,
             Err(error) => {
                 *unread = Some(error);
-                let _cancelled = cancel(writer).await;
+                let _cancelled = send_cancel(writer).await;
                 return;
             }
         };
@@ -96,9 +117,14 @@ async fn upstream<W, LR>(
             }
             .await;
             if ended.is_ok() {
-                // The destination may keep sending; a lost local side still cancels it.
-                lost.notified().await;
-                let _cancelled = cancel(writer).await;
+                // The destination may keep sending; a lost local side or a caller cancel still
+                // cancels it.
+                tokio::select! {
+                    biased;
+                    () = lost.notified() => {}
+                    () = &mut cancel => {}
+                }
+                let _cancelled = send_cancel(writer).await;
             }
             return;
         }
@@ -188,7 +214,9 @@ where
     (answer, unwritten)
 }
 
-async fn cancel<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>) -> Result<(), ServiceError> {
+async fn send_cancel<W: AsyncWrite + Unpin>(
+    writer: &mut FrameWriter<W>,
+) -> Result<(), ServiceError> {
     writer.frame(FrameKind::Cancel, &[]).await?;
     writer.flush().await
 }

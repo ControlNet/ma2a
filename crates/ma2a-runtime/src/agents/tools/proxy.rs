@@ -123,5 +123,10 @@ async fn relay((manager, task): (&AgentManager, AgentTaskId), shared: &Shared, s
         return;
     };
     let (read, write) = socket.into_split();
-    let _relayed = client::proxy::run((&mut reader, &mut writer), (read, write)).await;
+    let _relayed = client::proxy::run(
+        (&mut reader, &mut writer),
+        (read, write),
+        std::future::pending(),
+    )
+    .await;
 }

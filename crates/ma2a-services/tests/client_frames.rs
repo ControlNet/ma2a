@@ -229,7 +229,12 @@ async fn proxied_with<L: tokio::io::AsyncRead + Unpin>(
         }
         TestResult::Ok(())
     });
-    let relayed = within(proxy::run((&mut reader, &mut writer), (local, Vec::new()))).await;
+    let relayed = within(proxy::run(
+        (&mut reader, &mut writer),
+        (local, Vec::new()),
+        std::future::pending(),
+    ))
+    .await;
     target.abort();
     relayed
 }
@@ -737,7 +742,11 @@ async fn proxied_into(sink: &mut Sink) -> TestResult<Result<ProxyResult, ClientE
         ];
         send(&mut target_writer, &relay).await
     };
-    let relaying = proxy::run((&mut reader, &mut writer), (&b""[..], sink));
+    let relaying = proxy::run(
+        (&mut reader, &mut writer),
+        (&b""[..], sink),
+        std::future::pending(),
+    );
     let (relayed, scripted) = within(async { tokio::join!(relaying, target) }).await?;
     scripted?;
     Ok(relayed)
@@ -1037,6 +1046,7 @@ async fn a_continuous_incoming_stream_never_starves_proxy_or_drained_cancel() ->
             let _ = proxy::run(
                 (&mut reader, &mut writer),
                 (&b"hello"[..], tokio::io::sink()),
+                std::future::pending(),
             )
             .await;
             Ok(())
@@ -1051,7 +1061,12 @@ async fn a_continuous_incoming_stream_never_starves_proxy_or_drained_cancel() ->
         (&EMPTY_ACCEPT, Channel::Input),
         |mut reader, mut writer| async move {
             let (_hold, local_read) = tokio::io::duplex(64);
-            let _ = proxy::run((&mut reader, &mut writer), (local_read, Broken)).await;
+            let _ = proxy::run(
+                (&mut reader, &mut writer),
+                (local_read, Broken),
+                std::future::pending(),
+            )
+            .await;
             Ok(())
         },
         is_cancel,

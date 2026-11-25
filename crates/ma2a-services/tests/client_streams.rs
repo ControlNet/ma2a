@@ -174,7 +174,11 @@ async fn a_proxied_connection_is_byte_exact_in_both_directions() -> TestResult {
     let host = serve_proxy(request, &shutdown, (&mut host_reader, &mut host_writer));
     let sent = content(1 << 20);
     let mut returned = Vec::new();
-    let caller = client::proxy::run((&mut reader, &mut writer), (sent.as_slice(), &mut returned));
+    let caller = client::proxy::run(
+        (&mut reader, &mut writer),
+        (sent.as_slice(), &mut returned),
+        std::future::pending(),
+    );
     let (result, _report) = within(async { tokio::join!(caller, host) }).await?;
     let result = result?;
     assert_eq!(destination.await??, sent);
@@ -209,7 +213,11 @@ async fn a_reset_local_connection_cancels_the_proxy_instead_of_ending_its_input(
         .await?;
 
     // When: the local client aborts its connection.
-    let caller = client::proxy::run((&mut reader, &mut writer), (Reset, Vec::new()));
+    let caller = client::proxy::run(
+        (&mut reader, &mut writer),
+        (Reset, Vec::new()),
+        std::future::pending(),
+    );
     let target = async {
         let frame = target_reader.expect().await?;
         let cancelled = ProxyResult::new(EndReason::Cancelled, (0, 0), 1);
@@ -379,5 +387,79 @@ async fn a_failed_local_read_cancels_the_process_and_is_reported() -> TestResult
     // is the answer.
     assert_eq!(last, FrameKind::Cancel);
     assert!(matches!(result, Err(ClientError::Local(_))), "{result:?}");
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_proxy_before_or_after_accept_returns_cancelled() -> TestResult {
+    let outcome = || -> TestResult<Vec<u8>> {
+        let cancelled = ProxyResult::new(EndReason::Cancelled, (0, 0), 1);
+        Ok(ProxyResult::encode_outcome(&Ok(cancelled))?)
+    };
+
+    // 1. Cancelled before Accept: target hears Cancel first, sends Accept + Outcome(Cancelled).
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(1 << 16);
+    let target = async {
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        target_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        target_writer.frame(FrameKind::Outcome, &outcome()?).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let (_hold, local_read) = tokio::io::duplex(64);
+    let caller = client::proxy::run(
+        (&mut reader, &mut writer),
+        (local_read, Vec::new()),
+        async {},
+    );
+    let (result, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert_eq!(result?.reason, EndReason::Cancelled);
+
+    // 2. Cancelled after Accept while reading stdin.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(1 << 16);
+    let target = async {
+        target_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        target_writer.flush().await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        target_writer.frame(FrameKind::Outcome, &outcome()?).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let (_hold, local_read) = tokio::io::duplex(64);
+    let caller = client::proxy::run(
+        (&mut reader, &mut writer),
+        (local_read, Vec::new()),
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (result, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert_eq!(result?.reason, EndReason::Cancelled);
+
+    // 3. Cancelled after Accept and after local stdin reached EOF.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(1 << 16);
+    let target = async {
+        target_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        target_writer.flush().await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::End);
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        target_writer.frame(FrameKind::Outcome, &outcome()?).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = client::proxy::run(
+        (&mut reader, &mut writer),
+        (&b""[..], Vec::new()),
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (result, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert_eq!(result?.reason, EndReason::Cancelled);
     Ok(())
 }

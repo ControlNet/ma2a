@@ -22,7 +22,12 @@ pub(crate) async fn run(paths: IpcPaths, command: ProxyCommand) -> Result<(), Ap
             let (mut reader, mut writer) =
                 open(&paths, &destination.endpoint, OpenBody::Proxy(request)).await?;
             let local = (tokio::io::stdin(), tokio::io::stdout());
-            let relayed = client::proxy::run((&mut reader, &mut writer), local).await;
+            let relayed = client::proxy::run(
+                (&mut reader, &mut writer),
+                local,
+                super::process::interrupted(),
+            )
+            .await;
             exit_with(relayed.map_err(AppError::from))
         }
         ProxyCommand::Forward {
@@ -108,7 +113,12 @@ async fn forward(
                 let (mut reader, mut writer) =
                     open(paths, endpoint, OpenBody::Proxy(request)).await?;
                 let (read, write) = socket.into_split();
-                client::proxy::run((&mut reader, &mut writer), (read, write)).await?;
+                client::proxy::run(
+                    (&mut reader, &mut writer),
+                    (read, write),
+                    std::future::pending(),
+                )
+                .await?;
                 Ok::<(), AppError>(())
             };
             if let Err(error) = relayed.await {

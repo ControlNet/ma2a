@@ -127,3 +127,118 @@ fn a_proxied_connection_that_times_out_exits_124() -> TestResult {
     drop(silent.join().map_err(|_| "silent destination panicked")??);
     lab.shutdown()
 }
+
+/// Sends SIGINT to `child`, as Ctrl-C would.
+fn interrupt(child: &std::process::Child) -> TestResult {
+    let status = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("kill -INT failed".into())
+    }
+}
+
+#[test]
+fn a_proxied_connection_exits_130_on_interrupt() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let lab = Lab::start("proxy-interrupt", &port.to_string())?;
+    let port_text = port.to_string();
+
+    let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+    let silent = std::thread::spawn(move || -> TestValue<TcpStream> {
+        let (socket, _) = listener.accept()?;
+        let _sent = accepted_tx.send(());
+        Ok(socket)
+    });
+    let child = lab
+        .member
+        .command(&[
+            "proxy",
+            "connect",
+            "--endpoint",
+            lab.owner.id(),
+            "--idle",
+            "60s",
+            "127.0.0.1",
+            &port_text,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    accepted_rx.recv_timeout(std::time::Duration::from_secs(15))?;
+    // Give the CLI a moment to enter `client::proxy::run` and register its Ctrl-C handler.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    interrupt(&child)?;
+    let cancelled = child.wait_with_output()?;
+    assert_eq!(
+        cancelled.status.code(),
+        Some(130),
+        "stderr: {}",
+        String::from_utf8_lossy(&cancelled.stderr)
+    );
+    assert!(
+        String::from_utf8(cancelled.stderr)?.contains("proxy connection cancelled"),
+        "missing cancelled message"
+    );
+    drop(silent.join().map_err(|_| "silent destination panicked")??);
+    lab.shutdown()
+}
+
+#[test]
+fn a_proxied_connection_exits_255_on_shutdown() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let lab = Lab::start("proxy-shutdown", &port.to_string())?;
+    let port_text = port.to_string();
+
+    let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+    let silent = std::thread::spawn(move || -> TestValue<TcpStream> {
+        let (socket, _) = listener.accept()?;
+        let _sent = accepted_tx.send(());
+        Ok(socket)
+    });
+    let child = lab
+        .member
+        .command(&[
+            "proxy",
+            "connect",
+            "--endpoint",
+            lab.owner.id(),
+            "--idle",
+            "60s",
+            "127.0.0.1",
+            &port_text,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    accepted_rx.recv_timeout(std::time::Duration::from_secs(15))?;
+    // Withdrawing exposure stops the running Proxy with `EndReason::Shutdown` over the live QUIC
+    // connection (services-v1.md:45-46).
+    lab.owner.run_ok(&[
+        "service",
+        "unexpose",
+        "proxy",
+        &lab.space,
+        "127.0.0.1",
+        &port_text,
+    ])?;
+    let shut_down = child.wait_with_output()?;
+    assert_eq!(
+        shut_down.status.code(),
+        Some(255),
+        "stderr: {}",
+        String::from_utf8_lossy(&shut_down.stderr)
+    );
+    assert!(
+        String::from_utf8(shut_down.stderr)?.contains("target Runtime shut down"),
+        "missing shutdown message"
+    );
+    drop(silent.join().map_err(|_| "silent destination panicked")??);
+    lab.shutdown()
+}
