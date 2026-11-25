@@ -5,7 +5,7 @@
 
 use std::io;
 
-use ma2a_core::service::{FrameKind, OpenBody, OpenHeader, RemotePath};
+use ma2a_core::service::{FrameKind, OpenBody, OpenHeader, RemotePath, ServiceError};
 use ma2a_runtime::ipc::{IpcPaths, LocalApiClient, LocalStream, StreamUpgrade};
 use ma2a_services::{FrameReader, FrameWriter, client::ClientError};
 use serde_json::Value;
@@ -39,6 +39,16 @@ impl From<ClientError> for AppError {
             other => Self::Protocol(other.to_string()),
         }
     }
+}
+
+/// Runs `read` under `deadline`, failing as `timed_out` once it passes.
+async fn bounded<T>(
+    deadline: std::time::Duration,
+    read: impl Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    tokio::time::timeout(deadline, read)
+        .await
+        .unwrap_or_else(|_| Err(ClientError::Stream(ServiceError::TimedOut).into()))
 }
 
 /// Opens one remote operation on `endpoint` and sends its `open`.

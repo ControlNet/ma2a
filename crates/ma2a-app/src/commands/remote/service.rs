@@ -3,14 +3,14 @@
 use std::{io::Write as _, time::Duration};
 
 use ma2a_core::service::{
-    DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceError,
-    ServiceName, ServiceOrigin, ServiceRequest, ServiceVersion,
+    DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceName,
+    ServiceOrigin, ServiceRequest, ServiceVersion,
 };
 use ma2a_runtime::ipc::IpcPaths;
-use ma2a_services::client::{ClientError, process::ProcessIo, service};
+use ma2a_services::client::{process::ProcessIo, service};
 use serde_json::{Value, json};
 
-use super::{open, open_as, process::interrupted};
+use super::{bounded, open, open_as, process::interrupted};
 use crate::{AppError, cli::hosted::CallArgs};
 
 fn version_value(version: &ServiceVersion) -> Value {
@@ -36,16 +36,6 @@ fn descriptor_value(descriptor: &ServiceDescriptor) -> Value {
 
 /// Longest wait for one discovery page, so a target that never answers fails the command.
 const PAGE_DEADLINE: Duration = Duration::from_secs(30);
-
-/// Runs `read` under `deadline`, failing as `timed_out` once it passes.
-async fn bounded<T>(
-    deadline: Duration,
-    read: impl Future<Output = Result<T, AppError>>,
-) -> Result<T, AppError> {
-    tokio::time::timeout(deadline, read)
-        .await
-        .unwrap_or_else(|_| Err(ClientError::Stream(ServiceError::TimedOut).into()))
-}
 
 async fn page(
     (paths, endpoint): (&IpcPaths, &str),

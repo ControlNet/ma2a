@@ -1,6 +1,9 @@
 //! `ma2a file`: remote Files operations and verified transfers.
 
-use std::io::{self, Read as _, Write as _};
+use std::{
+    io::{self, Read as _, Write as _},
+    time::Duration,
+};
 
 use ma2a_core::service::{
     FileMetadata, FilesRequest, FilesResult, MAX_SMALL_FILE_LEN, OpenBody, ServiceError, WriteMode,
@@ -8,7 +11,7 @@ use ma2a_core::service::{
 use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client::{self, ClientError};
 
-use super::{open, remote_path, transfer};
+use super::{bounded, open, remote_path, transfer};
 use crate::{
     AppError,
     cli::services::{FileArgs, FileCommand},
@@ -53,13 +56,21 @@ pub(crate) async fn run(paths: IpcPaths, arguments: FileArgs) -> Result<(), AppE
 
 type Target<'a> = (&'a IpcPaths, &'a str);
 
+/// Longest wait for one Files operation, twice the target's own 15 s bound, so a target
+/// that never answers fails the command.
+const FILES_DEADLINE: Duration = Duration::from_secs(30);
+
 async fn files(
     (paths, endpoint): Target<'_>,
     request: FilesRequest,
     content: &[u8],
 ) -> Result<(FilesResult, Vec<u8>), AppError> {
-    let (mut reader, mut writer) = open(paths, endpoint, OpenBody::Files(request.clone())).await?;
-    Ok(client::files::run((&mut reader, &mut writer), &request, content).await?)
+    bounded(FILES_DEADLINE, async {
+        let (mut reader, mut writer) =
+            open(paths, endpoint, OpenBody::Files(request.clone())).await?;
+        Ok(client::files::run((&mut reader, &mut writer), &request, content).await?)
+    })
+    .await
 }
 
 async fn done(target: Target<'_>, request: FilesRequest) -> Result<(), AppError> {

@@ -256,6 +256,9 @@ restart.
 | Shell | 4 | 16 | lifetime ≤ 24 h |
 | Proxy | 64 | 256 | idle ≤ 1 h, lifetime 24 h |
 
+`ma2a file` waits at most 30 seconds for each Files operation, twice the host's bound, and fails
+with `timed_out` after that, so a target that never answers cannot hang the command.
+
 A stream over a bound is rejected with `concurrency_exceeded` before any byte is read. The
 `open` frame must arrive within 15 seconds. Permits are RAII and released on every exit path.
 A peer the Runtime refuses outright, such as a non-member, gives its permit back before the
