@@ -206,17 +206,6 @@ impl Repository {
         });
         let mut assigned = Vec::new();
         if let Some((generation, max_tasks)) = instance {
-            // An instance that does not read what it is sent is given nothing more.
-            let unacked: u32 = transaction.query_row(
-                "SELECT COUNT(*) FROM agent_outbox WHERE agent_id = ?1 AND generation = ?2",
-                params![agent.as_str(), generation],
-                |row| row.get(0),
-            )?;
-            let max_tasks = if unacked >= MAX_UNACKED_DELIVERIES {
-                0
-            } else {
-                max_tasks
-            };
             let busy: u32 = transaction.query_row(
                 "SELECT COUNT(*) FROM agent_tasks WHERE agent_id = ?1 AND generation = ?2
                  AND state IN (1, 2)",
@@ -235,6 +224,16 @@ impl Repository {
                 rows.collect::<Result<_, _>>()?
             };
             for id in queued {
+                // An instance that does not read what it is sent is given nothing more; the
+                // count includes what this pass already delivered.
+                let unacked: u32 = transaction.query_row(
+                    "SELECT COUNT(*) FROM agent_outbox WHERE agent_id = ?1 AND generation = ?2",
+                    params![agent.as_str(), generation],
+                    |row| row.get(0),
+                )?;
+                if unacked >= MAX_UNACKED_DELIVERIES {
+                    break;
+                }
                 let task = AgentTaskId::try_from(id.as_slice())?;
                 assign(&transaction, (agent, generation), (task, at_ms))?;
                 assigned.push(task);

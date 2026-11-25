@@ -475,6 +475,44 @@ fn an_instance_that_never_acknowledges_takes_no_more_tasks() -> TestResult {
 }
 
 #[test]
+fn one_pass_stops_assigning_once_its_own_deliveries_reach_the_outbox_bound() -> TestResult {
+    // Given: three free slots and three queued tasks, the first two holding 128 messages each.
+    let directory = TempState::new("agent-unacked-pass")?;
+    let mut repository = Repository::open(&StoreConfig::new(directory.path()))?;
+    let generation = ready_agent(&mut repository, 3)?;
+    let mut tasks = Vec::new();
+    for seed in 1..=3 {
+        let creation = repository.create_agent_task(&new_task(seed, endpoint(1))?)?;
+        tasks.push(created(&creation.into_value())?);
+    }
+    let [first, second, third] = <[_; 3]>::try_from(tasks).map_err(|_| "three tasks")?;
+    for (task, at_ms) in [(first, 100), (second, 300)] {
+        for offset in 0..128 {
+            let message = text(MessageRole::User, "more")?;
+            repository.send_agent_message(task, (&message, at_ms + offset))?;
+        }
+    }
+
+    // When: one pass assigns them.
+    let assigned = repository.assign_agent_tasks(&agent()?, 500)?.into_value();
+
+    // Then: the first two tasks bring 258 deliveries, so the third waits for acknowledgements.
+    assert_eq!(assigned, [first, second]);
+    let outbox = repository.agent_outbox((&agent()?, generation))?.len();
+    assert_eq!(outbox, 258);
+    apply(
+        &mut repository,
+        (generation, 2),
+        AgentOutputEffect::Ack(258),
+    )?;
+    assert_eq!(
+        repository.assign_agent_tasks(&agent()?, 501)?.into_value(),
+        [third]
+    );
+    Ok(())
+}
+
+#[test]
 fn an_artifact_over_the_event_bound_is_not_published() -> TestResult {
     let (_state, mut repository, generation, task) = running("agent-artifact-bound")?;
     // `queued` and `running` already hold two durable events.
