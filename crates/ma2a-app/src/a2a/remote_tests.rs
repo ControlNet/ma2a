@@ -55,9 +55,9 @@ mod through_the_daemon {
     use tokio::time::Instant;
 
     use super::{super::CALL_DEADLINE, id};
-    use crate::a2a::{
-        backend::Refusal,
-        remote_fixture::{Daemon, Script, TestResult, answering, summary},
+    use crate::{
+        a2a::backend::{Backend, Refusal},
+        test_daemon::{Daemon, Script, TestResult, answering, summary},
     };
 
     fn details(task: u8, agent: &str) -> TestResult<AgentReply> {
@@ -73,21 +73,19 @@ mod through_the_daemon {
     /// Whether a remote Get of task 1 through a target answering `script` succeeds.
     async fn got(script: Script) -> TestResult<bool> {
         let daemon = Daemon::start("get", script)?;
+        let (backend, route) = Backend::standing_in(&daemon)?;
         let task = id(1).to_string();
-        Ok(super::super::details(&daemon.backend, &daemon.route, &task)
-            .await
-            .is_ok())
+        Ok(super::super::details(&backend, &route, &task).await.is_ok())
     }
 
     /// Whether a remote Submit through a target answering `script` succeeds.
     async fn submitted(script: Script) -> TestResult<bool> {
         let daemon = Daemon::start("submit", script)?;
+        let (backend, route) = Backend::standing_in(&daemon)?;
         let message = AgentMessage::new(MessageRole::User, vec![MessagePart::Text("hi".into())])?;
         let request_id = "09".repeat(16);
         let sent = (&message, request_id.as_str());
-        Ok(super::super::submit(&daemon.backend, &daemon.route, sent)
-            .await
-            .is_ok())
+        Ok(super::super::submit(&backend, &route, sent).await.is_ok())
     }
 
     #[tokio::test]
@@ -118,10 +116,11 @@ mod through_the_daemon {
     async fn a_target_that_never_answers_fails_as_timed_out() -> TestResult {
         // Given: a target whose stream opens and then stays silent.
         let daemon = Daemon::start("silent", Vec::new())?;
+        let (backend, route) = Backend::standing_in(&daemon)?;
         let (task, started) = (id(1).to_string(), Instant::now());
 
         // When
-        let got = super::super::details(&daemon.backend, &daemon.route, &task);
+        let got = super::super::details(&backend, &route, &task);
         let answered = tokio::time::timeout(CALL_DEADLINE * 2, got).await;
 
         // Then: the operation's own deadline ended it, not the transport's.

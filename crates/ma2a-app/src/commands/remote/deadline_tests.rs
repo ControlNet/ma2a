@@ -2,10 +2,7 @@
 
 use tokio::time::Instant;
 
-use super::{
-    READ_DEADLINE,
-    silent_target::{SilentTarget, TestResult},
-};
+use super::READ_DEADLINE;
 use crate::{
     AppError,
     cli::{
@@ -13,6 +10,7 @@ use crate::{
         processes::{ProcessArgs, ProcessCommand},
         services::{FileArgs, FileCommand},
     },
+    test_daemon::{Daemon, TestResult},
 };
 
 const ID: &str = "0123456789abcdef0123456789abcdef";
@@ -38,7 +36,7 @@ fn task() -> TaskTarget {
 
 #[tokio::test(start_paused = true)]
 async fn agent_reads_give_up_on_a_silent_target() -> TestResult {
-    let target = SilentTarget::start("agent")?;
+    let target = Daemon::start("agent", Vec::new())?;
     let remote = (&target.paths, target.endpoint.as_str());
     let tasks = AgentCommand::Tasks {
         agent: Some("worker".to_owned()),
@@ -62,7 +60,7 @@ async fn agent_reads_give_up_on_a_silent_target() -> TestResult {
 
 #[tokio::test(start_paused = true)]
 async fn process_reads_give_up_on_a_silent_target() -> TestResult {
-    let target = SilentTarget::start("process")?;
+    let target = Daemon::start("process", Vec::new())?;
     for command in [
         ProcessCommand::List { after: None },
         ProcessCommand::Inspect { id: ID.to_owned() },
@@ -85,7 +83,7 @@ async fn process_reads_give_up_on_a_silent_target() -> TestResult {
 
 #[tokio::test(start_paused = true)]
 async fn a_file_download_gives_up_on_a_silent_target() -> TestResult {
-    let target = SilentTarget::start("file")?;
+    let target = Daemon::start("file", Vec::new())?;
     let remote = (&target.paths, target.endpoint.as_str());
     let local = target.state_dir.join("downloaded");
     let got = super::transfer::get(remote, ("docs:/a", &local), (false, false));
@@ -97,7 +95,7 @@ async fn a_file_download_gives_up_on_a_silent_target() -> TestResult {
 
 #[tokio::test(start_paused = true)]
 async fn a_files_operation_gives_up_on_a_silent_target() -> TestResult {
-    let target = SilentTarget::start("files")?;
+    let target = Daemon::start("files", Vec::new())?;
     let arguments = FileArgs {
         endpoint: target.endpoint.clone(),
         command: FileCommand::Stat {

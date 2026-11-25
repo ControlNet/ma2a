@@ -26,8 +26,6 @@ mod hosted_view;
 pub(crate) mod process;
 pub(crate) mod proxy;
 pub(crate) mod service;
-#[cfg(all(test, unix))]
-mod silent_target;
 mod transfer;
 
 /// The caller's frame halves of one opened operation.

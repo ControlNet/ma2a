@@ -208,19 +208,23 @@ mod tests {
     /// Lists the tasks of a target whose only page lists `tasks`, a page of one at a time,
     /// following each token; answers the IDs listed, or the error.
     #[cfg(unix)]
-    async fn follow_tokens(tasks: &[u8]) -> crate::a2a::remote_fixture::TestResult<Vec<String>> {
+    async fn follow_tokens(tasks: &[u8]) -> crate::test_daemon::TestResult<Vec<String>> {
         use ma2a_core::service::{AgentAccept, AgentReply, AgentTaskId};
 
-        use crate::a2a::remote_fixture::{Daemon, answering, summary};
+        use crate::{
+            a2a::backend::Backend,
+            test_daemon::{Daemon, answering, summary},
+        };
         let page = tasks
             .iter()
             .map(|byte| summary(AgentTaskId::from_bytes([*byte; 16]), "worker"))
             .collect::<Result<_, _>>()?;
         let script = answering(AgentAccept::Admitted, &AgentReply::Page(page, None))?;
         let daemon = Daemon::start("list", script)?;
+        let (backend, route) = Backend::standing_in(&daemon)?;
         let served = Served {
-            backend: &daemon.backend,
-            route: &daemon.route,
+            backend: &backend,
+            route: &route,
             base: "http://127.0.0.1",
         };
         let (mut listed, mut token) = (Vec::new(), String::new());

@@ -17,6 +17,8 @@ mod credential_command;
 mod daemon;
 mod daemon_control;
 mod output;
+#[cfg(all(test, unix))]
+mod test_daemon;
 
 mod embedded_web {
     include!(concat!(env!("OUT_DIR"), "/embedded_web.rs"));

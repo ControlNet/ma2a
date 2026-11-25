@@ -1,13 +1,18 @@
-//! A stand-in daemon for the remote commands: it completes the local handshake, opens every
-//! stream it is asked for, and then never sends a frame on it, as a target that accepted the
-//! stream and fell silent.
+//! A stand-in daemon for the remote calls: it completes the local handshake, opens every
+//! stream, writes the target's scripted frames on it, and then falls silent. An empty script
+//! stands for a target that accepted the stream and never said a word.
 
 use std::{fs::File, path::PathBuf};
 
+use ma2a_core::{
+    EndpointId, RequestId,
+    service::{AgentAccept, AgentId, AgentReply, AgentTaskId, AgentTaskSummary, FrameKind},
+};
 use ma2a_runtime::{
     api::{LOCAL_API_VERSION, MAX_LOCAL_REQUEST_BYTES},
     ipc::IpcPaths,
 };
+use ma2a_services::FrameWriter;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -15,25 +20,54 @@ use tokio::{
     task::JoinHandle,
 };
 
-pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-pub(super) struct SilentTarget {
-    pub(super) paths: IpcPaths,
+/// The frames the target sends on every stream it is opened for.
+pub(crate) type Script = Vec<(FrameKind, Vec<u8>)>;
+
+/// A target that accepts with `accept` and answers `reply`.
+pub(crate) fn answering(accept: AgentAccept, reply: &AgentReply) -> TestResult<Script> {
+    Ok(vec![
+        (FrameKind::Accept, accept.encode()?),
+        (
+            FrameKind::Outcome,
+            AgentReply::encode_outcome(&Ok(reply.clone()))?,
+        ),
+    ])
+}
+
+/// A queued task of `agent` on the target.
+pub(crate) fn summary(task: AgentTaskId, agent: &str) -> TestResult<AgentTaskSummary> {
+    // The identity point is a valid Ed25519 key.
+    let mut creator = [0_u8; 32];
+    creator[0] = 1;
+    Ok(AgentTaskSummary::new(
+        (task, AgentId::new(agent)?),
+        (
+            EndpointId::try_from(creator.as_slice())?,
+            RequestId::try_from([9; 16].as_slice())?,
+        ),
+        1_000,
+    ))
+}
+
+pub(crate) struct Daemon {
+    pub(crate) paths: IpcPaths,
     /// A well-formed Endpoint ID for the target.
-    pub(super) endpoint: String,
-    pub(super) state_dir: PathBuf,
+    pub(crate) endpoint: String,
+    pub(crate) state_dir: PathBuf,
     serving: JoinHandle<()>,
     /// Held like a running daemon holds it, so callers find one running.
     _lock: File,
 }
 
-impl SilentTarget {
+impl Daemon {
     /// Serves a fresh state directory; must be called inside the test's runtime.
-    pub(super) fn start(label: &str) -> TestResult<Self> {
+    pub(crate) fn start(label: &str, script: Script) -> TestResult<Self> {
         let mut nonce = [0_u8; 8];
         getrandom::fill(&mut nonce)?;
         let state_dir = std::env::temp_dir().join(format!(
-            "ma2a-silent-{label}-{:016x}",
+            "ma2a-standin-{label}-{:016x}",
             u64::from_le_bytes(nonce)
         ));
         std::fs::create_dir(&state_dir)?;
@@ -47,7 +81,7 @@ impl SilentTarget {
             .open(paths.lock_path())?;
         lock.lock()?;
         let listener = UnixListener::bind(paths.socket_path())?;
-        let serving = tokio::spawn(serve(listener));
+        let serving = tokio::spawn(serve(listener, script));
         let endpoint = iroh::SecretKey::generate().public();
         let endpoint = endpoint.as_bytes().iter().map(|byte| format!("{byte:02x}"));
         Ok(Self {
@@ -60,14 +94,14 @@ impl SilentTarget {
     }
 }
 
-impl Drop for SilentTarget {
+impl Drop for Daemon {
     fn drop(&mut self) {
         self.serving.abort();
         let _removed = std::fs::remove_dir_all(&self.state_dir);
     }
 }
 
-async fn serve(listener: UnixListener) {
+async fn serve(listener: UnixListener, script: Script) {
     while let Ok((mut stream, _)) = listener.accept().await {
         let Ok((correlation, request)) = read(&mut stream).await else {
             continue;
@@ -87,15 +121,26 @@ async fn serve(listener: UnixListener) {
                 "result": {"type": "stream_opened", "payload": {}},
             }),
         };
-        if write(&mut stream, correlation, &answer).await.is_ok()
-            && answer.pointer("/result/type") == Some(&json!("stream_opened"))
-        {
-            // Held open without another word.
-            tokio::spawn(async move {
-                let _held = stream;
-                std::future::pending::<()>().await;
-            });
+        if write(&mut stream, correlation, &answer).await.is_err() {
+            continue;
         }
+        if answer.pointer("/result/type") == Some(&json!("stream_opened")) {
+            tokio::spawn(target(stream, script.clone()));
+        }
+    }
+}
+
+/// Sends `script` as the target, then holds the stream open without another word.
+async fn target(stream: UnixStream, script: Script) {
+    let (_read, write) = stream.into_split();
+    let mut writer = FrameWriter::new(write);
+    for (kind, payload) in &script {
+        if writer.frame(*kind, payload).await.is_err() {
+            return;
+        }
+    }
+    if writer.flush().await.is_ok() {
+        std::future::pending::<()>().await;
     }
 }
 

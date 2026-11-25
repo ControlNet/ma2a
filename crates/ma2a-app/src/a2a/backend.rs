@@ -68,6 +68,18 @@ pub(super) struct Backend {
     pub(super) paths: IpcPaths,
 }
 
+#[cfg(all(test, unix))]
+impl Backend {
+    /// The Runtime `daemon` stands in for, and the route of the Agent `worker` on its target.
+    pub(super) fn standing_in(
+        daemon: &crate::test_daemon::Daemon,
+    ) -> crate::test_daemon::TestResult<(Self, Route)> {
+        let (state_dir, paths) = (daemon.state_dir.clone(), daemon.paths.clone());
+        let route = Route::Remote(daemon.endpoint.clone(), AgentId::new("worker")?);
+        Ok((Self { state_dir, paths }, route))
+    }
+}
+
 /// The local API form of one message.
 pub(super) fn message_json(message: &AgentMessage) -> Value {
     let parts: Vec<Value> = message
