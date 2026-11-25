@@ -1,4 +1,5 @@
 import ky, { HTTPError } from "ky"
+import { z } from "zod"
 
 import { type EndpointId, LOCAL_API_VERSION, type RequestId, type SpaceId } from "./generated"
 import {
@@ -44,21 +45,25 @@ export class RuntimeMutationRejectedError extends Error {
 
 /**
  * Whether a failed mutation may still have taken effect: no answer came back, or none that says
- * it was refused. A rejection, or an HTTP refusal before the command ran, is definite; a request
- * timeout is not, since the server can time out after it passed the command on.
+ * it was refused. Client-side input validation fails before any request leaves the browser; a
+ * rejection, or an HTTP refusal before the command ran, is definite; a request timeout is not,
+ * since the server can time out after it passed the command on.
  */
 export function mutationOutcomeUnknown(error: unknown): boolean {
   return !(
+    error instanceof z.ZodError ||
     error instanceof RuntimeMutationRejectedError ||
     (error instanceof HTTPError && error.response.status < 500 && error.response.status !== 408)
   )
 }
 
 /**
- * What to tell the operator about a failed mutation: `unknown` when it may still have taken
- * effect, otherwise the Runtime's remediation, or `rejected` when it gave none.
+ * What to tell the operator about a failed mutation: a client-side validation error when the
+ * input failed before dispatch, `unknown` when it may still have taken effect, otherwise the
+ * Runtime's remediation, or `rejected` when it gave none.
  */
 export function mutationFailureText(error: unknown, unknown: string, rejected: string): string {
+  if (error instanceof z.ZodError) return error.issues[0]?.message ?? rejected
   if (mutationOutcomeUnknown(error)) return unknown
   return error instanceof RuntimeMutationRejectedError && error.remediation
     ? error.remediation

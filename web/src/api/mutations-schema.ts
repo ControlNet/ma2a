@@ -50,9 +50,15 @@ export type PrivateRelayConfiguration =
       readonly privateKeyPath: null
     }
 
-export const RequestIdSchema = z.string().regex(/^[0-9a-f]{32}$/)
-export const EndpointIdSchema = z.string().regex(/^[0-9a-f]{64}$/)
-export const SpaceIdSchema = z.string().regex(/^[0-9a-f]{64}$/)
+export const RequestIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{32}$/, "Request ID must be 32 lowercase hexadecimal characters.")
+export const EndpointIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/, "Endpoint ID must be 64 lowercase hexadecimal characters.")
+export const SpaceIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/, "Space ID must be 64 lowercase hexadecimal characters.")
 const SpaceSchema = z.strictObject({
   space_id: SpaceIdSchema,
   name: z.string().min(1).max(128),

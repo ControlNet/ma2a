@@ -2,13 +2,18 @@ import "@testing-library/jest-dom/vitest"
 
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { expect, test } from "vitest"
+import { afterEach, expect, test, vi } from "vitest"
 
-import { RuntimeMutationRejectedError } from "../api/mutations"
+import { createRuntimeMutationClient, RuntimeMutationRejectedError } from "../api/mutations"
+import { createRuntimeActions } from "../runtime-actions"
 import { ONE_RUNTIME_FIXTURE } from "../test/fixtures"
 import { runtimeActions } from "./actions.fixture"
 import { RelaysInspector } from "./relay-config"
 import { SpacesInspector } from "./spaces"
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 test("creates an invitation ticket through the Runtime without browser secret material", async () => {
   const user = userEvent.setup()
@@ -104,4 +109,27 @@ test("a relay configuration whose answer was lost does not say the Runtime rejec
   await user.click(form.getByRole("button", { name: "Configure public" }))
 
   expect(await form.findByText(/^No answer came back/)).toBeInTheDocument()
+})
+
+// Invalid Space IDs fail client-side validation before fetch, so the form must not say no answer came back.
+test("an invalid Space ID in RelaysInspector shows a validation error without calling fetch", async () => {
+  const fetchSpy = vi.spyOn(globalThis, "fetch")
+  const user = userEvent.setup()
+  const actions = createRuntimeActions(
+    createRuntimeMutationClient({ csrfToken: () => "cd".repeat(32) }),
+    async () => undefined,
+    () => undefined,
+  )
+  render(<RelaysInspector actions={actions} />)
+  const form = within(screen.getByRole("form", { name: "Configure the Private Relay" }))
+
+  await user.click(form.getByRole("button", { name: "External" }))
+  await user.type(form.getByLabelText("Listen address"), "127.0.0.1:443")
+  await user.type(form.getByLabelText("Public HTTPS URL"), "https://relay.example")
+  await user.type(form.getByLabelText("Served Space IDs"), "not-a-hex-id")
+  await user.click(form.getByRole("button", { name: "Configure private" }))
+
+  expect(await form.findByText(/64 lowercase hexadecimal/)).toBeInTheDocument()
+  expect(form.queryByText(/No answer came back/)).not.toBeInTheDocument()
+  expect(fetchSpy).not.toHaveBeenCalled()
 })
