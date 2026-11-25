@@ -216,11 +216,12 @@ impl LogWriter {
         Ok(())
     }
 
-    /// Deletes oldest segments while over the limit. A segment leaves the window only once its
-    /// file is gone, so the window always matches the directory; one that cannot be deleted
-    /// now stays first and is tried again after the next append.
+    /// Deletes oldest segments while their files hold more than the limit, record headers
+    /// included, so the limit bounds the disk the log takes. A segment leaves the window only
+    /// once its file is gone, so the window always matches the directory; one that cannot be
+    /// deleted now stays first and is tried again after the next append.
     fn retain(&mut self) {
-        let mut retained: u64 = self.segments.iter().map(|segment| segment.content).sum();
+        let mut retained: u64 = self.segments.iter().map(|segment| segment.file_bytes).sum();
         while retained > self.limit && self.segments.len() > 1 {
             let Some(oldest) = self.segments.front().copied() else {
                 break;
@@ -231,7 +232,7 @@ impl LogWriter {
                 Err(_) => break,
             }
             self.segments.pop_front();
-            retained -= oldest.content;
+            retained -= oldest.file_bytes;
         }
     }
 }

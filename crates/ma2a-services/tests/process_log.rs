@@ -96,6 +96,28 @@ fn retention_drops_whole_old_segments_and_reports_truncation() -> TestResult {
 }
 
 #[test]
+fn retention_bounds_the_log_on_disk_with_record_headers_counted() -> TestResult {
+    // Given: a 1 MiB limit and one-byte records, each six bytes on disk with its header.
+    let root = TempRoot::new("log-disk")?;
+    let mut writer = LogWriter::create(root.path(), MIB)?;
+
+    // When: 400,000 bytes of output are written, 2,400,000 bytes on disk.
+    for _ in 0..400_000 {
+        writer.append(Channel::Output, b"x")?;
+    }
+    writer.sync()?;
+
+    // Then: the files keep at most the limit plus the segment being written.
+    let mut on_disk = 0;
+    for entry in std::fs::read_dir(root.path())? {
+        on_disk += entry?.metadata()?.len();
+    }
+    assert!(on_disk <= MIB + SEGMENT_BYTES, "{on_disk} bytes on disk");
+    assert_eq!(log::window(root.path())?, writer.window());
+    Ok(())
+}
+
+#[test]
 fn a_torn_final_record_is_invisible_until_complete() -> TestResult {
     let root = TempRoot::new("log-torn")?;
     let mut writer = LogWriter::create(root.path(), MIB)?;

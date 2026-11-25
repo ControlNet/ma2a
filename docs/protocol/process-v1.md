@@ -89,7 +89,7 @@ and `spec` is `[program: tstr, args: [tstr…], cwd: tstr / null, env: [[name, v
 | `cwd` | `null` (the target's home directory) or 1–4,096 bytes without NUL |
 | `env` | at most 64 additions; `name` matches `[A-Za-z_][A-Za-z0-9_]*`, at most 128 bytes, unique; `value` 0–4,096 bytes without NUL |
 | `stdin` | `true` keeps a stdin pipe for one writer at a time; `false` connects stdin to null |
-| `log_limit` | retained output bytes, 1,048,576–16,777,216 (1–16 MiB); callers that name none send `DEFAULT_LOG_LIMIT` = 4,194,304 |
+| `log_limit` | retained log bytes on disk, each record counted with its 5-byte header, 1,048,576–16,777,216 (1–16 MiB); callers that name none send `DEFAULT_LOG_LIMIT` = 4,194,304 |
 | `name` | `null` or 1–64 bytes without control characters |
 | `labels` | at most 8; `key` matches `[a-z0-9][a-z0-9._-]*`, 1–64 bytes, unique; `value` 0–256 bytes without control characters |
 
@@ -297,8 +297,10 @@ The supervisor appends every chunk it reads from the child's stdout (channel 1) 
   the supervisor received the chunks.
 - **Window.** `first_available` is the first cursor still retained, and `end` is the cursor after
   the last complete record.
-- **Retention.** When the retained content exceeds `log_limit`, whole oldest segments are
-  deleted, but never the segment being written. Retention never blocks the child.
+- **Retention.** When the retained segments hold more than `log_limit` bytes, record headers
+  included, whole oldest segments are deleted, but never the segment being written. Retention
+  never blocks the child. Output written in many small records therefore keeps less than
+  `log_limit` content bytes, but the disk it takes stays bounded.
 - **Skipped.** The `control` payload `[1, cursor: uint]` means that output before `cursor` was
   dropped by retention before this reader received it. The next byte has this cursor.
 
@@ -441,7 +443,7 @@ The same sweep restarts the follower of any live Process that lost it.
   archiving, and beyond the newest 1,024, oldest first. After pruning, the same RequestId can
   create a new Process.
 - **Disk bound.** At most 128 non-archived records (16 per creator), each with at most
-  `log_limit` retained output plus one open segment.
+  `log_limit` of retained log plus one open segment.
 
 ## Status codes
 
