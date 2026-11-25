@@ -101,14 +101,18 @@ pub(super) fn destination_directory(path: &str) -> Result<(OwnedFd, &OsStr), Pro
 /// The directory is opened by name once after it is made, so it is checked to be one only this
 /// account can change: a directory another account swapped in between is refused.
 pub(super) fn create_staging(directory: &OwnedFd) -> Result<Staged, ProtocolError> {
+    create_staging_after(directory, |_| {})
+}
+
+pub(super) fn create_staging_after(
+    directory: &OwnedFd,
+    after_mkdir: impl FnOnce(&str),
+) -> Result<Staged, ProtocolError> {
     let name = staging_name()?;
     rustix::fs::mkdirat(directory, name.as_str(), Mode::RWXU)
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let opened = open_staging(directory, &name);
-    if opened.is_err() {
-        let _removed = rustix::fs::unlinkat(directory, name.as_str(), AtFlags::REMOVEDIR);
-    }
-    let (staging, file) = opened?;
+    after_mkdir(&name);
+    let (staging, file) = open_staging(directory, &name)?;
     Ok(Staged {
         name,
         directory: staging,
@@ -128,8 +132,10 @@ fn open_staging(directory: &OwnedFd, name: &str) -> Result<(OwnedFd, OwnedFd), P
         return Err(ProtocolError::INVALID_INPUT);
     }
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let file = rustix::fs::openat(&staging, TICKET, flags, Mode::RUSR | Mode::WUSR)
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
+    let Ok(file) = rustix::fs::openat(&staging, TICKET, flags, Mode::RUSR | Mode::WUSR) else {
+        remove_verified_dir(directory, &staging, name);
+        return Err(ProtocolError::INVALID_INPUT);
+    };
     Ok((staging, file))
 }
 
@@ -170,12 +176,16 @@ pub(super) fn publish_staged(
 /// check before the removal narrows that race to the two calls but cannot close it.
 fn remove_staging(directory: &OwnedFd, staged: &Staged) {
     let _removed = rustix::fs::unlinkat(&staged.directory, TICKET, AtFlags::empty());
-    let held = rustix::fs::fstat(&staged.directory);
-    let at_name = rustix::fs::statat(directory, staged.name.as_str(), AtFlags::SYMLINK_NOFOLLOW);
+    remove_verified_dir(directory, &staged.directory, staged.name.as_str());
+}
+
+fn remove_verified_dir(directory: &OwnedFd, staging: &OwnedFd, name: &str) {
+    let held = rustix::fs::fstat(staging);
+    let at_name = rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW);
     if let (Ok(held), Ok(at_name)) = (held, at_name)
         && (held.st_dev, held.st_ino) == (at_name.st_dev, at_name.st_ino)
     {
-        let _removed = rustix::fs::unlinkat(directory, staged.name.as_str(), AtFlags::REMOVEDIR);
+        let _removed = rustix::fs::unlinkat(directory, name, AtFlags::REMOVEDIR);
     }
 }
 

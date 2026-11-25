@@ -149,6 +149,39 @@ fn an_empty_replacement_of_the_staging_directory_is_never_removed()
     Ok(())
 }
 
+/// An empty directory swapped in between `mkdirat` and `open_staging` is left alone, whether
+/// `openat` itself failed or the mode check rejected it.
+#[cfg(unix)]
+#[test]
+fn a_rejected_replacement_during_staging_is_never_removed() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::unix::fs::PermissionsExt as _;
+
+    for mode in [0o755, 0o000] {
+        let base = std::env::temp_dir().join(format!(
+            "ma2a-invite-create-swap-{}-{mode:o}",
+            std::process::id()
+        ));
+        let _stale = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base)?;
+        let output = base.join("ticket");
+        let (directory, _) = super::unix::destination_directory(output.to_str().ok_or("path")?)?;
+        let mut stage = std::path::PathBuf::new();
+        let created = super::unix::create_staging_after(&directory, |name| {
+            stage = base.join(name);
+            let _moved = std::fs::rename(&stage, base.join("moved"));
+            let _created = std::fs::create_dir(&stage);
+            let _chmod = std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(mode));
+        });
+        let kept = std::fs::symlink_metadata(&stage).is_ok_and(|meta| meta.is_dir());
+        let _restore = std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700));
+        std::fs::remove_dir_all(&base)?;
+        assert_eq!(created.err(), Some(ma2a_core::ProtocolError::INVALID_INPUT));
+        assert!(kept, "mode: {mode:o}");
+    }
+    Ok(())
+}
+
 /// Windows: once the ticket file is closed, as `write` closes it before it publishes the ticket,
 /// its staging directory is still held, so it cannot be moved away and replaced by another.
 #[cfg(windows)]
