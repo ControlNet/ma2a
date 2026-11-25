@@ -21,6 +21,9 @@ mod tools;
 mod watch;
 
 #[cfg(test)]
+#[path = "agents/tests/link.rs"]
+mod link_tests;
+#[cfg(test)]
 #[path = "agents/tests/live.rs"]
 mod live_tests;
 

@@ -261,6 +261,9 @@ At most 8 readers are attached to one Process at a time. The ninth is
   the Process is still taking earlier input. Bytes already delivered stay delivered.
 - Input the Process does not take within 30 seconds ends the operation with `timed_out`, also
   input it is still taking 30 seconds after the caller's `end`.
+- However the operation ends, the writer lease is freed for the next writer even while the
+  Process has not taken the last input: at once when at most the caller's `end` followed that
+  input, and otherwise within 30 seconds. Input the Process had not taken by then is dropped.
 - The caller refuses an `accept` other than Admitted, and a Written that counts more bytes than
   it sent. It also refuses one that reports stdin open before its `end`, after asking for
   `close`, or with fewer bytes than it sent, since a Process that stops taking input has its

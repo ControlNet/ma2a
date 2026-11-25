@@ -630,3 +630,106 @@ async fn a_detach_while_output_is_backed_up_still_ends_in_whole_frames_and_a_sta
     harness.finish().await?;
     Ok(())
 }
+
+/// Whether a new stdin writer is admitted within `wait`, while an earlier one may still be
+/// letting go of the lease.
+async fn admitted_within(harness: &Harness, wait: Duration) -> TestResult<bool> {
+    let deadline = tokio::time::Instant::now() + wait;
+    while tokio::time::Instant::now() < deadline {
+        let (mut reader, _writer) = harness.open(SupervisorRequest::Stdin(false)).await?;
+        let answer = reader.expect().await?;
+        if answer.kind() == FrameKind::Accept {
+            return Ok(true);
+        }
+        assert_eq!(answer.rejection()?, ServiceError::WriterBusy);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(false)
+}
+
+/// Sends two pipes' worth of stdin, so the second write waits for a child that never reads.
+async fn fill_stdin(channel: &mut Channel) -> TestResult {
+    let chunk = vec![b'x'; 65_536];
+    for _ in 0..2 {
+        channel.1.data(DataChannel::Input, &chunk).await?;
+    }
+    channel.1.flush().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stdin_writer_that_goes_away_during_a_write_frees_the_lease() -> TestResult {
+    // Given: a write that waits for a child that never reads its stdin, with the input ended.
+    let harness = host("sup-stdin-gone", start("sleep 30", true)?)?;
+    harness.ask(SupervisorRequest::Go).await?;
+    let mut first = harness.open(SupervisorRequest::Stdin(false)).await?;
+    assert_eq!(first.0.expect().await?.kind(), FrameKind::Accept);
+    fill_stdin(&mut first).await?;
+    first.1.end(DataChannel::Input).await?;
+    first.1.flush().await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // When: the daemon gives up on the write and closes its connection.
+    drop(first);
+
+    // Then: the next writer is admitted.
+    assert!(admitted_within(&harness, Duration::from_secs(3)).await?);
+    harness.ask(SupervisorRequest::Terminate(0)).await?;
+    harness.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_writing_attachment_detaches_during_a_write_and_frees_the_lease() -> TestResult {
+    // Given: an attachment whose input waits for a child that never reads its stdin.
+    let harness = host("sup-attach-gone", start("sleep 30", true)?)?;
+    harness.ask(SupervisorRequest::Go).await?;
+    let mut attached = harness
+        .open(SupervisorRequest::Attach(LogFrom::Now, true))
+        .await?;
+    assert_eq!(attached.0.expect().await?.kind(), FrameKind::Accept);
+    fill_stdin(&mut attached).await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // When
+    attached.1.frame(FrameKind::Cancel, &[]).await?;
+    attached.1.flush().await?;
+
+    // Then: the detach is answered with the status, and the next writer is admitted.
+    let (_, _, frames) =
+        tokio::time::timeout(Duration::from_secs(3), follow(&mut attached)).await??;
+    assert!(
+        matches!(last_status(&frames)?, SupervisorStatus::Running(..)),
+        "{frames:?}"
+    );
+    assert!(admitted_within(&harness, Duration::from_secs(3)).await?);
+    drop(attached);
+    harness.ask(SupervisorRequest::Terminate(0)).await?;
+    harness.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stdin_write_waiting_on_a_pipe_a_grandchild_keeps_ends_with_the_child() -> TestResult {
+    // Given: a child that leaves a grandchild in its own session holding its stdin without
+    // reading it.
+    // A background job's stdin is /dev/null, so the pipe is handed over on another descriptor.
+    let script = "exec 3<&0; setsid sleep 5 <&3 >/dev/null 2>&1 & exec 3<&-; sleep 0.5; exit 0";
+    let harness = host("sup-stdin-grandchild", start(script, true)?)?;
+    let mut watch = harness.open(SupervisorRequest::Watch).await?;
+    assert_eq!(watch.0.expect().await?.kind(), FrameKind::Accept);
+    harness.ask(SupervisorRequest::Go).await?;
+    let mut writing = harness.open(SupervisorRequest::Stdin(false)).await?;
+    assert_eq!(writing.0.expect().await?.kind(), FrameKind::Accept);
+
+    // When: a write waits on that pipe while the child exits.
+    fill_stdin(&mut writing).await?;
+
+    // Then: the write reports what reached the pipe, and that stdin is gone, at the child's end.
+    let outcome = tokio::time::timeout(Duration::from_secs(3), writing.0.expect()).await??;
+    assert_eq!(outcome.kind(), FrameKind::Outcome, "{outcome:?}");
+    assert_eq!(decode_written(outcome.payload())?, (65_536, true));
+    drop((writing, watch));
+    harness.finish().await?;
+    Ok(())
+}

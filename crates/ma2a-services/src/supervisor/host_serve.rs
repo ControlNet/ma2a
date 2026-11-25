@@ -145,7 +145,7 @@ async fn serve_request(
             super::host_attach::attach((reader, writer), shared, (from, stdin)).await
         }
         SupervisorRequest::Stdin(close) => {
-            super::host_attach::stdin((reader, writer), shared, close).await
+            super::host_stdin::stdin((reader, writer), shared, close).await
         }
     }
 }

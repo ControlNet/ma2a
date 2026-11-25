@@ -1,54 +1,18 @@
 //! Attachments: many readers of retained and live output, and one stdin writer at a time.
 
-use ma2a_core::service::{Channel, FrameKind, LogFrom, ServiceError, encode_skipped};
-use tokio::io::AsyncWriteExt as _;
+use ma2a_core::service::{FrameKind, LogFrom, ServiceError, encode_skipped};
 use tokio_util::sync::CancellationToken;
 
 use super::{
     host::Shared,
     host_serve::{Reader, Writer},
+    host_stdin::{Lease, relay_stdin},
     log,
-    protocol::{ACKNOWLEDGED, encode_reading, encode_written},
-    status::SupervisorStatus,
+    protocol::encode_reading,
 };
 
 /// Most content bytes read from the log for one batch of `data` frames.
 const BATCH: usize = 262_144;
-
-/// Holds the stdin writer lease for one connection and releases it on every exit path.
-struct Lease<'a>(&'a Shared);
-
-impl<'a> Lease<'a> {
-    /// Takes the lease of a Process whose stdin is still open.
-    ///
-    /// A child not running, because it was not spawned yet, never started, or already ended,
-    /// has no stdin to write: that is `NotRunning`, while a Process started without stdin, or
-    /// whose stdin was ended, is `StdinClosed`.
-    async fn take(shared: &'a Shared) -> Result<Self, ServiceError> {
-        if !shared.start.stdin() {
-            return Err(ServiceError::StdinClosed);
-        }
-        if !matches!(*shared.status.borrow(), SupervisorStatus::Running(..)) {
-            return Err(ServiceError::NotRunning);
-        }
-        // The lease is decided first: the stdin lock may be held by the current writer for as
-        // long as the child does not read, and a second writer must not wait behind it.
-        if !shared.lease() {
-            return Err(ServiceError::WriterBusy);
-        }
-        let lease = Self(shared);
-        if shared.stdin.lock().await.is_none() {
-            return Err(ServiceError::StdinClosed);
-        }
-        Ok(lease)
-    }
-}
-
-impl Drop for Lease<'_> {
-    fn drop(&mut self) {
-        self.0.release();
-    }
-}
 
 /// Follows output from `from`; with `stdin`, also relays channel 0 to the child.
 pub(super) async fn attach(
@@ -90,101 +54,6 @@ pub(super) async fn attach(
             following.await
         }
         result = &mut following => result,
-    }
-}
-
-/// Writes stdin until `end`; with `close`, the child's stdin is closed afterwards.
-pub(super) async fn stdin(
-    (reader, writer): (&mut Reader, &mut Writer),
-    shared: &Shared,
-    close: bool,
-) -> Result<(), ServiceError> {
-    let _lease = match Lease::take(shared).await {
-        Ok(lease) => lease,
-        Err(error) => return writer.reject(error).await,
-    };
-    writer.frame(FrameKind::Accept, ACKNOWLEDGED).await?;
-    let mut written = 0_u64;
-    // A child that stops reading closes its stdin; the rest of the input is drained so the
-    // daemon still reaches `end` and learns why.
-    let mut failure = None;
-    let mut changes = shared.status.subscribe();
-    let mut child_ended = false;
-    loop {
-        let frame = tokio::select! {
-            frame = reader.expect() => frame?,
-            // Nothing more can reach the stdin of a child that ended, so the write ends too.
-            () = ended(&mut changes) => {
-                child_ended = true;
-                break;
-            }
-        };
-        match frame.kind() {
-            FrameKind::Data => {
-                let (Channel::Input, bytes) = frame.data()? else {
-                    return Err(ServiceError::InvalidInput);
-                };
-                if failure.is_none() {
-                    match write(shared, bytes).await {
-                        Ok(()) => written += u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                        Err(error) => failure = Some(error),
-                    }
-                }
-            }
-            FrameKind::End if frame.end()? == Channel::Input => break,
-            _ => return Err(ServiceError::InvalidInput),
-        }
-    }
-    if let Some(error) = failure {
-        return writer.reject(error).await;
-    }
-    let closed = if close {
-        shared.stdin.lock().await.take();
-        true
-    } else {
-        child_ended || shared.stdin.lock().await.is_none()
-    };
-    writer
-        .frame(FrameKind::Outcome, &encode_written(written, closed))
-        .await
-}
-
-async fn write(shared: &Shared, bytes: &[u8]) -> Result<(), ServiceError> {
-    let mut slot = shared.stdin.lock().await;
-    let pipe = slot.as_mut().ok_or(ServiceError::StdinClosed)?;
-    if pipe.write_all(bytes).await.is_err() {
-        // The child no longer reads its stdin; it stays closed.
-        slot.take();
-        drop(slot);
-        return Err(ServiceError::StdinClosed);
-    }
-    drop(slot);
-    Ok(())
-}
-
-/// Relays channel 0 until the caller detaches; `end` closes the child's stdin for good.
-async fn relay_stdin(reader: &mut Reader, shared: &Shared) -> Result<u64, ServiceError> {
-    let mut written = 0_u64;
-    loop {
-        let Some(frame) = reader.next().await? else {
-            return Ok(written);
-        };
-        match frame.kind() {
-            FrameKind::Data => {
-                let (Channel::Input, bytes) = frame.data()? else {
-                    return Err(ServiceError::InvalidInput);
-                };
-                // Once the child closed its stdin, input is dropped; output keeps flowing.
-                if write(shared, bytes).await.is_ok() {
-                    written += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                }
-            }
-            FrameKind::End if frame.end()? == Channel::Input => {
-                shared.stdin.lock().await.take();
-            }
-            FrameKind::Cancel => return Ok(written),
-            _ => return Err(ServiceError::InvalidInput),
-        }
     }
 }
 
@@ -250,15 +119,6 @@ async fn follow(
             changed = output.changed() => changed.map_err(|_| ServiceError::Unavailable)?,
             changed = status.changed() => changed.map_err(|_| ServiceError::Unavailable)?,
             () = detach.cancelled() => {}
-        }
-    }
-}
-
-/// Completes once the child has ended; never, while its status cannot change any more.
-async fn ended(changes: &mut tokio::sync::watch::Receiver<SupervisorStatus>) {
-    while !changes.borrow_and_update().is_final() {
-        if changes.changed().await.is_err() {
-            std::future::pending::<()>().await;
         }
     }
 }

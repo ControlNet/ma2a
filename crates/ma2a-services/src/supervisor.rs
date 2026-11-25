@@ -9,6 +9,7 @@ mod host;
 mod host_attach;
 mod host_child;
 mod host_serve;
+mod host_stdin;
 pub mod launch;
 pub mod log;
 pub mod proof;

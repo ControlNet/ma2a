@@ -12,7 +12,10 @@ use ma2a_core::service::{
     AgentId, Channel as DataChannel, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, ProcessReason,
     ServiceError, decode_skipped,
 };
-use ma2a_services::{FrameReader, FrameWriter, supervisor::protocol::decode_reading};
+use ma2a_services::{
+    FrameReader, FrameWriter,
+    supervisor::{SupervisorStatus, protocol::decode_reading},
+};
 use ma2a_store::{AgentInstanceRecord, AgentOutput, AgentOutputApplied};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -24,7 +27,7 @@ const READY_DEADLINE_MS: u64 = 30_000;
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
 /// How one connection to an instance ended.
-enum Linked {
+pub(super) enum Linked {
     /// The instance's Process ended.
     Ended,
     /// The connection broke; reach the supervisor again.
@@ -150,7 +153,7 @@ impl AgentManager {
                     }
                     Err(_) => return Linked::Broken,
                 },
-                (FrameKind::Outcome, _) => return Linked::Ended,
+                (FrameKind::Outcome, _) => return concluded(frame.payload()),
                 _ => return Linked::Broken,
             };
             for (line, cursor) in complete {
@@ -254,5 +257,15 @@ impl AgentManager {
             let _ended = self.0.processes.terminate((None, process), reason).await;
         }
         std::future::pending::<()>().await;
+    }
+}
+
+/// How a supervisor's `outcome` ends the link: for good once the Process ended. The supervisor
+/// also answers a detach it decided on, as after a write the instance left waiting past the
+/// stall bound; the link then connects again and writes what is unacknowledged once more.
+pub(super) fn concluded(status: &[u8]) -> Linked {
+    match SupervisorStatus::from_bytes(status) {
+        Ok(status) if status.is_final() => Linked::Ended,
+        _ => Linked::Broken,
     }
 }
