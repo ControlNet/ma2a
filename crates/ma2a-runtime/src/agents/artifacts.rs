@@ -115,13 +115,10 @@ fn place_blob(staging: &Path, blobs: &Path, (size, hash): (u64, &[u8; 32])) -> i
         return placed;
     }
     // The rename must survive a crash before a task commits a reference to the blob, and so
-    // must `blobs/` itself, which the first publication creates.
+    // must `blobs/` and `agents-v1/`, which are created on demand.
     #[cfg(unix)]
-    {
-        std::fs::File::open(blobs)?.sync_all()?;
-        if let Some(parent) = blobs.parent() {
-            std::fs::File::open(parent)?.sync_all()?;
-        }
+    for directory in blobs.ancestors().take(3) {
+        std::fs::File::open(directory)?.sync_all()?;
     }
     Ok(())
 }
