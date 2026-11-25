@@ -38,20 +38,17 @@ pub(super) async fn invite(
     context: &ConnectionContext,
     command: &crate::api::Command,
 ) -> Result<CommandResult, ApiError> {
-    let (space_id, ttl_ms, output_path) =
-        command.space_invite().ok_or(ProtocolError::INVALID_INPUT)?;
-    // Refused before the invitation is committed, so a bad path never costs a revision.
-    let destination = invite_file::Destination::open(output_path)?;
+    let (space_id, ttl_ms, output_path) = command.space_invite().ok_or_else(not_run)?;
+    // Refused before the invitation is committed, so a bad path never costs a revision, and
+    // the same request can run once the path is fixed.
+    let destination = invite_file::Destination::open(output_path).map_err(without_effects)?;
+    let entropy =
+        ma2a_core::InviteEntropy::random().map_err(|_| without_effects(ProtocolError::INTERNAL))?;
+    let creation =
+        crate::EnrollmentCreation::new(space_id, ttl_ms, entropy).map_err(|_| not_run())?;
     let created = context
         .handle
-        .create_enrollment_invite_committed(
-            crate::EnrollmentCreation::new(
-                space_id,
-                ttl_ms,
-                ma2a_core::InviteEntropy::random().map_err(|_| ProtocolError::INTERNAL)?,
-            )
-            .map_err(|_| ProtocolError::INVALID_INPUT)?,
-        )
+        .create_enrollment_invite_committed(creation)
         .await
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
     let encoded = created.ticket().encode_string().into_bytes();
@@ -128,15 +125,15 @@ pub(super) async fn leave(
         .handle
         .snapshot()
         .await
-        .map_err(|_| ProtocolError::UNAVAILABLE)?;
+        .map_err(|_| without_effects(ProtocolError::UNAVAILABLE))?;
     let space = snapshot
         .spaces()
         .iter()
         .find(|space| space.id() == space_id)
         .cloned()
-        .ok_or(ProtocolError::NOT_FOUND)?;
+        .ok_or_else(|| without_effects(ProtocolError::NOT_FOUND))?;
     let identity = crate::api::SpaceIdentityView::new(space.space_id(), space.name())
-        .map_err(|_| ProtocolError::INTERNAL)?;
+        .map_err(|_| without_effects(ProtocolError::INTERNAL))?;
     let revision = context
         .handle
         .leave_space(space_id, request_id)
@@ -178,15 +175,14 @@ pub(super) async fn redeem(
     request_id: RequestId,
     invitation: &str,
 ) -> Result<CommandResult, ApiError> {
-    let ticket = SignedInviteTicket::decode_string(invitation.trim())
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
+    let ticket = SignedInviteTicket::decode_string(invitation.trim()).map_err(|_| not_run())?;
     // The joining member is labelled by its own Endpoint identity, never by the
     // Space it is joining and never by a placeholder standing in for a person.
     let local = context
         .handle
         .status()
         .await
-        .map_err(|_| ProtocolError::UNAVAILABLE)?
+        .map_err(|_| without_effects(ProtocolError::UNAVAILABLE))?
         .endpoint_id();
     let committed = context
         .handle
@@ -249,6 +245,16 @@ fn enrollment_protocol_error(error: &crate::EnrollmentError) -> ProtocolError {
     } else {
         ProtocolError::INTERNAL
     }
+}
+
+/// A refusal made before the request handed anything to the Runtime, so it had no effect.
+const fn without_effects(error: ProtocolError) -> ApiError {
+    ApiError::new(error).without_effects()
+}
+
+/// Invalid input found before the request ran.
+const fn not_run() -> ApiError {
+    ApiError::invalid_input().without_effects()
 }
 
 fn committed_runtime_error(error: &crate::RuntimeError) -> ApiError {

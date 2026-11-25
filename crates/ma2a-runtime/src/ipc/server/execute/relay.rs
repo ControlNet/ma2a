@@ -11,14 +11,8 @@ pub(super) async fn private_configure(
     context: &ConnectionContext,
     command: &crate::api::Command,
 ) -> Result<CommandResult, ApiError> {
-    let requested = command
-        .private_relay_configuration()
-        .ok_or(ProtocolError::INVALID_INPUT)?;
-    let mut configuration = context
-        .handle
-        .relay_configuration()
-        .await
-        .map_err(|_| ProtocolError::INTERNAL)?;
+    let requested = command.private_relay_configuration().ok_or_else(not_run)?;
+    let mut configuration = current(context).await?;
     configuration.private_provider_enabled = true;
     configuration.listener_address = Some(requested.listen.as_str().to_owned());
     configuration.private_relay_url = Some(requested.public_url.as_str().to_owned());
@@ -30,19 +24,19 @@ pub(super) async fn private_configure(
             certificate_path: requested
                 .certificate_path
                 .as_ref()
-                .ok_or(ProtocolError::INVALID_INPUT)?
+                .ok_or_else(not_run)?
                 .as_str()
                 .to_owned(),
             private_key_path: requested
                 .private_key_path
                 .as_ref()
-                .ok_or(ProtocolError::INVALID_INPUT)?
+                .ok_or_else(not_run)?
                 .as_str()
                 .to_owned(),
         },
         crate::api::PrivateRelayMode::ExternalTermination => {
             if requested.certificate_path.is_some() || requested.private_key_path.is_some() {
-                return Err(ProtocolError::INVALID_INPUT.into());
+                return Err(not_run());
             }
             RelayTransportConfiguration::ExternalTlsTermination
         }
@@ -63,11 +57,7 @@ pub(super) async fn private_configure(
 pub(super) async fn private_disable(
     context: &ConnectionContext,
 ) -> Result<CommandResult, ApiError> {
-    let mut configuration = context
-        .handle
-        .relay_configuration()
-        .await
-        .map_err(|_| ProtocolError::INTERNAL)?;
+    let mut configuration = current(context).await?;
     configuration.private_provider_enabled = false;
     configuration.listener_address = None;
     configuration.private_relay_url = None;
@@ -100,11 +90,7 @@ pub(super) async fn public_configure(
     context: &ConnectionContext,
     url: &str,
 ) -> Result<CommandResult, ApiError> {
-    let mut configuration = context
-        .handle
-        .relay_configuration()
-        .await
-        .map_err(|_| ProtocolError::INTERNAL)?;
+    let mut configuration = current(context).await?;
     configuration.public_fallback_enabled = true;
     configuration.public_relay_urls = vec![url.to_owned()];
     refuse_unusable(&configuration)?;
@@ -121,11 +107,7 @@ pub(super) async fn public_configure(
 }
 
 pub(super) async fn public_disable(context: &ConnectionContext) -> Result<CommandResult, ApiError> {
-    let mut configuration = context
-        .handle
-        .relay_configuration()
-        .await
-        .map_err(|_| ProtocolError::INTERNAL)?;
+    let mut configuration = current(context).await?;
     configuration.public_fallback_enabled = false;
     configuration.public_relay_urls.clear();
     let committed = context
@@ -194,7 +176,21 @@ fn private_view(
 fn refuse_unusable(configuration: &RelayConfiguration) -> Result<(), ApiError> {
     ma2a_net::RuntimeRelayConfiguration::try_from(configuration.clone())
         .map(drop)
-        .map_err(|_| ApiError::invalid_input().without_effects())
+        .map_err(|_| not_run())
+}
+
+/// The stored configuration a change starts from, read before anything runs.
+async fn current(context: &ConnectionContext) -> Result<RelayConfiguration, ApiError> {
+    context
+        .handle
+        .relay_configuration()
+        .await
+        .map_err(|_| ApiError::new(ProtocolError::INTERNAL).without_effects())
+}
+
+/// Invalid input found before the request ran.
+const fn not_run() -> ApiError {
+    ApiError::invalid_input().without_effects()
 }
 
 /// A view that fails after its configuration committed still reports that commit.
