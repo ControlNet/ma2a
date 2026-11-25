@@ -252,3 +252,36 @@ async fn a_committed_cancellation_whose_wait_loses_the_store_is_of_unknown_outco
     assert_eq!(cancelled.err(), Some(ServiceError::OutcomeUnknown));
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_artifact_blob_that_is_no_regular_file_is_refused_without_waiting() -> TestResult {
+    // Given: a published artifact whose blob path holds a FIFO nobody writes to.
+    let live = Live::new().await?;
+    let artifact =
+        ma2a_core::service::ArtifactRef::new(("report.txt", "text/plain"), (16, [5; 32]))?;
+    Repository::open(&live.config)?.add_agent_artifact(live.task, (&artifact, 10))?;
+    let blobs = live.dir.join("agents-v1").join("blobs");
+    std::fs::create_dir_all(&blobs)?;
+    let blob = blobs.join(crate::agents::convert::hex(&[5; 32]));
+    let made = std::process::Command::new("mkfifo").arg(&blob).status()?;
+    assert!(made.success(), "mkfifo failed");
+
+    // When
+    let read = live
+        .manager
+        .read_artifact((None, None), ((live.task, "report.txt"), 0));
+    let read = tokio::time::timeout(Duration::from_secs(2), read).await;
+    if read.is_err() {
+        // Release the read still blocked on the FIFO, so the test can end.
+        let _writer = std::fs::OpenOptions::new().write(true).open(&blob)?;
+    }
+
+    // Then: the blob is a broken store, answered at once.
+    live.finish().await?;
+    assert_eq!(
+        read.map_err(|_| "the read waited on the FIFO")?.err(),
+        Some(ServiceError::Internal)
+    );
+    Ok(())
+}

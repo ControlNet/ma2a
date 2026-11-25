@@ -33,8 +33,14 @@ impl AgentManager {
             .unwrap_or(usize::MAX)
             .min(MAX_ARTIFACT_READ);
         let path = self.blobs().join(hex(artifact.blake3()));
+        let size = artifact.size();
         let read = tokio::task::spawn_blocking(move || -> io::Result<Vec<u8>> {
-            let mut file = std::fs::File::open(path)?;
+            // As a remote read does: only a regular file of the recorded size, and never a
+            // wait on a FIFO.
+            let mut file = super::artifacts::open_regular(&path)?;
+            if file.metadata()?.len() != size {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
             file.seek(SeekFrom::Start(offset))?;
             let mut bytes = vec![0; length];
             file.read_exact(&mut bytes)?;
