@@ -13,6 +13,7 @@ mod launch;
 mod local;
 mod maintain;
 mod reads;
+mod relay;
 mod start;
 mod stdin;
 
