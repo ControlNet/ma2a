@@ -160,7 +160,8 @@ export class RuntimeController {
     this.closeEvents?.()
     // A stream the Runtime refuses at once, as when every event connection is taken, would
     // otherwise reload the snapshot in a tight loop. Only an open stream resets the pause, and
-    // only losing one reconnects at once.
+    // only losing one reconnects at once. A refused stream missed no event, so the details
+    // being loaded for this snapshot still stand.
     let opened = false
     this.closeEvents = this.client.subscribe(snapshot.revision, {
       onOpen: () => {
@@ -173,9 +174,10 @@ export class RuntimeController {
         void this.refresh()
       },
       onDisconnect: () => {
-        this.clearDetails()
-        if (opened) void this.refresh()
-        else this.scheduleRetry()
+        if (opened) {
+          this.clearDetails()
+          void this.refresh()
+        } else this.scheduleRetry()
       },
       onPayloadError: (error) => this.handleError(error),
     })

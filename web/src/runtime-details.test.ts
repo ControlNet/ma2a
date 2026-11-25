@@ -143,6 +143,7 @@ describe("Space detail loading", () => {
     const value = detail(1)
     const given = scenario([value])
     await given.controller.start()
+    given.events()?.onOpen()
     given.events()?.onDisconnect()
     await flush()
     given.requests[0]?.pending.resolve(value)
@@ -153,6 +154,18 @@ describe("Space detail loading", () => {
     given.requests[1]?.pending.resolve(value)
     await flush()
     expect(given.latest()).toBe(before)
+  })
+
+  test("keeps loading details when the event stream is refused before it opens", async () => {
+    const value = detail(1)
+    const given = scenario([value])
+    await given.controller.start()
+    given.events()?.onDisconnect()
+    given.requests[0]?.pending.resolve(value)
+    await flush()
+    expect(given.requests).toHaveLength(1)
+    expect(given.latest()?.spaces[0]?.members).toHaveLength(1)
+    given.controller.stop()
   })
 
   test("keeps failed details distinct from an empty member set and retries on refresh", async () => {
