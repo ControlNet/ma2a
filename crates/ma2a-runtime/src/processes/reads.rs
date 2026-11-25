@@ -74,10 +74,15 @@ impl ProcessManager {
         Ok(ProcessReply::Page(page, next))
     }
 
-    /// Returns the retained output window of one Process: empty when it has no log, and `io`
-    /// when a log exists but cannot be read.
-    pub(crate) async fn window(&self, id: ProcessId) -> Result<LogWindow, ServiceError> {
-        let directory = log_directory(&self.directory(id));
+    /// Returns the retained output window of one Process: empty when it has no log or was
+    /// archived, and `io` when a log exists but cannot be read.
+    ///
+    /// An archived Process has no output, even when a failed cleanup left its files behind.
+    pub(crate) async fn window(&self, record: &ProcessRecord) -> Result<LogWindow, ServiceError> {
+        if record.is_archived() {
+            return Ok(LogWindow::default());
+        }
+        let directory = log_directory(&self.directory(record.id));
         tokio::task::spawn_blocking(move || log::window(&directory))
             .await
             .map_err(|_| ServiceError::Internal)?
@@ -97,7 +102,7 @@ impl ProcessManager {
             .map(ProcessStart::from_bytes)
             .transpose()
             .map_err(|_| ServiceError::Internal)?;
-        let window = self.window(id).await?;
+        let window = self.window(&record).await?;
         let details = ProcessDetails::new(record.summary(), start, window);
         Ok((record, details))
     }
@@ -131,7 +136,7 @@ impl ProcessManager {
             Ok(record) => record,
             Err(error) => return refuse(writer, error).await,
         };
-        let window = match self.window(id).await {
+        let window = match self.window(&record).await {
             Ok(window) => window,
             Err(error) => return refuse(writer, error).await,
         };
@@ -151,7 +156,12 @@ impl ProcessManager {
         if let Err(error) = super::host::write_accept(writer, &accept).await {
             return OperationReport::new(OperationEnd::Failed(error));
         }
-        let budget = usize::try_from(max).unwrap_or(usize::MAX);
+        // Nothing is read from the files of an archived Process.
+        let budget = if record.is_archived() {
+            0
+        } else {
+            usize::try_from(max).unwrap_or(usize::MAX)
+        };
         let (next, sent) = match self.send_output((id, start, budget), (stop, writer)).await {
             Ok(read) => read,
             Err((error, sent)) => return finish(writer, Err(error)).await.with_bytes(0, sent),

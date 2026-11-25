@@ -153,7 +153,7 @@ async fn a_started_process_runs_and_its_exit_is_recorded() -> TestResult {
         Some(ma2a_core::service::Termination::Exited(4))
     );
     assert!(ended.secret.is_none(), "the secret is gone once terminal");
-    assert_eq!(manager.window(record.id).await?.end, 3);
+    assert_eq!(manager.window(&record).await?.end, 3);
     shutdown.cancel();
     Ok(())
 }

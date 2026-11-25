@@ -268,7 +268,8 @@ kills the group. The outcome Summary is sent only after the end has been recorde
 **`delete`.** This archives a terminal Process. It removes the output directory and the stored
 `start` (argv and environment), and keeps a tombstone: the ID, creator, RequestId, fingerprint,
 final state, reason, termination, and times. A non-terminal Process is `reject(process_active)`.
-Deleting an archived Process succeeds again with Deleted.
+Deleting an archived Process succeeds again with Deleted. From then on `inspect` reports an empty
+window and `logs` returns no output, even if the output directory could not be removed.
 
 ## Output log and cursors
 
@@ -563,7 +564,8 @@ remain, then removes its Unix socket and exits.
   callers dial again at once.
 - **Archive interrupted by a crash.** Archiving commits before the output directory is removed. A
   daemon crash between the two leaves that directory, at most `log_limit` plus one segment, until
-  it is removed by hand. The tombstone and its binding are unaffected.
+  it is removed by hand. The tombstone and its binding are unaffected, and none of that output is
+  served again.
 - **No terminal.** Processes use pipes. A terminal (PTY) Process is not part of v1.
 - **Compatibility.** Pre-Phase-3 Runtimes accept member capability bits `0x7f` only. They cannot
   decode a signed Space member entry that carries `process` (bit value `128`), so a Space
