@@ -30,6 +30,8 @@ pub(super) async fn inbound<R: AsyncRead + Unpin>(
     let mut reader = Input::new(reader);
     let mut input = Some(input);
     let mut input_bytes = 0_u64;
+    // Set once the terminal stops taking input; the caller may not know yet and keeps sending.
+    let mut closed_by_session = false;
     let failure = loop {
         let frame = tokio::select! {
             _ = &mut finished => return input_bytes,
@@ -45,8 +47,13 @@ pub(super) async fn inbound<R: AsyncRead + Unpin>(
         };
         match frame.kind() {
             FrameKind::Data => {
-                let (Ok((Channel::Input, bytes)), Some(sender)) = (frame.data(), input.as_ref())
-                else {
+                let Ok((Channel::Input, bytes)) = frame.data() else {
+                    break ServiceError::InvalidInput;
+                };
+                let Some(sender) = input.as_ref() else {
+                    if closed_by_session {
+                        continue;
+                    }
                     break ServiceError::InvalidInput;
                 };
                 input_bytes += len64(bytes.len());
@@ -58,6 +65,7 @@ pub(super) async fn inbound<R: AsyncRead + Unpin>(
                 };
                 if sent.is_err() {
                     input = None;
+                    closed_by_session = true;
                 }
             }
             FrameKind::Control => match TerminalSize::decode_resize(frame.payload()) {
@@ -69,7 +77,10 @@ pub(super) async fn inbound<R: AsyncRead + Unpin>(
                 }
                 Err(_) => break ServiceError::InvalidInput,
             },
-            FrameKind::End if frame.end() == Ok(Channel::Input) => input = None,
+            FrameKind::End if frame.end() == Ok(Channel::Input) => {
+                input = None;
+                closed_by_session = false;
+            }
             FrameKind::Cancel => break ServiceError::Cancelled,
             _ => break ServiceError::InvalidInput,
         }
@@ -190,3 +201,7 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
     let _finished = done.send(());
     ended
 }
+
+#[cfg(all(test, unix))]
+#[path = "io_tests.rs"]
+mod tests;
