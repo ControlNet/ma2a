@@ -14,15 +14,16 @@ use std::{
 };
 
 use ma2a_core::service::{
-    Channel, EMPTY_ACCEPT, EndReason, FilesRequest, FilesResult, FrameKind, ProcessResult,
-    ProxyResult, RemotePath, ServiceError, Termination, encode_call_accept, encode_call_outcome,
+    AgentAccept, Channel, ContentIdentity, EMPTY_ACCEPT, EndReason, FilesRequest, FilesResult,
+    FrameKind, ProcessResult, ProxyResult, RemotePath, ServiceError, Termination, TransferAccept,
+    encode_call_accept, encode_call_outcome,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
     client::{
-        ClientError, files,
+        ClientError, agent, files,
         process::{self, ProcessControl, ProcessIo},
-        proxy, service,
+        proxy, service, transfer,
     },
 };
 use support::TestResult;
@@ -310,5 +311,64 @@ async fn a_files_answer_is_admitted_with_an_empty_accept() -> TestResult {
     assert!(malformed(&got), "an accept with a header: {got:?}");
     let got = run(&read, &[empty]).await?;
     assert!(malformed(&got), "a read without accept: {got:?}");
+    Ok(())
+}
+
+/// A `reject` after the target already admitted the operation.
+fn late_reject(error: ServiceError) -> Sent {
+    Sent::Frame(FrameKind::Reject, vec![error.code()])
+}
+
+#[tokio::test]
+async fn a_reject_after_accept_is_a_broken_stream_not_a_refusal() -> TestResult {
+    let late = late_reject(ServiceError::Conflict);
+    let ran = exec(&[accept(&EMPTY_ACCEPT), late.clone()], Vec::new()).await?;
+    assert!(malformed(&ran), "exec: {ran:?}");
+    let call_accept = accept(&encode_call_accept(b"h")?);
+    let ran = called(&[call_accept, late.clone()], Vec::new()).await?;
+    assert!(malformed(&ran), "service call: {ran:?}");
+    let ran = proxied(&[accept(&EMPTY_ACCEPT), late.clone()], b"").await?;
+    assert!(malformed(&ran), "proxy: {ran:?}");
+    let read = FilesRequest::Read(RemotePath::parse("docs:/a")?, 0, 16);
+    let sent = replies(&[accept(&EMPTY_ACCEPT), late.clone()]).await?;
+    let mut reader = FrameReader::new(sent.as_slice());
+    let mut writer = FrameWriter::new(tokio::io::sink());
+    let got = within(files::run((&mut reader, &mut writer), &read, &[])).await?;
+    assert!(malformed(&got), "files read: {got:?}");
+    let sent = replies(&[
+        Sent::Frame(FrameKind::Accept, AgentAccept::Admitted.encode()?),
+        late,
+    ])
+    .await?;
+    let answered = within(agent::call(&mut FrameReader::new(sent.as_slice()))).await?;
+    assert!(malformed(&answered), "agent call: {answered:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_late_precondition_reject_of_a_resumed_download_keeps_it_resumable() -> TestResult {
+    // Given: a resumed download the target accepted and started sending.
+    let identity = ContentIdentity::new(10, 1);
+    let sent = replies(&[
+        Sent::Frame(FrameKind::Accept, TransferAccept::Get(identity).encode()?),
+        Sent::Data(Channel::Output, b"abc"),
+        late_reject(ServiceError::PreconditionFailed),
+    ])
+    .await?;
+    let mut reader = FrameReader::new(sent.as_slice());
+    let accepted = transfer::download_accepted(&mut reader).await?;
+
+    // When: it ends with a refusal that says the content changed.
+    let mut sink = Vec::new();
+    let mut hasher = blake3::Hasher::new();
+    let downloaded = within(transfer::download_content(
+        &mut reader,
+        (&mut sink, &mut hasher),
+        (accepted, 4),
+    ))
+    .await?;
+
+    // Then: that is a broken stream, not the refusal that would restart the download.
+    assert!(malformed(&downloaded), "{downloaded:?}");
     Ok(())
 }

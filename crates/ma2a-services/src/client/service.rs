@@ -16,7 +16,7 @@ use tokio::{
 use super::{
     ClientError, First, decoded, first_or_cancel, next,
     process::{ProcessControl, ProcessIo, finished, inbound, write_flushed},
-    unexpected,
+    refused, unexpected,
 };
 use crate::{FrameReader, FrameWriter};
 
@@ -43,6 +43,7 @@ pub async fn describe<R: AsyncRead + Unpin>(
     let frame = next(reader).await?;
     let page = match frame.kind() {
         FrameKind::Outcome => decoded(DescribePage::decode_outcome(frame.payload()))?,
+        FrameKind::Reject => return Err(refused(&frame)),
         _ => return Err(unexpected(&frame)),
     };
     if !page.continues(after) {

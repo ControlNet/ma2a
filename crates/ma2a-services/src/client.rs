@@ -105,6 +105,7 @@ pub(crate) async fn first<R: AsyncRead + Unpin>(
             failed(&frame)?;
             Ok(First::Finished(frame))
         }
+        FrameKind::Reject => Err(refused(&frame)),
         _ => Err(unexpected(&frame)),
     }
 }
@@ -167,12 +168,17 @@ pub(crate) fn failed(frame: &Frame) -> Result<(), ClientError> {
     }
 }
 
-/// Classifies a frame the family contract does not allow at this point.
+/// The refusal a `reject` answering an `open` carries.
+pub(crate) fn refused(frame: &Frame) -> ClientError {
+    frame
+        .rejection()
+        .map_or_else(ClientError::Stream, ClientError::Rejected)
+}
+
+/// Classifies a frame the family contract does not allow at this point, after the target's
+/// first answer: a `reject` then would claim that an admitted operation had no effect.
 pub(crate) fn unexpected(frame: &Frame) -> ClientError {
     match frame.kind() {
-        FrameKind::Reject => frame
-            .rejection()
-            .map_or_else(ClientError::Stream, ClientError::Rejected),
         FrameKind::Outcome => failed(frame)
             .err()
             .unwrap_or(ClientError::Stream(ServiceError::InvalidInput)),
