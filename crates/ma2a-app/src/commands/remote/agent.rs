@@ -10,7 +10,7 @@ use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client;
 use serde_json::{Value, json};
 
-pub(crate) use super::agent_follow::passes;
+pub(crate) use super::agent_follow::{passes, reopening_passes};
 use super::{
     READ_DEADLINE, agent_follow::follow, agent_view::view, bounded, open, open_bound, own_endpoint,
 };

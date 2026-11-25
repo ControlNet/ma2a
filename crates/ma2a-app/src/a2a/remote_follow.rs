@@ -11,7 +11,10 @@ use tokio::sync::mpsc;
 use super::{parts, refusal, task_id};
 use crate::{
     a2a::backend::{Backend, Refusal, Route, message_json},
-    commands::remote::{agent::passes, open_as, own_endpoint},
+    commands::remote::{
+        agent::{passes, reopening_passes},
+        open_as, own_endpoint,
+    },
 };
 
 /// Pause before reaching a target again that is restarting or unreachable.
@@ -65,7 +68,10 @@ pub(in crate::a2a) async fn follow(
                     Err(error) => (true, refusal(&error)),
                 }
             }
-            Err(error) => (reconnecting, Refusal::from(error)),
+            Err(error) => (
+                reconnecting && reopening_passes(&error),
+                Refusal::from(error),
+            ),
         };
         match refused {
             (true, refusal) if passes(&refusal.0) => reconnecting = true,

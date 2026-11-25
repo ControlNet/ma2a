@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use ma2a_core::service::{AgentId, AgentReply, AgentRequest, AgentTaskId, OpenBody, ServiceError};
-use ma2a_runtime::api::agent_event_value;
+use ma2a_runtime::{api::agent_event_value, ipc::IpcError};
 use ma2a_services::client;
 
 use super::{
@@ -30,11 +30,15 @@ pub(crate) fn passes(name: &str) -> bool {
 }
 
 /// Returns whether reopening an interrupted watch failed in a way that passes: the Runtime
-/// keeps the meaning of its own refusals, and any other local failure is this Runtime being
-/// away for now, as while it restarts.
-fn reopening_passes(error: &AppError) -> bool {
+/// keeps the meaning of its own refusals, a Runtime of another local API version or an IPC
+/// path that is not this user's stays that way, and any other local failure is this Runtime
+/// being away for now, as while it restarts.
+pub(crate) fn reopening_passes(error: &AppError) -> bool {
     match error {
         AppError::Rejected(name, _) => passes(name),
+        AppError::Ipc(
+            IpcError::VersionMismatch | IpcError::UnauthorizedPeer | IpcError::InvalidPath,
+        ) => false,
         _ => true,
     }
 }

@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use crate::{
     a2a::backend::{Backend, Refusal},
     test_daemon::{
-        Daemon, Script, TestResult, another_endpoint, answering, refusing, summary,
+        Daemon, Script, TestResult, another_endpoint, answering, incompatible, refusing, summary,
         watch_completing, watch_lost,
     },
 };
@@ -119,6 +119,10 @@ async fn a_follow_reconnects_while_reopening_its_watch_fails_for_now() -> TestRe
         (seqs, ended),
         (Vec::new(), Err(Refusal::named("unavailable")))
     );
+    // A Runtime replaced by one of another local API version stays that way.
+    let opened = vec![watch_lost()?, incompatible(), watch_completing(TASK)?];
+    let (seqs, ended) = followed(opened).await?;
+    assert_eq!((seqs, ended), (vec![2], Err(Refusal::named("unavailable"))));
     Ok(())
 }
 

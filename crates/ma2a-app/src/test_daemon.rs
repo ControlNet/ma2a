@@ -46,6 +46,12 @@ pub(crate) fn refusing(error: &str) -> Script {
     vec![(FrameKind::Open, error.as_bytes().to_vec())]
 }
 
+/// Not a target's frames: the daemon was replaced by one of another local API version, whose
+/// handshake every caller fails from then on.
+pub(crate) fn incompatible() -> Script {
+    vec![(FrameKind::Open, Vec::new())]
+}
+
 /// The stand-in Runtime's own Endpoint, which created every task the target answers with: the
 /// identity point, a valid Ed25519 key.
 const OWN: [u8; 32] = {
@@ -181,7 +187,8 @@ async fn serve(listener: UnixListener, (scripts, own): (Vec<Script>, String)) {
             continue;
         };
         let mut script = None;
-        let version = LOCAL_API_VERSION;
+        let replaced = scripts.get(opened).or_else(|| scripts.last()) == Some(&incompatible());
+        let version = LOCAL_API_VERSION + u16::from(replaced);
         let answer = match request.get("operation").and_then(Value::as_str) {
             // Not a lifecycle report, so a caller asks the handshake instead.
             _ if request.get("ma2a_lifecycle").is_some() => {

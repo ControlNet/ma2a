@@ -8,8 +8,8 @@ use crate::{
     AppError,
     cli::agents::{AgentCommand, TaskTarget},
     test_daemon::{
-        Daemon, Script, TestResult, another_endpoint, refusing, summary, watch_completing,
-        watch_lost,
+        Daemon, Script, TestResult, another_endpoint, incompatible, refusing, summary,
+        watch_completing, watch_lost,
     },
 };
 
@@ -91,5 +91,25 @@ async fn a_watch_takes_no_end_of_a_task_another_endpoint_created() -> TestResult
 
     // Then
     assert!(ended.is_err(), "{ended:?}");
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_watch_is_not_reopened_on_a_runtime_of_another_version() -> TestResult {
+    // Given: a watch lost after event 2, and this Runtime replaced by one of another local API
+    // version before it is reopened.
+    let opened = vec![watch_lost()?, incompatible(), watch_completing(TASK)?];
+
+    // When
+    let ended = watched(opened).await?;
+
+    // Then: the watch ends at once instead of waiting for a software change.
+    assert!(
+        matches!(
+            &ended,
+            Err(AppError::Ipc(ma2a_runtime::ipc::IpcError::VersionMismatch))
+        ),
+        "{ended:?}"
+    );
     Ok(())
 }
