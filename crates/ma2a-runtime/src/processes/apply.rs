@@ -80,17 +80,24 @@ impl ProcessManager {
             .store()
             .processes(move |repository| repository.transition_process(id, transition))
             .await?;
-        if transition.to.is_terminal() {
-            self.coordination().terminating.remove(&id);
-        }
-        match result {
+        let answer = match result {
             Ok(committed) => Ok(committed),
             Err(StoreError::Protocol(ProtocolError::CONFLICT)) => found(self.record_at(id).await?),
             Err(StoreError::Protocol(ProtocolError::NOT_FOUND)) => {
                 Err(ServiceError::UnknownProcess)
             }
             Err(_) => Err(ServiceError::Unavailable),
+        };
+        // The reason a termination was asked for is forgotten only once the Process ended, so
+        // an end whose commit failed is retried with it.
+        let ended = match &answer {
+            Ok(committed) => committed.value().state.is_terminal(),
+            Err(error) => *error == ServiceError::UnknownProcess,
+        };
+        if transition.to.is_terminal() && ended {
+            self.coordination().terminating.remove(&id);
         }
+        answer
     }
 
     /// Applies what an authenticated supervisor, or its status record, reported.

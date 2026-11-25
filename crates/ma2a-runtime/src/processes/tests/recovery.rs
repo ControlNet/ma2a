@@ -167,3 +167,35 @@ async fn logs_stay_readable_after_the_process_ended() -> TestResult {
     shutdown.cancel();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_termination_reason_outlives_a_store_failure_of_the_end() -> TestResult {
+    // Given: a Process being ended because its creator lost authorization.
+    let harness = Harness::new("reason-kept").await?;
+    let (manager, shutdown) = harness.manager();
+    let id = recorded(&harness, &manager, (17, ProcessState::Running)).await?;
+    manager
+        .coordination()
+        .terminating
+        .insert(id, ProcessReason::Unauthorized);
+    let ended = SupervisorStatus::Ended(Termination::Signaled(15), EndCause::Terminated, 5);
+    let config = ma2a_store::StoreConfig::new(&harness.state.0);
+    let sql = rusqlite::Connection::open(config.database_path())?;
+    sql.execute_batch(
+        "CREATE TRIGGER test_process_end_failure BEFORE UPDATE ON processes
+         BEGIN SELECT RAISE(ABORT, 'injected process end failure'); END;",
+    )?;
+
+    // When: committing the reported end fails once, and the next report commits it.
+    let failed = manager.apply(id, ended).await;
+    sql.execute_batch("DROP TRIGGER test_process_end_failure;")?;
+    let committed = manager.apply(id, ended).await?;
+
+    // Then: the end carries the reason it was asked for, not a requested one.
+    assert_eq!(failed.err(), Some(ServiceError::Unavailable));
+    assert_eq!(committed.value().state, ProcessState::Terminated);
+    assert_eq!(committed.value().reason, Some(ProcessReason::Unauthorized));
+    assert!(!manager.coordination().terminating.contains_key(&id));
+    shutdown.cancel();
+    Ok(())
+}
