@@ -101,9 +101,10 @@ fn answers(request: &FilesRequest, result: &FilesResult, read: usize) -> Result<
         (FilesRequest::Write(_, _, length), FilesResult::Written(size)) => {
             read == 0 && u64::from(*length) == *size
         }
-        (FilesRequest::List(_, after), FilesResult::Listing(entries, next)) => {
+        (FilesRequest::List(_, after), FilesResult::Listing(entries, next)) if read == 0 => {
             return continues(after.as_deref(), entries, next.as_deref());
         }
+        (FilesRequest::List(..), FilesResult::Listing(..)) => false,
         (FilesRequest::Stat(_), FilesResult::Metadata(_))
         | (
             FilesRequest::Mkdir(..) | FilesRequest::Rename(..) | FilesRequest::Remove(..),

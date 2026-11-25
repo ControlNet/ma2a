@@ -394,6 +394,32 @@ async fn a_listing_entry_no_request_can_name_is_refused() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_listing_that_carries_a_body_is_refused() -> TestResult {
+    let request = FilesRequest::List(RemotePath::parse("docs:/")?, None);
+    for (body, valid) in [(&b""[..], true), (&b"x"[..], false)] {
+        // Given: a target that accepts a list, sends `body`, then lists one entry.
+        let ((mut reader, mut writer), (_service_reader, mut service_writer)) = pipe();
+        service_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        if !body.is_empty() {
+            service_writer.data(Channel::Output, body).await?;
+        }
+        let entry = DirEntry::new("a".to_owned(), FileMetadata::new(FileKind::File, 1));
+        let page = FilesResult::encode_outcome(&Ok(FilesResult::Listing(vec![entry], None)))?;
+        service_writer.frame(FrameKind::Outcome, &page).await?;
+        service_writer.flush().await?;
+
+        // When
+        let listed = within(files::run((&mut reader, &mut writer), &request, &[])).await?;
+
+        // Then: only the listing without a body is an answer.
+        assert_eq!(listed.is_ok(), valid, "{body:?}: {listed:?}");
+    }
+    Ok(())
+}
+
 /// Runs a three-byte write whose body cannot be sent against a target that accepts it and
 /// then answers `outcome`.
 async fn write_without_body(
