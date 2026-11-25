@@ -6,8 +6,8 @@ use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 
 use super::{Relayed, Terminal, relay};
 
-type Reader = FrameReader<ReadHalf<DuplexStream>>;
-type Writer = FrameWriter<WriteHalf<DuplexStream>>;
+pub(super) type Reader = FrameReader<ReadHalf<DuplexStream>>;
+pub(super) type Writer = FrameWriter<WriteHalf<DuplexStream>>;
 
 pub(super) fn ends(stream: DuplexStream) -> (Reader, Writer) {
     let (read, write) = tokio::io::split(stream);
@@ -35,7 +35,7 @@ pub(super) fn start_with(capacity: usize) -> Started {
         relay(
             (&mut client_reader, &mut client_writer),
             (&mut target_reader, &mut target_writer),
-            (|| (), &super::ClientWrite::default()),
+            (|| (), &super::ClientWrite::default(), super::FORWARD_STALL),
         )
         .await
     });

@@ -163,7 +163,7 @@ async fn a_continuous_downstream_flood_never_starves_client_cancel() {
         relay(
             (&mut client_reader, &mut sink),
             (&mut target_reader, &mut target_writer),
-            (|| (), &ClientWrite::default()),
+            (|| (), &ClientWrite::default(), super::FORWARD_STALL),
         )
         .await
     });
@@ -179,4 +179,107 @@ async fn a_continuous_downstream_flood_never_starves_client_cancel() {
     assert_eq!(frame.kind(), FrameKind::Cancel);
     flood.abort();
     task.abort();
+}
+
+fn start_asymmetric(
+    (client_cap, target_cap): (usize, usize),
+    stall: std::time::Duration,
+) -> (
+    (super::tests::Reader, super::tests::Writer),
+    (super::tests::Reader, super::tests::Writer),
+    tokio::task::JoinHandle<super::Relayed>,
+) {
+    let (client, plane_client) = tokio::io::duplex(client_cap);
+    let (plane_target, target) = tokio::io::duplex(target_cap);
+    let task = tokio::spawn(async move {
+        let ((mut cr, mut cw), (mut tr, mut tw)) = (
+            super::tests::ends(plane_client),
+            super::tests::ends(plane_target),
+        );
+        super::relay(
+            (&mut cr, &mut cw),
+            (&mut tr, &mut tw),
+            (|| (), &super::ClientWrite::default(), stall),
+        )
+        .await
+    });
+    (super::tests::ends(client), super::tests::ends(target), task)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_proxy_relay_waits_past_forward_stall_for_its_idle_timeout() {
+    use ma2a_core::service::{Channel, EndReason, OpenBody, ProxyHost, ProxyRequest, ProxyResult};
+
+    let request = ProxyRequest::new(ProxyHost::new("127.0.0.1").expect("host"), 80, 40_000)
+        .expect("proxy request");
+    let stall = crate::stream_plane::stall_for(&OpenBody::Proxy(request));
+
+    // 1. Blocked upstream write waits 40 s (past 30 s FORWARD_STALL) for target TimedOut.
+    let ((mut cr, mut cw), (_tr, mut tw), task) = start_asymmetric((1 << 16, 1), stall);
+    cw.data(Channel::Input, b"blocked").await.expect("data");
+    cw.flush().await.expect("flush");
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(40)).await;
+    let timed_out =
+        ProxyResult::encode_outcome(&Ok(ProxyResult::new(EndReason::TimedOut, (0, 0), 40_000)))
+            .expect("outcome");
+    let _sent = tw.frame(FrameKind::Outcome, &timed_out).await;
+    let relayed = task.await.expect("relay");
+    let _drained = cr.next().await;
+    assert!(
+        matches!(relayed.terminal, Terminal::Outcome { failure: None, .. }),
+        "expected target TimedOut outcome, got {:?}",
+        relayed.terminal
+    );
+
+    // 2. Slow local Proxy consumer draining after 35 s (< 40 s idle) still gets every frame.
+    let ((mut cr, _cw), (_tr, mut tw), task) = start_asymmetric((1, 1 << 16), stall);
+    tw.data(Channel::Input, b"slow-bytes").await.expect("data");
+    let completed =
+        ProxyResult::encode_outcome(&Ok(ProxyResult::new(EndReason::Completed, (0, 10), 35_000)))
+            .expect("outcome");
+    tw.frame(FrameKind::Outcome, &completed)
+        .await
+        .expect("outcome");
+    tw.flush().await.expect("flush");
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(35)).await;
+    assert_eq!(
+        cr.expect().await.expect("data").data(),
+        Ok((Channel::Input, &b"slow-bytes"[..]))
+    );
+    assert_eq!(
+        cr.expect().await.expect("outcome").kind(),
+        FrameKind::Outcome
+    );
+    let relayed = task.await.expect("relay");
+    assert!(relayed.client_present);
+    assert!(matches!(
+        relayed.terminal,
+        Terminal::Outcome { failure: None, .. }
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_proxy_relay_cancels_within_cancel_grace_when_client_cancels_or_leaves() {
+    use ma2a_core::service::Channel;
+
+    for disconnect in [false, true] {
+        let ((cr, mut cw), _target, task) =
+            start_asymmetric((1 << 16, 1), std::time::Duration::from_secs(605));
+        cw.data(Channel::Input, b"blocked").await.expect("data");
+        cw.flush().await.expect("flush");
+        tokio::task::yield_now().await;
+        let started = tokio::time::Instant::now();
+        if disconnect {
+            drop((cr, cw));
+        } else {
+            cw.frame(FrameKind::Cancel, &[]).await.expect("cancel");
+            cw.flush().await.expect("flush");
+        }
+        let relayed = task.await.expect("relay");
+        assert_eq!(started.elapsed(), super::CANCEL_GRACE);
+        assert_eq!(relayed.terminal, Terminal::Lost);
+        assert_eq!(relayed.client_present, !disconnect);
+    }
 }

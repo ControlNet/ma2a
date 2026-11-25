@@ -6,11 +6,26 @@
 use std::{
     collections::HashSet,
     sync::{Arc, Mutex, PoisonError},
+    time::Duration,
 };
 
-use ma2a_core::{EndpointId, RequestId, ServiceKind};
+use ma2a_core::{EndpointId, RequestId, ServiceKind, service::OpenBody};
 
 pub(crate) mod relay;
+
+/// How long one frame may wait for room in either direction of `body`'s relay.
+///
+/// Proxy operations honor the request's `idle_timeout_ms` plus [`relay::CANCEL_GRACE`] so the
+/// target's blocked-write idle timeout and the caller's local-write idle timeout can settle
+/// cleanly before the stream plane gives up.
+pub(crate) fn stall_for(body: &OpenBody) -> Duration {
+    match body {
+        OpenBody::Proxy(proxy) => relay::FORWARD_STALL.max(
+            Duration::from_millis(proxy.idle_timeout_ms()).saturating_add(relay::CANCEL_GRACE),
+        ),
+        _ => relay::FORWARD_STALL,
+    }
+}
 
 /// Most concurrent stream-plane connections, separate from the business connection pool.
 pub(crate) const STREAM_CONNECTION_LIMIT: usize = 64;

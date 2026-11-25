@@ -11,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 use super::super::{CallIo, fault};
-use crate::stream_plane::relay::{CANCEL_GRACE, ClientWrite, Relayed, relay};
+use crate::stream_plane::relay::{CANCEL_GRACE, ClientWrite, FORWARD_STALL, Relayed, relay};
 
 /// Bytes buffered between the caller's frames and the relay.
 const PUMP_BUFFER: usize = 128 * 1024;
@@ -68,7 +68,7 @@ where
     let relaying = relay(
         (&mut client, writer),
         (&mut target.0, &mut target.1),
-        (before_outcome, &writing),
+        (before_outcome, &writing, FORWARD_STALL),
     );
     let cancelled = async {
         tokio::select! {

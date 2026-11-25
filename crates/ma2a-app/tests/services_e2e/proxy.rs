@@ -311,3 +311,57 @@ fn a_stalled_forwarded_consumer_fails_by_idle_and_releases_its_slot() -> TestRes
     server.join().map_err(|_| "flood server panicked")??;
     lab.shutdown()
 }
+
+#[test]
+fn a_blocked_proxy_write_past_30s_still_exits_124() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let lab = Lab::start("proxy-long-idle", &port.to_string())?;
+    let port_text = port.to_string();
+
+    // Accepts and never reads, holding the socket open until the CLI finishes.
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let silent = std::thread::spawn(move || -> TestValue<()> {
+        let (_socket, _) = listener.accept()?;
+        let _ = done_rx.recv();
+        Ok(())
+    });
+
+    let mut child = lab
+        .member
+        .command(&[
+            "proxy",
+            "connect",
+            "--endpoint",
+            lab.owner.id(),
+            "--idle",
+            "35s",
+            "127.0.0.1",
+            &port_text,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("missing stdin")?;
+    let writer = std::thread::spawn(move || {
+        let chunk = vec![b'a'; 65_536];
+        while stdin.write_all(&chunk).is_ok() {}
+    });
+
+    let output = child.wait_with_output()?;
+    let _ = done_tx.send(());
+    let _ = writer.join();
+    silent.join().map_err(|_| "silent destination panicked")??;
+    assert_eq!(
+        output.status.code(),
+        Some(124),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8(output.stderr)?.contains("timed out"),
+        "missing timed out message"
+    );
+    lab.shutdown()
+}

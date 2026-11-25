@@ -80,7 +80,8 @@ pub(super) async fn open(
     } else {
         None
     };
-    let operation = ((key, frame.payload()), reservation);
+    let stall = crate::stream_plane::stall_for(header.body());
+    let operation = ((key, frame.payload(), stall), reservation);
     run(context, operation, (&mut client.0, &mut client.1)).await;
     drop(stream_permit);
     Ok(())
@@ -176,7 +177,10 @@ async fn send_terminal<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>, termi
 
 async fn run<R, W>(
     context: &ConnectionContext,
-    ((key, open), reservation): ((OperationKey, &[u8]), Option<replay::Reservation>),
+    ((key, open, stall), reservation): (
+        (OperationKey, &[u8], Duration),
+        Option<replay::Reservation>,
+    ),
     (client_reader, client_writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
 ) where
     R: tokio::io::AsyncRead + Unpin,
@@ -222,7 +226,7 @@ async fn run<R, W>(
         relay(
             (client_reader, client_writer),
             (&mut target.0, &mut target.1),
-            (|| (), &ClientWrite::default()),
+            (|| (), &ClientWrite::default(), stall),
         )
         .await
     } else {

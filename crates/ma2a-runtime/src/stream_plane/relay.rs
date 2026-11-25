@@ -23,9 +23,9 @@ pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// How long the last frame and the shutdown toward a client may take; a client that stopped
 /// reading must not hold an ended operation open.
 pub(crate) const FINAL_WRITE_GRACE: Duration = Duration::from_secs(5);
-/// How long one frame toward the target may wait for room, as long as a host waits for progress;
-/// a target that takes nothing for longer is stalled and gets cancelled.
-const FORWARD_STALL: Duration = Duration::from_secs(30);
+/// How long one frame toward the target or client may wait for room by default, as long as a
+/// host waits for progress; a side that takes nothing for longer is stalled and gets cancelled.
+pub(crate) const FORWARD_STALL: Duration = Duration::from_secs(30);
 
 /// What an owner that drops a relay can still learn from it: whether a frame toward the client
 /// is being written right now, and the target's terminal once it was read.
@@ -92,7 +92,7 @@ pub(crate) fn encoded(kind: FrameKind, payload: &[u8]) -> Result<Vec<u8>, Servic
 }
 
 /// Frames a client may send after `open`.
-const fn from_client(kind: FrameKind) -> bool {
+pub(super) const fn from_client(kind: FrameKind) -> bool {
     matches!(
         kind,
         FrameKind::Data | FrameKind::End | FrameKind::Control | FrameKind::Cancel
@@ -114,7 +114,7 @@ fn data_len(frame: &Frame) -> u64 {
 }
 
 /// Writes one frame within `bound`.
-async fn forward<W: AsyncWrite + Unpin>(
+pub(super) async fn forward<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,
     frame: &Frame,
     bound: Duration,
@@ -130,31 +130,35 @@ async fn forward<W: AsyncWrite + Unpin>(
 
 /// State both directions of one relay update.
 #[derive(Debug, Default)]
-struct Shared {
-    to_target: AtomicU64,
+pub(super) struct Shared {
+    pub(super) to_target: AtomicU64,
     from_target: AtomicU64,
-    client_gone: AtomicBool,
+    pub(super) client_gone: AtomicBool,
     /// Raised by the target direction when the client can no longer receive frames.
-    client_lost: Notify,
+    pub(super) client_lost: Notify,
 }
 
 impl Shared {
-    fn count(counter: &AtomicU64, frame: &Frame) {
+    pub(super) fn count(counter: &AtomicU64, frame: &Frame) {
         counter.fetch_add(data_len(frame), Ordering::Relaxed);
     }
 }
+
+#[path = "relay_upstream.rs"]
+mod upstream;
 
 /// Relays frames after the client's `open` was written to the target, until the target's
 /// terminal, its loss, or the cancel grace after the client cancelled or disappeared.
 ///
 /// The two directions run independently, so neither side blocking on a full stream can
 /// stall the other, and a full-duplex operation can never deadlock inside the relay.
-/// `before_outcome` runs once the target's outcome is read and before it is forwarded, and
-/// `writing` tells an owner that drops this future whether a client frame was cut short.
+/// `before_outcome` runs once the target's outcome is read and before it is forwarded,
+/// `writing` tells an owner that drops this future whether a client frame was cut short, and
+/// `stall` bounds how long one non-terminal frame may wait for room in either direction.
 pub(crate) async fn relay<CR, CW, TR, TW>(
     (client_reader, client_writer): (&mut FrameReader<CR>, &mut FrameWriter<CW>),
     (target_reader, target_writer): (&mut FrameReader<TR>, &mut FrameWriter<TW>),
-    (before_outcome, writing): (fn(), &ClientWrite),
+    (before_outcome, writing, stall): (fn(), &ClientWrite, Duration),
 ) -> Relayed
 where
     CR: AsyncRead + Unpin,
@@ -165,9 +169,9 @@ where
     let shared = Shared::default();
     let downstream = downstream(
         (target_reader, client_writer),
-        (&shared, before_outcome, writing),
+        (&shared, before_outcome, writing, stall),
     );
-    let upstream = upstream((client_reader, target_writer), &shared);
+    let upstream = upstream::run((client_reader, target_writer), (&shared, stall));
     let grace = tokio::time::sleep(Duration::MAX);
     tokio::pin!(downstream, upstream, grace);
     let mut cancelling = false;
@@ -193,60 +197,10 @@ where
     }
 }
 
-/// Client → target until the client cancels, breaks the contract, or disappears; each of
-/// those leaves the target cancelled. Returning starts the cancel grace, unless it returns
-/// `false`: a write toward the target ran out of its bound, which already was the wait.
-async fn upstream<CR, TW>(
-    (client_reader, target_writer): (&mut FrameReader<CR>, &mut FrameWriter<TW>),
-    shared: &Shared,
-) -> bool
-where
-    CR: AsyncRead + Unpin,
-    TW: AsyncWrite + Unpin,
-{
-    loop {
-        let frame = tokio::select! {
-            biased;
-            () = shared.client_lost.notified() => None,
-            frame = client_reader.next() => Some(frame),
-        };
-        match frame {
-            Some(Ok(Some(frame))) if from_client(frame.kind()) => {
-                Shared::count(&shared.to_target, &frame);
-                // A cancel gets the grace a cancel for a client that left gets.
-                let bound = if frame.kind() == FrameKind::Cancel {
-                    CANCEL_GRACE
-                } else {
-                    FORWARD_STALL
-                };
-                match forward(target_writer, &frame, bound).await {
-                    Err(ServiceError::TimedOut) => return false,
-                    // A target that stopped reading may have ended; its terminal can follow.
-                    Err(_) => return true,
-                    Ok(()) if frame.kind() == FrameKind::Cancel => return true,
-                    Ok(()) => {}
-                }
-            }
-            other => {
-                // A protocol violation leaves the client able to hear the terminal; a closed
-                // connection, a read failure, or a lost client does not.
-                if !matches!(other, Some(Ok(Some(_)))) {
-                    shared.client_gone.store(true, Ordering::Relaxed);
-                }
-                let cancel = async {
-                    target_writer.frame(FrameKind::Cancel, &[]).await?;
-                    target_writer.flush().await
-                };
-                return tokio::time::timeout(CANCEL_GRACE, cancel).await.is_ok();
-            }
-        }
-    }
-}
-
 /// Target → client until the target's terminal; a malformed or missing one is a loss.
 async fn downstream<TR, CW>(
     (target_reader, client_writer): (&mut FrameReader<TR>, &mut FrameWriter<CW>),
-    (shared, before_outcome, writing): (&Shared, fn(), &ClientWrite),
+    (shared, before_outcome, writing, stall): (&Shared, fn(), &ClientWrite, Duration),
 ) -> Terminal
 where
     TR: AsyncRead + Unpin,
@@ -297,7 +251,7 @@ where
             let bound = if terminal.is_some() || frame.kind() == FrameKind::Accept {
                 FINAL_WRITE_GRACE
             } else {
-                FORWARD_STALL
+                stall
             };
             let forwarded = forward(client_writer, &frame, bound).await;
             writing.writing.store(false, Ordering::Relaxed);
