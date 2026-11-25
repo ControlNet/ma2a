@@ -118,6 +118,7 @@ async fn attach_forwards_stdin_and_a_detach_leaves_the_process_running() -> Test
     let stop = CancellationToken::new();
     let request = ProcessRequest::Attach(id, LogFrom::Start, true);
     let scope = ((harness.creator, request_id(31)?), request, &stop);
+    let target = (id, LogFrom::Start);
     let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
     let (mut output, mut error) = (Vec::new(), Vec::new());
     let local = ProcessIo {
@@ -125,7 +126,11 @@ async fn attach_forwards_stdin_and_a_detach_leaves_the_process_running() -> Test
         output: &mut output,
         error: Some(&mut error),
     };
-    let caller = hosted::attach((&mut reader, &mut writer), local, std::future::pending());
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (target, local),
+        std::future::pending(),
+    );
     let (_report, attached) = tokio::join!(host, caller);
     let attached = attached?;
     assert_eq!(attached.reason, EndReason::Completed);
@@ -146,7 +151,8 @@ async fn attach_forwards_stdin_and_a_detach_leaves_the_process_running() -> Test
         error: None,
     };
     let detach = tokio::time::sleep(Duration::from_millis(300));
-    let caller = hosted::attach((&mut reader, &mut writer), local, detach);
+    let target = (sleeper, LogFrom::Now);
+    let caller = hosted::attach((&mut reader, &mut writer), (target, local), detach);
     let (_report, attached) = tokio::join!(host, caller);
     let attached = attached?;
     assert_eq!(attached.reason, EndReason::Cancelled);
@@ -221,7 +227,12 @@ async fn closed_stdin_archived_logs_relative_cwd_and_strangers_are_refused_exact
         output: Vec::new(),
         error: None,
     };
-    let caller = hosted::attach((&mut reader, &mut writer), local, std::future::pending());
+    let target = (id, LogFrom::Now);
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (target, local),
+        std::future::pending(),
+    );
     let (_report, attached) = tokio::join!(host, caller);
     assert!(
         matches!(

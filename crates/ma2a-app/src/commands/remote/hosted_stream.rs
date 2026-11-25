@@ -32,7 +32,8 @@ pub(super) async fn logs(
         output: tokio::io::stdout(),
         error: Some(tokio::io::stderr()),
     };
-    match hosted::attach((&mut reader, &mut writer), local, interrupted()).await {
+    let attach = (id, LogFrom::Cursor(next));
+    match hosted::attach((&mut reader, &mut writer), (attach, local), interrupted()).await {
         Ok(attached) => finish(&attached, false),
         // The Process ended between the read and the attach: print what it wrote last.
         Err(ClientError::Rejected(ServiceError::NotRunning)) => {
@@ -135,9 +136,13 @@ pub(super) async fn attach(
         output: tokio::io::stdout(),
         error: Some(tokio::io::stderr()),
     };
-    let attached = hosted::attach((&mut reader, &mut writer), local, interrupted())
-        .await
-        .map_err(AppError::from);
+    let attached = hosted::attach(
+        (&mut reader, &mut writer),
+        ((id, from), local),
+        interrupted(),
+    )
+    .await
+    .map_err(AppError::from);
     finish(&super::unless_reading_stdin(stdin, attached)?, stdin)
 }
 

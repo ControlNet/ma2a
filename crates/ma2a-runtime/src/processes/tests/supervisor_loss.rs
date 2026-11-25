@@ -65,14 +65,14 @@ async fn run(
             ProcessRequest::Stdin(..) => hosted::stdin((&mut reader, &mut writer), &b"x"[..])
                 .await
                 .map(|_| ()),
-            ProcessRequest::Attach(..) => {
+            ProcessRequest::Attach(id, from, _) => {
                 let local = ProcessIo::<&[u8], Vec<u8>, Vec<u8>> {
                     input: None,
                     output: Vec::new(),
                     error: None,
                 };
                 let detach = std::future::pending();
-                hosted::attach((&mut reader, &mut writer), local, detach)
+                hosted::attach((&mut reader, &mut writer), ((id, from), local), detach)
                     .await
                     .map(|_| ())
             }

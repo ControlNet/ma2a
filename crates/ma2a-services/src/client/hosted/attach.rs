@@ -6,15 +6,15 @@
 use std::future::Future;
 
 use ma2a_core::service::{
-    Channel, EndReason, FrameKind, MAX_DATA_CHUNK_LEN, ProcessAccept, ProcessReply, ProcessSummary,
-    ServiceError,
+    Channel, EndReason, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, ProcessAccept, ProcessId,
+    ProcessReply, ProcessSummary, ServiceError,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     sync::Notify,
 };
 
-use super::{Gaps, accepted, deliver, reply};
+use super::{Gaps, accepted, advanced, deliver, reading, reply, skipped};
 use crate::{
     FrameReader, FrameWriter,
     client::{ClientError, First, first_or_cancel, next, process::ProcessIo, unexpected},
@@ -36,18 +36,23 @@ pub struct Attached {
     pub gaps: Gaps,
 }
 
-/// Follows one Process until it ends or `detach` completes.
+/// Follows Process `id` from `from` until it ends or `detach` completes.
 ///
 /// With `input`, local input is forwarded as stdin and its EOF closes the Process stdin;
 /// the `open` must then have asked for the stdin writer. A failed local output write
 /// detaches, because nothing can observe the Process any more.
+///
+/// Every byte's cursor is known, as for `logs`: the attachment starts where `from` resolves in
+/// the window the accept reports, and the outcome must name this Process and the cursor its
+/// bytes and skips reached. Only an attachment with stdin, a mutation, may be answered from
+/// replay.
 ///
 /// # Errors
 /// Returns the refusal (`writer_busy` when another attachment holds stdin), the failed
 /// outcome, or the stream failure.
 pub async fn attach<R, W, I, O, E, D>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
-    local: ProcessIo<I, O, E>,
+    ((id, from), local): ((ProcessId, LogFrom), ProcessIo<I, O, E>),
     detach: D,
 ) -> Result<Attached, ClientError>
 where
@@ -61,18 +66,22 @@ where
     tokio::pin!(detach);
     let (answer, detached) = first_or_cancel((reader, writer), detach.as_mut()).await?;
     let accept = match answer {
-        First::Finished(frame) => return attached((None, &frame), Gaps::default()),
+        First::Finished(frame) if local.input.is_some() => {
+            return attached((None, &frame), (id, None), Gaps::default());
+        }
+        First::Finished(_) => return Err(ClientError::Stream(ServiceError::InvalidInput)),
         First::Accepted(frame) => accepted(&frame)?,
     };
+    let start = reading(&accept, from)?;
     let ProcessIo {
         input,
         output,
         error,
     } = local;
     let lost = Notify::new();
-    let outbound = outbound(reader, (output, error), &lost);
+    let outbound = outbound(reader, (output, error), (&lost, start));
     // Once detached, nothing more is sent; the outcome still follows.
-    let (frame, gaps) = if detached {
+    let (frame, gaps, reached) = if detached {
         outbound.await
     } else {
         let inbound = inbound(writer, (input, detach), &lost);
@@ -83,7 +92,7 @@ where
             () = &mut inbound => outbound.await,
         }
     }?;
-    attached((Some(accept), &frame), gaps)
+    attached((Some(accept), &frame), (id, Some(reached)), gaps)
 }
 
 /// Caller → target: stdin until EOF, then at most one `cancel` on detach or lost output.
@@ -123,27 +132,32 @@ async fn inbound<W, I, D>(
     .await;
 }
 
-/// Target → caller until the outcome; a failed local write asks the inbound side to detach.
+/// Target → caller until the outcome, from cursor `start`; returns the outcome, the gaps, and
+/// the cursor reached. A failed local write asks the inbound side to detach.
 async fn outbound<R, O, E>(
     reader: &mut FrameReader<R>,
     (mut output, mut error): (O, Option<E>),
-    lost: &Notify,
-) -> Result<(crate::Frame, Gaps), ClientError>
+    (lost, start): (&Notify, u64),
+) -> Result<(crate::Frame, Gaps, u64), ClientError>
 where
     R: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
     E: AsyncWrite + Unpin,
 {
     let mut gaps = Gaps::default();
+    let mut reached = start;
     let mut delivering = true;
     loop {
         let frame = next(reader).await?;
         match frame.kind() {
-            FrameKind::Outcome => return Ok((frame, gaps)),
-            FrameKind::Control => {
-                gaps.record(&frame)?;
-            }
-            FrameKind::Data if delivering => {
+            FrameKind::Outcome => return Ok((frame, gaps, reached)),
+            FrameKind::Control => reached = skipped(&mut gaps, &frame, reached)?,
+            FrameKind::Data => {
+                let (_, bytes) = frame.data().map_err(ClientError::Stream)?;
+                reached = advanced(reached, bytes.len())?;
+                if !delivering {
+                    continue;
+                }
                 let delivered = async {
                     deliver(&frame, (&mut output, error.as_mut())).await?;
                     output.flush().await?;
@@ -161,7 +175,6 @@ where
                     Err(failure) => return Err(failure),
                 }
             }
-            FrameKind::Data => {}
             _ => return Err(unexpected(&frame)),
         }
     }
@@ -178,21 +191,27 @@ async fn read_input<I: AsyncRead + Unpin>(
     }
 }
 
+/// Checks that an outcome reports this Process detached at the cursor `reached`, when known.
 fn attached(
     (accept, frame): (Option<ProcessAccept>, &crate::Frame),
+    (id, reached): (ProcessId, Option<u64>),
     gaps: Gaps,
 ) -> Result<Attached, ClientError> {
     if frame.kind() != FrameKind::Outcome {
         return Err(unexpected(frame));
     }
     match reply(frame)? {
-        ProcessReply::Detached(reason, summary, cursor) => Ok(Attached {
-            accept,
-            reason,
-            summary,
-            cursor,
-            gaps,
-        }),
+        ProcessReply::Detached(reason, summary, cursor)
+            if summary.id == id && reached.is_none_or(|reached| cursor == reached) =>
+        {
+            Ok(Attached {
+                accept,
+                reason,
+                summary,
+                cursor,
+                gaps,
+            })
+        }
         _ => Err(ClientError::Stream(ServiceError::InvalidInput)),
     }
 }

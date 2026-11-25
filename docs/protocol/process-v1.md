@@ -227,6 +227,11 @@ Process and its supervisor have ended.
    taken the detach within 5 seconds, or reported 5 seconds after that, ends it with a failed
    `cancelled` outcome, so none of them holds the reader slot or the stdin lease.
 4. The Detached summary is the Process as it now is, and `cursor` is the position reached.
+5. The caller refuses, before writing any output, an `accept` that is not Reading or whose `start`
+   and `truncated` are not where `from` resolves in the window it reports. It also refuses a
+   Skipped cursor that goes back, and a Detached outcome for another Process or at a cursor other
+   than where its bytes and skips ended. Only an attachment with `stdin` reserves its RequestId,
+   so only that one may be answered from replay.
 
 With `stdin = true`, the attachment also takes the single stdin writer lease. `data` on channel 0
 is written to the Process stdin. `end` on channel 0 closes the Process stdin permanently, and the
