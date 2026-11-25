@@ -173,7 +173,7 @@ impl StoreClient {
         publisher: ma2a_net::AddressPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,
-    ) -> Result<(u64, bool), RuntimeError> {
+    ) -> Result<crate::store::AddressPublicationResult, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PublishAddress {
             publisher,

@@ -3,9 +3,16 @@ use crate::error::{RuntimeError, RuntimeErrorKind};
 
 impl Actor {
     pub(crate) async fn refresh_local_control_publications(&mut self) -> Result<(), RuntimeError> {
-        self.publish_local_address().await?;
-        self.refresh_local_relay_publication().await?;
-        Ok(())
+        let address = self.publish_local_address().await.map(|_| ());
+        let relay = self.refresh_local_relay_publication().await;
+        match (address, relay) {
+            (Err(first), Err(second))
+                if first.is_retryable_background() && !second.is_retryable_background() =>
+            {
+                Err(second)
+            }
+            (first, second) => first.and(second),
+        }
     }
 
     pub(crate) async fn refresh_local_relay_publication(&mut self) -> Result<(), RuntimeError> {
@@ -95,9 +102,9 @@ impl Actor {
             // The Store may have committed some Space records before failing.
             self.maintenance.address_lookup_pending = true;
         }
-        let (revision, advanced) = write_result?;
-        self.state.revision = self.state.revision.max(revision);
-        if advanced {
+        let outcome = write_result?;
+        self.state.revision = self.state.revision.max(outcome.revision);
+        if outcome.advanced {
             self.maintenance.address_lookup_pending = true;
         }
         if self.maintenance.address_lookup_pending {
@@ -111,7 +118,10 @@ impl Actor {
             );
             self.maintenance.address_lookup_pending = false;
         }
-        Ok(revision)
+        if outcome.clock_behind {
+            return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
+        }
+        Ok(outcome.revision)
     }
 
     /// Publishes advertisements issued now that expire at `expires_at_ms`.

@@ -148,11 +148,11 @@ async fn actor_publishes_exact_next_record_to_every_space_for_user_data_only_cha
     .await?
     .ok_or("initial relay observation channel closed")?;
     let publisher = actor.endpoint.address_publisher()?;
-    let (_revision, advanced) = actor
+    let outcome = actor
         .store
         .publish_address(publisher, identity.endpoint_id, u64::try_from(NOW_MS)?)
         .await?;
-    assert!(advanced);
+    assert!(outcome.advanced);
     let initial = spaces
         .iter()
         .map(|space_id| {

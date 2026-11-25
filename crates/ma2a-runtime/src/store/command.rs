@@ -120,7 +120,7 @@ pub(crate) enum StoreCommand {
         publisher: ma2a_net::AddressPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,
-        reply: oneshot::Sender<Result<(u64, bool), RuntimeError>>,
+        reply: oneshot::Sender<Result<super::AddressPublicationResult, RuntimeError>>,
     },
     PublishRelayAdvertisements {
         publisher: ma2a_net::PrivateRelayAdvertisementPublisher,

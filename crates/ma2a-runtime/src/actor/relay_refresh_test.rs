@@ -86,11 +86,11 @@ async fn relay_map_failures_retry_without_committing_actor_or_churning_address()
     .await?
     .ok_or("initial relay observation channel closed")?;
     let publisher = actor.endpoint.address_publisher()?;
-    let (_revision, advanced) = actor
+    let outcome = actor
         .store
         .publish_address(publisher, identity.endpoint_id, u64::try_from(NOW_MS)?)
         .await?;
-    assert!(advanced);
+    assert!(outcome.advanced);
     let initial = repository
         .address_record(authorization.space_id(), identity.endpoint_id)?
         .ok_or("initial address record missing")?;

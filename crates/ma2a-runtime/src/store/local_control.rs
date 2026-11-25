@@ -1,4 +1,4 @@
-use super::{RelayPublicationResult, StoreBackend};
+use super::{AddressPublicationResult, RelayPublicationResult, StoreBackend};
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
 pub(super) struct PendingRelayPublication {
@@ -123,18 +123,24 @@ impl StoreBackend {
         publisher: &ma2a_net::AddressPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,
-    ) -> Result<(u64, bool), RuntimeError> {
+    ) -> Result<AddressPublicationResult, RuntimeError> {
         let states = self.repository.control_spaces_for(local_endpoint_id)?;
         let mut advanced = false;
+        let mut clock_behind = false;
         for state in states {
             let authorization = state.authorization();
             let request = ma2a_net::AddressPublishRequest::new(&authorization, now_ms);
-            advanced |= publisher
-                .publish(&mut self.repository, request)
-                .map_err(RuntimeError::from)?
-                .is_some();
+            match publisher.publish(&mut self.repository, request) {
+                Ok(record) => advanced |= record.is_some(),
+                Err(ma2a_net::AddressPublisherError::ClockRollback) => clock_behind = true,
+                Err(error) => return Err(RuntimeError::from(error)),
+            }
         }
-        Ok((self.repository.revision()?, advanced))
+        Ok(AddressPublicationResult {
+            revision: self.repository.revision()?,
+            advanced,
+            clock_behind,
+        })
     }
 
     #[expect(

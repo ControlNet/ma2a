@@ -39,6 +39,13 @@ pub(crate) struct PersistedEnrollment {
     pub(crate) memberships: std::collections::BTreeSet<ma2a_core::SpaceId>,
 }
 
+/// Outcome of one address publication sweep across every active Space.
+pub(crate) struct AddressPublicationResult {
+    pub(crate) revision: u64,
+    pub(crate) advanced: bool,
+    pub(crate) clock_behind: bool,
+}
+
 /// Effective signed window of a completed private-relay publication batch.
 pub(crate) struct RelayPublicationResult {
     pub(crate) revision: u64,
