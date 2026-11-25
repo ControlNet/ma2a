@@ -112,12 +112,14 @@ bunx @axodotdev/dist@0.32.0 plan --output-format=json --allow-dirty
 For downloaded assets, verify SHA-256 first and then run `gh attestation verify` as shown in
 [quickstart.md](quickstart.md). The SPDX SBOM must contain both Rust and production frontend
 packages. Its Rust packages are the ones whose code the archive carries: those `ma2a-app` reaches
-through normal dependency edges, resolved for the archive's own target, without passing through a
-procedural macro. A macro such as `serde_derive` runs on the build host and only its expansion is
-compiled in, so it, and any package only it depends on, is not listed; a library a macro shares
-with the program stays listed through the program's own path. Another platform's dependencies,
-build and dev dependencies, and workspace tools such as `xtask` are not listed either. The SBOM
-therefore describes what ships, not the full build toolchain; `Cargo.lock` at the archive's commit
+through normal dependency edges, resolved for the archive's own target and with the features that
+build of `ma2a-app` turns on, without passing through a procedural macro (`cargo tree -p ma2a-app
+--target TARGET -e normal,no-proc-macro`). A macro such as `serde_derive` runs on the build host
+and only its expansion is compiled in, so it, and any package only it depends on, is not listed; a
+library a macro shares with the program stays listed through the program's own path. Another
+platform's dependencies, build and dev dependencies, optional dependencies that only a test or
+another workspace member turns on, and workspace tools such as `xtask` are not listed either. The
+SBOM therefore describes what ships, not the full build toolchain; `Cargo.lock` at the archive's commit
 records that. Its frontend packages are the installed closure of the console's production
 dependencies, counting peers and installed optional dependencies. Each package declares its
 license as an SPDX expression, with a slash between licenses read as `OR`; a package with no

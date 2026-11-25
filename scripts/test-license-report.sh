@@ -47,13 +47,31 @@ for report in linked spaced suffix; do
 done
 printf 'license report is independent of the checkout path\n'
 
-# The synthetic checkout: a one-crate workspace, and installed frontend packages written here.
+# The synthetic checkout: a small workspace, and installed frontend packages written here.
 fixture="$temporary/fixture"
-mkdir -p "$fixture/crates/ma2a-app/src" "$fixture/web"
+mkdir -p "$fixture/web"
 printf '[workspace]\nmembers = ["crates/ma2a-app"]\nresolver = "2"\n' > "$fixture/Cargo.toml"
-printf '[package]\nname = "ma2a-app"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n' \
-  > "$fixture/crates/ma2a-app/Cargo.toml"
+crate() {
+  mkdir -p "$fixture/crates/$1/src"
+  printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n%s\n' \
+    "$1" "$2" > "$fixture/crates/$1/Cargo.toml"
+  touch "$fixture/crates/$1/src/lib.rs"
+}
+# Only the tests turn on the feature of shared that pulls in extra and common, so extra does not
+# ship; common ships anyway, since the application also depends on it directly.
+crate ma2a-app '[dependencies]
+shared = { path = "../shared" }
+common = { path = "../common" }
+[dev-dependencies]
+shared = { path = "../shared", features = ["testing"] }'
 printf 'fn main() {}\n' > "$fixture/crates/ma2a-app/src/main.rs"
+crate shared '[dependencies]
+extra = { path = "../extra", optional = true }
+common = { path = "../common", optional = true }
+[features]
+testing = ["dep:extra", "dep:common"]'
+crate extra ''
+crate common ''
 (cd "$fixture" && cargo generate-lockfile --offline --quiet)
 package() {
   mkdir -p "$fixture/web/node_modules/$1"
@@ -113,6 +131,16 @@ if ! jq -e --argjson expected "$expected" \
    | add == $expected' "$temporary/fixture.spdx.json" >/dev/null; then
   printf 'the synthetic SBOM states frontend licenses wrongly:\n' >&2
   jq -S '[.packages[] | select(.SPDXID | startswith("SPDXRef-Frontend-"))]' \
+    "$temporary/fixture.spdx.json" >&2
+  exit 1
+fi
+
+# The SBOM lists the Rust packages the application's build compiles in, and no package that only
+# the tests reach.
+if ! jq -e '[.packages[] | select(.SPDXID | startswith("SPDXRef-Rust-")) | .name] | sort
+    == ["common", "ma2a-app", "shared"]' "$temporary/fixture.spdx.json" >/dev/null; then
+  printf 'the synthetic SBOM lists the wrong Rust packages:\n' >&2
+  jq -S '[.packages[] | select(.SPDXID | startswith("SPDXRef-Rust-")) | .name]' \
     "$temporary/fixture.spdx.json" >&2
   exit 1
 fi

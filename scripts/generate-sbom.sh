@@ -13,9 +13,18 @@ target=$4
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 
-# Resolved for the archive's target only, so another platform's dependencies never appear.
 cargo metadata --locked --format-version 1 --filter-platform "$target" \
   > "$temporary/cargo-metadata.json"
+# The packages whose code the archive carries, by name and version: `ma2a-app` and everything it
+# reaches through normal dependency edges on the archive's target, without passing through a
+# procedural macro, with features resolved for that build alone. A macro runs on the build host
+# and only its expansion is compiled in, so it, and whatever only it depends on, is not listed; a
+# library a macro shares with the program is still reached on its own path. Build and dev
+# dependencies, the features only they turn on, and workspace tools such as xtask are not shipped.
+cargo tree --locked --color never -p ma2a-app --target "$target" -e normal,no-proc-macro \
+  --prefix none --format '{p}' \
+  | jq -Rn '[inputs | split(" ") | {key: (.[0] + " " + (.[1] | ltrimstr("v"))), value: true}]
+    | from_entries' > "$temporary/shipped.json"
 digest=$(awk 'NF >= 2 {print $1; exit}' "${archive}.sha256" | tr -d '\r')
 [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
   printf 'invalid SHA-256 digest in %s.sha256\n' "$archive" >&2
@@ -37,33 +46,11 @@ jq -n -L "$(dirname "$0")" \
   --arg digest "$digest" \
   --arg created "$created" \
   --slurpfile cargo "$temporary/cargo-metadata.json" \
+  --slurpfile shipped "$temporary/shipped.json" \
   --slurpfile licenses "$report" '
   include "spdx";
-  # The packages whose code the archive carries: `ma2a-app` and everything it reaches through
-  # normal dependency edges, without passing through a procedural macro. A macro runs on the
-  # build host and only its expansion is compiled in, so it, and whatever only it depends on,
-  # is not listed; a library a macro shares with the program is still reached on its own path.
-  # Build and dev dependencies, and workspace tools such as xtask, are not shipped either.
-  def shipped:
-    ($cargo[0].resolve.nodes | map({key: .id, value: .}) | from_entries) as $nodes
-    | ([$cargo[0].packages[]
-        | select(any(.targets[]; any(.kind[]; . == "proc-macro")))
-        | {key: .id, value: true}] | from_entries) as $macros
-    | {seen: {}, queue: [$cargo[0].packages[] | select(.name == "ma2a-app") | .id]}
-    | until(.queue | length == 0;
-        .queue[0] as $id
-        | .queue |= .[1:]
-        | if .seen[$id] then .
-          else
-            .seen[$id] = true
-            | .queue += [$nodes[$id].deps[]
-                | select(any(.dep_kinds[]; .kind == null) and ($macros[.pkg] | not))
-                | .pkg]
-          end)
-    | .seen;
   def rust_packages:
-    shipped as $shipped
-    | [$cargo[0].packages[] | select($shipped[.id])]
+    [$cargo[0].packages[] | select($shipped[0][.name + " " + .version])]
     | to_entries
     | map({
         SPDXID: ("SPDXRef-Rust-" + (.key | tostring)),
