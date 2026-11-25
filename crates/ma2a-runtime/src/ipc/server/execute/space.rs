@@ -121,6 +121,8 @@ fn departure_api_error(code: SpaceDepartureErrorCode) -> ApiError {
         )
     } else if code == SpaceDepartureErrorCode::IN_FLIGHT {
         ApiError::new(ProtocolError::CONFLICT).without_effects()
+    } else if code == SpaceDepartureErrorCode::BUSY {
+        ApiError::new(ProtocolError::UNAVAILABLE).without_effects()
     } else if code == SpaceDepartureErrorCode::REJECTED {
         ApiError::new(ProtocolError::CONFLICT)
     } else {

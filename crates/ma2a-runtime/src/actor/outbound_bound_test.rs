@@ -1,0 +1,161 @@
+//! Outbound Echo calls and departures waiting on another Endpoint are bounded where the actor
+//! admits them, as redemptions are.
+//!
+//! The exchanges run on real Iroh I/O, so this uses real time, as `departure_test` does.
+use std::time::Duration;
+
+use ma2a_core::{EchoError, EndpointId, InviteEntropy, RequestId, SpaceId};
+use ma2a_store::StoreConfig;
+use tokio::time::timeout;
+
+use super::relay_lifecycle_test::TempState;
+use crate::{EnrollmentAttempt, EnrollmentCreation, Runtime, SpaceDepartureErrorCode};
+
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+/// Far below the ten-second Echo and thirty-second departure bounds, far above one actor turn.
+const PROMPT: Duration = Duration::from_secs(5);
+
+struct OfflineOwner {
+    _dirs: [TempState; 2],
+    member: Runtime,
+    owner: EndpointId,
+    spaces: Vec<SpaceId>,
+}
+
+/// A member of `count` Spaces whose owner has stopped answering.
+async fn member_of_offline_owner(label: &str, count: u8) -> TestResult<OfflineOwner> {
+    let dirs = [
+        TempState::new(&format!("{label}-owner"))?,
+        TempState::new(&format!("{label}-member"))?,
+    ];
+    let owner = Runtime::start(StoreConfig::new(&dirs[0].0)).await?;
+    let member = Runtime::start(StoreConfig::new(&dirs[1].0)).await?;
+    let mut spaces = Vec::new();
+    let mut joining = tokio::task::JoinSet::new();
+    for marker in 0..count {
+        let space = owner
+            .handle()
+            .create_owned_space(format!("{label}-{marker}"))
+            .await?;
+        let ticket = owner
+            .handle()
+            .create_enrollment_invite(EnrollmentCreation::new(
+                space,
+                300_000,
+                InviteEntropy::random()?,
+            )?)
+            .await?;
+        let attempt = EnrollmentAttempt::new(
+            ticket,
+            RequestId::try_from([marker; 16].as_slice())?,
+            "member".to_owned(),
+        );
+        let handle = member.handle();
+        joining.spawn(async move { handle.redeem_enrollment(attempt).await });
+        spaces.push(space);
+        // Stay well inside the bound on pending redemptions.
+        if joining.len() == 16 {
+            while let Some(joined) = joining.join_next().await {
+                joined??;
+            }
+        }
+    }
+    while let Some(joined) = joining.join_next().await {
+        joined??;
+    }
+    let owner_id = owner.handle().status().await?.endpoint_id;
+    owner.shutdown().await?;
+    Ok(OfflineOwner {
+        _dirs: dirs,
+        member,
+        owner: owner_id,
+        spaces,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_echo_past_the_pending_bound_is_refused_at_once() -> TestResult {
+    // Given
+    let fixture = member_of_offline_owner("echo-bound", 1).await?;
+
+    // When: as many Echo calls as are allowed wait on the owner, and one more is made.
+    let mut pending = Vec::new();
+    for marker in 0..u8::try_from(super::echo::MAX_PENDING_OUTBOUND_ECHOES)? {
+        let handle = fixture.member.handle();
+        let owner = fixture.owner;
+        pending.push(tokio::spawn(async move {
+            handle
+                .echo(RequestId::try_from([marker; 16].as_slice())?, owner, b"hi")
+                .await
+                .map_err(Box::<dyn std::error::Error + Send + Sync>::from)
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let refused = timeout(
+        PROMPT,
+        fixture.member.handle().echo(
+            RequestId::try_from([0xff; 16].as_slice())?,
+            fixture.owner,
+            b"hi",
+        ),
+    )
+    .await?;
+
+    // Then: the extra one is refused at once, and the Runtime keeps answering.
+    assert!(matches!(refused, Err(EchoError::ConcurrencyExceeded)));
+    assert!(pending.iter().all(|echoing| !echoing.is_finished()));
+    timeout(PROMPT, fixture.member.handle().status()).await??;
+    timeout(PROMPT, fixture.member.shutdown()).await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_departure_past_the_pending_bound_is_refused_at_once() -> TestResult {
+    // Given
+    let bound = crate::departure_actor::MAX_PENDING_DEPARTURES;
+    let fixture = member_of_offline_owner("departure-bound", u8::try_from(bound + 1)?).await?;
+    let (waiting, extra) = fixture.spaces.split_at(bound);
+
+    // When: as many departures as are allowed wait on the owner, and one more is made.
+    let mut pending = Vec::new();
+    for (marker, space) in (0_u8..).zip(waiting.iter().copied()) {
+        let handle = fixture.member.handle();
+        let request_id = RequestId::try_from([marker; 16].as_slice())?;
+        pending.push(tokio::spawn(async move {
+            handle.leave_space(space, request_id).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let space = *extra.first().ok_or("one Space past the bound")?;
+    let refused = timeout(
+        PROMPT,
+        fixture
+            .member
+            .handle()
+            .leave_space(space, RequestId::try_from([0xff; 16].as_slice())?),
+    )
+    .await?
+    .err()
+    .ok_or("a departure past the bound must be refused")?;
+
+    let again = timeout(
+        PROMPT,
+        fixture
+            .member
+            .handle()
+            .leave_space(space, RequestId::try_from([0xfe; 16].as_slice())?),
+    )
+    .await?
+    .err()
+    .ok_or("a departure past the bound must be refused")?;
+
+    // Then: the extra one is refused at once as retryable, without claiming its Space, and the
+    // Runtime keeps answering.
+    assert_eq!(refused.code(), SpaceDepartureErrorCode::BUSY, "{refused}");
+    assert_eq!(again.code(), SpaceDepartureErrorCode::BUSY, "{again}");
+    assert!(pending.iter().all(|leaving| !leaving.is_finished()));
+    timeout(PROMPT, fixture.member.handle().status()).await??;
+    timeout(PROMPT, fixture.member.shutdown()).await??;
+    Ok(())
+}

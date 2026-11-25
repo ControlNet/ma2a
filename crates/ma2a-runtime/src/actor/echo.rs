@@ -7,6 +7,11 @@ use tokio::sync::oneshot;
 use super::Actor;
 use crate::{EchoAuditRecord, services::echo::EchoDispatchInput};
 
+/// Most outbound Echo calls that wait on their targets at once: as many as the local API serves
+/// requests at once, so normally only callers that bypass it, such as an embedding application,
+/// meet it.
+pub(crate) const MAX_PENDING_OUTBOUND_ECHOES: usize = 32;
+
 impl Actor {
     pub(super) async fn handle_echo_call(&mut self, call: EchoCall) {
         let peer = call.remote_endpoint_id();
@@ -35,6 +40,11 @@ impl Actor {
         request: OutboundEchoRequest,
         reply: oneshot::Sender<Result<ma2a_store::Committed<EchoResponse<'static>>, EchoError>>,
     ) {
+        if self.outbound_echoes >= MAX_PENDING_OUTBOUND_ECHOES {
+            let _unsent = reply.send(Err(EchoError::ConcurrencyExceeded));
+            return;
+        }
+        self.outbound_echoes += 1;
         let OutboundEchoRequest {
             request_id,
             target,
@@ -62,7 +72,10 @@ impl Actor {
                 audit,
                 result,
                 reply,
-            } => (audit, EchoTaskResponse::Outbound(result, reply)),
+            } => {
+                self.outbound_echoes -= 1;
+                (audit, EchoTaskResponse::Outbound(result, reply))
+            }
         };
         let revision = match audit {
             Some(record) => match self.store.advance_revision().await {

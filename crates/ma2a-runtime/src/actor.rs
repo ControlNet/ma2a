@@ -33,6 +33,8 @@ mod local_control;
 pub(crate) mod maintenance;
 mod membership;
 #[cfg(test)]
+mod outbound_bound_test;
+#[cfg(test)]
 mod owner_invariant_test;
 #[cfg(test)]
 mod partial_relay_publication_test;
@@ -71,6 +73,8 @@ pub(crate) struct Actor {
     pub(crate) control_tasks: JoinSet<crate::control_actor::inbound::InboundControlCompletion>,
     echo_calls: mpsc::Receiver<EchoCall>,
     echo_tasks: JoinSet<echo::EchoTaskCompletion>,
+    /// Outbound Echo calls among `echo_tasks`.
+    outbound_echoes: usize,
     pub(crate) departure_tasks: JoinSet<crate::departure_actor::DepartureCompletion>,
     /// Spaces whose departure exchange is still in flight.
     pub(crate) departing: BTreeSet<ma2a_core::SpaceId>,

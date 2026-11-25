@@ -17,6 +17,11 @@ use crate::{
     state::RuntimeEvent,
 };
 
+/// Most departures that wait on their Space authorities at once: as many as the local API serves
+/// requests at once, so normally only callers that bypass it, such as an embedding application,
+/// meet it.
+pub(crate) const MAX_PENDING_DEPARTURES: usize = 32;
+
 type DepartureReply = oneshot::Sender<Result<u64, SpaceDepartureError>>;
 
 /// One finished exchange with a Space authority, handed back to the actor loop.
@@ -80,11 +85,14 @@ impl Actor {
     /// Returns the authority to ask, and claims the Space for this one departure.
     ///
     /// A second departure of a Space whose exchange is still in flight is refused
-    /// rather than sent alongside it.
+    /// rather than sent alongside it, and so is one past the pending bound.
     async fn departure_target(
         &mut self,
         space_id: SpaceId,
     ) -> Result<EndpointAddr, SpaceDepartureError> {
+        if self.departure_tasks.len() >= MAX_PENDING_DEPARTURES {
+            return Err(SpaceDepartureError::busy());
+        }
         let chain = self.member_chain(space_id).await?;
         let authority_owner = chain.genesis().genesis().initial_member().endpoint_id();
         if authority_owner == self.state.endpoint_id {
