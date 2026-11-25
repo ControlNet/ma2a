@@ -1,0 +1,314 @@
+//! Caller-side stream drivers against scripted targets that break the frame contract: an
+//! accept with a payload, an `end` or `data` on a channel the target never sends on, and an
+//! outcome counting other bytes than the run delivered.
+//!
+//! The target here is a test script writing exact Services v1 frames, not a host.
+
+#[path = "support/host.rs"]
+mod support;
+
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
+
+use ma2a_core::service::{
+    Channel, EMPTY_ACCEPT, EndReason, FilesRequest, FilesResult, FrameKind, ProcessResult,
+    ProxyResult, RemotePath, ServiceError, Termination, encode_call_accept, encode_call_outcome,
+};
+use ma2a_services::{
+    FrameReader, FrameWriter,
+    client::{
+        ClientError, files,
+        process::{self, ProcessControl, ProcessIo},
+        proxy, service,
+    },
+};
+use support::TestResult;
+use tokio::io::AsyncWrite;
+
+/// One frame a scripted target sends.
+#[derive(Clone, Debug)]
+enum Sent {
+    Frame(FrameKind, Vec<u8>),
+    Data(Channel, &'static [u8]),
+    End(Channel),
+}
+
+/// The bytes a target sending `sent` writes.
+async fn replies(sent: &[Sent]) -> TestResult<Vec<u8>> {
+    let mut writer = FrameWriter::new(Vec::new());
+    for frame in sent {
+        match frame {
+            Sent::Frame(kind, payload) => writer.frame(*kind, payload).await?,
+            Sent::Data(channel, bytes) => writer.data(*channel, bytes).await?,
+            Sent::End(channel) => writer.end(*channel).await?,
+        }
+    }
+    writer.flush().await?;
+    Ok(writer.into_inner())
+}
+
+fn accept(payload: &[u8]) -> Sent {
+    Sent::Frame(FrameKind::Accept, payload.to_vec())
+}
+
+/// A payload other than the empty accept the families without a header send.
+const HEADER: [u8; 2] = [0x81, 0x00];
+
+const fn malformed<T>(result: &Result<T, ClientError>) -> bool {
+    matches!(result, Err(ClientError::Stream(ServiceError::InvalidInput)))
+}
+
+const fn miscounted<T>(result: &Result<T, ClientError>) -> bool {
+    matches!(
+        result,
+        Err(ClientError::Stream(ServiceError::IntegrityMismatch))
+    )
+}
+
+/// A local sink that refuses every write, as a closed terminal or pipe does.
+struct Broken;
+
+impl AsyncWrite for Broken {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        _bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+async fn within<T>(future: impl std::future::Future<Output = T>) -> TestResult<T> {
+    Ok(tokio::time::timeout(Duration::from_secs(30), future).await?)
+}
+
+/// The outcome of an Exec run that sent `bytes` of output and `errors` of stderr.
+fn exited(bytes: u64, errors: u64) -> TestResult<Sent> {
+    let result = ProcessResult::new(Termination::Exited(0), EndReason::Completed, 1)
+        .with_bytes(bytes, errors);
+    Ok(Sent::Frame(
+        FrameKind::Outcome,
+        ProcessResult::encode_outcome(&Ok(result))?,
+    ))
+}
+
+/// Runs an Exec caller with no input against a target sending `sent`, its output going to
+/// `output`.
+async fn exec<O: AsyncWrite + Unpin>(
+    sent: &[Sent],
+    output: O,
+) -> TestResult<Result<process::Streamed, ClientError>> {
+    let replies = replies(sent).await?;
+    let mut reader = FrameReader::new(replies.as_slice());
+    let mut writer = FrameWriter::new(tokio::io::sink());
+    let local = ProcessIo {
+        input: None::<&[u8]>,
+        output,
+        error: Some(Vec::new()),
+    };
+    let control = ProcessControl {
+        resizes: None,
+        cancel: std::future::pending(),
+    };
+    within(process::run_streamed(
+        (&mut reader, &mut writer),
+        local,
+        control,
+    ))
+    .await
+}
+
+#[tokio::test]
+async fn an_exec_run_must_follow_the_frame_contract_and_count_what_it_sent() -> TestResult {
+    let ran = exec(
+        &[
+            accept(&EMPTY_ACCEPT),
+            Sent::Data(Channel::Output, b"abc"),
+            Sent::Data(Channel::Error, b"e"),
+            Sent::End(Channel::Output),
+            Sent::End(Channel::Error),
+            exited(3, 1)?,
+        ],
+        Vec::new(),
+    )
+    .await?;
+    assert!(ran.is_ok(), "{ran:?}");
+
+    let ran = exec(&[accept(&HEADER), exited(0, 0)?], Vec::new()).await?;
+    assert!(malformed(&ran), "an accept with a header: {ran:?}");
+    let ran = exec(
+        &[
+            accept(&EMPTY_ACCEPT),
+            Sent::End(Channel::Input),
+            exited(0, 0)?,
+        ],
+        Vec::new(),
+    )
+    .await?;
+    assert!(malformed(&ran), "an end of the caller's input: {ran:?}");
+    for (bytes, errors) in [(2, 1), (3, 0), (4, 1)] {
+        let sent = [
+            accept(&EMPTY_ACCEPT),
+            Sent::Data(Channel::Output, b"abc"),
+            Sent::Data(Channel::Error, b"e"),
+            exited(bytes, errors)?,
+        ];
+        let ran = exec(&sent, Vec::new()).await?;
+        assert!(miscounted(&ran), "{bytes} {errors}: {ran:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_exec_run_whose_output_was_lost_still_checks_every_frame() -> TestResult {
+    let sent = [
+        accept(&EMPTY_ACCEPT),
+        Sent::Data(Channel::Output, b"abc"),
+        Sent::Data(Channel::Input, b"x"),
+        exited(3, 0)?,
+    ];
+    let ran = exec(&sent, Broken).await?;
+    assert!(malformed(&ran), "{ran:?}");
+    Ok(())
+}
+
+/// The outcome of a relay that took `to` bytes to its destination and `from` back.
+fn relayed(to: u64, from: u64) -> TestResult<Sent> {
+    let result = ProxyResult::new(EndReason::Completed, (to, from), 1);
+    Ok(Sent::Frame(
+        FrameKind::Outcome,
+        ProxyResult::encode_outcome(&Ok(result))?,
+    ))
+}
+
+/// Runs a Proxy caller sending `local` against a target sending `sent`.
+async fn proxied(
+    sent: &[Sent],
+    local: &'static [u8],
+) -> TestResult<Result<ProxyResult, ClientError>> {
+    let replies = replies(sent).await?;
+    let mut reader = FrameReader::new(replies.as_slice());
+    let mut writer = FrameWriter::new(tokio::io::sink());
+    within(proxy::run((&mut reader, &mut writer), (local, Vec::new()))).await
+}
+
+#[tokio::test]
+async fn a_proxy_must_follow_the_frame_contract_and_count_what_it_relayed() -> TestResult {
+    let from = Sent::Data(Channel::Input, b"abc");
+    let ended = Sent::End(Channel::Input);
+    let relay = [
+        accept(&EMPTY_ACCEPT),
+        from.clone(),
+        ended.clone(),
+        relayed(0, 3)?,
+    ];
+    let ran = proxied(&relay, b"").await?;
+    assert!(ran.is_ok(), "{ran:?}");
+
+    let ran = proxied(&[accept(&HEADER), relayed(0, 0)?], b"").await?;
+    assert!(malformed(&ran), "an accept with a header: {ran:?}");
+    for (case, sent) in [
+        ("data after end", [ended.clone(), from.clone()]),
+        ("end twice", [ended.clone(), ended.clone()]),
+    ] {
+        let sent = [accept(&EMPTY_ACCEPT), sent[0].clone(), sent[1].clone()];
+        let ran = proxied(&[&sent[..], &[relayed(0, 3)?]].concat(), b"").await?;
+        assert!(malformed(&ran), "{case}: {ran:?}");
+    }
+    for (to, from_target) in [(0, 2), (0, 4), (1, 3)] {
+        let sent = [
+            accept(&EMPTY_ACCEPT),
+            from.clone(),
+            ended.clone(),
+            relayed(to, from_target)?,
+        ];
+        let ran = proxied(&sent, b"").await?;
+        assert!(miscounted(&ran), "{to} {from_target}: {ran:?}");
+    }
+    Ok(())
+}
+
+/// Runs a service call with no input against a target sending `sent`, its output going to
+/// `output`.
+async fn called<O: AsyncWrite + Unpin>(
+    sent: &[Sent],
+    output: O,
+) -> TestResult<Result<service::Called, ClientError>> {
+    let replies = replies(sent).await?;
+    let mut reader = FrameReader::new(replies.as_slice());
+    let mut writer = FrameWriter::new(tokio::io::sink());
+    let local = ProcessIo {
+        input: None::<&[u8]>,
+        output,
+        error: Some(Vec::new()),
+    };
+    within(service::call(
+        (&mut reader, &mut writer),
+        local,
+        std::future::pending(),
+    ))
+    .await
+}
+
+#[tokio::test]
+async fn a_service_call_takes_output_only_on_the_services_channels() -> TestResult {
+    let accepted = accept(&encode_call_accept(b"h")?);
+    let outcome = Sent::Frame(FrameKind::Outcome, encode_call_outcome(Ok(b"r"))?);
+    let sent = [accepted.clone(), Sent::End(Channel::Input), outcome.clone()];
+    let ran = called(&sent, Vec::new()).await?;
+    assert!(malformed(&ran), "an end of the caller's input: {ran:?}");
+    let sent = [
+        accepted,
+        Sent::Data(Channel::Output, b"abc"),
+        Sent::Data(Channel::Input, b"x"),
+        outcome,
+    ];
+    let ran = called(&sent, Broken).await?;
+    assert!(malformed(&ran), "input after a lost output: {ran:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_files_answer_is_admitted_with_an_empty_accept() -> TestResult {
+    let mkdir = FilesRequest::Mkdir(RemotePath::parse("docs:/b")?, false);
+    let read = FilesRequest::Read(RemotePath::parse("docs:/a")?, 0, 16);
+    let run = async |request: &FilesRequest, sent: &[Sent]| -> TestResult<_> {
+        let replies = replies(sent).await?;
+        let mut reader = FrameReader::new(replies.as_slice());
+        let mut writer = FrameWriter::new(tokio::io::sink());
+        within(files::run((&mut reader, &mut writer), request, &[])).await
+    };
+    // A content-free operation answers with its outcome alone.
+    let done = Sent::Frame(
+        FrameKind::Outcome,
+        FilesResult::encode_outcome(&Ok(FilesResult::Done))?,
+    );
+    let made = run(&mkdir, std::slice::from_ref(&done)).await?;
+    assert!(made.is_ok(), "{made:?}");
+    // A read is accepted, with no header, before its content.
+    let empty = Sent::Frame(
+        FrameKind::Outcome,
+        FilesResult::encode_outcome(&Ok(FilesResult::Read(0, true)))?,
+    );
+    let got = run(&read, &[accept(&EMPTY_ACCEPT), empty.clone()]).await?;
+    assert!(got.is_ok(), "{got:?}");
+    let got = run(&read, &[accept(&HEADER), empty.clone()]).await?;
+    assert!(malformed(&got), "an accept with a header: {got:?}");
+    let got = run(&read, &[empty]).await?;
+    assert!(malformed(&got), "a read without accept: {got:?}");
+    Ok(())
+}

@@ -6,7 +6,7 @@ use ma2a_core::service::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::{ClientError, First, decoded, failed, first, next, unexpected};
+use super::{ClientError, First, decoded, empty_accept, failed, first, next, unexpected};
 use crate::{FrameReader, FrameWriter};
 
 /// Runs one Files request whose `open` was written, returning its result and any content read.
@@ -25,8 +25,16 @@ where
     W: AsyncWrite + Unpin,
 {
     let frame = match first(reader).await? {
+        // A read is always accepted before its content, and reserves no RequestId whose
+        // outcome replay could answer alone.
+        First::Finished(_) if matches!(request, FilesRequest::Read(..)) => {
+            return Err(ClientError::Stream(ServiceError::InvalidInput));
+        }
         First::Finished(frame) => return finished(&frame, request, Vec::new()),
-        First::Accepted(_) => next_after_accept(reader, writer, (request, content)).await?,
+        First::Accepted(frame) => {
+            empty_accept(&frame)?;
+            next_after_accept(reader, writer, (request, content)).await?
+        }
     };
     let mut read = Vec::new();
     let mut frame = frame;

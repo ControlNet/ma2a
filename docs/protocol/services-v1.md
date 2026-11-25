@@ -310,6 +310,14 @@ A caller keeps its write side open until it receives the terminal frame. Closing
 cancels the operation, and a stream that ends without a terminal frame is reported as
 `outcome_unknown`.
 
+A caller also refuses, as `invalid_input`, an answer that breaks the family contract, even after
+its own local output failed: an `accept` with a header for Files, Exec, Shell, and Proxy, which
+send an empty one; a Files `read` answered with an `outcome` alone, since a read is always
+accepted and never answered from replay; `data` or `end` on a channel the target does not send on; and for Proxy,
+the destination's bytes after its `end`, or a second `end`. An Exec, Shell, or Proxy outcome must
+count exactly the bytes received from the target on each channel, and Proxy's `bytes_to_target`
+can be no more than the caller sent; any other count is `integrity_mismatch`.
+
 The `ma2a` CLI drives every family this way:
 
 | Command | Family | Notes |

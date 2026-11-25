@@ -6,7 +6,7 @@
 
 use std::{fmt, io, pin::Pin};
 
-use ma2a_core::service::{FrameKind, ServiceError, outcome_status};
+use ma2a_core::service::{EMPTY_ACCEPT, FrameKind, ServiceError, outcome_status};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{Frame, FrameReader, FrameWriter};
@@ -147,6 +147,15 @@ pub(crate) async fn next<R: AsyncRead + Unpin>(
         .await
         .map_err(ClientError::Stream)?
         .ok_or(ClientError::Stream(ServiceError::OutcomeUnknown))
+}
+
+/// Checks that an `accept` carries the empty header of a family that sends none.
+pub(crate) fn empty_accept(frame: &Frame) -> Result<(), ClientError> {
+    if frame.payload() == EMPTY_ACCEPT {
+        Ok(())
+    } else {
+        Err(ClientError::Stream(ServiceError::InvalidInput))
+    }
 }
 
 /// Returns an error for a failed `outcome`, and nothing for a successful one.

@@ -10,7 +10,7 @@ use tokio::{
     sync::{Notify, mpsc},
 };
 
-use super::{ClientError, First, decoded, first_or_cancel, next, unexpected};
+use super::{ClientError, First, decoded, empty_accept, first_or_cancel, next, unexpected};
 use crate::{FrameReader, FrameWriter};
 
 /// Local ends of one remote process.
@@ -100,12 +100,15 @@ where
     tokio::pin!(cancel);
     let (answer, cancelled) = first_or_cancel((reader, writer), cancel.as_mut()).await?;
     // A running process is always accepted first; an outcome without that is a replay.
-    if let First::Finished(frame) = answer {
-        let result = decoded(ProcessResult::decode_outcome(frame.payload()))?;
-        return Ok(Streamed {
-            result,
-            replayed: true,
-        });
+    match answer {
+        First::Finished(frame) => {
+            let result = decoded(ProcessResult::decode_outcome(frame.payload()))?;
+            return Ok(Streamed {
+                result,
+                replayed: true,
+            });
+        }
+        First::Accepted(frame) => empty_accept(&frame)?,
     }
     let ProcessIo {
         input,
@@ -185,6 +188,10 @@ pub(super) async fn inbound<W, I, C>(
 }
 
 /// Target → caller until the outcome; lost local output asks the inbound side to cancel.
+///
+/// The target sends only on the output channel, and on the error channel when there is one,
+/// and its outcome counts exactly the bytes it sent on each: an answer with other counts is
+/// not the run that streamed.
 async fn outbound<R, O, E>(
     reader: &mut FrameReader<R>,
     (mut output, mut error): (O, Option<E>),
@@ -195,20 +202,41 @@ where
     O: AsyncWrite + Unpin,
     E: AsyncWrite + Unpin,
 {
+    let invalid = || ClientError::Stream(ServiceError::InvalidInput);
+    let sends_on = |channel, error: bool| {
+        matches!(
+            (channel, error),
+            (Channel::Output, _) | (Channel::Error, true)
+        )
+    };
     let mut delivering = true;
+    // Bytes received on the output and the error channel.
+    let mut received = (0_u64, 0_u64);
     loop {
         let frame = next(reader).await?;
         match frame.kind() {
-            FrameKind::Outcome => return decoded(ProcessResult::decode_outcome(frame.payload())),
+            FrameKind::Outcome => {
+                let result = decoded(ProcessResult::decode_outcome(frame.payload()))?;
+                if (result.output_bytes, result.error_bytes) != received {
+                    return Err(ClientError::Stream(ServiceError::IntegrityMismatch));
+                }
+                return Ok(result);
+            }
             FrameKind::Data => {
                 let (channel, bytes) = frame.data().map_err(ClientError::Stream)?;
+                if !sends_on(channel, error.is_some()) {
+                    return Err(invalid());
+                }
+                let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                let count = match channel {
+                    Channel::Output => &mut received.0,
+                    Channel::Error | Channel::Input => &mut received.1,
+                };
+                *count = count.saturating_add(length);
                 let written = match (channel, error.as_mut()) {
                     _ if !delivering => Ok(()),
-                    (Channel::Output, _) => write_flushed(&mut output, bytes).await,
                     (Channel::Error, Some(error)) => write_flushed(error, bytes).await,
-                    (Channel::Error, None) | (Channel::Input, _) => {
-                        return Err(ClientError::Stream(ServiceError::InvalidInput));
-                    }
+                    _ => write_flushed(&mut output, bytes).await,
                 };
                 if written.is_err() {
                     // Nothing can observe the process any more, so it is cancelled.
@@ -216,7 +244,11 @@ where
                     lost.notify_one();
                 }
             }
-            FrameKind::End => {}
+            FrameKind::End => {
+                if !sends_on(frame.end().map_err(ClientError::Stream)?, error.is_some()) {
+                    return Err(invalid());
+                }
+            }
             _ => return Err(unexpected(&frame)),
         }
     }

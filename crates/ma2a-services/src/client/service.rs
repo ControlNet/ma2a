@@ -131,19 +131,23 @@ where
             FrameKind::Data => {
                 let (channel, bytes) = frame.data().map_err(ClientError::Stream)?;
                 let written = match (channel, error.as_mut()) {
+                    (Channel::Input, _) => {
+                        return Err(ClientError::Stream(ServiceError::InvalidInput));
+                    }
                     _ if !delivering => Ok(()),
                     (Channel::Output, _) => write_flushed(&mut output, bytes).await,
                     (Channel::Error, Some(error)) => write_flushed(error, bytes).await,
                     (Channel::Error, None) => Ok(()),
-                    (Channel::Input, _) => {
-                        return Err(ClientError::Stream(ServiceError::InvalidInput));
-                    }
                 };
                 if written.is_err() {
                     // Nothing can observe the call any more, so it is cancelled.
                     delivering = false;
                     lost.notify_one();
                 }
+            }
+            // The service ends only its own channels.
+            FrameKind::End if frame.end().map_err(ClientError::Stream)? == Channel::Input => {
+                return Err(ClientError::Stream(ServiceError::InvalidInput));
             }
             // Control messages are the service's own; this generic caller has no use for them.
             FrameKind::End | FrameKind::Control => {}
