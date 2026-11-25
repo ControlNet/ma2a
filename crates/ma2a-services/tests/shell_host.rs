@@ -245,6 +245,7 @@ async fn background_jobs_never_outlive_their_session() -> TestResult {
 }
 
 /// Open descriptors of this process on the PTY multiplexer, one per terminal end held.
+#[cfg(target_os = "linux")]
 fn terminal_masters() -> TestResult<usize> {
     let mut count = 0;
     for entry in std::fs::read_dir("/proc/self/fd")? {
