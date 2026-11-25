@@ -225,7 +225,7 @@ const fn not_run() -> ApiError {
 /// Maps a failure of a change signed with a Space's authority. What the Store refused before
 /// writing anything has no effect: a Space or member it does not hold, a Space this Runtime
 /// does not own, or a bound the change would pass.
-fn authority_error(error: &crate::RuntimeError) -> ApiError {
+pub(super) fn authority_error(error: &crate::RuntimeError) -> ApiError {
     if error.is_space_not_found() {
         without_effects(ProtocolError::NOT_FOUND)
     } else if error.is_not_space_owner() {

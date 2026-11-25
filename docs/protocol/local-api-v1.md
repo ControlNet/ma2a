@@ -31,9 +31,10 @@ The pre-authorization `handshake` result exposes only Runtime version, Endpoint 
 `member_count`, because after departure this Endpoint holds no authoritative membership for that
 Space and reporting the pre-departure count would present stale state as current. It is a membership operation, not a local deletion: the leaving member sends an authenticated request over the enrollment ALPN to the Space authority, which signs the next manifest generation removing that member and returns the advanced signed chain. The leaving Runtime persists only a chain whose signed membership excludes it and whose revocations include it. A Space's own authority-holding Endpoint cannot leave and receives `unauthorized` with remediation. An unreachable authority returns `unavailable`; nothing local is removed. A second `space_leave` for a Space whose departure is still waiting on the authority returns `conflict`. That refusal has no effect, so its request ID is released. While a departure or a `space_redeem` waits on the other Endpoint, it holds its own request ID but not the local mutation lock, so other mutations are still answered. At most 32 redemptions wait on their Space owners at once, and at most 32 departures on their Space authorities; another of either is answered `unavailable` with no effect, so it can be retried with the same request ID once one ends. A Space owner that is serving as many enrollment connections as it allows refuses a redemption the same way ([enrollment-v1](enrollment-v1.md)).
 
-`space_invite` and `space_revoke` are signed with the Space's authority. A Space this Runtime does
-not hold, or a member it does not list, is `not_found`; a Space it holds but does not own is
-`unauthorized`; a change that would pass a Space bound is `conflict`. These refusals have no effect,
+`space_invite`, `space_revoke`, and `space_grant` are signed with the Space's authority. A Space
+this Runtime does not hold, or a member it does not list, is `not_found`; a Space it holds but does
+not own is `unauthorized`; a change that would pass a Space bound, such as one more manifest in a
+full history, is `conflict`. These refusals have no effect,
 so their request ID is released.
 
 `ui_init` atomically establishes or replaces the Web password and revokes existing sessions. The public CLI uses this operation for both first setup and recovery. Lower-level `ui_password_set` and `ui_password_reset` operations retain their explicit preconditions for local API callers: setting a password that is already set, or resetting one that is not, is `conflict` with no effect.

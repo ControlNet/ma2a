@@ -18,6 +18,8 @@ mod agent_revisions;
 mod committed_response;
 #[path = "server_tests/failed_replay.rs"]
 mod failed_replay;
+#[path = "server_tests/grant_refusals.rs"]
+mod grant_refusals;
 #[path = "server_tests/handshake.rs"]
 mod handshake;
 #[path = "server_tests/hosted.rs"]

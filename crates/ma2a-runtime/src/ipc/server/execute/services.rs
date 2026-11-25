@@ -27,7 +27,7 @@ pub(super) async fn grant(
         .handle
         .grant_owned_space_member(member, services)
         .await
-        .map_err(|error| runtime_error(&error))?
+        .map_err(|error| super::space::authority_error(&error))?
         .map_err(|refusal| match refusal {
             GrantRefusal::NotFound => ApiError::new(ProtocolError::NOT_FOUND).without_effects(),
             GrantRefusal::NotOwner => ApiError::with_remediation(
