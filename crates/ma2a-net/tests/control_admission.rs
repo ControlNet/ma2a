@@ -210,10 +210,12 @@ async fn connections_still_to_open_a_stream_hold_the_peer_slots() -> TestResult 
     wait_for_active(&metrics, u64::try_from(CONTROL_PER_PEER_LIMIT)?).await?;
 
     // When: it opens one more and starts a request.
-    let excess = open_control(&client, &server).await?;
+    let excess = client.connect(server.endpoint_addr(), CONTROL_ALPN).await?;
+    // The server may close it before the stream opens; either way the request never runs.
+    let _stream = excess.open_bi().await;
 
     // Then: the excess connection is closed at once and never reaches the Runtime.
-    tokio::time::timeout(Duration::from_secs(5), excess.connection.closed()).await?;
+    tokio::time::timeout(Duration::from_secs(5), excess.closed()).await?;
     assert!(calls.try_recv().is_err());
     assert!(
         streamless
