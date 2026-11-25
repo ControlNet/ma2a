@@ -25,19 +25,6 @@ use super::{
 /// Most content bytes read from the log for one batch of `data` frames.
 const BATCH: usize = 262_144;
 
-/// Where a read from `from` starts in `window`, and whether older output was dropped.
-pub(super) fn resolve(from: LogFrom, window: LogWindow) -> Result<(u64, bool), ServiceError> {
-    match from {
-        LogFrom::Start => Ok((window.first_available, false)),
-        LogFrom::Now => Ok((window.end, false)),
-        LogFrom::Cursor(cursor) if cursor > window.end => Err(ServiceError::InvalidInput),
-        LogFrom::Cursor(cursor) => Ok((
-            cursor.max(window.first_available),
-            cursor < window.first_available,
-        )),
-    }
-}
-
 impl ProcessManager {
     /// Lists Processes in identifier order: a creator's own, or every one for the operator.
     pub(crate) async fn records(
@@ -140,9 +127,8 @@ impl ProcessManager {
             Ok(window) => window,
             Err(error) => return refuse(writer, error).await,
         };
-        let (start, truncated) = match resolve(from, window) {
-            Ok(resolved) => resolved,
-            Err(error) => return refuse(writer, error).await,
+        let Some((start, truncated)) = window.resolve(from) else {
+            return refuse(writer, ServiceError::InvalidInput).await;
         };
         let accept = ProcessAccept::Reading {
             state: record.state,
@@ -236,26 +222,5 @@ impl ProcessManager {
             cursor = read.next;
         }
         Ok((cursor, sent))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use ma2a_core::service::{LogFrom, LogWindow, ServiceError};
-
-    use super::resolve;
-
-    #[test]
-    fn positions_resolve_inside_the_retained_window() {
-        let window = LogWindow::new(100, 250);
-        assert_eq!(resolve(LogFrom::Start, window), Ok((100, false)));
-        assert_eq!(resolve(LogFrom::Now, window), Ok((250, false)));
-        assert_eq!(resolve(LogFrom::Cursor(120), window), Ok((120, false)));
-        assert_eq!(resolve(LogFrom::Cursor(250), window), Ok((250, false)));
-        assert_eq!(resolve(LogFrom::Cursor(3), window), Ok((100, true)));
-        assert_eq!(
-            resolve(LogFrom::Cursor(251), window),
-            Err(ServiceError::InvalidInput)
-        );
     }
 }

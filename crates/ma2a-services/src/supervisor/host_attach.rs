@@ -65,15 +65,9 @@ pub(super) async fn attach(
         None
     };
     let window = *shared.output.borrow();
-    let start = match from {
-        LogFrom::Start => window.first_available,
-        LogFrom::Now => window.end,
-        LogFrom::Cursor(cursor) if cursor > window.end => {
-            return writer.reject(ServiceError::InvalidInput).await;
-        }
-        LogFrom::Cursor(cursor) => cursor.max(window.first_available),
+    let Some((start, truncated)) = window.resolve(from) else {
+        return writer.reject(ServiceError::InvalidInput).await;
     };
-    let truncated = matches!(from, LogFrom::Cursor(cursor) if cursor < window.first_available);
     let accept = encode_reading((start, window.first_available, window.end), truncated);
     writer.frame(FrameKind::Accept, &accept).await?;
     let inbound = async {

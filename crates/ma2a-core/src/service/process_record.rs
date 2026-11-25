@@ -3,7 +3,7 @@
 use crate::{ProtocolError, RequestId, space_codec::Decoder};
 
 use super::{
-    ProcessId, ProcessReason, ProcessStart, ProcessState, Termination,
+    LogFrom, ProcessId, ProcessReason, ProcessStart, ProcessState, Termination,
     cbor::{self, Writer},
     process_start::MAX_PROCESS_NAME_LEN,
 };
@@ -133,6 +133,20 @@ impl LogWindow {
             end,
         }
     }
+
+    /// Where a read from `from` starts in this window, and whether output before that was
+    /// already dropped; `None` for a cursor past `end`, which no read may name.
+    pub const fn resolve(self, from: LogFrom) -> Option<(u64, bool)> {
+        match from {
+            LogFrom::Start => Some((self.first_available, false)),
+            LogFrom::Now => Some((self.end, false)),
+            LogFrom::Cursor(cursor) if cursor > self.end => None,
+            LogFrom::Cursor(cursor) if cursor < self.first_available => {
+                Some((self.first_available, true))
+            }
+            LogFrom::Cursor(cursor) => Some((cursor, false)),
+        }
+    }
 }
 
 /// The full view of one Process: its summary, its start, and its output window.
@@ -187,5 +201,21 @@ impl ProcessDetails {
             start,
             LogWindow::new(first_available, end),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LogFrom, LogWindow};
+
+    #[test]
+    fn positions_resolve_inside_the_retained_window() {
+        let window = LogWindow::new(100, 250);
+        assert_eq!(window.resolve(LogFrom::Start), Some((100, false)));
+        assert_eq!(window.resolve(LogFrom::Now), Some((250, false)));
+        assert_eq!(window.resolve(LogFrom::Cursor(120)), Some((120, false)));
+        assert_eq!(window.resolve(LogFrom::Cursor(250)), Some((250, false)));
+        assert_eq!(window.resolve(LogFrom::Cursor(3)), Some((100, true)));
+        assert_eq!(window.resolve(LogFrom::Cursor(251)), None);
     }
 }
