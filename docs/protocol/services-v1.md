@@ -118,8 +118,9 @@ parent without following links (`openat` with `O_DIRECTORY | O_NOFOLLOW` on Unix
 step (`statat`, `openat`, `mkdirat`, `unlinkat`, `renameat`, `linkat`) runs relative to the held
 parent. Swapping an ancestor for a symbolic link while an operation runs, including through the
 caller's own concurrent `rename`, therefore cannot redirect the operation outside its root. On
-Windows every ancestor from the root down stays open without delete sharing for the whole
-operation, so no ancestor can be renamed or replaced meanwhile, and reparse points are refused.
+Windows every ancestor from the root down stays open, to list it and without delete sharing, for
+the whole operation, so no ancestor can be renamed or replaced meanwhile, and reparse points are
+refused.
 
 | Op | Code | Access | Semantics |
 | --- | --- | --- | --- |

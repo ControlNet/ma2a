@@ -1,8 +1,9 @@
 //! Directory handles on Windows: every verified ancestor stays open without delete sharing.
 //!
-//! Windows cannot rename or delete a directory while a handle to it is open without
-//! `FILE_SHARE_DELETE`. Holding every ancestor from the root down for the whole operation
-//! therefore pins the path: nothing can swap an ancestor for a reparse point mid-operation.
+//! Windows cannot rename or delete a directory while a handle open to list it does not share
+//! deletion (see [`crate::windows_files::pin`]). Holding every ancestor from the root down for
+//! the whole operation therefore pins the path: nothing can swap an ancestor for a reparse
+//! point mid-operation.
 //! Each handle is opened on the entry itself (`FILE_FLAG_OPEN_REPARSE_POINT`) and refused when
 //! it is a reparse point.
 
@@ -17,8 +18,7 @@ use std::{
 
 use ma2a_core::service::{FileKind, ServiceError};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
 };
 
 use super::{entry::Entry, stop::Stop};
@@ -33,13 +33,10 @@ pub(crate) struct Directory {
 
 /// Opens `path` itself, sharing reads and writes but never deletion or renaming.
 fn pin(path: &Path) -> Result<File, ServiceError> {
-    let handle = fs_error::map(
-        OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path),
-    )?;
+    let handle = fs_error::map(crate::windows_files::pin(
+        path,
+        FILE_FLAG_OPEN_REPARSE_POINT,
+    ))?;
     let metadata = fs_error::map(handle.metadata())?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(ServiceError::SymlinkRefused);
@@ -57,13 +54,7 @@ impl Directory {
         // without refusing a reparse point the owner deliberately exported through. Its path
         // comes from the pinned handle itself so repointing a junction afterwards cannot move
         // later operations into another directory.
-        let handle = fs_error::map(
-            OpenOptions::new()
-                .access_mode(FILE_READ_ATTRIBUTES)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-                .open(path),
-        )?;
+        let handle = fs_error::map(crate::windows_files::pin(path, 0))?;
         if !fs_error::map(handle.metadata())?.is_dir() {
             return Err(ServiceError::NotADirectory);
         }
@@ -249,3 +240,7 @@ impl Directory {
     )]
     pub(crate) const fn sync(&self) {}
 }
+
+#[cfg(test)]
+#[path = "dir_windows_tests.rs"]
+mod tests;

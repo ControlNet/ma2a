@@ -40,7 +40,7 @@ jobs:
         run: cargo test --locked -p ma2a-store --test key_permissions
       - name: Check Windows file identity and private ACLs natively
         if: runner.os == 'Windows'
-        run: cargo test --locked -p ma2a-services --lib -- windows_files sddl resume::anchor
+        run: cargo test --locked -p ma2a-services --lib -- windows_files sddl resume::anchor files::platform
       - name: Check the A2A token file natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-app --bin ma2a token_file
