@@ -193,7 +193,7 @@ async fn follow(
         let watched = match open(target.0, target.1, OpenBody::Agent(request)).await {
             Ok((mut reader, _writer)) => {
                 let mut printed = Ok(());
-                let outcome = client::agent::watch(&mut reader, (task, seen), |event| {
+                let outcome = client::agent::watch(&mut reader, (&agent, task, seen), |event| {
                     seen = event.seq;
                     if print_events && printed.is_ok() {
                         printed = print(&agent_event_value(&event));

@@ -47,29 +47,49 @@ fn ended_at(last_seq: u32) -> TestResult<AgentReply> {
     Ok(AgentReply::Summary(ended))
 }
 
-fn event(seq: u32) -> TestResult<Vec<u8>> {
-    let body = AgentEventBody::State(AgentTaskState::Running, None);
-    Ok(AgentEvent::new(seq, 1_000, body).to_bytes()?)
+/// The events `seqs`: the task running, and completed at the last one.
+fn events(seqs: &[u32]) -> Vec<(u32, AgentEventBody)> {
+    let mut events: Vec<_> = seqs
+        .iter()
+        .map(|seq| (*seq, AgentEventBody::State(AgentTaskState::Running, None)))
+        .collect();
+    if let Some(last) = events.last_mut() {
+        last.1 = AgentEventBody::State(AgentTaskState::Completed, None);
+    }
+    events
 }
 
 /// Runs `watch` of [`TASK`] after `after` against a target that answers `accept`, then the
-/// events `seqs`, then `outcome`; returns the result and the sequence numbers handed to the
-/// caller.
+/// events `seqs`, the last of them the task's end, then `outcome`; returns the result and
+/// the sequence numbers handed to the caller.
 async fn watched(
-    (after, accept): (u32, AgentAccept),
+    watching: (u32, AgentAccept),
     seqs: &[u32],
+    outcome: &AgentReply,
+) -> TestResult<(Result<(), ClientError>, Vec<u32>)> {
+    watched_events(watching, &events(seqs), outcome).await
+}
+
+/// Runs `watch` as [`watched`] does, with the event bodies the target sends.
+async fn watched_events(
+    (after, accept): (u32, AgentAccept),
+    events: &[(u32, AgentEventBody)],
     outcome: &AgentReply,
 ) -> TestResult<(Result<(), ClientError>, Vec<u32>)> {
     let ((mut reader, _writer), (_target_reader, mut target)) = pipe();
     target.frame(FrameKind::Accept, &accept.encode()?).await?;
-    for seq in seqs {
-        target.data(Channel::Output, &event(*seq)?).await?;
+    for (seq, body) in events {
+        let event = AgentEvent::new(*seq, 1_000, body.clone()).to_bytes()?;
+        target.data(Channel::Output, &event).await?;
     }
     let outcome = AgentReply::encode_outcome(&Ok(outcome.clone()))?;
     target.frame(FrameKind::Outcome, &outcome).await?;
     target.flush().await?;
     let mut seen = Vec::new();
-    let watching = agent::watch(&mut reader, (TASK, after), |event| seen.push(event.seq));
+    let worker = AgentId::new("worker")?;
+    let watching = agent::watch(&mut reader, (&worker, TASK, after), |event| {
+        seen.push(event.seq);
+    });
     let result = tokio::time::timeout(Duration::from_secs(30), watching).await?;
     Ok((result.map(|_| ()), seen))
 }
@@ -138,7 +158,7 @@ async fn a_watch_answers_the_cursor_and_task_it_was_asked_for() -> TestResult {
 
 #[tokio::test]
 async fn a_watch_after_the_last_sequence_number_takes_no_event() -> TestResult {
-    let ended = AgentReply::Summary(summary(AgentTaskState::Completed)?);
+    let ended = ended_at(u32::MAX)?;
     // The target saturates `next` at the maximum, which no event lies past.
     let last = (
         u32::MAX,
@@ -171,5 +191,41 @@ async fn a_watch_ends_only_after_the_last_event_of_the_task() -> TestResult {
         assert!(result.is_ok(), "{last_seq}: {result:?}");
         assert!(seen.is_empty(), "{last_seq}: {seen:?}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_delivers_the_end_its_summary_reports() -> TestResult {
+    let watching = (0, AgentAccept::Watching(AgentTaskState::Running, 1));
+    // The last event the target sends is not the task's end, or another end than reported.
+    let running = AgentEventBody::State(AgentTaskState::Running, None);
+    let failed = AgentEventBody::State(AgentTaskState::Failed, None);
+    for last in [
+        running,
+        AgentEventBody::Progress("working".to_owned()),
+        failed,
+    ] {
+        let sent = [
+            (1, AgentEventBody::State(AgentTaskState::Queued, None)),
+            (2, last),
+        ];
+        let (result, seen) = watched_events(watching, &sent, &ended_at(2)?).await?;
+        assert!(malformed(&result), "{sent:?}: {result:?}");
+        assert_eq!(seen, [1, 2]);
+    }
+    // A task that ended has an event, so a summary with none is not its end.
+    let (result, _) = watched(watching, &[], &ended_at(0)?).await?;
+    assert!(malformed(&result), "{result:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_ends_with_the_task_of_the_agent_it_named() -> TestResult {
+    let mut other = summary(AgentTaskState::Completed)?;
+    other.agent = AgentId::new("other")?;
+    other.last_seq = 1;
+    let watching = (0, AgentAccept::Watching(AgentTaskState::Running, 1));
+    let (result, _) = watched(watching, &[1], &AgentReply::Summary(other)).await?;
+    assert!(malformed(&result), "{result:?}");
     Ok(())
 }

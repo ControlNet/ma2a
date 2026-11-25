@@ -258,7 +258,7 @@ pub(super) async fn follow(
     loop {
         let request = OpenBody::Agent(AgentRequest::Watch(agent.clone(), task, after));
         let (mut reader, _writer) = open_as(&backend.paths, (endpoint, None), request).await?;
-        let watching = client::agent::watch(&mut reader, (task, after), |event| {
+        let watching = client::agent::watch(&mut reader, (agent, task, after), |event| {
             after = event.seq;
             let _sent = events.send(agent_event_value(&event));
         });
