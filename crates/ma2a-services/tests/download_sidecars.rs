@@ -245,3 +245,31 @@ async fn kept_content_is_never_continued_with_content_of_another_identity() -> T
     again.discard().await?;
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_download_ending_beside_another_leaves_the_private_directory_marker_alone() -> TestResult
+{
+    use std::os::unix::fs::MetadataExt as _;
+    // Given: two downloads at once in one directory; the first made the private directory.
+    let local = TempRoot::new("sidecar-marker")?;
+    let mut first = Partial::open(&local.path().join("one"), "peer docs:/one", false).await?;
+    let mut second = Partial::open(&local.path().join("two"), "peer docs:/two", false).await?;
+    let marker = local.path().join(PRIVATE_DIRECTORY).join("created");
+    let changed =
+        |path: &Path| std::fs::metadata(path).map(|meta| (meta.ctime(), meta.ctime_nsec()));
+    let before = changed(&marker)?;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    // When: the first ends while the second still holds its lock.
+    first.sink().0.write_all(b"one").await?;
+    first.finish(false).await?;
+
+    // Then: the marker is never taken away meanwhile, so the second's end can still remove
+    // the private directory however the two ends interleave.
+    assert_eq!(changed(&marker)?, before);
+    second.sink().0.write_all(b"two").await?;
+    second.finish(false).await?;
+    assert!(!local.path().join(PRIVATE_DIRECTORY).exists());
+    Ok(())
+}

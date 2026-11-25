@@ -146,8 +146,14 @@ impl Helpers {
         } = self;
         drop(locks);
         let ours = is_marked(&directory);
-        if ours || made_locks {
-            let _removed = directory.remove_dir(OsStr::new(LOCKS));
+        let locks_left = (ours || made_locks)
+            && directory
+                .remove_dir(OsStr::new(LOCKS))
+                .is_err_and(|error| error.kind() != io::ErrorKind::NotFound);
+        // Another download still holds a lease: the marker stays for its end to tidy, since
+        // taking it away even for a moment can make that end leave everything behind.
+        if ours && locks_left {
+            return;
         }
         let created = OsStr::new(CREATED);
         if !ours {
