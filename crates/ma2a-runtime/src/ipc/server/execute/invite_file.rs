@@ -199,62 +199,86 @@ fn rename_no_clobber(
 }
 
 /// Where one ticket is going to be written, checked before the invitation is committed.
+///
+/// On Windows the destination's directory is already pinned and the ticket's protected staging
+/// directory and file already created in it, so a directory nothing can be created in is refused
+/// before anything is committed rather than after. Staging, publishing, and cleanup all go
+/// through the pinned directory's final path, so they all happen in that one directory. A
+/// destination dropped unwritten removes its staging.
 #[cfg(windows)]
-pub(super) struct Destination(String);
+pub(super) struct Destination {
+    _pin: std::fs::File,
+    directory: std::path::PathBuf,
+    name: std::ffi::OsString,
+    staging: std::path::PathBuf,
+    file: Option<std::fs::File>,
+}
 
 #[cfg(windows)]
 impl Destination {
-    /// Checks `path`; its directory is pinned when the ticket is written.
+    /// Checks `path`, pins the directory it names its file in, and stages the file there.
     pub(super) fn open(path: &str) -> Result<Self, ProtocolError> {
+        use std::path::Path;
+
+        use ma2a_services::windows_files;
+
         check_destination(path)?;
-        Ok(Self(path.to_owned()))
+        let destination = Path::new(path);
+        let name = destination
+            .file_name()
+            .ok_or(ProtocolError::INVALID_INPUT)?;
+        // A bare file name is relative to the current directory, as it is on Unix.
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let (pin, directory) =
+            windows_files::pin_directory(parent).map_err(|_| ProtocolError::INVALID_INPUT)?;
+        let staging = directory.join(staging_name()?);
+        windows_files::create_protected_dir(&staging).map_err(|_| ProtocolError::INVALID_INPUT)?;
+        let mut opened = Self {
+            _pin: pin,
+            directory,
+            name: name.to_owned(),
+            staging,
+            file: None,
+        };
+        let file = windows_files::create_protected_file(&opened.staged())
+            .map_err(|_| ProtocolError::INVALID_INPUT)?;
+        opened.file = Some(file);
+        Ok(opened)
     }
 
-    pub(super) fn write(self, contents: &[u8]) -> Result<(), ProtocolError> {
-        write_owner_only(&self.0, contents)
-    }
-}
-
-/// Writes the ticket into a protected staging directory and moves it into place without
-/// replacing anything. The destination's directory is pinned first, and staging, publishing,
-/// and cleanup all go through its final path, so they all happen in that one directory.
-#[cfg(windows)]
-fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
-    use std::{io::Write as _, path::Path};
-
-    use ma2a_services::windows_files;
-
-    check_destination(path)?;
-    let destination = Path::new(path);
-    let name = destination
-        .file_name()
-        .ok_or(ProtocolError::INVALID_INPUT)?;
-    // A bare file name is relative to the current directory, as it is on Unix.
-    let parent = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let (_pin, directory) =
-        windows_files::pin_directory(parent).map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let staging = directory.join(staging_name()?);
-    windows_files::create_protected_dir(&staging).map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let staged = staging.join("ticket");
-    let published = (|| {
-        let mut file =
-            windows_files::create_protected_file(&staged).map_err(|_| ProtocolError::INTERNAL)?;
+    /// Writes the ticket into the staging file and moves it into place without replacing
+    /// anything; dropping the destination then removes whatever staging is left.
+    pub(super) fn write(mut self, contents: &[u8]) -> Result<(), ProtocolError> {
+        use std::io::Write as _;
+        let mut file = self.file.take().ok_or(ProtocolError::INTERNAL)?;
         file.write_all(contents)
             .and_then(|()| file.write_all(b"\n"))
             .and_then(|()| file.sync_all())
             .map_err(|_| ProtocolError::INTERNAL)?;
+        // The file is open without sharing, so it is closed before it can be moved.
         drop(file);
-        windows_files::rename_no_clobber(&staged, &directory.join(name))
-            .map_err(|_| ProtocolError::INVALID_INPUT)
-    })();
-    if published.is_err() {
-        let _removed = std::fs::remove_file(&staged);
+        ma2a_services::windows_files::rename_no_clobber(
+            &self.staged(),
+            &self.directory.join(&self.name),
+        )
+        .map_err(|_| ProtocolError::INVALID_INPUT)
     }
-    let _removed = std::fs::remove_dir(&staging);
-    published
+
+    fn staged(&self) -> std::path::PathBuf {
+        self.staging.join("ticket")
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Destination {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _removed = std::fs::remove_file(self.staged());
+        let _removed = std::fs::remove_dir(&self.staging);
+    }
 }
 
 #[cfg(test)]

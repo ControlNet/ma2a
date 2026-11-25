@@ -180,11 +180,9 @@ async fn an_invitation_retried_after_its_output_path_is_fixed_is_created_once() 
     served.stop().await
 }
 
-/// An owner-only directory the daemon can search but not write.
-#[cfg(unix)]
+/// A directory the daemon can search but not add entries to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_invitation_into_an_unwritable_directory_has_no_effect() -> TestResult {
-    use std::os::unix::fs::PermissionsExt as _;
     let served = Served::start().await?;
     let space = served
         .runtime
@@ -193,7 +191,7 @@ async fn an_invitation_into_an_unwritable_directory_has_no_effect() -> TestResul
         .await?;
     let directory = served.state.0.join("read-only");
     std::fs::create_dir(&directory)?;
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))?;
+    set_writable(&directory, false)?;
     let revision = served.runtime.handle().status().await?.revision();
     let request = serde_json::json!({
         "version": 1, "operation": "space_invite", "request_id": "62".repeat(16),
@@ -203,12 +201,38 @@ async fn an_invitation_into_an_unwritable_directory_has_no_effect() -> TestResul
 
     let refused = served.refused(&request, ProtocolError::INVALID_INPUT).await;
 
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    set_writable(&directory, true)?;
     refused?;
     assert_eq!(served.runtime.handle().status().await?.revision(), revision);
     assert_eq!(invitations(&served)?, 0);
     assert_eq!(std::fs::read_dir(&directory)?.count(), 0);
     served.stop().await
+}
+
+/// Lets, or stops, the current account adding entries to `directory`.
+fn set_writable(directory: &std::path::Path, writable: bool) -> TestResult {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = if writable { 0o700 } else { 0o500 };
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(windows)]
+    {
+        // A rule that denies everyone adding a file (WD) or a subdirectory (AD).
+        let mut icacls = std::process::Command::new("icacls");
+        icacls.arg(directory).stdout(std::process::Stdio::null());
+        if writable {
+            icacls.args(["/remove:d", "*S-1-1-0"]);
+        } else {
+            icacls.args(["/deny", "*S-1-1-0:(WD,AD)"]);
+        }
+        let status = icacls.status()?;
+        if !status.success() {
+            return Err(format!("icacls: {status}").into());
+        }
+    }
+    Ok(())
 }
 
 fn invitations(served: &Served) -> TestResult<u64> {

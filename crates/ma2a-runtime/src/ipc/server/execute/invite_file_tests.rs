@@ -135,11 +135,9 @@ fn publishing_claims_a_free_name_and_never_replaces_a_file()
 /// The staging file is made when the destination is opened, before the invitation is
 /// committed, so a directory no file can be created in is refused then; one never written is
 /// removed when the destination is dropped.
-#[cfg(unix)]
 #[test]
 fn a_destination_stages_its_file_when_opened_and_removes_it_unless_written()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::fs::PermissionsExt as _;
     let base = std::env::temp_dir().join(format!("ma2a-invite-open-{}", std::process::id()));
     let _stale = std::fs::remove_dir_all(&base);
     std::fs::create_dir(&base)?;
@@ -149,11 +147,39 @@ fn a_destination_stages_its_file_when_opened_and_removes_it_unless_written()
     let staged = std::fs::read_dir(&base)?.count();
     drop(opened);
     let left = std::fs::read_dir(&base)?.count();
-    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o500))?;
-    let unwritable = super::Destination::open(path);
-    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))?;
+    set_writable(&base, false)?;
+    let unwritable = super::Destination::open(path).map(drop);
+    set_writable(&base, true)?;
+    let left_unwritable = std::fs::read_dir(&base)?.count();
     std::fs::remove_dir_all(&base)?;
-    assert_eq!((staged, left), (1, 0));
+    assert_eq!((staged, left, left_unwritable), (1, 0, 0));
     assert!(unwritable.is_err());
     Ok(())
+}
+
+/// Lets, or stops, the current account adding entries to `directory`.
+fn set_writable(directory: &std::path::Path, writable: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = if writable { 0o700 } else { 0o500 };
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode))
+    }
+    #[cfg(windows)]
+    {
+        // A rule that denies everyone adding a file (WD) or a subdirectory (AD).
+        let mut icacls = std::process::Command::new("icacls");
+        icacls.arg(directory).stdout(std::process::Stdio::null());
+        if writable {
+            icacls.args(["/remove:d", "*S-1-1-0"]);
+        } else {
+            icacls.args(["/deny", "*S-1-1-0:(WD,AD)"]);
+        }
+        let status = icacls.status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!("icacls: {status}")))
+        }
+    }
 }
