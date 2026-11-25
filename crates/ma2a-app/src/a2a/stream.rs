@@ -243,7 +243,10 @@ async fn produce(
     let (events, mut received) = mpsc::unbounded_channel();
     let following = owned.backend.follow((&owned.route, (task, after)), &events);
     tokio::pin!(following);
-    let mut forward = |event: Value| position.forward(&event, (task, &owned.base));
+    // Whether the task's end arrived, and the update that shows it, held back until the
+    // follow confirmed that end.
+    let mut end = (false, None);
+    let to = (task, owned.base.as_str(), frames);
     let followed = loop {
         let event = match next(&mut received, following.as_mut(), frames).await {
             Next::Event(event) => event,
@@ -251,30 +254,57 @@ async fn produce(
             // Ending here drops the follow, which ends a remote watch with it.
             Next::Gone => return None,
         };
-        let (update, last) = forward(event);
-        if let Some(update) = update {
-            send(frames, &success(id, &update)).await.then_some(())?;
-        }
-        if last {
+        if !end.0 && take((&mut position, &mut end), &event, (to, id)).await? {
             return Some(());
         }
     };
     // The task ended: whatever is still queued is its last events.
-    while let Ok(event) = received.try_recv() {
-        let (update, last) = forward(event);
-        if let Some(update) = update {
-            send(frames, &success(id, &update)).await.then_some(())?;
-        }
-        if last {
+    while !end.0
+        && let Ok(event) = received.try_recv()
+    {
+        if take((&mut position, &mut end), &event, (to, id)).await? {
             return Some(());
         }
     }
-    if let Err(refusal) = followed {
-        send(frames, &refused(refusal)).await;
-    }
+    let last = match (followed, end) {
+        (Err(refusal), _) => refused(refusal),
+        (Ok(()), (_, Some(update))) => success(id, &update),
+        (Ok(()), _) => return Some(()),
+    };
+    send(frames, &last).await;
     Some(())
 }
+
+/// Takes one followed event toward client `frames` of stream `id`: sends its update, or holds
+/// back in `end` the one that shows the task ended, since only the follow's own end confirms
+/// it. Answers whether the stream closes now, or `None` once the client is gone.
+async fn take(
+    (position, end): (&mut Position, &mut (bool, Option<Value>)),
+    event: &Value,
+    ((task, base, frames), id): (Followed<'_>, &Value),
+) -> Option<bool> {
+    let (update, last) = position.forward(event, (task, base));
+    if last && ended(&position.current) {
+        *end = (true, update);
+        return Some(false);
+    }
+    if let Some(update) = update {
+        send(frames, &success(id, &update)).await.then_some(())?;
+    }
+    Some(last)
+}
+
+/// The task a stream follows, the adapter's base URL, and the client's frames.
+type Followed<'a> = (
+    &'a str,
+    &'a str,
+    &'a mpsc::Sender<Result<Event, Infallible>>,
+);
 
 #[cfg(test)]
 #[path = "stream_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "stream_remote_tests.rs"]
+mod remote_tests;
