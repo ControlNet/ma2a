@@ -36,7 +36,8 @@ impl ProcessManager {
         let request = SupervisorRequest::Stdin(close);
         let opened = tokio::select! {
             biased;
-            () = stop.cancelled() => Err(ServiceError::Cancelled),
+            // Withdrawn while opening, as once running: this Runtime no longer serves it.
+            () = stop.cancelled() => Err(ServiceError::Unavailable),
             opened = self.open_live((viewer, id), request) => opened,
         };
         let (_, (mut from_supervisor, mut to_supervisor), _) = match opened {

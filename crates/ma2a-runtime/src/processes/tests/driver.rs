@@ -342,3 +342,29 @@ async fn a_stdin_write_waiting_on_a_process_that_reads_nothing_can_be_cancelled(
     shutdown.cancel();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attach_or_stdin_stopped_while_opening_is_unavailable() -> TestResult {
+    // Given: a running Process, and operations whose authorization is already withdrawn.
+    let harness = Harness::new("driver-stopped-open").await?;
+    let (manager, shutdown) = harness.manager();
+    let id = start_cat(&harness, &manager, 60).await?;
+    let stop = CancellationToken::new();
+    stop.cancel();
+
+    for (byte, request) in [
+        (61, ProcessRequest::Attach(id, LogFrom::Now, true)),
+        (62, ProcessRequest::Stdin(id, false)),
+    ] {
+        // When
+        let ((mut reader, _writer), (mut host_reader, mut host_writer)) = pipe();
+        let scope = ((harness.creator, request_id(byte)?), request, &stop);
+        let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
+        let (_report, answered) = tokio::join!(host, reader.expect());
+
+        // Then: as for a running operation stopped this way, this Runtime no longer serves it.
+        assert_eq!(answered?.rejection(), Ok(ServiceError::Unavailable));
+    }
+    shutdown.cancel();
+    Ok(())
+}
