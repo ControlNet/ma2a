@@ -1,6 +1,8 @@
-# Runs a command with SeBackupPrivilege and SeRestorePrivilege disabled, as in a CI job step, and
-# exits with the command's exit code. An upterm session enables both, and with them Windows skips
-# file access checks. A token that does not hold a privilege is left as it is.
+# Runs a command with SeBackupPrivilege and SeRestorePrivilege disabled, as in a PowerShell CI
+# step, and exits with the command's exit code. Git Bash enables both for itself and everything it
+# starts, and with them Windows skips file access checks. The interactive workflow starts upterm
+# from a Git Bash step, so every shell in the session has them, PowerShell included. A token that
+# does not hold a privilege is left as it is.
 param([string]$Command)
 if (-not $Command) {
   [Console]::Error.WriteLine("drop-privileges: -Command is required")

@@ -43,7 +43,8 @@ bash .claude/skills/interactive-ssh/scripts/open-session.sh \
 - Redirect long output to a log file on the runner and read it in pieces.
 - Anything run through Git Bash (`bash -lc`, or a CI step with `shell: bash`) has
   SeBackupPrivilege and SeRestorePrivilege enabled, which a PowerShell CI step does not; with them,
-  Windows skips file access checks. Check with `C:\Windows\System32\whoami.exe /priv`. Run ACL and permission tests through
+  Windows skips file access checks. The session itself is started from a Git Bash step, so
+  PowerShell in the session has them too. Check with `C:\Windows\System32\whoami.exe /priv`. Run ACL and permission tests through
   `scripts/drop-privileges.ps1`: copy it with
   `scp -F <config> .claude/skills/interactive-ssh/scripts/drop-privileges.ps1 windows-latest:D:/a/`, then
   `ssh -F <config> windows-latest 'cd D:\a\ma2a\ma2a -ErrorAction Stop; D:\a\drop-privileges.ps1 -Command "cargo test ..."; exit $LASTEXITCODE'`,
