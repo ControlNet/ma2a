@@ -216,8 +216,9 @@ ID byte order, strictly after `after`. `next` is the last ID of the page when mo
 - an already terminal task answers its current Summary.
 
 The target waits at most 60 s for the end, and stops waiting when it shuts down or the caller's
-authorization is withdrawn. A task still live at that point answers `accept` Admitted followed by
-outcome `outcome_unknown`; the cancellation stays recorded and still ends the task.
+authorization is withdrawn. A task still live at that point, or one whose end can no longer be
+read, answers `accept` Admitted followed by outcome `outcome_unknown`; the cancellation stays
+recorded and still ends the task.
 
 **`artifact`.** See [Artifacts](#artifacts).
 

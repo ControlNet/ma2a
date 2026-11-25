@@ -219,3 +219,36 @@ async fn a_tool_call_cut_short_by_shutdown_stays_pending() -> TestResult {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_committed_cancellation_whose_wait_loses_the_store_is_of_unknown_outcome() -> TestResult {
+    // Given: a running task whose cancellation is recorded and waits for its Agent.
+    let live = Live::new().await?;
+    let (manager, task) = (live.manager.clone(), live.task);
+    let cancelling = tokio::spawn(async move {
+        let stop = CancellationToken::new();
+        let request = (task, AgentTaskReason::Requested, &stop);
+        manager.cancel((None, None), request).await
+    });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while Repository::open(&live.config)?
+        .agent_task(task)?
+        .is_some_and(|record| record.cancel.is_none())
+    {
+        assert!(tokio::time::Instant::now() < deadline, "never recorded");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // When: the store stops, and a change wakes the wait to read the task again.
+    live.store.stop().await?;
+    live.manager.changed();
+    let cancelled = tokio::time::timeout(Duration::from_secs(5), cancelling).await??;
+
+    // Then: the request stands, so its end is unknown rather than refused as if nothing
+    // happened.
+    drop(live.manager);
+    live.store_task.await?;
+    let _cleanup = std::fs::remove_dir_all(&live.dir);
+    assert_eq!(cancelled.err(), Some(ServiceError::OutcomeUnknown));
+    Ok(())
+}

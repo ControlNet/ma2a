@@ -130,10 +130,14 @@ impl AgentManager {
         if record.summary.state.is_terminal() {
             return Ok(record);
         }
+        // The request is committed from here on, so any failure to see the end leaves the
+        // outcome unknown, never refused.
         tokio::select! {
             biased;
             () = stop.cancelled() => Err(ServiceError::OutcomeUnknown),
-            ended = self.wait_ended(task, Duration::from_secs(60)) => ended?
+            ended = self.wait_ended(task, Duration::from_secs(60)) => ended
+                .ok()
+                .flatten()
                 .filter(|record| record.summary.state.is_terminal())
                 .ok_or(ServiceError::OutcomeUnknown),
         }
