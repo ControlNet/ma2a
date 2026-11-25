@@ -63,6 +63,7 @@ impl Actor {
             echo_tasks: tokio::task::JoinSet::new(),
             departure_tasks: tokio::task::JoinSet::new(),
             departing: std::collections::BTreeSet::new(),
+            redemption_tasks: tokio::task::JoinSet::new(),
             echo_audit,
             echo_metrics,
             connections,

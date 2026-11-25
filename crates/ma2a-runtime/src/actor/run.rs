@@ -74,7 +74,7 @@ impl Actor {
                         let _unsent = reply.send(self.create_enrollment_invite(creation).await);
                     }
                     Some(Command::RedeemEnrollment { attempt, reply }) => {
-                        let _unsent = reply.send(self.redeem_enrollment(*attempt).await);
+                        self.redeem_enrollment(&attempt, reply);
                     }
                     Some(Command::CancelEnrollmentInvite { invitation_id, reply }) => {
                         let result = self.store.cancel_enrollment_invite(invitation_id).await
@@ -151,6 +151,11 @@ impl Actor {
                 joined = self.departure_tasks.join_next(), if !self.departure_tasks.is_empty() => {
                     if let Some(completion) = joined {
                         self.finish_departure(completion.map_err(RuntimeError::from)?).await;
+                    }
+                },
+                joined = self.redemption_tasks.join_next(), if !self.redemption_tasks.is_empty() => {
+                    if let Some(completion) = joined {
+                        self.finish_redemption(completion.map_err(RuntimeError::from)?).await;
                     }
                 },
                 observation = self.relay_observations.recv() => if let Some(observation) = observation {

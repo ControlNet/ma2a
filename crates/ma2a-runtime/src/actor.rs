@@ -39,6 +39,8 @@ mod partial_relay_publication_test;
 #[cfg(test)]
 mod private_server_test;
 #[cfg(test)]
+mod redemption_test;
+#[cfg(test)]
 mod relay_clock_test;
 mod relay_configuration;
 #[cfg(test)]
@@ -70,6 +72,7 @@ pub(crate) struct Actor {
     pub(crate) departure_tasks: JoinSet<crate::departure_actor::DepartureCompletion>,
     /// Spaces whose departure exchange is still in flight.
     pub(crate) departing: BTreeSet<ma2a_core::SpaceId>,
+    pub(crate) redemption_tasks: JoinSet<crate::enrollment_actor::RedemptionCompletion>,
     pub(crate) echo_audit: crate::echo_audit::EchoAuditLog,
     pub(crate) echo_metrics: EchoMetrics,
     pub(crate) connections: crate::RuntimeConnections,

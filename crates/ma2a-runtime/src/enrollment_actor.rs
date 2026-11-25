@@ -1,3 +1,11 @@
+//! Member-side invitation redemption.
+//!
+//! The exchange with the Space owner runs as a task beside the actor, so a slow or
+//! unreachable owner holds up only this request and never the rest of the Runtime.
+//! Its answer comes back through the actor loop, which validates and persists it.
+
+use ma2a_core::{EndpointId, SpaceId};
+use ma2a_net::NetError;
 use ma2a_store::{AddressRecordTarget, AddressRecordValidation, ValidatedAddressRecord};
 use tokio::sync::oneshot;
 
@@ -7,6 +15,16 @@ use crate::{
     enrollment::encode_attempt,
     state::RuntimeEvent,
 };
+
+type RedemptionReply = oneshot::Sender<Result<EstablishedEnrollment, EnrollmentError>>;
+
+/// One finished exchange with a Space owner, handed back to the actor loop.
+pub(crate) struct RedemptionCompletion {
+    /// The Space the invitation names, and the owner that answered for it.
+    target: (SpaceId, EndpointId),
+    exchanged: Result<(u8, Vec<Vec<u8>>), NetError>,
+    reply: RedemptionReply,
+}
 
 impl RuntimeHandle {
     /// Creates and durably records one owner-authorized single-use invitation.
@@ -79,22 +97,51 @@ impl RuntimeHandle {
 }
 
 impl Actor {
-    pub(crate) async fn redeem_enrollment(
+    /// Encodes the attempt, then starts the exchange with the Space owner as a task.
+    pub(crate) fn redeem_enrollment(
         &mut self,
-        attempt: EnrollmentAttempt,
-    ) -> Result<EstablishedEnrollment, EnrollmentError> {
-        let expected_space = attempt.space_id();
+        attempt: &EnrollmentAttempt,
+        reply: RedemptionReply,
+    ) {
         let owner_addr = attempt.owner_addr();
-        let owner_endpoint_id = owner_addr.id.into();
-        let request = encode_attempt(&attempt)?;
-        let (status, response_pages) = self
-            .endpoint
-            .exchange_redemption(owner_addr, &request)
-            .await
-            .map_err(|error| {
-                eprintln!("enrollment transport: {error}");
-                EnrollmentError::internal().at_stage(crate::EnrollmentStage::Exchange)
-            })?;
+        let target = (attempt.space_id(), owner_addr.id.into());
+        match encode_attempt(attempt) {
+            Ok(request) => {
+                let exchange = self.endpoint.exchange_redemption(owner_addr, request);
+                self.redemption_tasks.spawn(async move {
+                    RedemptionCompletion {
+                        target,
+                        exchanged: exchange.await,
+                        reply,
+                    }
+                });
+            }
+            Err(error) => {
+                let _unsent = reply.send(Err(error));
+            }
+        }
+    }
+
+    /// Settles a finished exchange and answers the caller that redeemed the invitation.
+    pub(crate) async fn finish_redemption(&mut self, completion: RedemptionCompletion) {
+        let RedemptionCompletion {
+            target,
+            exchanged,
+            reply,
+        } = completion;
+        let result = self.complete_redemption(target, exchanged).await;
+        let _unsent = reply.send(result);
+    }
+
+    async fn complete_redemption(
+        &mut self,
+        (expected_space, owner_endpoint_id): (SpaceId, EndpointId),
+        exchanged: Result<(u8, Vec<Vec<u8>>), NetError>,
+    ) -> Result<EstablishedEnrollment, EnrollmentError> {
+        let (status, response_pages) = exchanged.map_err(|error| {
+            eprintln!("enrollment transport: {error}");
+            EnrollmentError::internal().at_stage(crate::EnrollmentStage::Exchange)
+        })?;
         if status != 0 {
             return Err(EnrollmentError::from_status(status)
                 .at_stage(crate::EnrollmentStage::OwnerRedemption));
