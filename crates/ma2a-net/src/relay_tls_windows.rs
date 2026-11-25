@@ -14,8 +14,9 @@ use windows_sys::Win32::{
         ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
         DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetKernelObjectSecurity,
         GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-        GetSecurityDescriptorOwner, INHERITED_ACE, IsValidAcl, IsValidSecurityDescriptor,
-        IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+        GetSecurityDescriptorOwner, INHERIT_ONLY_ACE, INHERITED_ACE, IsValidAcl,
+        IsValidSecurityDescriptor, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SE_DACL_PROTECTED,
     },
     Storage::FileSystem::FILE_ALL_ACCESS,
     System::SystemServices::ACCESS_ALLOWED_ACE_TYPE,
@@ -193,8 +194,9 @@ fn allowed_full_control_sid(dacl: *mut ACL, index: u32) -> Result<PSID, ()> {
     // SAFETY: [Category 8 - FFI boundary] every ACE begins with a valid ACE_HEADER in the live ACL.
     let header = unsafe { &(*ace).Header };
     let sid_offset = offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+    // An inherit-only rule applies to children alone, never to the key file itself.
     if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
-        || header.AceFlags & u8::try_from(INHERITED_ACE).map_err(|_| ())? != 0
+        || u32::from(header.AceFlags) & (INHERITED_ACE | INHERIT_ONLY_ACE) != 0
         || usize::from(header.AceSize) < sid_offset + 8
     {
         return Err(());
@@ -237,4 +239,52 @@ fn aligned_storage(bytes: u32) -> Result<Vec<usize>, ()> {
     let word = mem::size_of::<usize>();
     let words = bytes.checked_add(word - 1).ok_or(())? / word;
     Ok(vec![0_usize; words])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, process::Command};
+
+    use super::validate_private_key_acl;
+
+    /// Gives SYSTEM's rule on the file in `MA2A_ACL_PATH` the inherit-only flag through the
+    /// Win32 API: .NET drops such a rule from a file's ACL, so `Set-Acl` cannot write it.
+    const INHERIT_ONLY_SYSTEM_RULE: &str = r#"
+Add-Type -Namespace W -Name Sd -MemberDefinition '
+[DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string s, int r, out IntPtr d, IntPtr l);
+[DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool SetFileSecurityW(string f, int i, IntPtr d);'
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$sd = [IntPtr]::Zero
+if (-not [W.Sd]::ConvertStringSecurityDescriptorToSecurityDescriptorW("D:P(A;;FA;;;$user)(A;IO;FA;;;SY)", 1, [ref]$sd, [IntPtr]::Zero)) { exit 2 }
+if (-not [W.Sd]::SetFileSecurityW($env:MA2A_ACL_PATH, 0x80000004, $sd)) { exit 3 }
+"#;
+
+    #[test]
+    fn a_rule_for_children_alone_is_not_full_control_over_the_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = std::env::temp_dir().join(format!("ma2a-key-acl-{}", std::process::id()));
+        let _stale = fs::remove_dir_all(&base);
+        fs::create_dir(&base)?;
+        let (key, script) = (base.join("key.pem"), base.join("acl.ps1"));
+        fs::write(&key, "key")?;
+        fs::write(&script, INHERIT_ONLY_SYSTEM_RULE)?;
+        ma2a_store::protect_private_file(&key, "test")?;
+        assert!(validate_private_key_acl(&fs::File::open(&key)?).is_ok());
+
+        let status = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&script)
+            .env("MA2A_ACL_PATH", &key)
+            .status()?;
+        assert!(status.success(), "setting the ACL failed: {status}");
+        assert!(validate_private_key_acl(&fs::File::open(&key)?).is_err());
+        fs::remove_dir_all(&base)?;
+        Ok(())
+    }
 }

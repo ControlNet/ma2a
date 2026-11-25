@@ -18,8 +18,9 @@ use windows_sys::Win32::{
         ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
         DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetKernelObjectSecurity,
         GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-        GetSecurityDescriptorOwner, INHERITED_ACE, IsValidAcl, IsValidSecurityDescriptor,
-        IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+        GetSecurityDescriptorOwner, INHERIT_ONLY_ACE, INHERITED_ACE, IsValidAcl,
+        IsValidSecurityDescriptor, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SE_DACL_PROTECTED,
     },
     Storage::FileSystem::{
         FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -188,7 +189,8 @@ fn access_rule(
     // SAFETY: [Category 8 - FFI boundary] every ACE begins with a valid ACE_HEADER inside the live
     // ACL returned by Windows.
     let header = unsafe { &(*ace).Header };
-    let inherited = header.AceFlags & u8::try_from(INHERITED_ACE).map_err(|_| ())? != 0;
+    // A rule for children alone does not apply to the file, so it counts as an inherited one.
+    let inherited = u32::from(header.AceFlags) & (INHERITED_ACE | INHERIT_ONLY_ACE) != 0;
     if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE {
         return Ok(AccessRule {
             principal: Principal::Other,
@@ -281,3 +283,7 @@ fn aligned_storage(bytes: u32) -> Result<Vec<usize>, ()> {
     let words = bytes.checked_add(word - 1).ok_or(())? / word;
     Ok(vec![0_usize; words])
 }
+
+#[cfg(test)]
+#[path = "space_windows_tests.rs"]
+mod tests;
