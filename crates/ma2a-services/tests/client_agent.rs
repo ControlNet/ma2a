@@ -40,6 +40,13 @@ fn summary_of(task: AgentTaskId, state: AgentTaskState) -> TestResult<AgentTaskS
     Ok(summary)
 }
 
+/// The summary of [`TASK`] completed with its newest event at `last_seq`.
+fn ended_at(last_seq: u32) -> TestResult<AgentReply> {
+    let mut ended = summary(AgentTaskState::Completed)?;
+    ended.last_seq = last_seq;
+    Ok(AgentReply::Summary(ended))
+}
+
 fn event(seq: u32) -> TestResult<Vec<u8>> {
     let body = AgentEventBody::State(AgentTaskState::Running, None);
     Ok(AgentEvent::new(seq, 1_000, body).to_bytes()?)
@@ -74,8 +81,7 @@ const fn malformed(result: &Result<(), ClientError>) -> bool {
 #[tokio::test]
 async fn a_watch_ends_only_with_the_summary_of_an_ended_task() -> TestResult {
     let watching = (0, AgentAccept::Watching(AgentTaskState::Running, 1));
-    let ended = AgentReply::Summary(summary(AgentTaskState::Completed)?);
-    let (result, seen) = watched(watching, &[1, 2], &ended).await?;
+    let (result, seen) = watched(watching, &[1, 2], &ended_at(2)?).await?;
     assert!(result.is_ok(), "{result:?}");
     assert_eq!(seen, [1, 2]);
 
@@ -99,7 +105,7 @@ async fn a_watch_must_be_accepted_as_one() -> TestResult {
 
 #[tokio::test]
 async fn watched_events_only_move_forward() -> TestResult {
-    let ended = AgentReply::Summary(summary(AgentTaskState::Completed)?);
+    let ended = ended_at(8)?;
     // Pruned progress may leave a gap after `next`, but never before it.
     let from_five = (4, AgentAccept::Watching(AgentTaskState::Running, 5));
     let (result, seen) = watched(from_five, &[7, 8], &ended).await?;
@@ -144,5 +150,26 @@ async fn a_watch_after_the_last_sequence_number_takes_no_event() -> TestResult {
     let (result, seen) = watched(last, &[u32::MAX], &ended).await?;
     assert!(malformed(&result), "{result:?}");
     assert!(seen.is_empty(), "{seen:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_ends_only_after_the_last_event_of_the_task() -> TestResult {
+    let from_five = (4, AgentAccept::Watching(AgentTaskState::Running, 5));
+    // The task ended at 6, but its terminal event never came.
+    let (result, _) = watched(from_five, &[], &ended_at(6)?).await?;
+    assert!(malformed(&result), "{result:?}");
+    let (result, _) = watched(from_five, &[5], &ended_at(6)?).await?;
+    assert!(malformed(&result), "{result:?}");
+    // A summary behind an event already delivered is not the end of that task either.
+    let (result, _) = watched(from_five, &[5, 6], &ended_at(5)?).await?;
+    assert!(malformed(&result), "{result:?}");
+
+    // A watch from a cursor already past the end takes the summary without an event.
+    for last_seq in [3, 4] {
+        let (result, seen) = watched(from_five, &[], &ended_at(last_seq)?).await?;
+        assert!(result.is_ok(), "{last_seq}: {result:?}");
+        assert!(seen.is_empty(), "{last_seq}: {seen:?}");
+    }
     Ok(())
 }

@@ -349,7 +349,9 @@ pruned in between, so the first event delivered may have a `seq` above `next`.
 A caller treats a `watch` as malformed (`invalid_input`) when it is accepted as anything other
 than Watching with `next = after + 1` (saturating at the maximum `seq`), when an event's `seq` is
 not above `after` or not above the event before it, or when its outcome is anything other than the
-Summary of the watched task once ended.
+Summary of the watched task once ended. That Summary's `last_seq` must be the `seq` of the last
+event delivered, or at most `after` when none was: the terminal `state` event is never pruned, so a
+watch that did not deliver it is missing the task's end.
 
 ## Artifacts
 

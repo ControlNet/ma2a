@@ -38,6 +38,8 @@ pub async fn call<R: AsyncRead + Unpin>(
 /// (saturating), sends an event at or before `after` or one it already sent, or ends the
 /// watch with anything but the summary of `task` once ended is malformed: a caller would
 /// otherwise replay events, move its cursor backwards, or take a live task for an ended one.
+/// So is a summary whose newest event is not the last one sent, or is past `after` when none
+/// was sent: the terminal event is never pruned, and a caller would miss the task's end.
 ///
 /// # Errors
 /// Returns the refusal, the failed outcome, or the stream or protocol failure.
@@ -62,6 +64,8 @@ where
     }
     // The lowest sequence number the next event may carry, past `after` even at its maximum.
     let mut floor = u64::from(after) + 1;
+    // The newest event sent so far, if any.
+    let mut last = None;
     loop {
         let frame = next(reader).await?;
         match frame.kind() {
@@ -73,6 +77,7 @@ where
                         return Err(malformed());
                     }
                     floor = u64::from(event.seq) + 1;
+                    last = Some(event.seq);
                     on_event(event);
                 }
                 _ => return Err(malformed()),
@@ -80,7 +85,11 @@ where
             FrameKind::Outcome => {
                 return match reply(&frame)? {
                     AgentReply::Summary(summary)
-                        if summary.state.is_terminal() && summary.id == task =>
+                        if summary.state.is_terminal()
+                            && summary.id == task
+                            && last.map_or(summary.last_seq <= after, |last| {
+                                summary.last_seq == last
+                            }) =>
                     {
                         Ok((accept, AgentReply::Summary(summary)))
                     }
