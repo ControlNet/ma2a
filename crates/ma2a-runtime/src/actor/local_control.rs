@@ -56,7 +56,9 @@ impl Actor {
             if current {
                 self.finish_relay_publication().await?;
             } else {
-                self.publish_local_relay(provider.clone(), expires_at_ms)
+                // One clock reading gives the renewal both its issue time and its expiry, so a
+                // clock step between two readings cannot leave it an invalid window.
+                self.publish_local_relay(provider.clone(), (issued_at_ms, expires_at_ms))
                     .await?;
             }
         } else {
@@ -112,13 +114,23 @@ impl Actor {
         Ok(revision)
     }
 
-    pub(super) async fn publish_local_relay(
+    /// Publishes advertisements issued now that expire at `expires_at_ms`.
+    pub(super) async fn publish_local_relay_until(
         &mut self,
         config: ma2a_net::PrivateRelayProviderConfig,
         expires_at_ms: u64,
     ) -> Result<u64, RuntimeError> {
         let issued_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
+        self.publish_local_relay(config, (issued_at_ms, expires_at_ms))
+            .await
+    }
+
+    async fn publish_local_relay(
+        &mut self,
+        config: ma2a_net::PrivateRelayProviderConfig,
+        (issued_at_ms, expires_at_ms): (u64, u64),
+    ) -> Result<u64, RuntimeError> {
         let authorizations = self
             .store
             .relay_authorizations(self.state.endpoint_id)

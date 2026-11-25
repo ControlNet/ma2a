@@ -108,7 +108,7 @@ impl Actor {
                         let _unsent = reply.send(result);
                     }
                     Some(Command::PublishRelayAdvertisements { config, expires_at_ms, reply }) => {
-                        let result = self.publish_local_relay(config, expires_at_ms).await;
+                        let result = self.publish_local_relay_until(config, expires_at_ms).await;
                         let _unsent = reply.send(result);
                     }
                     Some(Command::RelayConfiguration { reply }) => {
