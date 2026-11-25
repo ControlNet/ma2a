@@ -203,6 +203,25 @@ fn every_process_reply_roundtrips_canonically() -> TestResult {
 }
 
 #[test]
+fn a_detached_outcome_only_completes_or_cancels() -> TestResult {
+    for reason in [EndReason::Completed, EndReason::Cancelled] {
+        let reply = Ok(ProcessReply::Detached(reason, summary()?, 41));
+        let encoded = ProcessReply::encode_outcome(&reply)?;
+        assert_eq!(ProcessReply::decode_outcome(&encoded)?, reply);
+    }
+    // A timeout or shutdown ends an attachment with a failed outcome, never a Detached one.
+    for reason in [EndReason::TimedOut, EndReason::Shutdown] {
+        let reply = Ok(ProcessReply::Detached(reason, summary()?, 41));
+        let encoded = ProcessReply::encode_outcome(&reply)?;
+        assert!(
+            ProcessReply::decode_outcome(&encoded).is_err(),
+            "{reason:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn accepts_and_skip_controls_roundtrip_canonically() -> TestResult {
     for accept in [
         ProcessAccept::Started(id(), true),

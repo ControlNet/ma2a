@@ -138,7 +138,8 @@ pub enum ProcessReply {
     Details(Box<ProcessDetails>),
     /// `logs`: the cursor to continue from; `true` once the Process ended and all was read.
     Logs(u64, bool),
-    /// `attach` ended: why, the Process as it now is, and the cursor reached.
+    /// `attach` ended: `completed` or `cancelled`, the Process as it now is, and the cursor
+    /// reached.
     Detached(EndReason, ProcessSummary, u64),
     /// `stdin`: bytes delivered, and whether the Process stdin is now closed.
     Written(u64, bool),
@@ -222,7 +223,7 @@ impl ProcessReply {
             (2, 2) => Self::Details(Box::new(ProcessDetails::decode(decoder)?)),
             (3, 3) => Self::Logs(decoder.uint()?, decoder.boolean()?),
             (4, 4) => {
-                let reason = end_reason(decoder.text(16)?)?;
+                let reason = detach_reason(decoder.text(16)?)?;
                 let summary = ProcessSummary::decode(decoder)?;
                 Self::Detached(reason, summary, decoder.uint()?)
             }
@@ -234,14 +235,10 @@ impl ProcessReply {
     }
 }
 
-fn end_reason(name: &str) -> Result<EndReason, ProtocolError> {
-    [
-        EndReason::Completed,
-        EndReason::TimedOut,
-        EndReason::Cancelled,
-        EndReason::Shutdown,
-    ]
-    .into_iter()
-    .find(|reason| reason.name() == name)
-    .ok_or(ProtocolError::INVALID_INPUT)
+/// An attachment ends `completed` or `cancelled`; a timeout or shutdown is a failed outcome.
+fn detach_reason(name: &str) -> Result<EndReason, ProtocolError> {
+    [EndReason::Completed, EndReason::Cancelled]
+        .into_iter()
+        .find(|reason| reason.name() == name)
+        .ok_or(ProtocolError::INVALID_INPUT)
 }

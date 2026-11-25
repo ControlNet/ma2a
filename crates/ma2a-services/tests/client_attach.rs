@@ -633,3 +633,32 @@ async fn a_replayed_stdin_answer_must_close_stdin_when_closing_was_asked_for() -
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_detached_answer_only_completes_or_cancels() -> TestResult {
+    for reason in [
+        EndReason::Completed,
+        EndReason::Cancelled,
+        EndReason::TimedOut,
+        EndReason::Shutdown,
+    ] {
+        // Given: a fresh answer and a replayed one, each detached with `reason`.
+        let fresh = vec![reading(100, (0, 100))?, detached(reason, process(1), 100)?];
+        let replayed = vec![detached(reason, process(1), 100)?];
+
+        // When
+        let (fresh, _) = attach(LogFrom::Cursor(100), None, fresh).await?;
+        let (replayed, _) = attach(LogFrom::Now, Some(b""), replayed).await?;
+
+        // Then: a timeout or shutdown is a failed outcome, never a Detached one.
+        for attached in [fresh, replayed] {
+            let allowed = matches!(reason, EndReason::Completed | EndReason::Cancelled);
+            let refused = matches!(
+                attached,
+                Err(ClientError::Stream(ServiceError::InvalidInput))
+            );
+            assert!(allowed != refused, "{reason:?}: {attached:?}");
+        }
+    }
+    Ok(())
+}

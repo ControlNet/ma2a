@@ -168,7 +168,8 @@ success, and otherwise one of the status codes with a `null` result. A successfu
 Process is archived. A decoder requires `first_available ≤ end`.
 
 The Detached `reason` is the Exec end-reason name: `completed` when the Process ended and every
-retained byte was delivered, and `cancelled` when the caller detached.
+retained byte was delivered, and `cancelled` when the caller detached. A decoder refuses any
+other reason.
 
 ## Operations
 
@@ -230,9 +231,10 @@ Process and its supervisor have ended.
 4. The Detached summary is the Process as it now is, and `cursor` is the position reached.
 5. The caller refuses, before writing any output, an `accept` that is not Reading or whose `start`
    and `truncated` are not where `from` resolves in the window it reports. It also refuses a
-   Skipped cursor that goes back, `data` on channel 0, a Detached outcome for another Process or
-   at a cursor other than where its bytes and skips ended, and a Detached `completed` whose
-   Process has not ended or whose cursor is before the `end` of the window the accept reported.
+   Skipped cursor that goes back, `data` on channel 0, a Detached outcome for another Process,
+   at a cursor other than where its bytes and skips ended, or with a reason other than
+   `completed` and `cancelled`, and a Detached `completed` whose Process has not ended or whose
+   cursor is before the `end` of the window the accept reported.
    Only an attachment with `stdin` reserves its RequestId, so only that one may be answered from
    replay.
 
