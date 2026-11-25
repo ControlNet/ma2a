@@ -32,7 +32,7 @@ pub(super) type Caller<'a, R, W> = (&'a mut FrameReader<R>, &'a mut FrameWriter<
 pub(super) const SUPERVISOR_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
 /// Longest wait for room toward a caller, so one that stops reading frees its reader slot and
 /// stdin lease.
-const CALLER_STALL: std::time::Duration = std::time::Duration::from_secs(30);
+pub(super) const CALLER_STALL: std::time::Duration = std::time::Duration::from_secs(30);
 /// Longest wait for the supervisor's report once the caller detached.
 const DETACH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 

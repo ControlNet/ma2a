@@ -235,8 +235,9 @@ At most 8 readers are attached to one Process at a time. The ninth is
 - The outcome is Written, with the bytes delivered and whether the Process stdin is now closed.
 - If the Process ends before the caller's `end`, the outcome comes at once, Written with
   `closed = true`; the caller need not end its input first.
-- `cancel` or stream loss ends the operation with outcome `cancelled`. Bytes already delivered
-  stay delivered.
+- `cancel` or stream loss ends the operation with outcome `cancelled`, also after `end` while
+  the Process is still taking earlier input. Bytes already delivered stay delivered.
+- Input the Process does not take within 30 seconds ends the operation with `timed_out`.
 
 **`signal`.** This needs a `running` Process, and is otherwise `reject(not_running)`.
 

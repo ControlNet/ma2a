@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use ma2a_core::service::{
-    EndReason, LogFrom, MAX_LOGS_READ, ProcessAccept, ProcessId, ProcessReply, ProcessRequest,
-    ProcessSpec, ProcessStart, ProcessState, ServiceError,
+    Channel, EndReason, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, MAX_LOGS_READ, ProcessAccept,
+    ProcessId, ProcessReply, ProcessRequest, ProcessSpec, ProcessStart, ProcessState, ServiceError,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
@@ -293,6 +293,52 @@ async fn a_caller_gone_before_the_accept_still_gets_its_process() -> TestResult 
         )
         .await?;
     assert_eq!(ended.state, ProcessState::Terminated);
+    shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stdin_write_waiting_on_a_process_that_reads_nothing_can_be_cancelled() -> TestResult {
+    // Given: a Process that keeps its stdin open and never reads it.
+    let harness = Harness::new("driver-stdin-cancel").await?;
+    let (manager, shutdown) = harness.manager();
+    let request = ProcessRequest::Start(stdin_start("sleep 30")?);
+    let (accept, _) = call((&harness, &manager), (50, request)).await??;
+    let Some(ProcessAccept::Started(id, false)) = accept else {
+        return Err(format!("expected a new Process, got {accept:?}").into());
+    };
+    let ((mut reader, mut writer), (mut host_reader, mut host_writer)) = pipe();
+    let stop = CancellationToken::new();
+    let scope = (
+        (harness.creator, request_id(51)?),
+        ProcessRequest::Stdin(id, false),
+        &stop,
+    );
+    let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
+
+    // When: more input than its pipe holds is followed by `end`, and then the caller cancels.
+    let caller = async {
+        assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+        let chunk = vec![b'x'; MAX_DATA_CHUNK_LEN];
+        for _ in 0..2 {
+            writer.data(Channel::Input, &chunk).await?;
+        }
+        writer.end(Channel::Input).await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        writer.frame(FrameKind::Cancel, &[]).await?;
+        writer.flush().await?;
+        TestResult::Ok(reader.expect().await?)
+    };
+    let (_report, answered) =
+        tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(host, caller) }).await?;
+
+    // Then: the operation ends as cancelled without waiting for the Process.
+    let answered = answered?;
+    assert_eq!(answered.kind(), FrameKind::Outcome, "{answered:?}");
+    assert_eq!(
+        ProcessReply::decode_outcome(answered.payload())?,
+        Err(ServiceError::Cancelled)
+    );
     shutdown.cancel();
     Ok(())
 }

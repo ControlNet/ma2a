@@ -2,20 +2,23 @@
 //!
 //! A write ends when the caller ends its input, and also when the supervisor answers first,
 //! for example because the Process ended: a caller that keeps its input open must not hold
-//! the operation open past the Process.
+//! the operation open past the Process. Input the Process does not take within the stall
+//! bound fails the write, and once its input ended a caller can still cancel while the
+//! Process takes the rest, so neither holds the operation for as long as the Process runs.
 
 use ma2a_core::service::{
     Channel as DataChannel, FrameKind, ProcessAccept, ProcessId, ProcessReply, ServiceError,
 };
 use ma2a_services::{
     OperationEnd, OperationReport,
+    reply::client_cancelled,
     supervisor::{SupervisorRequest, protocol::decode_written},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
     ProcessManager,
-    attach::{Caller, Scope},
+    attach::{CALLER_STALL, Caller, Scope},
     host::{finish, refuse, write_accept},
 };
 
@@ -60,7 +63,14 @@ impl ProcessManager {
                         let (DataChannel::Input, bytes) = frame.data()? else {
                             return Err(ServiceError::InvalidInput);
                         };
-                        to_supervisor.data(DataChannel::Input, bytes).await?;
+                        let write = to_supervisor.data(DataChannel::Input, bytes);
+                        tokio::select! {
+                            biased;
+                            answer = &mut answer => break Some(answer?),
+                            written = tokio::time::timeout(CALLER_STALL, write) => {
+                                written.map_err(|_| ServiceError::TimedOut)??;
+                            }
+                        }
                     }
                     FrameKind::End if frame.end()? == DataChannel::Input => break None,
                     FrameKind::Cancel => return Err(ServiceError::Cancelled),
@@ -70,8 +80,20 @@ impl ProcessManager {
             let outcome = if let Some(outcome) = early {
                 outcome
             } else {
-                to_supervisor.end(DataChannel::Input).await?;
-                answer.await?
+                let ended = async {
+                    let end = to_supervisor.end(DataChannel::Input);
+                    match tokio::time::timeout(CALLER_STALL, end).await {
+                        Ok(Ok(())) => std::future::pending().await,
+                        Ok(Err(error)) => error,
+                        Err(_) => ServiceError::TimedOut,
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    answer = &mut answer => answer?,
+                    error = ended => return Err(error),
+                    error = client_cancelled(reader) => return Err(error),
+                }
             };
             match outcome.kind() {
                 FrameKind::Outcome => decode_written(outcome.payload()),

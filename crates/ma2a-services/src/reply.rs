@@ -106,9 +106,7 @@ pub(crate) const fn lost(
 ///
 /// A clean client half-close is not a cancellation: the future then never resolves, so the
 /// operation continues until its own terminal.
-pub(crate) async fn client_cancelled<R: AsyncRead + Unpin>(
-    reader: &mut FrameReader<R>,
-) -> ServiceError {
+pub async fn client_cancelled<R: AsyncRead + Unpin>(reader: &mut FrameReader<R>) -> ServiceError {
     match reader.next().await {
         Ok(None) => std::future::pending().await,
         Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => ServiceError::Cancelled,
