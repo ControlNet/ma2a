@@ -78,7 +78,7 @@ where
         }
         AgentRequest::Cancel(agent, task) => {
             let reason = AgentTaskReason::Requested;
-            let cancelled = manager.cancel(viewer(&agent), (task, reason)).await;
+            let cancelled = manager.cancel(viewer(&agent), (task, reason, stop)).await;
             answer(
                 writer,
                 cancelled.map(|record| AgentReply::Summary(record.summary)),

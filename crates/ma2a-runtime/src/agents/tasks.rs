@@ -16,6 +16,8 @@ use ma2a_store::{
     AgentTaskChange, AgentTaskCreation, AgentTaskFilter, AgentTaskRecord, NewAgentTask,
 };
 
+use tokio_util::sync::CancellationToken;
+
 use super::{AgentManager, convert::valid_data, fault, visible};
 
 /// Who asks (`None` is the local operator) and the Agent the operation names, if any.
@@ -117,20 +119,24 @@ impl AgentManager {
     }
 
     /// Cancels a task and answers once it ended: at once when queued, otherwise when its
-    /// Agent confirms or the grace period passes.
+    /// Agent confirms or the grace period passes. When `stop` fires first, the request stands
+    /// but its end is unknown.
     pub(crate) async fn cancel(
         &self,
         viewer: Viewer<'_>,
-        (task, reason): (AgentTaskId, AgentTaskReason),
+        (task, reason, stop): (AgentTaskId, AgentTaskReason, &CancellationToken),
     ) -> Result<AgentTaskRecord, ServiceError> {
         let record = self.request_cancel(viewer, (task, reason)).await?;
         if record.summary.state.is_terminal() {
             return Ok(record);
         }
-        self.wait_ended(task, Duration::from_secs(60))
-            .await?
-            .filter(|record| record.summary.state.is_terminal())
-            .ok_or(ServiceError::OutcomeUnknown)
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => Err(ServiceError::OutcomeUnknown),
+            ended = self.wait_ended(task, Duration::from_secs(60)) => ended?
+                .filter(|record| record.summary.state.is_terminal())
+                .ok_or(ServiceError::OutcomeUnknown),
+        }
     }
 
     /// Requests a task's cancellation and answers the task as it then is: ended when it

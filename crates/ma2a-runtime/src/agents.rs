@@ -20,6 +20,10 @@ mod tasks;
 mod tools;
 mod watch;
 
+#[cfg(test)]
+#[path = "agents/tests/live.rs"]
+mod live_tests;
+
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},

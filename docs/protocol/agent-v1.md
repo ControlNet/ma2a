@@ -215,9 +215,9 @@ ID byte order, strictly after `after`. `next` is the last ID of the page when mo
   instance, and ends as described in [Cancellation](#cancellation);
 - an already terminal task answers its current Summary.
 
-The target waits at most 60 s for the end. A task still live at that point answers `accept`
-Admitted followed by outcome `outcome_unknown`; the cancellation stays recorded and still ends the
-task.
+The target waits at most 60 s for the end, and stops waiting when it shuts down or the caller's
+authorization is withdrawn. A task still live at that point answers `accept` Admitted followed by
+outcome `outcome_unknown`; the cancellation stays recorded and still ends the task.
 
 **`artifact`.** See [Artifacts](#artifacts).
 
@@ -769,7 +769,7 @@ Other codes used by Agent:
 | `conflict` | a RequestId reused with a different `submit` body |
 | `unavailable` | a Store failure, and a `watch` ended by shutdown or withdrawn authorization |
 | `cancelled` | a `watch` the caller cancelled |
-| `outcome_unknown` | a `cancel` whose task did not end within 60 s; caller-side lost streams |
+| `outcome_unknown` | a `cancel` whose task did not end within 60 s or before the operation stopped; caller-side lost streams |
 | `precondition_failed`, `timed_out`, `internal` | the Transfer v1 download of `artifact` |
 
 ## Fault points (test-only)
