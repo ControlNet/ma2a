@@ -61,7 +61,9 @@ package() {
 }
 # A dependency also listed as optional is optional, so its absence is no error.
 printf '%s\n' '{"dependencies": {"component": "1.0.0", "absent": "1.0.0", "legacy": "1.0.0",
-  "unlicensed": "1.0.0", "spaced": "1.0.0"}, "optionalDependencies": {"absent": "1.0.0"}}' \
+  "unlicensed": "1.0.0", "spaced": "1.0.0", "filed": "1.0.0", "proprietary": "1.0.0",
+  "compound": "1.0.0", "trailing": "1.0.0", "bare": "1.0.0"},
+  "optionalDependencies": {"absent": "1.0.0"}}' \
   > "$fixture/web/package.json"
 # The component ships its peer, the renderer, and does without an optional peer that is absent.
 package component '{"name": "component", "version": "1.0.0", "license": "MIT",
@@ -72,11 +74,23 @@ package legacy '{"name": "legacy", "version": "1.0.0", "license": "",
   "licenses": [{"type": "MIT"}, {"type": ""}, {"url": "https://example.com/license"}]}'
 package unlicensed '{"name": "unlicensed", "version": "1.0.0", "license": {"type": " "}}'
 package spaced '{"name": "spaced", "version": "1.0.0", "license": "MIT / Apache-2.0"}'
+# npm also allows a license file, UNLICENSED and stray slashes, none of them an SPDX expression.
+package filed '{"name": "filed", "version": "1.0.0", "license": "SEE LICENSE IN LICENSE.md"}'
+package proprietary '{"name": "proprietary", "version": "1.0.0", "license": "UNLICENSED"}'
+package compound '{"name": "compound", "version": "1.0.0",
+  "license": "(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception"}'
+package trailing '{"name": "trailing", "version": "1.0.0", "license": "MIT / "}'
+package bare '{"name": "bare", "version": "1.0.0", "license": "/"}'
 (cd "$fixture" && "$repo/scripts/generate-license-report.sh" "$temporary/fixture.json")
 expected='{"Apache-2.0":[{"name":"renderer","versions":["1.0.0"]}],
   "MIT":[{"name":"component","versions":["1.0.0"]},{"name":"legacy","versions":["1.0.0"]}],
   "MIT / Apache-2.0":[{"name":"spaced","versions":["1.0.0"]}],
-  "UNKNOWN":[{"name":"unlicensed","versions":["1.0.0"]}]}'
+  "UNKNOWN":[{"name":"unlicensed","versions":["1.0.0"]}],
+  "SEE LICENSE IN LICENSE.md":[{"name":"filed","versions":["1.0.0"]}],
+  "UNLICENSED":[{"name":"proprietary","versions":["1.0.0"]}],
+  "(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception":[{"name":"compound","versions":["1.0.0"]}],
+  "MIT /":[{"name":"trailing","versions":["1.0.0"]}],
+  "/":[{"name":"bare","versions":["1.0.0"]}]}'
 if ! jq -e --argjson expected "$expected" '.frontend == $expected' "$temporary/fixture.json" \
   >/dev/null; then
   printf 'the synthetic frontend report is wrong:\n' >&2
@@ -84,13 +98,16 @@ if ! jq -e --argjson expected "$expected" '.frontend == $expected' "$temporary/f
   exit 1
 fi
 
-# The SBOM states an unknown license as NOASSERTION and a slashed one as an SPDX expression.
+# The SBOM states a slashed license as an SPDX expression, keeps a valid expression, and states
+# anything else, unknown or not an SPDX expression, as NOASSERTION.
 printf 'archive' > "$temporary/fixture.tar.xz"
 printf '%s *fixture.tar.xz\n' "$(printf '0%.0s' $(seq 64))" > "$temporary/fixture.tar.xz.sha256"
 (cd "$fixture" && "$repo/scripts/generate-sbom.sh" "$temporary/fixture.tar.xz" \
   "$temporary/fixture.json" "$temporary/fixture.spdx.json" x86_64-unknown-linux-gnu)
 expected='{"component":"MIT","legacy":"MIT","renderer":"Apache-2.0",
-  "spaced":"MIT OR Apache-2.0","unlicensed":"NOASSERTION"}'
+  "spaced":"MIT OR Apache-2.0","unlicensed":"NOASSERTION","filed":"NOASSERTION",
+  "proprietary":"NOASSERTION","compound":"(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception",
+  "trailing":"MIT","bare":"NOASSERTION"}'
 if ! jq -e --argjson expected "$expected" \
   '[.packages[] | select(.SPDXID | startswith("SPDXRef-Frontend-")) | {(.name): .licenseDeclared}]
    | add == $expected' "$temporary/fixture.spdx.json" >/dev/null; then

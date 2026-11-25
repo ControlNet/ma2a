@@ -32,12 +32,13 @@ esac
   exit 1
 }
 
-jq -n \
+jq -n -L "$(dirname "$0")" \
   --arg name "$(basename "$archive")" \
   --arg digest "$digest" \
   --arg created "$created" \
   --slurpfile cargo "$temporary/cargo-metadata.json" \
   --slurpfile licenses "$report" '
+  include "spdx";
   # The packages whose code the archive carries: `ma2a-app` and everything it reaches through
   # normal dependency edges, without passing through a procedural macro. A macro runs on the
   # build host and only its expansion is compiled in, so it, and whatever only it depends on,
@@ -77,7 +78,7 @@ jq -n \
         ),
         filesAnalyzed: false,
         licenseConcluded: "NOASSERTION",
-        licenseDeclared: (.value.license // "NOASSERTION" | gsub("\\s*/\\s*"; " OR ")),
+        licenseDeclared: (.value.license // "NOASSERTION" | spdx_declared),
         copyrightText: "NOASSERTION"
       });
   def frontend_packages:
@@ -97,8 +98,7 @@ jq -n \
         downloadLocation: "NOASSERTION",
         filesAnalyzed: false,
         licenseConcluded: "NOASSERTION",
-        licenseDeclared: (.value.license
-          | if . == "UNKNOWN" then "NOASSERTION" else gsub("\\s*/\\s*"; " OR ") end),
+        licenseDeclared: (.value.license | spdx_declared),
         copyrightText: "NOASSERTION"
       });
   rust_packages as $rust |

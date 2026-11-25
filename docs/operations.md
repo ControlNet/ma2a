@@ -119,8 +119,11 @@ with the program stays listed through the program's own path. Another platform's
 build and dev dependencies, and workspace tools such as `xtask` are not listed either. The SBOM
 therefore describes what ships, not the full build toolchain; `Cargo.lock` at the archive's commit
 records that. Its frontend packages are the installed closure of the console's production
-dependencies, counting peers and installed optional dependencies; a frontend package with no
-stated license is declared `NOASSERTION`. Validation refuses an SBOM listing `xtask` or `serde_derive`, or missing `serde`, and one whose
+dependencies, counting peers and installed optional dependencies. Each package declares its
+license as an SPDX expression, with a slash between licenses read as `OR`; a package with no
+stated license, or one that is not an SPDX expression, such as npm's `SEE LICENSE IN <file>` or
+`UNLICENSED`, is declared `NOASSERTION`, and the license report keeps the text as written. Validation refuses an SBOM listing `xtask` or `serde_derive`, or missing `serde`, one with a
+declared license that is neither `NOASSERTION`, `NONE` nor an SPDX expression, and one whose
 `documentNamespace` does not carry the SHA-256 of the archive's actual bytes, so an SBOM of
 another build with the same archive name is refused before it is attested. The dependency/license report must have both
 `rust` and `frontend` sections. The clean-room smoke logs only HTTP methods, paths, and statuses while proving failed unauthenticated

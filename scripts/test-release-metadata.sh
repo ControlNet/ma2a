@@ -41,7 +41,12 @@ done
 # Every package declares a license, as an SPDX expression.
 for mutation in \
   'missing|.packages[0] |= del(.licenseDeclared)' \
-  'slashed|.packages[0].licenseDeclared = "MIT / Apache-2.0"'
+  'slashed|.packages[0].licenseDeclared = "MIT / Apache-2.0"' \
+  'dangling|.packages[0].licenseDeclared = "MIT OR "' \
+  'empty|.packages[0].licenseDeclared = ""' \
+  'file|.packages[0].licenseDeclared = "SEE LICENSE IN LICENSE.md"' \
+  'unlicensed|.packages[0].licenseDeclared = "UNLICENSED"' \
+  'unbalanced|.packages[0].licenseDeclared = "(MIT OR Apache-2.0"'
 do
   label=${mutation%%|*}
   mutated="$temporary/$label-license.spdx.json"
@@ -51,6 +56,12 @@ do
     exit 1
   fi
 done
+
+# A compound expression with parentheses and an exception is an SPDX expression.
+compound="$temporary/compound-license.spdx.json"
+jq '.packages[0].licenseDeclared = "(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception"' \
+  "$sbom" > "$compound"
+./scripts/validate-release-metadata.sh "$archive" "$compound" "$report" >/dev/null
 
 # A report that names a build directory is refused, however the tools spelled the path.
 for mutation in \
