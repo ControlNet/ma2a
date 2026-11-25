@@ -16,7 +16,7 @@ use std::{
 use ma2a_core::service::{
     AgentAccept, Channel, ContentIdentity, EMPTY_ACCEPT, EndReason, FilesRequest, FilesResult,
     FrameKind, ProcessResult, ProxyResult, RemotePath, ServiceError, Termination, TransferAccept,
-    encode_call_accept, encode_call_outcome,
+    WriteMode, encode_call_accept, encode_call_outcome,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
@@ -519,5 +519,38 @@ async fn a_broken_stream_is_reported_over_a_failed_local_read() -> TestResult {
     // Any outcome the target did report gives way to the failed read.
     let answer = failing_input(false, &[exited(0, 0)?]).await?;
     assert!(matches!(answer, Err(ClientError::Local(_))), "{answer:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn only_a_files_read_or_write_is_accepted_and_only_a_read_sends_content() -> TestResult {
+    let run = async |request: &FilesRequest, content: &[u8], sent: &[Sent]| -> TestResult<_> {
+        let sent = replies(sent).await?;
+        let mut reader = FrameReader::new(sent.as_slice());
+        let mut writer = FrameWriter::new(tokio::io::sink());
+        within(files::run((&mut reader, &mut writer), request, content)).await
+    };
+    let done = Sent::Frame(
+        FrameKind::Outcome,
+        FilesResult::encode_outcome(&Ok(FilesResult::Done))?,
+    );
+    let mkdir = FilesRequest::Mkdir(RemotePath::parse("docs:/b")?, false);
+    let made = run(&mkdir, &[], &[accept(&EMPTY_ACCEPT), done]).await?;
+    assert!(malformed(&made), "an accepted mkdir: {made:?}");
+    let write = FilesRequest::Write(RemotePath::parse("docs:/a")?, WriteMode::Replace, 1);
+    let failed = Sent::Frame(
+        FrameKind::Outcome,
+        FilesResult::encode_outcome(&Err(ServiceError::Io))?,
+    );
+    let sent = [
+        accept(&EMPTY_ACCEPT),
+        Sent::Data(Channel::Output, b"x"),
+        failed,
+    ];
+    let written = run(&write, b"y", &sent).await?;
+    assert!(
+        malformed(&written),
+        "content answering a write: {written:?}"
+    );
     Ok(())
 }

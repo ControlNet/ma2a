@@ -318,7 +318,8 @@ A caller also refuses, as `invalid_input`, an answer that breaks the family cont
 its own local output failed: an `accept` with a header for Files, Exec, Shell, and Proxy, which
 send an empty one; a `reject` after `accept`, which would claim that an admitted operation had no
 effect; a Files `read` answered with an `outcome` alone, since a read is always
-accepted and never answered from replay; `data` or `end` on a channel the target does not send on;
+accepted and never answered from replay; an `accept` of any other Files operation than `read`
+and `write`, which answer alone, and content answering any but a `read`; `data` or `end` on a channel the target does not send on;
 and `data` on a channel the target already ended, or a second `end` of it. An Exec, Shell, or Proxy outcome must
 count exactly the bytes received from the target on each channel, and Proxy's `bytes_to_target`
 can be no more than the caller sent; any other count is `integrity_mismatch`.

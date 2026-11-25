@@ -24,23 +24,27 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let reads = matches!(request, FilesRequest::Read(..));
     let frame = match first(reader).await? {
         // A read is always accepted before its content, and reserves no RequestId whose
         // outcome replay could answer alone.
-        First::Finished(_) if matches!(request, FilesRequest::Read(..)) => {
+        First::Finished(_) if reads => {
             return Err(ClientError::Stream(ServiceError::InvalidInput));
         }
         First::Finished(frame) => return finished(&frame, request, Vec::new()),
-        First::Accepted(frame) => {
+        // Only a read or a write is accepted; every other operation answers alone.
+        First::Accepted(frame) if reads || matches!(request, FilesRequest::Write(..)) => {
             empty_accept(&frame)?;
             next_after_accept(reader, writer, (request, content)).await?
         }
+        First::Accepted(_) => return Err(ClientError::Stream(ServiceError::InvalidInput)),
     };
     let mut read = Vec::new();
     let mut frame = frame;
     loop {
         match frame.kind() {
-            FrameKind::Data => {
+            // Only a read carries content.
+            FrameKind::Data if reads => {
                 let (Channel::Output, bytes) = frame.data().map_err(ClientError::Stream)? else {
                     return Err(ClientError::Stream(ServiceError::InvalidInput));
                 };

@@ -582,12 +582,13 @@ async fn a_listing_entry_no_request_can_name_is_refused() -> TestResult {
 async fn a_listing_that_carries_a_body_is_refused() -> TestResult {
     let request = FilesRequest::List(RemotePath::parse("docs:/")?, None);
     for (body, valid) in [(&b""[..], true), (&b"x"[..], false)] {
-        // Given: a target that accepts a list, sends `body`, then lists one entry.
+        // Given: a target that answers a list with `body`, accepted to send it, then lists
+        // one entry.
         let ((mut reader, mut writer), (_service_reader, mut service_writer)) = pipe();
-        service_writer
-            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
-            .await?;
         if !body.is_empty() {
+            service_writer
+                .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+                .await?;
             service_writer.data(Channel::Output, body).await?;
         }
         let entry = DirEntry::new("a".to_owned(), FileMetadata::new(FileKind::File, 1));
