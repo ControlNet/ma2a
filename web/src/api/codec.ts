@@ -83,12 +83,12 @@ const ConnectionViewSchema = z.strictObject({
 })
 const PrivateRelayCandidateViewSchema = z.strictObject({
   provider_endpoint_id: EndpointIdSchema,
-  relay_url: z.string().min(1).max(2048),
+  relay_url: z.string().min(1).max(512),
   covered_space_ids: z.array(SpaceIdSchema).readonly(),
   home_compatible: z.boolean(),
 })
 const PublicRelayFallbackViewSchema = z.strictObject({
-  relay_url: z.string().min(1).max(2048),
+  relay_url: z.string().min(1).max(512),
   enabled: z.boolean(),
   observed_connected: z.boolean(),
 })

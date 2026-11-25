@@ -14,8 +14,11 @@ pub const PRIVATE_RELAY_ADVERTISEMENT_HASH_DOMAIN: &[u8] =
     b"ma2a-private-relay-advertisement-hash-v1";
 /// Maximum accepted canonical signed private relay advertisement size.
 pub const MAX_PRIVATE_RELAY_ADVERTISEMENT_LEN: usize = 4_096;
-/// Maximum UTF-8 byte length of one advertised relay URL.
-pub const MAX_PRIVATE_RELAY_URL_LEN: usize = 2_048;
+/// Maximum UTF-8 byte length of one relay URL, advertised or configured.
+///
+/// Any relay an Endpoint uses can become its home relay, which its signed address record then
+/// carries, so no relay URL may be longer than an address record allows.
+pub const MAX_RELAY_URL_LEN: usize = 512;
 /// Maximum lifetime of one private relay advertisement.
 pub const MAX_PRIVATE_RELAY_ADVERTISEMENT_VALIDITY_MS: u64 = 600_000;
 
@@ -87,7 +90,7 @@ impl PrivateRelayAdvertisementV1 {
         validity: PrivateRelayAdvertisementValidity,
     ) -> Result<Self, ProtocolError> {
         let relay_url_text = relay_url.as_str();
-        if relay_url_text.len() > MAX_PRIVATE_RELAY_URL_LEN || relay_url.scheme() != "https" {
+        if relay_url_text.len() > MAX_RELAY_URL_LEN || relay_url.scheme() != "https" {
             return Err(ProtocolError::INVALID_INPUT);
         }
         Ok(Self {
@@ -179,7 +182,7 @@ impl PrivateRelayAdvertisementV1 {
         let provider_endpoint_id = EndpointId::try_from(decoder.bytes(32)?)?;
         decoder.key(3)?;
         let relay_url = decoder
-            .text(MAX_PRIVATE_RELAY_URL_LEN)?
+            .text(MAX_RELAY_URL_LEN)?
             .parse()
             .map_err(|_| ProtocolError::INVALID_INPUT)?;
         decoder.key(4)?;

@@ -36,7 +36,7 @@ impl PrivateRelayCandidateView {
         covered_space_ids: Vec<SpaceId>,
         home_compatible: bool,
     ) -> Result<Self, ApiError> {
-        if relay_url.is_empty() || relay_url.len() > 2_048 {
+        if relay_url.is_empty() || relay_url.len() > ma2a_core::MAX_RELAY_URL_LEN {
             Err(ApiError::invalid_input())
         } else {
             Ok(Self {
@@ -66,7 +66,7 @@ impl PublicRelayFallbackView {
     /// # Errors
     /// Returns invalid input when the URL length is outside the bound.
     pub fn new(relay_url: &str, enabled: bool, observed_connected: bool) -> Result<Self, ApiError> {
-        if relay_url.is_empty() || relay_url.len() > 2_048 {
+        if relay_url.is_empty() || relay_url.len() > ma2a_core::MAX_RELAY_URL_LEN {
             Err(ApiError::invalid_input())
         } else {
             Ok(Self {

@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, error::Error, fmt, net::SocketAddr, path::PathB
 
 use iroh::{RelayMap, RelayMode};
 use iroh_base::RelayUrl;
-use ma2a_core::{MAX_SPACE_MEMBERS, SpaceId};
+use ma2a_core::{MAX_RELAY_URL_LEN, MAX_SPACE_MEMBERS, SpaceId};
 use ma2a_store::{RelayConfiguration, RelayTransportConfiguration};
 
 use crate::NativeRelayTlsConfig;
@@ -148,6 +148,9 @@ impl PrivateRelayProviderConfig {
         if public_relay_url.scheme() != "https" {
             return Err(RelayConfigError::PublicUrlRequiresTls);
         }
+        if public_relay_url.as_str().len() > MAX_RELAY_URL_LEN {
+            return Err(RelayConfigError::RelayUrlTooLong);
+        }
         if served_spaces.is_empty() || served_spaces.len() > MAX_SPACE_MEMBERS {
             return Err(RelayConfigError::InvalidServedSpaces);
         }
@@ -208,6 +211,12 @@ impl PublicRelayFallbackConfig {
         if relay_urls.iter().any(|url| url.scheme() != "https") {
             return Err(RelayConfigError::PublicUrlRequiresTls);
         }
+        if relay_urls
+            .iter()
+            .any(|url| url.as_str().len() > MAX_RELAY_URL_LEN)
+        {
+            return Err(RelayConfigError::RelayUrlTooLong);
+        }
         relay_urls.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
         let unique = relay_urls
             .iter()
@@ -240,6 +249,8 @@ pub enum RelayConfigError {
     InvalidPublicFallback,
     /// Publicly advertised relay URLs must use HTTPS.
     PublicUrlRequiresTls,
+    /// A relay URL is longer than an address record can carry.
+    RelayUrlTooLong,
     /// Plain external-termination backends must be restricted to loopback.
     ExternalListenerMustBeLoopback,
     /// Store-owned relay configuration is malformed or internally inconsistent.
@@ -256,6 +267,12 @@ impl fmt::Display for RelayConfigError {
                 formatter.write_str("public relay fallback set is invalid")
             }
             Self::PublicUrlRequiresTls => formatter.write_str("public relay URL must use HTTPS"),
+            Self::RelayUrlTooLong => {
+                write!(
+                    formatter,
+                    "relay URL is longer than {MAX_RELAY_URL_LEN} bytes"
+                )
+            }
             Self::ExternalListenerMustBeLoopback => formatter
                 .write_str("external TLS termination backend listener must use a loopback address"),
             Self::InvalidPersistedConfiguration => {

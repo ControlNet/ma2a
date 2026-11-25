@@ -2,11 +2,11 @@ use std::collections::BTreeSet;
 
 use iroh_base::TransportAddr;
 
-use crate::ProtocolError;
 use crate::address::{
     MAX_ADDRESS_RECORD_ADDRESSES, MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN,
-    MAX_ADDRESS_RECORD_USER_DATA_LEN, address_codec,
+    MAX_ADDRESS_RECORD_USER_DATA_LEN,
 };
+use crate::{MAX_RELAY_URL_LEN, ProtocolError};
 
 /// Bounded identity-free Iroh endpoint addressing data.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,8 +45,7 @@ impl AddressEndpointDataV1 {
                 return Err(ProtocolError::INVALID_INPUT);
             }
             match address {
-                TransportAddr::Relay(url)
-                    if url.as_str().len() <= address_codec::MAX_RELAY_URL_LEN => {}
+                TransportAddr::Relay(url) if url.as_str().len() <= MAX_RELAY_URL_LEN => {}
                 TransportAddr::Ip(socket) if socket.port() != 0 => {}
                 TransportAddr::Custom(custom)
                     if custom.data().len() <= MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN => {}

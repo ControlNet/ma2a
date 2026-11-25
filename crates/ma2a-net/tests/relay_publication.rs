@@ -242,3 +242,45 @@ fn store_owned_relay_configuration_parses_into_runtime_types() -> TestResult {
     );
     Ok(())
 }
+
+/// Returns an HTTPS relay URL exactly `length` bytes long.
+fn relay_url_of_length(length: usize) -> TestResult<RelayUrl> {
+    let base = "https://relay.example.invalid/";
+    let url: RelayUrl = format!("{base}{}", "a".repeat(length - base.len())).parse()?;
+    assert_eq!(url.as_str().len(), length);
+    Ok(url)
+}
+
+#[test]
+fn a_relay_url_must_fit_the_address_record_that_carries_it() -> TestResult {
+    // Given: the longest relay URL an address record carries, and one byte more.
+    let (fits, too_long) = (relay_url_of_length(512)?, relay_url_of_length(513)?);
+    let provider = |url: RelayUrl| {
+        PrivateRelayProviderConfig::new(
+            PrivateRelayProviderLocation::new("127.0.0.1:0".parse()?, url),
+            vec![ma2a_core::SpaceId::derive(b"relay-url-length")],
+            PrivateRelayTransport::ExternalTlsTermination,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })
+    };
+    let advertisement = |url: RelayUrl| {
+        ma2a_core::PrivateRelayAdvertisementV1::new(
+            ma2a_core::PrivateRelayAdvertisementScope::new(
+                ma2a_core::SpaceId::derive(b"relay-url-length"),
+                SecretKey::generate().public().into(),
+            ),
+            url,
+            ma2a_core::PrivateRelayAdvertisementValidity::new(1, NOW_MS, NOW_MS + 600_000)?,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })
+    };
+
+    // Then: every place a relay URL enters accepts the first and refuses the second.
+    assert!(provider(fits.clone()).is_ok());
+    assert!(provider(too_long.clone()).is_err());
+    assert!(PublicRelayFallbackConfig::new(vec![fits.clone()]).is_ok());
+    assert!(PublicRelayFallbackConfig::new(vec![too_long.clone()]).is_err());
+    assert!(advertisement(fits).is_ok());
+    assert!(advertisement(too_long).is_err());
+    Ok(())
+}

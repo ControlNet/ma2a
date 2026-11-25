@@ -2,14 +2,12 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use iroh_base::{CustomAddr, TransportAddr};
 
-use crate::ProtocolError;
 use crate::address::{
     AddressEndpointDataV1, MAX_ADDRESS_RECORD_ADDRESSES, MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN,
     MAX_ADDRESS_RECORD_USER_DATA_LEN,
 };
 use crate::space_codec::{Decoder, write_array, write_bytes, write_null, write_text, write_uint};
-
-pub(super) const MAX_RELAY_URL_LEN: usize = 512;
+use crate::{MAX_RELAY_URL_LEN, ProtocolError};
 
 impl AddressEndpointDataV1 {
     pub(super) fn encode(&self, output: &mut Vec<u8>) -> Result<(), ProtocolError> {

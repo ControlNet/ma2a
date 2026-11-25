@@ -1,4 +1,4 @@
-use ma2a_core::MAX_PRIVATE_RELAY_URL_LEN;
+use ma2a_core::MAX_RELAY_URL_LEN;
 
 use crate::repository::increment_revision;
 use crate::{RelayObservation, Repository, StoreError};
@@ -68,7 +68,7 @@ impl Repository {
             })?
             .map(|row| {
                 let observation = row?;
-                if observation.relay_url.len() > MAX_PRIVATE_RELAY_URL_LEN {
+                if observation.relay_url.len() > MAX_RELAY_URL_LEN {
                     return Err(StoreError::SchemaMismatch {
                         detail: "persisted relay observation URL exceeds protocol bounds",
                     });

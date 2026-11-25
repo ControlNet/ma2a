@@ -258,7 +258,7 @@ impl PublicRelayView {
     ) -> Result<Self, super::ApiError> {
         if url
             .as_ref()
-            .is_some_and(|value| value.len() > 2_048 || value.contains('@'))
+            .is_some_and(|value| value.len() > ma2a_core::MAX_RELAY_URL_LEN || value.contains('@'))
         {
             Err(super::ApiError::invalid_input())
         } else {

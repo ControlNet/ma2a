@@ -2,10 +2,8 @@ use iroh::address_lookup::{EndpointData, UserData};
 use iroh_base::TransportAddr;
 use ma2a_core::{
     AddressEndpointDataV1, MAX_ADDRESS_RECORD_ADDRESSES, MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN,
-    MAX_ADDRESS_RECORD_USER_DATA_LEN, ProtocolError,
+    MAX_ADDRESS_RECORD_USER_DATA_LEN, MAX_RELAY_URL_LEN, ProtocolError,
 };
-
-const MAX_RELAY_URL_LEN: usize = 512;
 
 /// Converts complete Iroh endpoint data into the bounded signed representation.
 ///

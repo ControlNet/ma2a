@@ -31,7 +31,7 @@ pub(super) fn private_configure(object: &Map<String, Value>) -> Result<CommandKi
         PrivateRelayConfiguration {
             mode,
             listen: bounded_text(object, "listen", 128)?,
-            public_url: bounded_text(object, "public_url", 2_048)?,
+            public_url: bounded_text(object, "public_url", ma2a_core::MAX_RELAY_URL_LEN)?,
             served_spaces: space_ids(object, "served_space_ids")?,
             certificate_path: optional_text(object, "certificate_path", 4_096)?,
             private_key_path: optional_text(object, "private_key_path", 4_096)?,
@@ -41,7 +41,7 @@ pub(super) fn private_configure(object: &Map<String, Value>) -> Result<CommandKi
 
 pub(super) fn public_configure(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
     exact_fields(object, &["version", "operation", "request_id", "url"])?;
-    let url = bounded_text(object, "url", 2_048)?;
+    let url = bounded_text(object, "url", ma2a_core::MAX_RELAY_URL_LEN)?;
     let authority = url
         .as_str()
         .strip_prefix("https://")

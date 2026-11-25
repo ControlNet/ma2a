@@ -69,7 +69,7 @@ pub use policy::{
 pub use reachability::RelayReachability;
 pub use relay::{
     MAX_PRIVATE_RELAY_ADVERTISEMENT_LEN, MAX_PRIVATE_RELAY_ADVERTISEMENT_VALIDITY_MS,
-    MAX_PRIVATE_RELAY_URL_LEN, PRIVATE_RELAY_ADVERTISEMENT_HASH_DOMAIN,
+    MAX_RELAY_URL_LEN, PRIVATE_RELAY_ADVERTISEMENT_HASH_DOMAIN,
     PRIVATE_RELAY_ADVERTISEMENT_SIGNATURE_DOMAIN, PrivateRelayAdvertisementScope,
     PrivateRelayAdvertisementV1, PrivateRelayAdvertisementValidity,
     SignedPrivateRelayAdvertisementV1,

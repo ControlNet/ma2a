@@ -10,6 +10,10 @@ an explicit, nonempty set of `served_spaces`. `PrivateRelayProviderLocation` pai
 with the externally reachable HTTPS relay URL. The provider signs advertisements with the same Iroh
 Endpoint secret used by the Runtime.
 
+Every relay URL, whether configured as a private relay, as a public fallback, or received in another
+provider's advertisement, is at most 512 bytes. Any relay an Endpoint uses can become its home
+relay, and its signed address record carries that URL with the same bound.
+
 Admission uses the Endpoint ID authenticated by the Iroh relay handshake. Effective served Spaces
 are the configured Spaces whose policy allows private relay providers and in which the hosting
 Endpoint is currently an unrevoked member. The per-member private-relay-provider bit is recorded and
