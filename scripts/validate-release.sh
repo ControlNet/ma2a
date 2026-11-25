@@ -102,13 +102,18 @@ if ! cmp -s "$expected" "$entries"; then
   exit 1
 fi
 
-checksum_name=$(tr -d '\r' < "$checksum_file" | awk 'NF >= 2 { sub(/^[^[:space:]]+[[:space:]]+\*?/, ""); print; exit }')
-[[ "$checksum_name" == "$(basename "$archive")" ]] || {
-  printf 'checksum sidecar names %s instead of %s\n' "$checksum_name" "$(basename "$archive")" >&2
+# The sidecar holds exactly one record, for this archive, in the form `sha256sum --check` reads.
+# Blank lines, such as the one dist ends it with, are allowed, and so are Windows line endings,
+# as a Windows build may write them and Windows users compare the digest by hand.
+checksum_record=$(tr -d '\r' < "$checksum_file" | grep -v '^$' || true)
+expected_digest=${checksum_record%% *}
+[[ "$expected_digest" =~ ^[0-9a-f]{64}$ &&
+  ( "$checksum_record" == "$expected_digest  $(basename "$archive")" ||
+    "$checksum_record" == "$expected_digest *$(basename "$archive")" ) ]] || {
+  printf 'checksum sidecar is not one record for %s\n' "$(basename "$archive")" >&2
   exit 1
 }
 
-expected_digest=$(tr -d '\r' < "$checksum_file" | awk 'NF >= 2 {print $1; exit}')
 if command -v sha256sum >/dev/null 2>&1; then
   observed_digest=$(sha256sum "$archive" | awk '{print $1}')
 else

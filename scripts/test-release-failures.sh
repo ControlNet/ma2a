@@ -41,6 +41,22 @@ if ./scripts/validate-release.sh "$tampered" "$target" >/dev/null 2>&1; then
   exit 1
 fi
 
+# The sidecar is one record for the archive, as `sha256sum --check` reads it. A second record
+# that disagrees fails that command, so it fails validation too; a lone record with Windows line
+# endings passes.
+resummed="$temporary/resummed/$(basename "$archive")"
+mkdir -p "$(dirname "$resummed")"
+cp "$archive" "$resummed"
+digest=$(hash_file "$archive")
+{ printf '%s *%s\n' "$digest" "$(basename "$archive")"
+  printf '%s *%s\n' "$(printf '0%.0s' $(seq 64))" "$(basename "$archive")"; } > "${resummed}.sha256"
+if ./scripts/validate-release.sh "$resummed" "$target" >/dev/null 2>&1; then
+  printf 'checksum sidecar with a second record unexpectedly passed validation\n' >&2
+  exit 1
+fi
+printf '%s *%s\r\n' "$digest" "$(basename "$archive")" > "${resummed}.sha256"
+./scripts/validate-release.sh "$resummed" "$target" >/dev/null
+
 mkdir "$temporary/extracted"
 tar -xJf "$archive" -C "$temporary/extracted"
 prefix=$(find "$temporary/extracted" -mindepth 1 -maxdepth 1 -type d -print -quit)
