@@ -263,13 +263,15 @@ while [ "$run" -le "$runs" ]; do
       else false end)
   ' --argjson expected "$expected_records" "$evidence" >/dev/null
   records=$(wc -l < "$evidence" | tr -d ' ')
+  # Checksums and the summary name the files inside the evidence directory, so they still hold
+  # wherever that directory is moved or downloaded to.
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$log" "$report" "$evidence" > "$output/run-$run.sha256" && sha256sum -c "$output/run-$run.sha256" >/dev/null
+    (cd "$output" && sha256sum "run-$run.log" "run-$run.junit.xml" "run-$run.jsonl" > "run-$run.sha256" && sha256sum -c "run-$run.sha256" >/dev/null)
   else
-    shasum -a 256 "$log" "$report" "$evidence" > "$output/run-$run.sha256" && shasum -a 256 -c "$output/run-$run.sha256" >/dev/null
+    (cd "$output" && shasum -a 256 "run-$run.log" "run-$run.junit.xml" "run-$run.jsonl" > "run-$run.sha256" && shasum -a 256 -c "run-$run.sha256" >/dev/null)
   fi
-  printf 'run=%s exit=0 tests=%s records=%s junit=%s evidence=%s\n' \
-    "$run" "$expected_tests" "$records" "$report" "$evidence" >> "$output/summary.txt"
+  printf 'run=%s exit=0 tests=%s records=%s junit=run-%s.junit.xml evidence=run-%s.jsonl\n' \
+    "$run" "$expected_tests" "$records" "$run" "$run" >> "$output/summary.txt"
   run=$((run + 1))
 done
 
