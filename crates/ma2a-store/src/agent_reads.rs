@@ -10,6 +10,7 @@ use rusqlite::params;
 
 use crate::{
     AgentDelivery, AgentRecord, AgentTaskRecord, Committed, Repository, StoreError,
+    agent_log::load_task,
     agent_rows::{AGENT_COLUMNS, TASK_COLUMNS, read_agent, read_task},
     agents::load_agent,
     repository::increment_revision,
@@ -146,6 +147,24 @@ impl Repository {
                 row.get::<_, Vec<u8>>(0)
             })?;
         rows.map(|row| Ok(AgentEvent::from_bytes(&row?)?)).collect()
+    }
+
+    /// Returns one task with its artifacts, both read in one transaction: an artifact is listed
+    /// exactly when the task's newest event counts its publication.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when a row is malformed.
+    pub fn agent_task_with_artifacts(
+        &self,
+        task: AgentTaskId,
+    ) -> Result<Option<(AgentTaskRecord, Vec<ArtifactRef>)>, StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let found = match load_task(&transaction, task)? {
+            Some(record) => Some((record, self.agent_artifacts(task)?)),
+            None => None,
+        };
+        transaction.commit()?;
+        Ok(found)
     }
 
     /// Returns a task's artifacts in publication order.

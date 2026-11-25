@@ -96,17 +96,17 @@ impl AgentManager {
         visible(self.task(task).await?, viewer)
     }
 
-    /// Returns one task with its artifacts.
+    /// Returns one task with its artifacts, as of one moment.
     pub(crate) async fn details(
         &self,
         viewer: Viewer<'_>,
         task: AgentTaskId,
     ) -> Result<AgentTaskDetails, ServiceError> {
-        let record = self.visible_task(viewer, task).await?;
-        let artifacts = self
-            .store(move |repository| repository.agent_artifacts(task))
+        let found = self
+            .store(move |repository| repository.agent_task_with_artifacts(task))
             .await?;
-        Ok(record.details(artifacts))
+        let (record, artifacts) = found.unzip();
+        Ok(visible(record, viewer)?.details(artifacts.unwrap_or_default()))
     }
 
     /// Delivers the creator's next message to a live task.

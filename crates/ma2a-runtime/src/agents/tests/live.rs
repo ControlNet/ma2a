@@ -621,3 +621,45 @@ async fn a_live_instance_is_still_followed_while_the_store_fails_for_a_moment() 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_task_and_its_artifacts_are_read_as_of_one_moment() -> TestResult {
+    // Given: a running task, its newest event, and a store thread held until it is released.
+    let live = Live::new().await?;
+    let before = Repository::open(&live.config)?
+        .agent_task(live.task)?
+        .ok_or("no task")?
+        .summary
+        .last_seq;
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let store = live.store.clone();
+    let holding = tokio::spawn(async move { store.processes(move |_| held.recv()).await });
+    tokio::task::yield_now().await;
+
+    // When: the task is read, and an artifact published between the reads the store queued.
+    let (manager, task) = (live.manager.clone(), live.task);
+    let reading = tokio::spawn(async move { manager.details((None, None), task).await });
+    tokio::task::yield_now().await;
+    let artifact =
+        ma2a_core::service::ArtifactRef::new(("report.txt", "text/plain"), (16, [5; 32]))?;
+    let store = live.store.clone();
+    let publishing = tokio::spawn(async move {
+        store
+            .processes(move |repository| repository.add_agent_artifact(task, (&artifact, 10)))
+            .await
+    });
+    tokio::task::yield_now().await;
+    release.send(())?;
+    let _held = holding.await?;
+    publishing.await???;
+    let details = reading.await??;
+
+    // Then: the artifact is listed exactly when the task's newest event counts it.
+    live.finish().await?;
+    let seen = (details.artifacts.len(), details.summary.last_seq);
+    assert!(
+        seen == (0, before) || seen == (1, before + 1),
+        "{seen:?} after {before}"
+    );
+    Ok(())
+}
