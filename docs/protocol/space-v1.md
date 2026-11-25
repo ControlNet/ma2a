@@ -141,7 +141,9 @@ The portable public-chain envelope is `{0: signed_genesis_bytes, 1: [signed_mani
 Each signed object is at most 32,768 bytes. A portable chain contains at most 255 manifests and is at
 most 8,389,381 bytes including canonical CBOR framing. Export rejects a chain beyond those bounds;
 every successfully exported chain is accepted by the same-version importer when its signatures and
-transitions remain valid.
+transitions remain valid. Applying a manifest past generation 255 fails as invalid encoding, the
+same way import refuses a longer chain, so control sync and enrollment never accept a chain that
+could not be exported again.
 
 The local authority therefore never signs a generation that export or enrollment paging would
 reject. Generations 240 through 255 are reserved for manifests that revoke at least one Endpoint, so

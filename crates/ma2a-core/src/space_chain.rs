@@ -103,7 +103,8 @@ impl SpaceChain {
     /// Applies one signed manifest under strict linear-chain transition rules.
     ///
     /// # Errors
-    /// Returns [`ManifestError`] for invalid signatures, forks, rollback, skips, or revocations.
+    /// Returns [`ManifestError`] for invalid signatures, forks, rollback, skips, or revocations,
+    /// and [`ManifestError::INVALID_ENCODING`] for a manifest past the 255 a portable chain holds.
     pub fn apply(
         &mut self,
         manifest: &SignedSpaceManifestV1,
@@ -131,6 +132,9 @@ impl SpaceChain {
             .ok_or(ManifestError::SKIPPED_GENERATION)?;
         if generation != next {
             return Err(ManifestError::SKIPPED_GENERATION);
+        }
+        if self.manifests.len() >= MAX_SPACE_CHAIN_MANIFESTS {
+            return Err(ManifestError::INVALID_ENCODING);
         }
         if manifest.previous_hash() != self.latest_hash {
             return Err(ManifestError::FORK);

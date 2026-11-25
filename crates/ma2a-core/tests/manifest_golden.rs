@@ -107,19 +107,35 @@ fn public_chain_round_trips_beyond_single_object_bound() -> Result<(), Box<dyn s
     let exported = chain.export_public()?;
     assert!(exported.len() > 32_768);
     assert_eq!(SpaceChain::import_public(&exported)?, chain);
-    for generation in 181..=256 {
-        let manifest = SpaceManifestV1::new(
-            SpaceManifestLink::new(chain.space_id(), generation, chain.latest_hash()),
-            generation,
+    let next = |chain: &SpaceChain| {
+        SpaceManifestV1::new(
+            SpaceManifestLink::new(
+                chain.space_id(),
+                chain.latest_generation() + 1,
+                chain.latest_hash(),
+            ),
+            chain.latest_generation() + 1,
             SpaceManifestMembership::new(vec![space_vectors::member(0x66, true)?], vec![]),
         )?
-        .sign(&secret)?;
-        chain.apply(&manifest)?;
+        .sign(&secret)
+    };
+    let mut last = next(&chain)?;
+    chain.apply(&last)?;
+    while chain.latest_generation() < 255 {
+        last = next(&chain)?;
+        chain.apply(&last)?;
     }
+    // A 256th manifest is refused like an over-long import, so the chain stays exportable.
     assert_eq!(
-        chain.export_public(),
-        Err(ma2a_core::ProtocolError::INVALID_INPUT)
+        chain.apply(&next(&chain)?),
+        Err(ma2a_core::ManifestError::INVALID_ENCODING)
     );
+    assert_eq!(
+        chain.apply(&last)?,
+        ma2a_core::ManifestApplyOutcome::IDEMPOTENT
+    );
+    let exported = chain.export_public()?;
+    assert_eq!(SpaceChain::import_public(&exported)?, chain);
     Ok(())
 }
 
