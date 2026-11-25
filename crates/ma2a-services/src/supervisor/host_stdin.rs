@@ -187,7 +187,8 @@ pub(super) async fn stdin(
 async fn write(shared: &Shared, bytes: &[u8]) -> Result<(), ServiceError> {
     let mut slot = shared.stdin.lock().await;
     let pipe = slot.as_mut().ok_or(ServiceError::StdinClosed)?;
-    if pipe.write_all(bytes).await.is_err() {
+    // On Windows the write finishes on another thread, and only the flush waits for it.
+    if pipe.write_all(bytes).await.is_err() || pipe.flush().await.is_err() {
         // The child no longer reads its stdin; it stays closed.
         slot.take();
         drop(slot);
