@@ -1,9 +1,9 @@
-use std::io;
+use std::{io, time::Duration};
 
 use iroh::{
     Endpoint, RelayMode,
     address_lookup::memory::MemoryLookup,
-    endpoint::{Connection, RecvStream, SendStream, presets},
+    endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream, VarInt, presets},
     protocol::Router,
 };
 use ma2a_core::{
@@ -179,6 +179,43 @@ async fn refusals_beyond_the_bound_are_reset_without_a_reply() -> TestResult {
         read_reject(&mut next_receive).await?,
         Some(ServiceError::Unavailable)
     );
+    client.close().await;
+    router.shutdown().await.map_err(io::Error::other)
+}
+
+#[tokio::test]
+async fn a_reject_cut_short_resets_the_stream() -> TestResult {
+    // Given: a peer that grants the handler no credit, so no reject frame can be sent.
+    let server = test_endpoint("ma2a_service_no_credit_server").await?;
+    let server_addr = server.addr();
+    let handler = ServiceHandler::new(ServiceKind::Shell, None, ServiceMetrics::default());
+    let router = Router::builder(server).accept(SHELL_ALPN, handler).spawn();
+    let transport = QuicTransportConfig::builder()
+        .stream_receive_window(VarInt::from_u32(0))
+        .receive_window(VarInt::from_u32(0))
+        .build();
+    let client = Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
+        .clear_address_lookup()
+        .address_lookup(MemoryLookup::with_provenance(
+            "ma2a_service_no_credit_client",
+        ))
+        .transport_config(transport)
+        .bind()
+        .await
+        .map_err(io::Error::other)?;
+    let connection = client
+        .connect(server_addr, SHELL_ALPN)
+        .await
+        .map_err(io::Error::other)?;
+
+    // When: its stream is refused, and the reject runs out of time unsent.
+    let (_send, mut receive) = announce(&connection).await?;
+    let mut byte = [0_u8; 1];
+    let read = tokio::time::timeout(Duration::from_secs(10), receive.read(&mut byte)).await;
+
+    // Then: the stream is reset, never ended as if a whole answer had been sent.
+    assert!(matches!(read, Ok(Err(_))), "{read:?}");
     client.close().await;
     router.shutdown().await.map_err(io::Error::other)
 }
