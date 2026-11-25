@@ -308,7 +308,9 @@ stall.
 
 A caller keeps its write side open until it receives the terminal frame. Closing it earlier
 cancels the operation, and a stream that ends without a terminal frame is reported as
-`outcome_unknown`.
+`outcome_unknown`. It sends `end` on channel 0 only at the end of its local input. When reading
+that input fails, it sends `cancel` instead and reports the failure, whatever the outcome, so a
+remote program never takes part of its input as all of it.
 
 A caller also refuses, as `invalid_input`, an answer that breaks the family contract, even after
 its own local output failed: an `accept` with a header for Files, Exec, Shell, and Proxy, which

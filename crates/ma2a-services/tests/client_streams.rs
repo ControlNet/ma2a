@@ -285,6 +285,25 @@ async fn a_replayed_outcome_is_told_apart_from_a_run_that_streamed() -> TestResu
     Ok(())
 }
 
+/// Local input that delivers one chunk and then fails.
+struct FailsAfter(Option<&'static [u8]>);
+
+impl tokio::io::AsyncRead for FailsAfter {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(self.0.take().map_or_else(
+            || Err(std::io::ErrorKind::BrokenPipe.into()),
+            |chunk| {
+                buffer.put_slice(chunk);
+                Ok(())
+            },
+        ))
+    }
+}
+
 /// Runs an Exec whose local input is `input`, sent through `wrap` around the caller's stream,
 /// against a scripted target that takes the input `ab` and the frame after it, then reports
 /// the process ended with `reason`; returns the answer and that last frame's kind.
@@ -343,5 +362,23 @@ async fn the_end_of_input_reaches_the_target_through_a_buffered_stream() -> Test
     // Then: the target receives the `end`, so a process waiting for it finishes.
     assert_eq!(last, FrameKind::End);
     assert_eq!(result?.reason, EndReason::Completed);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_local_read_cancels_the_process_and_is_reported() -> TestResult {
+    // Given: local input that fails after one chunk.
+    // When
+    let (result, last) = exec_scripted(
+        FailsAfter(Some(b"ab")),
+        std::convert::identity,
+        EndReason::Cancelled,
+    )
+    .await?;
+
+    // Then: the process is cancelled rather than told its input ended, and the read failure
+    // is the answer.
+    assert_eq!(last, FrameKind::Cancel);
+    assert!(matches!(result, Err(ClientError::Local(_))), "{result:?}");
     Ok(())
 }

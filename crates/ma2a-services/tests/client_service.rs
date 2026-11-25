@@ -99,6 +99,59 @@ async fn an_accepted_call_relays_input_output_and_errors_until_its_outcome() -> 
     Ok(())
 }
 
+/// Local input that delivers one chunk and then fails.
+struct FailsAfter(Option<&'static [u8]>);
+
+impl tokio::io::AsyncRead for FailsAfter {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(self.0.take().map_or_else(
+            || Err(std::io::ErrorKind::BrokenPipe.into()),
+            |chunk| {
+                buffer.put_slice(chunk);
+                Ok(())
+            },
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_failed_local_read_cancels_the_call_and_is_reported() -> TestResult {
+    // Given: a service that answers whatever input it got with success.
+    let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();
+    let script = async {
+        service_writer
+            .frame(FrameKind::Accept, &encode_call_accept(b"")?)
+            .await?;
+        service_writer.flush().await?;
+        let input = service_reader.expect().await?;
+        assert_eq!(input.data()?, (Channel::Input, &b"abc"[..]));
+        let after = service_reader.expect().await?.kind();
+        service_writer
+            .frame(FrameKind::Outcome, &encode_call_outcome(Ok(b"3"))?)
+            .await?;
+        service_writer.flush().await?;
+        TestResult::Ok(after)
+    };
+
+    // When: local input fails after one chunk.
+    let local = ProcessIo {
+        input: Some(FailsAfter(Some(b"abc"))),
+        output: Vec::new(),
+        error: None::<Vec<u8>>,
+    };
+    let calling = service::call((&mut reader, &mut writer), local, std::future::pending());
+    let (called, after) = within(async { tokio::join!(calling, script) }).await?;
+
+    // Then: the service is told to cancel, not that input ended, and the failure is reported.
+    assert_eq!(after?, FrameKind::Cancel);
+    assert!(matches!(called, Err(ClientError::Local(_))), "{called:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_cancelled_call_ends_with_the_services_failure() -> TestResult {
     let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();

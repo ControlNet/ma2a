@@ -15,7 +15,7 @@ use tokio::{
 
 use super::{
     ClientError, First, decoded, first_or_cancel, next,
-    process::{ProcessControl, ProcessIo, inbound, write_flushed},
+    process::{ProcessControl, ProcessIo, finished, inbound, write_flushed},
     unexpected,
 };
 use crate::{FrameReader, FrameWriter};
@@ -52,11 +52,13 @@ pub async fn describe<R: AsyncRead + Unpin>(
 }
 
 /// Relays one call until its outcome: local input to channel 0 once the service accepted,
-/// output and errors to their sinks, and one `cancel` when `cancel` completes.
+/// output and errors to their sinks, and one `cancel` when `cancel` completes or a local read
+/// fails.
 ///
 /// # Errors
 /// Returns the refusal (`unknown_service`, `version_mismatch`, `concurrency_exceeded`, ...),
-/// the failed outcome (`cancelled`, `outcome_unknown`, ...), or the stream failure.
+/// the failed outcome (`cancelled`, `outcome_unknown`, ...), the stream failure, or, once the
+/// call was cancelled, the failed local read.
 pub async fn call<R, W, I, O, E, C>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     local: ProcessIo<I, O, E>,
@@ -103,7 +105,7 @@ where
         tokio::select! {
             biased;
             result = &mut outbound => result,
-            () = &mut inbound => outbound.await,
+            failed = &mut inbound => finished(outbound.await, failed),
         }
     }?;
     Ok(Called {

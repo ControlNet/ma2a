@@ -58,11 +58,12 @@ pub struct Streamed {
 /// Relays one admitted remote process until its terminal outcome.
 ///
 /// Input and output run independently, so a process that echoes a large input can never
-/// deadlock against a caller that is still sending it.
+/// deadlock against a caller that is still sending it. Only EOF ends the process's input; a
+/// failed local read cancels the process instead.
 ///
 /// # Errors
 /// Returns the refusal (`spawn_failed` when the program cannot start), the failed outcome,
-/// or the stream failure.
+/// the stream failure, or, once the process was cancelled, the failed local read.
 pub async fn run<R, W, I, O, E, C>(
     streams: (&mut FrameReader<R>, &mut FrameWriter<W>),
     local: ProcessIo<I, O, E>,
@@ -126,7 +127,7 @@ where
         tokio::select! {
             biased;
             result = &mut outbound => result,
-            () = &mut inbound => outbound.await,
+            failed = &mut inbound => finished(outbound.await, failed),
         }
     }?;
     Ok(Streamed {
@@ -135,12 +136,23 @@ where
     })
 }
 
-/// Caller → target: input, resizes, and at most one `cancel`, until nothing is left to send.
+/// The outcome of a remote process whose input side ended with `failed`: a failed local read
+/// is the answer, since the target only saw a `cancel`.
+pub(super) fn finished<T>(
+    outcome: Result<T, ClientError>,
+    failed: Option<std::io::Error>,
+) -> Result<T, ClientError> {
+    failed.map_or(outcome, |failure| Err(ClientError::Local(failure)))
+}
+
+/// Caller → target: input, resizes, and at most one `cancel`, until nothing is left to send;
+/// returns a failed local read, which cancels instead of ending input.
 pub(super) async fn inbound<W, I, C>(
     writer: &mut FrameWriter<W>,
     (mut input, control): (Option<I>, ProcessControl<C>),
     lost: &Notify,
-) where
+) -> Option<std::io::Error>
+where
     W: AsyncWrite + Unpin,
     I: AsyncRead + Unpin,
     C: Future<Output = ()>,
@@ -151,6 +163,7 @@ pub(super) async fn inbound<W, I, C>(
     } = control;
     tokio::pin!(cancel);
     let mut cancelled = false;
+    let mut failed = None;
     let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
     while input.is_some() || resizes.is_some() || !cancelled {
         let reading = input.is_some();
@@ -159,18 +172,24 @@ pub(super) async fn inbound<W, I, C>(
             biased;
             () = lost.notified(), if !cancelled => true,
             () = &mut cancel, if !cancelled => true,
-            read = read_input(input.as_mut(), &mut buffer), if reading => {
-                let forwarded = match read {
-                    Some(length) => writer.data(Channel::Input, bytes_of(&buffer, length)).await,
-                    None => writer.end(Channel::Input).await,
-                };
-                // Flushed after the `end` too, which a buffered stream would keep.
-                let flushed = forwarded.and(writer.flush().await);
-                if read.is_none() || flushed.is_err() {
-                    input = None;
+            read = read_input(input.as_mut(), &mut buffer), if reading => match read {
+                Ok(read) => {
+                    let forwarded = match read.and_then(|length| buffer.get(..length)) {
+                        Some(chunk) => writer.data(Channel::Input, chunk).await,
+                        None => writer.end(Channel::Input).await,
+                    };
+                    // Flushed after the `end` too, which a buffered stream would keep.
+                    let flushed = forwarded.and(writer.flush().await);
+                    if read.is_none() || flushed.is_err() {
+                        input = None;
+                    }
+                    false
                 }
-                false
-            }
+                Err(error) => {
+                    failed = Some(error);
+                    true
+                }
+            },
             size = recv(resizes.as_mut()), if resizing => {
                 match size.map(TerminalSize::encode_resize) {
                     Some(Ok(resize)) => send(writer, FrameKind::Control, &resize).await,
@@ -187,6 +206,7 @@ pub(super) async fn inbound<W, I, C>(
             send(writer, FrameKind::Cancel, &[]).await;
         }
     }
+    failed
 }
 
 /// Target → caller until the outcome; lost local output asks the inbound side to cancel.
@@ -264,19 +284,15 @@ pub(super) async fn write_flushed<T: AsyncWrite + Unpin>(
     sink.flush().await
 }
 
-/// Reads local input; `None` is EOF, and a read failure ends input the same way.
+/// Reads local input; `None` is EOF.
 async fn read_input<I: AsyncRead + Unpin>(
     input: Option<&mut I>,
     buffer: &mut [u8],
-) -> Option<usize> {
-    match input?.read(buffer).await {
-        Ok(0) | Err(_) => None,
-        Ok(read) => Some(read),
-    }
-}
-
-fn bytes_of(buffer: &[u8], length: usize) -> &[u8] {
-    buffer.get(..length).unwrap_or_default()
+) -> std::io::Result<Option<usize>> {
+    let Some(input) = input else {
+        return Ok(None);
+    };
+    Ok(Some(input.read(buffer).await?).filter(|read| *read > 0))
 }
 
 async fn recv(resizes: Option<&mut mpsc::Receiver<TerminalSize>>) -> Option<TerminalSize> {
