@@ -3,7 +3,7 @@ use iroh_base::RelayUrl;
 use ma2a_core::AddressEndpointDataV1;
 use tokio::sync::mpsc;
 
-use crate::address_observation::AddressObservation;
+use crate::address_observation::{AddressObservation, AddressObservationError};
 
 /// One Iroh-reported home relay connection state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,42 +90,49 @@ impl IrohRelayObserver {
         }
     }
 
+    fn current(&self) -> Result<(u64, AddressEndpointDataV1), AddressObservationError> {
+        self.address_observation.current()
+    }
+
     pub(crate) async fn run(self, sender: mpsc::Sender<IrohRelayObservation>) {
         let mut address_generation = self.address_observation.subscribe();
         let mut home_watcher = self.endpoint.home_relay_status();
-        let Ok((_, endpoint_data)) = self.address_observation.current() else {
-            return;
-        };
-        let mut last = observation(&self.endpoint, endpoint_data, home_watcher.get());
-        if sender.send(last.clone()).await.is_err() {
+        let mut last = self.current().ok().map(|(_, endpoint_data)| {
+            observation(&self.endpoint, endpoint_data, home_watcher.get())
+        });
+        if let Some(first) = &last
+            && sender.send(first.clone()).await.is_err()
+        {
             return;
         }
         loop {
-            let next = tokio::select! {
+            let current = tokio::select! {
                 () = self.endpoint.closed() => break,
                 changed = address_generation.changed() => match changed {
-                    Ok(()) => match self.address_observation.current() {
-                        Ok((_, endpoint_data)) => observation(
-                            &self.endpoint,
-                            endpoint_data,
-                            home_watcher.get(),
-                        ),
-                        Err(_) => break,
-                    },
+                    Ok(()) => self.current().map(|(_, endpoint_data)| {
+                        observation(&self.endpoint, endpoint_data, home_watcher.get())
+                    }),
                     Err(_) => break,
                 },
                 homes = home_watcher.updated() => match homes {
-                    Ok(homes) => match self.address_observation.current() {
-                        Ok((_, endpoint_data)) => observation(&self.endpoint, endpoint_data, homes),
-                        Err(_) => break,
-                    },
+                    Ok(homes) => self.current().map(|(_, endpoint_data)| {
+                        observation(&self.endpoint, endpoint_data, homes)
+                    }),
                     Err(_) => break,
                 },
             };
-            if next == last {
+            let next = match current {
+                Ok(next) => next,
+                // Too many local addresses, say, may pass; the next change is reported.
+                Err(AddressObservationError::Unavailable | AddressObservationError::Invalid(_)) => {
+                    continue;
+                }
+                Err(AddressObservationError::Poisoned | AddressObservationError::Closed) => break,
+            };
+            if last.as_ref() == Some(&next) {
                 continue;
             }
-            last = next.clone();
+            last = Some(next.clone());
             if sender.send(next).await.is_err() {
                 break;
             }
@@ -156,3 +163,6 @@ fn observation(
         home_relays,
     }
 }
+
+#[cfg(test)]
+mod tests;
