@@ -112,3 +112,22 @@ async fn a_cancel_the_target_never_takes_ends_the_relay_without_a_second_grace()
     assert_eq!(started.elapsed(), super::CANCEL_GRACE);
     assert_eq!(relayed.terminal, Terminal::Lost);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_client_cancel_the_target_never_takes_ends_the_relay_after_the_cancel_grace() {
+    // Given: a target that reads nothing, through a pipe with no room.
+    let ((_client_reader, mut client_writer), (_target_reader, _target_writer), task) =
+        start_with(1);
+
+    // When: the client cancels in so many words rather than disappearing.
+    let started = tokio::time::Instant::now();
+    client_writer
+        .frame(FrameKind::Cancel, &[])
+        .await
+        .expect("cancel");
+    let relayed = task.await.expect("relay");
+
+    // Then: the cancel has the same grace as one sent for a client that left.
+    assert_eq!(started.elapsed(), super::CANCEL_GRACE);
+    assert_eq!(relayed.terminal, Terminal::Lost);
+}

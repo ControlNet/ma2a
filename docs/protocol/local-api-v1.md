@@ -103,7 +103,8 @@ session cannot make this Runtime serve anything.
 3. The Runtime dials the target on the family ALPN and relays frames with one-frame buffers.
    Dialing and writing `open` share 15 seconds. A target that grants no stream in that time is
    refused with `reject(timed_out)` and the request ID is released; one that takes no `open` in
-   that time, or no later frame within 30 seconds, is treated as lost.
+   that time, or no later frame within 30 seconds, is treated as lost. A `cancel`, whether the
+   client sent it or the Runtime sends it for a client that left, has 5 seconds instead.
 
 The client keeps its side open until it receives a terminal frame. Closing the connection earlier
 cancels the operation. A client that takes no frame for 30 seconds is treated as gone and the

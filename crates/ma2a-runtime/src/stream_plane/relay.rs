@@ -214,7 +214,13 @@ where
         match frame {
             Some(Ok(Some(frame))) if from_client(frame.kind()) => {
                 Shared::count(&shared.to_target, &frame);
-                match forward(target_writer, &frame, FORWARD_STALL).await {
+                // A cancel gets the grace a cancel for a client that left gets.
+                let bound = if frame.kind() == FrameKind::Cancel {
+                    CANCEL_GRACE
+                } else {
+                    FORWARD_STALL
+                };
+                match forward(target_writer, &frame, bound).await {
                     Err(ServiceError::TimedOut) => return false,
                     // A target that stopped reading may have ended; its terminal can follow.
                     Err(_) => return true,
