@@ -9,7 +9,10 @@ use std::{
     time::Duration,
 };
 
-use ma2a_agent::tools::{AgentTaskTarget, AgentWait, FilesTarget, ProcessTarget, ProxyOpen};
+use ma2a_agent::tools::{
+    AgentArtifactArgs, AgentTaskTarget, AgentWait, FilesTarget, ProcessTarget, ProxyOpen,
+    TransferGet,
+};
 use ma2a_core::{
     RequestId,
     service::{AgentId, AgentTaskId},
@@ -241,6 +244,40 @@ async fn read_only_calls_to_a_silent_target_time_out() -> TestResult {
         assert_eq!(error.code, "timed_out", "{tool}");
     }
     assert_eq!(fixture.opened.load(Ordering::Relaxed), 3);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn downloads_from_a_silent_target_time_out() -> TestResult {
+    // Given
+    let fixture = Fixture::new("silent-downloads", true)?;
+    let call = fixture.call()?;
+    let get = TransferGet {
+        endpoint: target(),
+        root: "home".to_owned(),
+        path: "a".to_owned(),
+        to: "a".to_owned(),
+    };
+    let artifact = AgentArtifactArgs {
+        endpoint: target(),
+        agent: "helper".to_owned(),
+        task: AgentTaskId::random()?.to_string(),
+        name: "report.txt".to_owned(),
+        to: "b".to_owned(),
+    };
+
+    // When
+    let bound = Duration::from_secs(60);
+    let got = tokio::time::timeout(bound, call.transfer_get(get)).await;
+    let fetched = tokio::time::timeout(bound, call.agent_artifact(artifact)).await;
+
+    // Then: a target that never accepts is `timed_out` after 30 s.
+    for (tool, answered) in [("transfer.get", got), ("agent.artifact", fetched)] {
+        let Ok(Err(error)) = answered else {
+            return Err(format!("{tool} waited on a target that never answers").into());
+        };
+        assert_eq!(error.code, "timed_out", "{tool}");
+    }
     Ok(())
 }
 

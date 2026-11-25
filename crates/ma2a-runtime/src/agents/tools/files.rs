@@ -136,9 +136,13 @@ pub(super) async fn download<R: AsyncRead + Unpin>(
     mut reader: FrameReader<R>,
     (workspace, relative): (&Path, &str),
 ) -> Result<TransferResult, ToolError> {
-    let identity = client::transfer::download_accepted(&mut reader)
-        .await
-        .map_err(|error| failed(&error))?;
+    // A download is read-only, so waiting for its Accept is bounded like any read.
+    let identity = bounded(async {
+        client::transfer::download_accepted(&mut reader)
+            .await
+            .map_err(|error| failed(&error))
+    })
+    .await?;
     // Re-validate immediately before opening the partial file so a directory component swapped
     // into a symlink during the remote handshake cannot escape the workspace.
     let target = destination(workspace, relative)?;
