@@ -1,0 +1,117 @@
+name: interactive
+
+# Manual only: opens an SSH session on a hosted runner to build and debug on that platform
+# (for example, Windows-only code that cannot run locally). Kept out of ci.yml so pushes and pull
+# requests never start a session. Only users with write access can dispatch it.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner to start
+        type: choice
+        options: [windows-latest, ubuntu-latest, macos-15-intel, all]
+        default: windows-latest
+      ref:
+        description: Branch, tag or SHA to check out (must be pushed here); empty checks out the dispatch ref
+        required: false
+        default: ''
+      timeout_minutes:
+        description: Job time limit in minutes (at most 360), setup and session included
+        type: number
+        default: 60
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  UPTERM_VERSION: v0.41.1
+
+jobs:
+  ssh:
+    name: session (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Dispatches from the API or gh CLI deliver number inputs as strings.
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ inputs.os == 'all' && fromJSON('["ubuntu-latest","windows-latest","macos-15-intel"]') || fromJSON(format('["{0}"]', inputs.os)) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - uses: Swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+        working-directory: web
+
+      # upterm relays SSH through uptermd.upterm.dev; only the listed public keys may join or run
+      # commands. Keys come from the dispatching user's GitHub profile plus the optional repository
+      # variable INTERACTIVE_SSH_AUTHORIZED_KEYS (one public key per line).
+      - name: Start the upterm session
+        id: upterm
+        shell: bash
+        env:
+          EXTRA_KEYS: ${{ vars.INTERACTIVE_SSH_AUTHORIZED_KEYS }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          native() { if [ "$RUNNER_OS" = Windows ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+          posix() { if [ "$RUNNER_OS" = Windows ]; then cygpath -u "$1"; else printf '%s' "$1"; fi; }
+          case "$RUNNER_OS" in Windows) platform=windows ;; Linux) platform=linux ;; macOS) platform=darwin ;; esac
+          case "$RUNNER_ARCH" in X64) arch=amd64 ;; ARM64) arch=arm64 ;; esac
+          dir="$(posix "$RUNNER_TEMP")/upterm"
+          mkdir -p "$dir/handoff" "$dir/run"
+          if [ "$RUNNER_OS" != Windows ]; then
+            # macOS caps Unix socket paths at 104 bytes, so keep upterm's admin socket under the short runner temp path.
+            export XDG_RUNTIME_DIR="$dir/run"
+            echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          fi
+          curl -fsSL "https://github.com/owenthereal/upterm/releases/download/$UPTERM_VERSION/upterm_${platform}_${arch}.tar.gz" | tar -xz -C "$dir"
+          native "$dir" >> "$GITHUB_PATH"
+          { curl -fsSL "https://github.com/$ACTOR.keys"; printf '%s\n' "$EXTRA_KEYS"; } | grep -E '^(ssh-|ecdsa-|sk-)' > "$dir/authorized_keys" || true
+          if [ ! -s "$dir/authorized_keys" ]; then
+            echo "::error::No authorized SSH keys: add one to the GitHub profile of $ACTOR or set INTERACTIVE_SSH_AUTHORIZED_KEYS."
+            exit 1
+          fi
+          printf '%s\n' \
+            '@cert-authority uptermd.upterm.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4' \
+            '@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4' \
+            > "$dir/known_hosts"
+          name="gha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$RUNNER_OS"
+          "$dir/upterm" host --detach --accept --output json --name "$name" \
+            --known-hosts "$(native "$dir/known_hosts")" --server ssh://uptermd.upterm.dev:22 \
+            --authorized-keys "$(native "$dir/authorized_keys")" --full-access -- bash -l > "$dir/session.json"
+          jq -e '.open != true and (.sshCommand | length > 0)' "$dir/session.json" > /dev/null
+          # jq on Windows ends lines with CRLF, which would corrupt the host name.
+          jq -r '.sshCommand' "$dir/session.json" | tr -d '\r' > "$dir/handoff/ssh-command.txt"
+          posix "$GITHUB_WORKSPACE" > "$dir/handoff/workspace.txt"
+          echo >> "$dir/handoff/workspace.txt"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "handoff=$(native "$dir/handoff")" >> "$GITHUB_OUTPUT"
+
+      # Job logs stay unreadable through the API until the job ends, but artifacts can be downloaded
+      # as soon as they are uploaded.
+      - name: Hand over the connection command
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-${{ matrix.os }}
+          path: ${{ steps.upterm.outputs.handoff }}
+          retention-days: 1
+
+      # The session lasts until a file named continue appears in the workspace, the session ends,
+      # or the job times out.
+      - name: Keep the session open
+        shell: bash
+        run: |
+          echo "The connection command is in artifact ssh-${{ matrix.os }}; create a file named continue in $GITHUB_WORKSPACE to end the session."
+          while [ ! -e "$GITHUB_WORKSPACE/continue" ] && upterm session info "${{ steps.upterm.outputs.name }}" -o json > /dev/null 2>&1; do
+            sleep 10
+          done
