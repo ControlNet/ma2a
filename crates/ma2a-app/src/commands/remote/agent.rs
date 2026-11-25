@@ -7,7 +7,7 @@ use ma2a_core::service::{
     MessagePart, MessageRole, OpenBody, ServiceError,
 };
 use ma2a_runtime::{api::agent_event_value, ipc::IpcPaths};
-use ma2a_services::client::{self, ClientError};
+use ma2a_services::client;
 use serde_json::{Value, json};
 
 use super::{READ_DEADLINE, agent_view::view, bounded, open, open_bound};
@@ -166,28 +166,40 @@ async fn submit(target: Target<'_>, arguments: SubmitArgs) -> Result<(), AppErro
     Ok(())
 }
 
-/// Returns whether an error only means the target cannot answer right now.
-const fn transient(error: &ClientError) -> bool {
-    matches!(
-        error.status(),
-        Some(
-            ServiceError::Unavailable
-                | ServiceError::Unreachable
-                | ServiceError::TimedOut
-                | ServiceError::OutcomeUnknown
-                | ServiceError::Cancelled
-        )
-    )
+/// Returns whether the status `name` only means the target cannot answer right now: it is
+/// restarting or out of reach.
+pub(crate) fn passes(name: &str) -> bool {
+    [
+        ServiceError::Unavailable,
+        ServiceError::Unreachable,
+        ServiceError::TimedOut,
+        ServiceError::OutcomeUnknown,
+        ServiceError::Cancelled,
+    ]
+    .iter()
+    .any(|status| status.name() == name)
+}
+
+/// Returns whether reopening an interrupted watch failed in a way that passes: the Runtime
+/// keeps the meaning of its own refusals, and any other local failure is this Runtime being
+/// away for now, as while it restarts.
+fn reopening_passes(error: &AppError) -> bool {
+    match error {
+        AppError::Rejected(name, _) => passes(name),
+        _ => true,
+    }
 }
 
 /// Follows a task until it ended, printing its events after `after` when given, and
-/// reconnecting while the target restarts or is unreachable.
+/// reconnecting while the target restarts or is unreachable. Once a watch was interrupted,
+/// reopening it can fail the same passing way, so that is retried too.
 async fn follow(
     target: Target<'_>,
     (agent, task): (AgentId, AgentTaskId),
     after: Option<u32>,
 ) -> Result<AgentReply, AppError> {
     let (print_events, mut seen) = (after.is_some(), after.unwrap_or(0));
+    let mut reconnecting = false;
     loop {
         let request = AgentRequest::Watch(agent.clone(), task, seen);
         let watched = match open(target.0, target.1, OpenBody::Agent(request)).await {
@@ -203,11 +215,18 @@ async fn follow(
                 printed?;
                 outcome
             }
+            Err(error) if reconnecting && reopening_passes(&error) => {
+                tokio::time::sleep(RETRY).await;
+                continue;
+            }
             Err(error) => return Err(error),
         };
         match watched {
             Ok((_, reply)) => return Ok(reply),
-            Err(error) if transient(&error) => tokio::time::sleep(RETRY).await,
+            Err(error) if error.status().is_some_and(|status| passes(status.name())) => {
+                reconnecting = true;
+                tokio::time::sleep(RETRY).await;
+            }
             Err(error) => return Err(error.into()),
         }
     }

@@ -7,7 +7,10 @@ use std::{fmt::Write as _, fs::File, path::PathBuf};
 
 use ma2a_core::{
     EndpointId, RequestId,
-    service::{AgentAccept, AgentId, AgentReply, AgentTaskId, AgentTaskSummary, FrameKind},
+    service::{
+        AgentAccept, AgentEvent, AgentEventBody, AgentId, AgentReply, AgentTaskId, AgentTaskState,
+        AgentTaskSummary, FrameKind, ServiceError,
+    },
 };
 use ma2a_runtime::{
     api::{LOCAL_API_VERSION, MAX_LOCAL_REQUEST_BYTES},
@@ -37,6 +40,12 @@ pub(crate) fn answering(accept: AgentAccept, reply: &AgentReply) -> TestResult<S
     ])
 }
 
+/// Not a target's frames: the daemon refuses the stream with the local API error `error`, as
+/// a Runtime that cannot open one does.
+pub(crate) fn refusing(error: &str) -> Script {
+    vec![(FrameKind::Open, error.as_bytes().to_vec())]
+}
+
 /// A queued task of `agent` on the target.
 pub(crate) fn summary(task: AgentTaskId, agent: &str) -> TestResult<AgentTaskSummary> {
     // The identity point is a valid Ed25519 key.
@@ -50,6 +59,42 @@ pub(crate) fn summary(task: AgentTaskId, agent: &str) -> TestResult<AgentTaskSum
         ),
         1_000,
     ))
+}
+
+/// A watch of `task` after event `after`, accepted.
+fn watching(after: u32) -> TestResult<(FrameKind, Vec<u8>)> {
+    let accept = AgentAccept::Watching(AgentTaskState::Running, after + 1);
+    Ok((FrameKind::Accept, accept.encode()?))
+}
+
+/// Event `seq` of a task, reaching `state`.
+fn event(seq: u32, state: AgentTaskState) -> TestResult<(FrameKind, Vec<u8>)> {
+    let mut data = vec![1];
+    let body = AgentEventBody::State(state, None);
+    data.extend(AgentEvent::new(seq, 1_000, body).to_bytes()?);
+    Ok((FrameKind::Data, data))
+}
+
+/// A watch after event 1 that the target loses after event 2, as when it restarts.
+pub(crate) fn watch_lost() -> TestResult<Script> {
+    let lost = AgentReply::encode_outcome(&Err(ServiceError::Unavailable))?;
+    Ok(vec![
+        watching(1)?,
+        event(2, AgentTaskState::Running)?,
+        (FrameKind::Outcome, lost),
+    ])
+}
+
+/// A watch of `task` of the Agent `worker` after event 2 that sees it complete at event 3.
+pub(crate) fn watch_completing(task: AgentTaskId) -> TestResult<Script> {
+    let mut ended = summary(task, "worker")?;
+    (ended.state, ended.last_seq) = (AgentTaskState::Completed, 3);
+    let outcome = AgentReply::encode_outcome(&Ok(AgentReply::Summary(ended)))?;
+    Ok(vec![
+        watching(2)?,
+        event(3, AgentTaskState::Completed)?,
+        (FrameKind::Outcome, outcome),
+    ])
 }
 
 pub(crate) struct Daemon {
@@ -123,6 +168,7 @@ async fn serve(listener: UnixListener, (scripts, own): (Vec<Script>, String)) {
         let Ok((correlation, request)) = read(&mut stream).await else {
             continue;
         };
+        let mut script = None;
         let version = LOCAL_API_VERSION;
         let answer = match request.get("operation").and_then(Value::as_str) {
             // Not a lifecycle report, so a caller asks the handshake instead.
@@ -136,6 +182,20 @@ async fn serve(listener: UnixListener, (scripts, own): (Vec<Script>, String)) {
             Some("stream_open") if request.get("target_endpoint_id") == Some(&json!(own)) => {
                 json!({"version": version, "request_id": null, "error": "invalid_input"})
             }
+            Some("stream_open") => {
+                script = scripts.get(opened).or_else(|| scripts.last()).cloned();
+                opened += 1;
+                match script.as_deref() {
+                    Some([(FrameKind::Open, error)]) => json!({
+                        "version": version, "request_id": null,
+                        "error": String::from_utf8_lossy(error),
+                    }),
+                    _ => json!({
+                        "version": version, "request_id": null, "revision": 1,
+                        "result": {"type": "stream_opened", "payload": {}},
+                    }),
+                }
+            }
             _ => json!({
                 "version": version, "request_id": null, "revision": 1,
                 "result": {"type": "stream_opened", "payload": {}},
@@ -145,9 +205,7 @@ async fn serve(listener: UnixListener, (scripts, own): (Vec<Script>, String)) {
             continue;
         }
         if answer.pointer("/result/type") == Some(&json!("stream_opened")) {
-            let script = scripts.get(opened).or_else(|| scripts.last()).cloned();
-            opened += 1;
-            tokio::spawn(target(stream, script.unwrap_or_default()));
+            tokio::spawn(target(stream, script.take().unwrap_or_default()));
         }
     }
 }

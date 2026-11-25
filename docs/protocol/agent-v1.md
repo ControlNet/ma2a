@@ -357,7 +357,11 @@ retention while it is watched ends it with outcome `unknown_task`.
 
 **Reconnect.** A watcher that reconnects with `after` set to the last `seq` it received gets every
 retained event after it, with no duplicates. Gaps can appear only among `progress` events that were
-pruned in between, so the first event delivered may have a `seq` above `next`.
+pruned in between, so the first event delivered may have a `seq` above `next`. `ma2a agent watch`
+and `submit --wait` reconnect this way after a watch fails with `unavailable`, `unreachable`,
+`timed_out`, `outcome_unknown`, or `cancelled`, once a second. Reopening the watch is then retried
+the same way while it fails for one of those reasons or because this Runtime is away for now, as
+while it restarts. Any other failure, or a failure of the first watch to open, ends the command.
 
 A caller treats a `watch` as malformed (`invalid_input`) when it is accepted as anything other
 than Watching with `next = after + 1` (saturating at the maximum `seq`), when an event's `seq` is

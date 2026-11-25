@@ -24,6 +24,8 @@ mod agent_view;
 #[cfg(all(test, unix))]
 mod deadline_tests;
 pub(crate) mod files;
+#[cfg(all(test, unix))]
+mod follow_tests;
 pub(crate) mod hosted;
 mod hosted_stream;
 mod hosted_view;

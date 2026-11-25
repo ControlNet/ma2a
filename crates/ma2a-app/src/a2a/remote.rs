@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::backend::{Backend, Refusal, Route};
-use crate::commands::remote::{open_as, open_bound};
+use crate::commands::remote::{agent::passes, open_as, open_bound};
 
 /// Pause before reaching a target again that is restarting or unreachable.
 const RETRY: Duration = Duration::from_secs(1);
@@ -239,6 +239,9 @@ const MAX_CARD_PAGES: usize = 64;
 
 /// Follows a task until it ended, reconnecting while the target restarts; stops early
 /// once nobody receives `events` any more.
+///
+/// Once a watch was interrupted, reopening it can fail the same passing way, for example while
+/// this Runtime restarts, so that is retried too.
 pub(super) async fn follow(
     backend: &Backend,
     (route, (task, mut after)): (&Route, (&str, u32)),
@@ -246,36 +249,35 @@ pub(super) async fn follow(
 ) -> Result<(), Refusal> {
     let (endpoint, agent) = parts(route)?;
     let task = task_id(task)?;
+    let mut reconnecting = false;
     loop {
         let request = OpenBody::Agent(AgentRequest::Watch(agent.clone(), task, after));
-        let (mut reader, _writer) = open_as(&backend.paths, (endpoint, None), request).await?;
-        let watching = client::agent::watch(&mut reader, (agent, task, after), |event| {
-            after = event.seq;
-            let _sent = events.send(agent_event_value(&event));
-        });
-        let watched = tokio::select! {
-            watched = watching => watched,
-            () = events.closed() => return Ok(()),
+        let refused = match open_as(&backend.paths, (endpoint, None), request).await {
+            Ok((mut reader, _writer)) => {
+                let watching = client::agent::watch(&mut reader, (agent, task, after), |event| {
+                    after = event.seq;
+                    let _sent = events.send(agent_event_value(&event));
+                });
+                let watched = tokio::select! {
+                    watched = watching => watched,
+                    () = events.closed() => return Ok(()),
+                };
+                match watched {
+                    Ok(_) => return Ok(()),
+                    Err(error) => (true, refusal(&error)),
+                }
+            }
+            Err(error) => (reconnecting, Refusal::from(error)),
         };
-        match watched {
-            Ok(_) => return Ok(()),
-            Err(error) if is_transient(&error) => tokio::time::sleep(RETRY).await,
-            Err(error) => return Err(refusal(&error)),
+        match refused {
+            (true, refusal) if passes(&refusal.0) => reconnecting = true,
+            (_, refusal) => return Err(refusal),
+        }
+        tokio::select! {
+            () = tokio::time::sleep(RETRY) => {}
+            () = events.closed() => return Ok(()),
         }
     }
-}
-
-const fn is_transient(error: &ClientError) -> bool {
-    matches!(
-        error.status(),
-        Some(
-            ServiceError::Unavailable
-                | ServiceError::Unreachable
-                | ServiceError::TimedOut
-                | ServiceError::OutcomeUnknown
-                | ServiceError::Cancelled
-        )
-    )
 }
 
 #[cfg(test)]
