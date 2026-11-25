@@ -97,8 +97,8 @@ pub use mutation_replay::{
 };
 pub use owned_spaces::{AdvancedOwnedSpace, CreatedSpace, OwnedSpaceUpdate, SpaceCreation};
 pub use permissions::{
-    create_private_directory, ensure_private_directory, protect_private_directory,
-    protect_private_file,
+    create_private_directory, ensure_private_directory, is_local_absolute,
+    protect_private_directory, protect_private_file,
 };
 pub use process_retention::{ENDED_RETENTION_MS, MAX_TOMBSTONES, TOMBSTONE_RETENTION_MS};
 pub use process_rows::{ProcessRecord, ProcessTimes};

@@ -21,26 +21,14 @@ pub(crate) fn prepare(paths: &IpcPaths) -> Result<(), IpcError> {
     ensure_private_dir(paths.runtime_dir(), "runtime directory")
 }
 
-fn is_remote(path: &Path) -> bool {
-    use std::path::{Component, Prefix};
-
-    matches!(
-        path.components().next(),
-        Some(Component::Prefix(prefix))
-            if matches!(
-                prefix.kind(),
-                Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _) | Prefix::DeviceNS(_)
-            )
-    )
-}
-
 /// Makes sure `path` is a private directory, creating every missing level so that each one
-/// carries its protected ACL from the moment it exists.
+/// carries its protected ACL from the moment it exists. A path the Store would refuse is refused
+/// before anything is created.
 ///
 /// A level that appears meanwhile is a lost race, not an error: whatever holds the name is then
 /// checked like any existing directory. Every other creation error is returned as it is.
 fn ensure_private_dir(path: &Path, target: &'static str) -> Result<(), IpcError> {
-    if !path.is_absolute() || is_remote(path) {
+    if !ma2a_store::is_local_absolute(path) {
         return Err(IpcError::InvalidPath);
     }
     let missing = path
@@ -155,6 +143,21 @@ mod tests {
         super::ensure_private_dir(&state, "state directory")?;
         std::fs::remove_dir_all(&base)?;
         Ok(())
+    }
+
+    #[test]
+    fn a_state_directory_off_a_drive_letter_is_refused_before_anything_is_created() {
+        for path in [
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\state",
+            r"\\?\GLOBALROOT\Device\Mup\server\share\state",
+            r"\\server\share\state",
+        ] {
+            let result = super::ensure_private_dir(std::path::Path::new(path), "state directory");
+            assert!(
+                matches!(result, Err(super::IpcError::InvalidPath)),
+                "{path}: {result:?}"
+            );
+        }
     }
 
     #[test]

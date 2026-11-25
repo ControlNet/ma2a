@@ -91,10 +91,16 @@ pub(crate) fn validate_private_file(path: &Path, target: &'static str) -> Result
 }
 
 fn validate_local_absolute(path: &Path) -> Result<(), StoreError> {
-    if !path.is_absolute() || is_remote(path) {
+    if !is_local_absolute(path) {
         return Err(StoreError::InvalidStateDirectory);
     }
     Ok(())
+}
+
+/// Whether `path` is absolute and names a local volume, the only state path the Store accepts.
+#[must_use]
+pub fn is_local_absolute(path: &Path) -> bool {
+    path.is_absolute() && !is_remote(path)
 }
 
 #[cfg(unix)]
