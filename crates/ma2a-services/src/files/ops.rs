@@ -1,6 +1,6 @@
 //! Content-free Files operations, run on a blocking thread.
 
-use std::{collections::BinaryHeap, io::ErrorKind, ops::ControlFlow, path::Path};
+use std::{collections::BTreeSet, io::ErrorKind, ops::ControlFlow, path::Path};
 
 use ma2a_core::service::{
     DirEntry, FileKind, FilesResult, MAX_LIST_PAGE, MAX_PATH_COMPONENTS, MAX_REMOTE_PATH_LEN,
@@ -63,7 +63,7 @@ pub(crate) fn list(
         path.components().len(),
         path.components().iter().map(String::len).sum::<usize>(),
     );
-    let mut smallest = BinaryHeap::with_capacity(MAX_LIST_PAGE + 1);
+    let mut smallest = Smallest::default();
     // A listing nobody waits for any more stops instead of visiting the rest of the directory.
     fs_error::map(directory.for_each_name(|name| {
         if stop.is_set() {
@@ -75,18 +75,13 @@ pub(crate) fn list(
         if cursor.is_some_and(|cursor| name <= cursor) {
             return ControlFlow::Continue(());
         }
-        smallest.push(name.to_owned());
-        if smallest.len() > MAX_LIST_PAGE + 1 {
-            smallest.pop();
-        }
+        smallest.offer(name);
         ControlFlow::Continue(())
     }))?;
     if stop.is_set() {
         return Err(ServiceError::Cancelled);
     }
-    let mut names = smallest.into_sorted_vec();
-    let more = names.len() > MAX_LIST_PAGE;
-    names.truncate(MAX_LIST_PAGE);
+    let (names, more) = smallest.page();
     let last_scanned = names.last().cloned();
     let mut entries = Vec::with_capacity(names.len());
     for name in names {
@@ -97,6 +92,27 @@ pub(crate) fn list(
     }
     let next = if more { last_scanned } else { None };
     Ok(FilesResult::Listing(entries, next))
+}
+
+/// The byte-order-smallest names seen, each once, and one more than a page so that a next page
+/// shows: a directory read while it changes can yield a name twice.
+#[derive(Default)]
+struct Smallest(BTreeSet<String>);
+
+impl Smallest {
+    fn offer(&mut self, name: &str) {
+        if self.0.insert(name.to_owned()) && self.0.len() > MAX_LIST_PAGE + 1 {
+            self.0.pop_last();
+        }
+    }
+
+    /// The page in byte order, and whether more names follow it.
+    fn page(self) -> (Vec<String>, bool) {
+        let mut names: Vec<String> = self.0.into_iter().collect();
+        let more = names.len() > MAX_LIST_PAGE;
+        names.truncate(MAX_LIST_PAGE);
+        (names, more)
+    }
 }
 
 /// Whether `name`, in a directory of `(components, bytes)`, can be named again in a request: it
@@ -188,109 +204,5 @@ pub(crate) fn remove(
 }
 
 #[cfg(test)]
-mod tests {
-    use ma2a_core::service::{FilesResult, RemotePath, ServiceError};
-
-    use super::{Failure, Stop, addressable, list, remove};
-
-    #[test]
-    fn a_stopped_listing_ends_without_a_page() -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!("ma2a-list-stop-{}", std::process::id()));
-        let _stale = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("dir"))?;
-        std::fs::write(root.join("dir/a"), b"a")?;
-        let path = RemotePath::parse("docs:/dir")?;
-
-        let stopped = Stop::default();
-        drop(stopped.on_drop());
-        assert_eq!(
-            list(&root, &path, (None, &stopped)),
-            Err(ServiceError::Cancelled)
-        );
-        let listed = list(&root, &path, (None, &Stop::default()));
-        assert!(matches!(listed, Ok(FilesResult::Listing(entries, None)) if entries.len() == 1));
-        std::fs::remove_dir_all(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn a_stopped_recursive_removal_changes_nothing_more() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = std::env::temp_dir().join(format!("ma2a-stop-{}", std::process::id()));
-        let _stale = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("tree/inner"))?;
-        std::fs::write(root.join("tree/a"), b"a")?;
-        std::fs::write(root.join("tree/inner/b"), b"b")?;
-        let path = RemotePath::parse("docs:/tree")?;
-
-        // Once its caller stopped waiting, the removal stops before its first change.
-        let stopped = Stop::default();
-        drop(stopped.on_drop());
-        assert_eq!(
-            remove(&root, &path, (true, &stopped)),
-            Err(Failure {
-                error: ServiceError::Cancelled,
-                partial: true
-            })
-        );
-        assert_eq!(std::fs::read(root.join("tree/a"))?, b"a");
-        assert_eq!(std::fs::read(root.join("tree/inner/b"))?, b"b");
-
-        // Otherwise the whole tree goes.
-        assert_eq!(
-            remove(&root, &path, (true, &Stop::default())),
-            Ok(FilesResult::Done)
-        );
-        assert!(!root.join("tree").exists());
-        std::fs::remove_dir_all(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn a_recursive_removal_keeps_what_lies_too_deep() -> Result<(), Box<dyn std::error::Error>> {
-        // Given: a chain of directories deeper than a removal enters, with a file near the top
-        // and one at the bottom.
-        let root = std::env::temp_dir().join(format!("ma2a-deep-{}", std::process::id()));
-        let _stale = std::fs::remove_dir_all(&root);
-        let deepest = (0..70).fold(root.join("tree"), |path, level| {
-            path.join(level.to_string())
-        });
-        std::fs::create_dir_all(&deepest)?;
-        std::fs::write(root.join("tree/0/near"), b"n")?;
-        std::fs::write(deepest.join("far"), b"f")?;
-
-        // When
-        let removed = remove(
-            &root,
-            &RemotePath::parse("docs:/tree")?,
-            (true, &Stop::default()),
-        );
-
-        // Then: what it reached is gone; the deep end stays, as a kept download would.
-        assert_eq!(
-            removed,
-            Err(Failure {
-                error: ServiceError::NotEmpty,
-                partial: true
-            })
-        );
-        assert!(!root.join("tree/0/near").exists());
-        assert_eq!(std::fs::read(deepest.join("far"))?, b"f");
-        std::fs::remove_dir_all(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn a_name_longer_than_a_path_component_is_not_addressable() {
-        // 85 three-byte characters fill a component; 100 exceed it, though NTFS takes them.
-        assert!(addressable(&"\u{6587}".repeat(85), (0, 0)));
-        assert!(!addressable(&"\u{6587}".repeat(100), (0, 0)));
-        assert!(addressable(&"n".repeat(255), (0, 0)));
-        assert!(!addressable(&"n".repeat(256), (0, 0)));
-        assert!(!addressable("", (0, 0)));
-        assert!(!addressable("bad\nname", (0, 0)));
-        assert!(!addressable("bad\tname", (0, 0)));
-        assert!(!addressable("bad\x7fname", (0, 0)));
-        assert!(!addressable("bad\u{0085}name", (0, 0)));
-    }
-}
+#[path = "ops_tests.rs"]
+mod tests;
