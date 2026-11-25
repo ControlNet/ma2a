@@ -76,6 +76,14 @@ export function App({
     [controlled],
   )
 
+  // Every way a session ends clears what the last one loaded, so the next sign-in starts clean.
+  const signedOut = useCallback((): void => {
+    setSession(undefined)
+    setLiveRuntime(undefined)
+    setRuntimeLoadFailed(false)
+    navigate(ROUTE_PATHS.login)
+  }, [navigate])
+
   useEffect(() => {
     if (controlled || session === undefined) return
     const active = new RuntimeController({
@@ -83,17 +91,13 @@ export function App({
         setRuntimeLoadFailed(false)
         setLiveRuntime(nextRuntime)
       },
-      onSessionExpired: () => {
-        setSession(undefined)
-        setLiveRuntime(undefined)
-        navigate(ROUTE_PATHS.login)
-      },
+      onSessionExpired: signedOut,
       onError: () => setRuntimeLoadFailed(true),
     })
     setController(active)
     void active.start()
     return () => active.stop()
-  }, [controlled, navigate, session])
+  }, [controlled, session, signedOut])
 
   const login = useCallback(
     async (password: string): Promise<void> => {
@@ -114,24 +118,20 @@ export function App({
             if (!sessionIsGone(error)) throw error
           }
           controller?.stop()
-          setSession(undefined)
-          setLiveRuntime(undefined)
-          navigate(ROUTE_PATHS.login)
+          signedOut()
         }
 
   const sessionsRevoked = (): void => {
     controller?.stop()
-    setSession(undefined)
-    setLiveRuntime(undefined)
-    setRuntimeLoadFailed(false)
-    navigate(ROUTE_PATHS.login)
+    signedOut()
   }
 
-  if (path === ROUTE_PATHS.login) {
-    return <LoginScreen onLogin={login} />
-  }
   if (path === ROUTE_PATHS.setup) {
     return <SetupScreen />
+  }
+  // No console page can load without a session, as after going back from the sign-in screen.
+  if (path === ROUTE_PATHS.login || (!controlled && session === undefined)) {
+    return <LoginScreen onLogin={login} />
   }
 
   const sync = (endpointId: string): void => {
