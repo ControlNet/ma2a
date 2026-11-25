@@ -68,7 +68,7 @@ pub(crate) enum ProcessCommand {
     Terminate {
         #[arg(value_name = "PROCESS_ID")]
         id: String,
-        /// Grace period such as 500ms or 10s, at most 60s.
+        /// Grace period such as 500ms or 10s, at most 60s; 0s kills at once.
         #[arg(long, value_name = "DURATION", default_value = "10s")]
         grace: String,
     },

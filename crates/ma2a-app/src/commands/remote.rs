@@ -173,6 +173,14 @@ pub(crate) fn remote_path(text: &str) -> Result<RemotePath, AppError> {
 
 /// Parses a duration such as `500ms`, `30s`, `10m`, or `2h` within `1ms..=maximum_ms`.
 pub(crate) fn duration_ms(value: &str, maximum_ms: u64) -> Result<u64, AppError> {
+    duration_within(value, 1..=maximum_ms)
+}
+
+/// Parses a duration as [`duration_ms`] does, within `bounds`.
+pub(crate) fn duration_within(
+    value: &str,
+    bounds: std::ops::RangeInclusive<u64>,
+) -> Result<u64, AppError> {
     let units = [("ms", 1), ("s", 1_000), ("m", 60_000), ("h", 3_600_000)];
     units
         .iter()
@@ -182,7 +190,7 @@ pub(crate) fn duration_ms(value: &str, maximum_ms: u64) -> Result<u64, AppError>
                 .and_then(|amount| amount.parse::<u64>().ok())
                 .and_then(|amount| amount.checked_mul(*multiplier))
         })
-        .filter(|duration| (1..=maximum_ms).contains(duration))
+        .filter(|duration| bounds.contains(duration))
         .ok_or(AppError::Usage(
             "DURATION must be a number ending in ms, s, m, or h, within the service's bound",
         ))

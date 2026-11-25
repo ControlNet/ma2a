@@ -13,7 +13,7 @@ use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client::{answer, hosted};
 use serde_json::{Value, json};
 
-use super::{READ_DEADLINE, bounded, duration_ms, hosted_stream, hosted_view, open_bound};
+use super::{READ_DEADLINE, bounded, duration_within, hosted_stream, hosted_view, open_bound};
 use crate::{
     AppError,
     cli::processes::{ProcessArgs, ProcessCommand, StartArgs},
@@ -188,7 +188,8 @@ fn log_from(text: &str) -> Result<LogFrom, AppError> {
 }
 
 fn grace_ms(text: &str) -> Result<u32, AppError> {
-    let grace = duration_ms(text, u64::from(MAX_TERMINATE_GRACE_MS))?;
+    // A zero grace period kills at once, as Process v1 allows.
+    let grace = duration_within(text, 0..=u64::from(MAX_TERMINATE_GRACE_MS))?;
     u32::try_from(grace).map_err(|_| AppError::Usage("--grace is at most 60s"))
 }
 
@@ -220,7 +221,7 @@ pub(super) fn print(value: &Value) -> Result<(), AppError> {
 mod tests {
     use ma2a_core::service::{LogFrom, ProcessSignal};
 
-    use super::{log_from, signal_named};
+    use super::{grace_ms, log_from, signal_named};
 
     #[test]
     fn signals_and_positions_take_their_conventional_spellings() {
@@ -231,5 +232,13 @@ mod tests {
         assert_eq!(log_from("start").ok(), Some(LogFrom::Start));
         assert_eq!(log_from("42").ok(), Some(LogFrom::Cursor(42)));
         assert!(log_from("-1").is_err());
+    }
+
+    #[test]
+    fn a_grace_period_may_be_zero_for_an_immediate_kill() {
+        assert_eq!(grace_ms("0s").ok(), Some(0));
+        assert_eq!(grace_ms("0ms").ok(), Some(0));
+        assert_eq!(grace_ms("60s").ok(), Some(60_000));
+        assert!(grace_ms("61s").is_err());
     }
 }
