@@ -58,9 +58,18 @@ describe("runtime API boundary", () => {
   test.each([
     "//evil.example/x",
     "/\\evil.example/x",
+    "/\\same-origin.invalid/x",
+    "/\\same-origin.invalid:80/x",
+    "/\\a.invalid/x",
+    "/\\b.invalid/x",
     "/\t/evil.example/x",
+    "/\t/same-origin.invalid/x",
     "/\n/evil.example/x",
     "/\r/evil.example/x",
+    "/\\[",
+    "/\\",
+    "/\t/",
+    "/\\evil:99999/x",
   ])("refuses a Runtime API path that leaves the origin: %#", (path) => {
     const paths = { snapshot: "/api/v1/snapshot", events: "/api/v1/events" }
 

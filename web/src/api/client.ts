@@ -26,12 +26,22 @@ export {
 } from "./coordinator"
 
 // A path is resolved as the browser resolves it, which reads a backslash as a slash and drops
-// tabs and newlines, so only a path that stays on the page's origin is accepted.
-const PATH_BASE = "http://same-origin.invalid"
+// tabs and newlines. Checking two distinct origins ensures any path carrying its own host fails at
+// least one, and malformed URLs reject cleanly as RuntimeApiPathError.
+const PATH_BASES = ["http://a.invalid", "http://b.invalid"] as const
+
+function isSameOriginPath(path: string): boolean {
+  try {
+    return PATH_BASES.every((base) => new URL(path, base).origin === base)
+  } catch {
+    return false
+  }
+}
+
 const SameOriginPathSchema = z
   .string()
   .regex(/^\/(?!\/)/)
-  .refine((path) => new URL(path, PATH_BASE).origin === PATH_BASE)
+  .refine(isSameOriginPath)
 
 export class RuntimeApiPathError extends Error {
   readonly name = "RuntimeApiPathError"
