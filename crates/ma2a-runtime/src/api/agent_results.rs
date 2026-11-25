@@ -18,6 +18,9 @@ pub const MAX_AGENT_TASK_PAGE: usize = 32;
 /// The remediation of the `conflict` that answers a message to a task that has ended or is
 /// being cancelled; a reused request ID with a different body answers `conflict` without one.
 pub const TASK_ENDED_REMEDIATION: &str = "the task has already ended";
+/// The remediation of the `conflict` that answers an operation on an Agent that is not
+/// started.
+pub const AGENT_UNAVAILABLE_REMEDIATION: &str = "the Agent is not started; start it first";
 /// Most events one `agent_task_events` page carries.
 pub const MAX_AGENT_EVENT_PAGE: usize = 64;
 /// Encoded size one page stays within, so a whole response fits one frame.

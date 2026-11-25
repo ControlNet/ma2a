@@ -6,7 +6,10 @@
 use std::{path::PathBuf, time::Duration};
 
 use ma2a_core::service::{AgentId, AgentMessage, MessagePart};
-use ma2a_runtime::{api::TASK_ENDED_REMEDIATION, ipc::IpcPaths};
+use ma2a_runtime::{
+    api::{AGENT_UNAVAILABLE_REMEDIATION, TASK_ENDED_REMEDIATION},
+    ipc::IpcPaths,
+};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
@@ -257,15 +260,17 @@ impl Backend {
 }
 
 /// The refusal a local API error envelope carries, if it is one. A message to a task that
-/// has ended or is being cancelled and a reused request ID both answer `conflict`; only the
-/// first carries the task-ended remediation, so it becomes `task_ended`.
+/// has ended or is being cancelled, an Agent that is not started, and a reused request ID
+/// all answer `conflict`; the first two carry their own remediation, so they become
+/// `task_ended` and `agent_unavailable`.
 fn refused(document: &Value) -> Option<Refusal> {
     let error = document.get("error").and_then(Value::as_str)?;
     let remediation = document.get("remediation").and_then(Value::as_str);
-    if error == "conflict" && remediation == Some(TASK_ENDED_REMEDIATION) {
-        return Some(Refusal::named("task_ended"));
-    }
-    Some(Refusal::named(error))
+    Some(Refusal::named(match (error, remediation) {
+        ("conflict", Some(TASK_ENDED_REMEDIATION)) => "task_ended",
+        ("conflict", Some(AGENT_UNAVAILABLE_REMEDIATION)) => "agent_unavailable",
+        _ => error,
+    }))
 }
 
 /// Builds one local API field map.
@@ -278,7 +283,7 @@ pub(super) fn fields<const N: usize>(entries: [(&str, Value); N]) -> Map<String,
 
 #[cfg(test)]
 mod tests {
-    use ma2a_runtime::api::TASK_ENDED_REMEDIATION;
+    use ma2a_runtime::api::{AGENT_UNAVAILABLE_REMEDIATION, TASK_ENDED_REMEDIATION};
     use serde_json::json;
 
     use super::{Refusal, refused};
@@ -294,6 +299,11 @@ mod tests {
         assert_eq!(
             refused(&error(json!(null))),
             Some(Refusal::named("conflict"))
+        );
+        // A stopped Agent answers `conflict` too, told apart the same way.
+        assert_eq!(
+            refused(&error(json!(AGENT_UNAVAILABLE_REMEDIATION))),
+            Some(Refusal::named("agent_unavailable"))
         );
         assert_eq!(refused(&json!({"version": 1, "result": {}})), None);
     }

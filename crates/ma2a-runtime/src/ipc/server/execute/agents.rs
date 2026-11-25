@@ -10,8 +10,8 @@ use ma2a_core::{
 use crate::{
     agents::AgentManager,
     api::{
-        AgentCommand, AgentView, ApiError, Command, CommandResult, MAX_AGENT_EVENT_PAGE,
-        MAX_AGENT_LIST_PAGE, MAX_AGENT_TASK_PAGE, TASK_ENDED_REMEDIATION,
+        AGENT_UNAVAILABLE_REMEDIATION, AgentCommand, AgentView, ApiError, Command, CommandResult,
+        MAX_AGENT_EVENT_PAGE, MAX_AGENT_LIST_PAGE, MAX_AGENT_TASK_PAGE, TASK_ENDED_REMEDIATION,
     },
 };
 
@@ -160,11 +160,10 @@ const fn refusal(error: ServiceError) -> ApiError {
         ServiceError::UnknownAgent | ServiceError::UnknownTask | ServiceError::UnknownArtifact => {
             ApiError::new(ProtocolError::NOT_FOUND).without_effects()
         }
-        ServiceError::AgentUnavailable => ApiError::with_remediation(
-            ProtocolError::CONFLICT,
-            "the Agent is not started; start it first",
-        )
-        .without_effects(),
+        ServiceError::AgentUnavailable => {
+            ApiError::with_remediation(ProtocolError::CONFLICT, AGENT_UNAVAILABLE_REMEDIATION)
+                .without_effects()
+        }
         ServiceError::TaskEnded => {
             ApiError::with_remediation(ProtocolError::CONFLICT, TASK_ENDED_REMEDIATION)
                 .without_effects()

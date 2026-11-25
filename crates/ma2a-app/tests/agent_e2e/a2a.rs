@@ -289,16 +289,25 @@ fn history_limits(adapter: &Adapter, lead: &str) -> TestResult {
     Ok(())
 }
 
-/// A stopped local Agent is unavailable, not a conflict.
-fn stopped_agent(adapter: &Adapter, lab: &AgentLab, lead: &str) -> TestResult {
+/// A stopped Agent, local or remote, is unavailable to a new message, while a message ID
+/// already used for other content still conflicts.
+fn stopped_agent(adapter: &Adapter, lab: &AgentLab, (lead, worker): (&str, &str)) -> TestResult {
+    let reason = |route: &str, sent: &Value| -> TestValue<Value> {
+        let document = adapter.call((route, "SendMessage"), sent)?.json()?;
+        Ok(document
+            .pointer("/error/data/0/reason")
+            .cloned()
+            .unwrap_or(document))
+    };
+    adapter.result((worker, "SendMessage"), &message("m-reused", "echo first"))?;
     lab.a.run_ok(&["agent", "stop", "lead"])?;
-    let refused = adapter.call((lead, "SendMessage"), &message("m-stopped", "echo x"))?;
-    let document = refused.json()?;
-    assert_eq!(
-        document.pointer("/error/data/0/reason"),
-        Some(&json!("AGENT_UNAVAILABLE")),
-        "{document}"
-    );
+    lab.b.run_ok(&["agent", "stop", "worker"])?;
+    for (route, used) in [(lead, "m-echo"), (worker, "m-reused")] {
+        let fresh = reason(route, &message(&format!("m-stopped-{used}"), "echo x"))?;
+        assert_eq!(fresh, json!("AGENT_UNAVAILABLE"), "{route}");
+        let reused = reason(route, &message(used, "echo different"))?;
+        assert_eq!(reused, json!("CONFLICT"), "{route}");
+    }
     Ok(())
 }
 
@@ -445,7 +454,7 @@ fn a2a_clients_use_local_and_remote_agents() -> TestResult {
     stream_get_and_list(&adapter, &lab, routes)?;
     local_artifact(&adapter, &lab, routes.0)?;
     subscribe_and_cancel(&adapter, routes)?;
-    stopped_agent(&adapter, &lab, routes.0)?;
+    stopped_agent(&adapter, &lab, routes)?;
     adapter.stop()?;
     lab.shutdown()
 }

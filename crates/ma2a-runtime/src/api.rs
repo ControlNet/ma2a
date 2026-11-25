@@ -35,7 +35,8 @@ use ma2a_core::{ProtocolError, RequestId};
 
 pub(crate) use agent_results::AgentResult;
 pub use agent_results::{
-    MAX_AGENT_EVENT_PAGE, MAX_AGENT_LIST_PAGE, MAX_AGENT_TASK_PAGE, TASK_ENDED_REMEDIATION,
+    AGENT_UNAVAILABLE_REMEDIATION, MAX_AGENT_EVENT_PAGE, MAX_AGENT_LIST_PAGE, MAX_AGENT_TASK_PAGE,
+    TASK_ENDED_REMEDIATION,
 };
 pub use agent_views::{
     AgentView, details_value as agent_task_details_value, event_value as agent_event_value,

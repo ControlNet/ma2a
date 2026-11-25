@@ -91,17 +91,7 @@ pub(super) async fn deliver(served: Served<'_>, inbound: &Inbound) -> Result<Val
         }
     } else {
         let submitted = (&inbound.message, request_id.as_str());
-        match served.backend.submit(served.route, submitted).await {
-            // The local API answers a stopped Agent as a conflict, like a reused messageId.
-            Err(refusal) if refusal.0 == "conflict" => {
-                let started = served.backend.card(served.route).await;
-                if started.is_ok_and(|(_, started)| !started) {
-                    return Err(Refusal::named("agent_unavailable"));
-                }
-                Err(refusal)
-            }
-            other => other,
-        }
+        served.backend.submit(served.route, submitted).await
     }
 }
 
