@@ -373,7 +373,7 @@ fn schema_seven_exposures_survive_the_process_migration() -> TestResult {
     drop(repository);
     let connection = Connection::open(config.database_path())?;
     connection.execute_batch(
-        "DELETE FROM schema_migrations WHERE version = 12; DROP TABLE departure_receipts; DELETE FROM schema_migrations WHERE version = 11; DROP TABLE hosted_services; DELETE FROM schema_migrations WHERE version = 10; DROP TABLE agent_tool_calls; DROP TABLE agent_artifacts; DROP TABLE agent_task_events; DROP TABLE agent_tasks; DROP TABLE agent_outbox; DROP TABLE agent_instances; DROP TABLE agents; DELETE FROM schema_migrations WHERE version = 9; DROP TABLE processes; DELETE FROM schema_migrations WHERE version = 8; PRAGMA user_version = 7;",
+        "DELETE FROM schema_migrations WHERE version IN (12, 13); DROP TABLE departure_receipts; DELETE FROM schema_migrations WHERE version = 11; DROP TABLE hosted_services; DELETE FROM schema_migrations WHERE version = 10; DROP TABLE agent_outbox; DROP TABLE agent_tool_calls; DROP TABLE agent_artifacts; DROP TABLE agent_task_events; DROP TABLE agent_tasks; DROP TABLE agent_instances; DROP TABLE agents; DELETE FROM schema_migrations WHERE version = 9; DROP TABLE processes; DELETE FROM schema_migrations WHERE version = 8; PRAGMA user_version = 7;",
     )?;
     drop(connection);
     let mut reopened = Repository::open(&config)?;

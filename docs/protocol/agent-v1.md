@@ -584,9 +584,10 @@ caused it; the outbox stores only references, and each line is rebuilt from dura
 re-sent line is byte-for-byte the first. The link writes a line as `data` frames of at most 64 KiB
 each; a Runtime line is at most 16 MiB. On every new connection to the instance, the link first
 writes an empty line, which ends any line a lost connection cut short, then re-sends every
-unacknowledged delivery in order. A delivery whose task or call no longer exists is skipped.
-While an instance holds 256 unacknowledged deliveries, no task is assigned to it; deliveries for
-tasks it already holds are still added.
+unacknowledged delivery in order. When retention removes a finished task, its unacknowledged
+deliveries leave the outbox in the same transaction; any remaining delivery whose backing row is
+missing is skipped. While an instance holds 256 unacknowledged deliveries, no task is assigned to
+it; deliveries for tasks it already holds are still added.
 
 **Deduplication.** The Agent processes each `seq` once: it ignores any `seq` at or below the
 highest it has processed, and acknowledges in order. Delivery is at least once and the effect

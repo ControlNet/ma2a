@@ -447,7 +447,7 @@ fn a_task_stored_before_schema_twelve_takes_its_newest_recorded_time() -> TestRe
     let connection = rusqlite::Connection::open(config.database_path())?;
     connection.execute_batch(
         "ALTER TABLE agent_tasks DROP COLUMN changed_at_ms;
-         DELETE FROM schema_migrations WHERE version = 12; PRAGMA user_version = 11;",
+         DELETE FROM schema_migrations WHERE version IN (12, 13); PRAGMA user_version = 11;",
     )?;
     drop(connection);
 
@@ -503,7 +503,7 @@ fn schema_twelve_backfills_changed_at_ms_from_the_last_state_event() -> TestResu
     )?;
     connection.execute_batch(
         "ALTER TABLE agent_tasks DROP COLUMN changed_at_ms;
-         DELETE FROM schema_migrations WHERE version = 12; PRAGMA user_version = 11;",
+         DELETE FROM schema_migrations WHERE version IN (12, 13); PRAGMA user_version = 11;",
     )?;
     drop(connection);
 
@@ -999,5 +999,231 @@ fn progress_its_event_could_not_be_read_back_is_ignored() -> TestResult {
     assert!(repository.agent_task_events(task, (0, 64)).is_ok());
     let record = repository.agent_task(task)?.ok_or("missing")?;
     assert_eq!(record.progress, None);
+    Ok(())
+}
+
+#[test]
+fn expired_tasks_retire_their_outbox_deliveries_and_unblock_assignment() -> TestResult {
+    // Given: two finished tasks whose unacknowledged messages fill the outbox limit.
+    let dir = TempState::new("agent-expire-outbox")?;
+    let config = StoreConfig::new(dir.path());
+    let mut repository = Repository::open(&config)?;
+    let generation = ready_agent(&mut repository, 2)?;
+    let first = created(
+        &repository
+            .create_agent_task(&new_task(1, endpoint(1))?)?
+            .into_value(),
+    )?;
+    let second = created(
+        &repository
+            .create_agent_task(&new_task(2, endpoint(1))?)?
+            .into_value(),
+    )?;
+    repository.assign_agent_tasks(&agent()?, 20)?;
+    for (task, base) in [(first, 30_u64), (second, 300_u64)] {
+        for offset in 0..127_u64 {
+            let message = text(MessageRole::User, "more")?;
+            repository.send_agent_message(task, (&message, base + offset))?;
+        }
+    }
+    assert_eq!(repository.agent_outbox((&agent()?, generation))?.len(), 256);
+    apply(
+        &mut repository,
+        (generation, 10),
+        state(first, AgentTaskState::Completed),
+    )?;
+    apply(
+        &mut repository,
+        (generation, 11),
+        state(second, AgentTaskState::Completed),
+    )?;
+    let ended = repository
+        .agent_task(second)?
+        .and_then(|record| record.summary.times.2)
+        .ok_or("no end")?;
+    let third = created(
+        &repository
+            .create_agent_task(&new_task(3, endpoint(1))?)?
+            .into_value(),
+    )?;
+    assert!(
+        repository
+            .assign_agent_tasks(&agent()?, ended + 1)?
+            .into_value()
+            .is_empty()
+    );
+
+    // When: both finished tasks expire and the Store is reopened.
+    assert_eq!(
+        repository
+            .expire_agent_tasks(ended + AGENT_TASK_RETENTION_MS)?
+            .into_value(),
+        2
+    );
+    drop(repository);
+    let mut repository = Repository::open(&config)?;
+
+    // Then: their outbox rows are gone and the same live instance takes the third task.
+    assert!(repository.agent_outbox((&agent()?, generation))?.is_empty());
+    assert_eq!(
+        repository
+            .assign_agent_tasks(&agent()?, ended + AGENT_TASK_RETENTION_MS + 1)?
+            .into_value(),
+        [third]
+    );
+    Ok(())
+}
+
+#[test]
+fn evicted_tasks_retire_their_outbox_deliveries_preserving_surviving_order() -> TestResult {
+    // Given: an ended task with 256 unacknowledged deliveries interleaved with a live task.
+    let dir = TempState::new("agent-evict-outbox")?;
+    let mut repository = Repository::open(&StoreConfig::new(dir.path()))?;
+    let generation = ready_agent(&mut repository, 2)?;
+    let oldest = created(
+        &repository
+            .create_agent_task(&new_task(1, endpoint(1))?)?
+            .into_value(),
+    )?;
+    let survivor = created(
+        &repository
+            .create_agent_task(&new_task(2, endpoint(1))?)?
+            .into_value(),
+    )?;
+    repository.assign_agent_tasks(&agent()?, 20)?;
+    apply(
+        &mut repository,
+        (generation, 10),
+        state(oldest, AgentTaskState::Completed),
+    )?;
+    for index in 0..255_u64 {
+        apply(
+            &mut repository,
+            (generation, 11 + index),
+            tool(oldest, &format!("late-{index}")),
+        )?;
+    }
+    let note = text(MessageRole::User, "keep me")?;
+    repository.send_agent_message(survivor, (&note, 2_500))?;
+    assert_eq!(repository.agent_outbox((&agent()?, generation))?.len(), 258);
+
+    // Fill the creator's retained history so the next submission evicts `oldest`.
+    let bound = u8::try_from(ma2a_store::MAX_RETAINED_TASKS_PER_CREATOR)?;
+    for offset in 0..bound {
+        let seed = 3 + offset;
+        let filler = created(
+            &repository
+                .create_agent_task(&new_task(seed, endpoint(1))?)?
+                .into_value(),
+        )?;
+        repository.request_agent_cancel(
+            filler,
+            (AgentTaskReason::Requested, 3_000 + u64::from(seed)),
+        )?;
+    }
+
+    // When: one more submission evicts `oldest`.
+    let queued = created(
+        &repository
+            .create_agent_task(&new_task(3 + bound, endpoint(1))?)?
+            .into_value(),
+    )?;
+
+    // Then: `oldest` and its 256 outbox rows are gone, `survivor`'s deliveries stay in order,
+    // and the live instance assigns `queued`.
+    assert!(repository.agent_task(oldest)?.is_none());
+    let remaining: Vec<_> = repository
+        .agent_outbox((&agent()?, generation))?
+        .into_iter()
+        .map(|entry| (entry.seq, entry.delivery))
+        .collect();
+    assert_eq!(
+        remaining,
+        [
+            (2, AgentDelivery::Task(survivor)),
+            (258, AgentDelivery::Message(survivor, 3)),
+        ]
+    );
+    assert_eq!(
+        repository
+            .assign_agent_tasks(&agent()?, 4_000)?
+            .into_value(),
+        [queued]
+    );
+    Ok(())
+}
+
+#[test]
+fn schema_thirteen_prunes_orphaned_outbox_rows_on_upgrade() -> TestResult {
+    // Given: a schema-12 store whose outbox still holds 256 orphaned rows beside a live task.
+    let dir = TempState::new("agent-upgrade-outbox")?;
+    let config = StoreConfig::new(dir.path());
+    let mut repository = Repository::open(&config)?;
+    let generation = ready_agent(&mut repository, 2)?;
+    let gone = created(
+        &repository
+            .create_agent_task(&new_task(1, endpoint(1))?)?
+            .into_value(),
+    )?;
+    let live = created(
+        &repository
+            .create_agent_task(&new_task(2, endpoint(1))?)?
+            .into_value(),
+    )?;
+    repository.assign_agent_tasks(&agent()?, 20)?;
+    apply(
+        &mut repository,
+        (generation, 10),
+        state(gone, AgentTaskState::Completed),
+    )?;
+    for index in 0..255_u64 {
+        apply(
+            &mut repository,
+            (generation, 11 + index),
+            tool(gone, &format!("orphan-{index}")),
+        )?;
+    }
+    let note = text(MessageRole::User, "still live")?;
+    repository.send_agent_message(live, (&note, 2_500))?;
+    drop(repository);
+
+    // Reconstruct a schema-12 layout where `gone` was deleted without retiring its outbox.
+    let connection = rusqlite::Connection::open(config.database_path())?;
+    connection.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         DELETE FROM agent_tasks WHERE task_id = X'01010101010101010101010101010101';
+         DELETE FROM schema_migrations WHERE version = 13;
+         PRAGMA user_version = 12;",
+    )?;
+    drop(connection);
+
+    // When: the store reopens and migrates.
+    let mut repository = Repository::open(&config)?;
+
+    // Then: orphaned rows are pruned, surviving deliveries keep their order, and a new task
+    // is assigned without any artificial acknowledgement.
+    let remaining: Vec<_> = repository
+        .agent_outbox((&agent()?, generation))?
+        .into_iter()
+        .map(|entry| (entry.seq, entry.delivery))
+        .collect();
+    assert_eq!(
+        remaining,
+        [
+            (2, AgentDelivery::Task(live)),
+            (258, AgentDelivery::Message(live, 3)),
+        ]
+    );
+    let next = created(
+        &repository
+            .create_agent_task(&new_task(3, endpoint(1))?)?
+            .into_value(),
+    )?;
+    assert_eq!(
+        repository
+            .assign_agent_tasks(&agent()?, 4_000)?
+            .into_value(),
+        [next]
+    );
     Ok(())
 }
