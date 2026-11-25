@@ -212,18 +212,21 @@ impl Repository {
                 params![agent.as_str(), generation],
                 |row| row.get(0),
             )?;
+            let mut free = max_tasks.saturating_sub(busy);
+            // At most `MAX_LIVE_TASKS` rows: a task that fails at its event bound takes no
+            // slot, so the queue is walked until the slots are filled.
             let queued: Vec<Vec<u8>> = {
                 let mut statement = transaction.prepare(
                     "SELECT task_id FROM agent_tasks WHERE agent_id = ?1 AND state = 0
-                     ORDER BY created_at_ms, task_id LIMIT ?2",
+                     ORDER BY created_at_ms, task_id",
                 )?;
-                let rows = statement.query_map(
-                    params![agent.as_str(), max_tasks.saturating_sub(busy)],
-                    |row| row.get(0),
-                )?;
+                let rows = statement.query_map(params![agent.as_str()], |row| row.get(0))?;
                 rows.collect::<Result<_, _>>()?
             };
             for id in queued {
+                if free == 0 {
+                    break;
+                }
                 // An instance that does not read what it is sent is given nothing more; the
                 // count includes what this pass already delivered.
                 let unacked: u32 = transaction.query_row(
@@ -235,7 +238,9 @@ impl Repository {
                     break;
                 }
                 let task = AgentTaskId::try_from(id.as_slice())?;
-                assign(&transaction, (agent, generation), (task, at_ms))?;
+                if assign(&transaction, (agent, generation), (task, at_ms))? {
+                    free -= 1;
+                }
                 assigned.push(task);
             }
         }
@@ -262,15 +267,17 @@ impl Repository {
 
 /// Moves one queued task to `running` on an instance and delivers it with every message
 /// its submitter sent while it waited. A task whose messages already fill its durable event
-/// bound fails with `limit` instead, since `running` would be one event more.
+/// bound fails with `limit` instead, since `running` would be one event more. Returns whether
+/// the task took a slot.
 fn assign(
     transaction: &Transaction<'_>,
     (agent, generation): (&AgentId, u64),
     (task, at_ms): (AgentTaskId, u64),
-) -> Result<(), StoreError> {
+) -> Result<bool, StoreError> {
     if durable_events(transaction, task)? >= MAX_DURABLE_EVENTS {
         let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
-        return set_state(transaction, (task, at_ms), limit);
+        set_state(transaction, (task, at_ms), limit)?;
+        return Ok(false);
     }
     transaction.execute(
         "UPDATE agent_tasks SET generation = ?2 WHERE task_id = ?1",
@@ -294,5 +301,5 @@ fn assign(
             )?;
         }
     }
-    Ok(())
+    Ok(true)
 }

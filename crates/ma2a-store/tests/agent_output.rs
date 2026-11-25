@@ -649,16 +649,27 @@ fn a_queued_task_at_its_durable_event_bound_fails_instead_of_running() -> TestRe
         let message = text(MessageRole::User, "more")?;
         repository.send_agent_message(task, (&message, 30 + at_ms))?;
     }
+    // A second task waits behind it.
+    let next = created(
+        &repository
+            .create_agent_task(&new_task(2, endpoint(1))?)?
+            .into_value(),
+    )?;
 
     // When: a slot is free, so the task would start running.
     let changed = repository.assign_agent_tasks(&agent()?, 900)?.into_value();
 
-    // Then: `running` would be an event past the bound, so the task fails with `limit`.
-    assert_eq!(changed, [task]);
+    // Then: `running` would be an event past the bound, so the task fails with `limit`, and
+    // the slot it never took goes to the next task in the same pass.
+    assert_eq!(changed, [task, next]);
     let record = repository.agent_task(task)?.ok_or("missing")?;
     assert_eq!(record.summary.state, AgentTaskState::Failed);
     assert_eq!(record.summary.reason, Some(AgentTaskReason::Limit));
     assert_eq!(record.summary.last_seq, ma2a_store::MAX_DURABLE_EVENTS + 1);
-    assert!(repository.agent_outbox((&agent()?, generation))?.is_empty());
+    let next = repository.agent_task(next)?.ok_or("missing")?;
+    assert_eq!(next.summary.state, AgentTaskState::Running);
+    let outbox = repository.agent_outbox((&agent()?, generation))?;
+    let deliveries: Vec<_> = outbox.into_iter().map(|entry| entry.delivery).collect();
+    assert_eq!(deliveries, [AgentDelivery::Task(next.summary.id)]);
     Ok(())
 }
