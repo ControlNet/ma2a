@@ -65,18 +65,22 @@ jq -n \
       | gsub("\\\\"; "/") | rtrimstr("/")) as $member
    | ($package.id | split("#")[0] | ltrimstr("path+file://")) as $member_url
    | if ($member_url | endswith($member)) then . else error("unexpected Cargo package ID") end
-   | [$logical, $physical, $native, ($member_url | rtrimstr($member))] as $roots
+   | [$logical, $physical, $native, ($member_url | rtrimstr($member))]
+   | unique | sort_by(length) | reverse | . as $roots
    | def relative:
        if type == "string"
-       then reduce $roots[] as $root (.; (. / ($root + "/") | join("")) | (. / ($root + "\\") | join("")))
+       then reduce ($roots[] + ("/", "\\")) as $root (.;
+         (. / ("file://" + $root) | join("file://"))
+         | if startswith($root) then .[($root | length):] else . end)
        else . end;
      def clean: walk(if type == "object" then with_entries(.key |= relative) else relative end);
      {schema_version: 1, rust: ($rust[0] | clean), frontend: ($frontend[0] | clean),
       roots: $roots}' > "$temporary/report.json"
 
-# Fail instead of publishing a report that still names the checkout.
+# Fail instead of publishing a report that still names the checkout where a path can stand.
 jq -e '.roots as $roots | del(.roots) | [.. | strings, (.. | objects | keys[])]
-  | all(. as $text | $roots | all(. as $root | $text | contains($root) | not))' \
+  | all(. as $text | $roots
+    | all(. as $root | $text | (startswith($root) or contains("file://" + $root)) | not))' \
   "$temporary/report.json" > /dev/null || {
   printf 'license report still contains the checkout path\n' >&2
   exit 1

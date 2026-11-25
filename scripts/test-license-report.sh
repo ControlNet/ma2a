@@ -7,8 +7,11 @@ repo=$(git rev-parse --show-toplevel)
 cd "$repo"
 temporary=$(mktemp -d)
 checkout="$temporary/spaced checkout"
+# A checkout whose path ends with the whole path of a symlink to it.
+nested="$temporary/outer$temporary/suffix"
 cleanup() {
   git worktree remove --force "$checkout" 2>/dev/null || true
+  git worktree remove --force "$nested" 2>/dev/null || true
   rm -rf "$temporary"
 }
 trap cleanup EXIT
@@ -24,7 +27,13 @@ git worktree add --quiet --detach "$checkout" HEAD
 (cd "$checkout/web" && bun install --frozen-lockfile --silent)
 (cd "$checkout" && "$repo/scripts/generate-license-report.sh" "$temporary/spaced.json")
 
-for report in linked spaced; do
+# A logical path that is a suffix of the physical one must not be cut out of the middle of it.
+git worktree add --quiet --detach "$nested" HEAD
+(cd "$nested/web" && bun install --frozen-lockfile --silent)
+ln -s "$nested" "$temporary/suffix"
+(cd "$temporary/suffix" && "$repo/scripts/generate-license-report.sh" "$temporary/suffix.json")
+
+for report in linked spaced suffix; do
   if grep -qF -e "$temporary" -e "${temporary// /%20}" -e "$repo" "$temporary/$report.json"; then
     printf 'the %s report names its checkout\n' "$report" >&2
     exit 1
