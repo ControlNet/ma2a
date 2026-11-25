@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react"
+import { type ReactNode, useRef, useState } from "react"
 import type { MutationEchoReplyView } from "../api/mutations"
 import { PendingSnapshot } from "../components/feedback"
 import { Field, Form, text } from "../components/form"
@@ -20,25 +20,35 @@ export function EchoScreen({
   const [payload, setPayload] = useState("hello")
   const [result, setResult] = useState<string | undefined>()
   const [reply, setReply] = useState<MutationEchoReplyView | undefined>()
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
   if (runtime === undefined) return <PendingSnapshot />
   const bytes = new TextEncoder().encode(payload).length
   return (
     <Section title="Echo">
       <Card label="Request">
         <Form
-          disabled={actions === undefined || bytes > LIMITS.echoPayload}
+          disabled={actions === undefined || busy || bytes > LIMITS.echoPayload}
           label="Send an Echo"
           onSubmit={(data) => {
-            if (actions === undefined) return
+            if (actions === undefined || busyRef.current) return
+            busyRef.current = true
+            setBusy(true)
             setResult("Echo in progress…")
             setReply(undefined)
-            void actions.echo(text(data, "target"), payload).then(
-              (received) => {
-                setReply(received)
-                setResult(undefined)
-              },
-              () => setResult("Echo failed or was not authorized."),
-            )
+            void actions
+              .echo(text(data, "target"), payload)
+              .then(
+                (received) => {
+                  setReply(received)
+                  setResult(undefined)
+                },
+                () => setResult("Echo failed or was not authorized."),
+              )
+              .finally(() => {
+                busyRef.current = false
+                setBusy(false)
+              })
           }}
           submitLabel="Send Echo"
           {...(result === undefined ? {} : { status: result })}
