@@ -73,3 +73,38 @@ async fn a_write_that_finishes_keeps_the_frames_read_meanwhile() {
     let ended = input.next().await.expect("ended").expect("frame");
     assert_eq!(ended.end().expect("end"), Channel::Input);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_write_with_nothing_or_only_the_end_behind_it_times_out_after_the_stall_bound() {
+    for end in [false, true] {
+        let (mut daemon, mut reader) = connection();
+        if end {
+            daemon.end(Channel::Input).await.expect("end");
+        }
+        let started = tokio::time::Instant::now();
+
+        let mut input = Daemon::new(&mut reader);
+        let written = input.write(blocked()).await;
+
+        assert_eq!(written, Err(ServiceError::TimedOut), "end {end}");
+        assert_eq!(started.elapsed(), INPUT_STALL);
+        if end {
+            let ended = input.next().await.expect("ended").expect("frame");
+            assert_eq!(ended.end().expect("end"), Channel::Input);
+        }
+        drop(daemon);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_write_that_finishes_just_within_the_stall_bound_is_written() {
+    let (_daemon, mut reader) = connection();
+    let written = Daemon::new(&mut reader)
+        .write(async {
+            tokio::time::sleep(INPUT_STALL - std::time::Duration::from_millis(1)).await;
+            Ok(())
+        })
+        .await;
+
+    assert_eq!(written, Ok(Ok(())));
+}

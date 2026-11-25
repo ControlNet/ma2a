@@ -3,10 +3,9 @@
 //! While a write waits for a child that does not read its stdin, the daemon's next frame is
 //! still read, so its `cancel`, the end of its connection, or a failed read abandons the write
 //! at once and frees the lease. The end of input is kept and reading goes on past it, since
-//! only a `cancel` may follow. Any other frame is held, and a write still waiting
-//! [`INPUT_STALL`] after that is abandoned as timed out, as the daemon gives up on it then too.
-
-use std::time::Duration;
+//! only a `cancel` may follow, and any other frame is held. A write still waiting
+//! [`INPUT_STALL`] after it began is abandoned as timed out, whatever follows it, so a child
+//! that stops reading never holds the lease for longer.
 
 use ma2a_core::service::{Channel, FrameKind, ServiceError};
 use tokio::io::{AsyncRead, AsyncWriteExt as _};
@@ -84,14 +83,14 @@ impl<'a, R: AsyncRead + Unpin> Daemon<'a, R> {
     ///
     /// # Errors
     /// Returns `Cancelled` when the daemon cancelled or closed its connection, `TimedOut` when
-    /// the write still waited past the stall bound, and the failed read otherwise; the write is
-    /// abandoned.
+    /// the write still waited [`INPUT_STALL`] after it began, and the failed read otherwise;
+    /// the write is abandoned.
     async fn write<F>(&mut self, write: F) -> Result<Result<(), ServiceError>, ServiceError>
     where
         F: Future<Output = Result<(), ServiceError>>,
     {
         tokio::pin!(write);
-        let stall = tokio::time::sleep(Duration::MAX);
+        let stall = tokio::time::sleep(INPUT_STALL);
         tokio::pin!(stall);
         loop {
             tokio::select! {
@@ -104,10 +103,7 @@ impl<'a, R: AsyncRead + Unpin> Daemon<'a, R> {
                     Some(frame) if self.ended.is_none() && frame.end() == Ok(Channel::Input) => {
                         self.ended = Some(frame);
                     }
-                    Some(frame) => {
-                        stall.as_mut().reset(tokio::time::Instant::now() + INPUT_STALL);
-                        self.ahead = Some(frame);
-                    }
+                    Some(frame) => self.ahead = Some(frame),
                     None => return Err(ServiceError::Cancelled),
                 },
                 () = &mut stall => return Err(ServiceError::TimedOut),
@@ -201,13 +197,16 @@ async fn write(shared: &Shared, bytes: &[u8]) -> Result<(), ServiceError> {
     Ok(())
 }
 
-/// Relays channel 0 until the caller detaches; `end` closes the child's stdin for good.
-pub(super) async fn relay_stdin(reader: &mut Reader, shared: &Shared) -> Result<u64, ServiceError> {
+/// Relays channel 0 until the caller detaches, or until input the child did not take stalled,
+/// which returns `true`; `end` closes the child's stdin for good.
+pub(super) async fn relay_stdin<R: AsyncRead + Unpin>(
+    reader: &mut FrameReader<R>,
+    shared: &Shared,
+) -> Result<bool, ServiceError> {
     let mut daemon = Daemon::new(reader);
-    let mut written = 0_u64;
     loop {
         let Some(frame) = daemon.next().await? else {
-            return Ok(written);
+            return Ok(false);
         };
         match frame.kind() {
             FrameKind::Data => {
@@ -216,17 +215,17 @@ pub(super) async fn relay_stdin(reader: &mut Reader, shared: &Shared) -> Result<
                 };
                 // Once the child closed its stdin, input is dropped; output keeps flowing.
                 match daemon.write(write(shared, bytes)).await {
-                    Ok(Ok(())) => written += u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                    Ok(Err(_)) => {}
-                    // The daemon detached during the write, or gave up on it.
-                    Err(ServiceError::Cancelled | ServiceError::TimedOut) => return Ok(written),
+                    Ok(_) => {}
+                    // The daemon detached during the write, or it stalled.
+                    Err(ServiceError::Cancelled) => return Ok(false),
+                    Err(ServiceError::TimedOut) => return Ok(true),
                     Err(error) => return Err(error),
                 }
             }
             FrameKind::End if frame.end()? == Channel::Input => {
                 shared.stdin.lock().await.take();
             }
-            FrameKind::Cancel => return Ok(written),
+            FrameKind::Cancel => return Ok(false),
             _ => return Err(ServiceError::InvalidInput),
         }
     }

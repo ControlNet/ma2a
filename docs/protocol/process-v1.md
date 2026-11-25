@@ -227,9 +227,11 @@ Process and its supervisor have ended.
      meanwhile. Output after the cursor may then be left unsent, and the summary shows the end
      when the Store recorded it.
    A caller that takes no output for 30 seconds ends it with a failed `timed_out` outcome. Input
-   the Process does not take within 30 seconds detaches the attachment. A supervisor that has not
-   taken the detach within 5 seconds, or reported 5 seconds after that, ends it with a failed
-   `cancelled` outcome, so none of them holds the reader slot or the stdin lease.
+   the Process does not take within 30 seconds of its write starting detaches the attachment,
+   unless the Process has ended by then, in which case its output is still delivered in full. A
+   supervisor that has not taken the detach within 5 seconds, or reported 5 seconds after that,
+   ends it with a failed `cancelled` outcome, so none of them holds the reader slot or the stdin
+   lease.
 4. The Detached summary is the Process as it now is, and `cursor` is the position reached.
 5. The caller refuses, before writing any output, an `accept` that is not Reading or whose `start`
    and `truncated` are not where `from` resolves in the window it reports. It also refuses a
