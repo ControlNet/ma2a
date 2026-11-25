@@ -8,7 +8,7 @@ use ma2a_core::{
         AgentId, AgentTaskId, ProcessId, ProcessReason, ProcessSpec, ProcessStart, ServiceError,
     },
 };
-use ma2a_store::{AgentInstanceRecord, AgentRecord};
+use ma2a_store::{AgentDefinition, AgentInstanceRecord, AgentRecord};
 use tokio::time::Instant;
 
 use super::{AgentManager, fault, private_dir};
@@ -96,7 +96,7 @@ impl AgentManager {
         let launched = async {
             let workspace = self.workspace(agent);
             private_dir(&workspace).map_err(|_| ServiceError::Unavailable)?;
-            let start = instance_start(record, &workspace.to_string_lossy())?;
+            let start = instance_start(&record.definition, &workspace.to_string_lossy())?;
             let request_id = start_request(agent, (record.times.0, instance.generation))?;
             self.0.processes.start_local(request_id, start).await
         };
@@ -198,15 +198,18 @@ impl AgentManager {
 }
 
 /// Builds the start of one instance: the definition plus the adapter environment.
-fn instance_start(record: &AgentRecord, workspace: &str) -> Result<ProcessStart, ServiceError> {
+pub(super) fn instance_start(
+    definition: &AgentDefinition,
+    workspace: &str,
+) -> Result<ProcessStart, ServiceError> {
     let invalid = |_| ServiceError::InvalidInput;
-    let defined = ProcessStart::from_bytes(&record.definition.start).map_err(invalid)?;
+    let defined = ProcessStart::from_bytes(&definition.start).map_err(invalid)?;
     let base = defined.spec();
     let cwd = base.cwd().unwrap_or(workspace).to_owned();
     let program = base.program().map(str::to_owned);
     let mut spec = ProcessSpec::new(program, base.args().to_vec(), Some(cwd)).map_err(invalid)?;
     let adapter = [
-        ("MA2A_AGENT_ID", record.definition.id.as_str()),
+        ("MA2A_AGENT_ID", definition.id.as_str()),
         ("MA2A_AGENT_WORKSPACE", workspace),
         ("MA2A_AGENT_PROTOCOL", "1"),
     ];
@@ -220,9 +223,7 @@ fn instance_start(record: &AgentRecord, workspace: &str) -> Result<ProcessStart,
             .map_err(invalid)?;
     }
     ProcessStart::new(spec, true, defined.log_limit())
-        .and_then(|start| {
-            start.with_label("ma2a.agent".to_owned(), record.definition.id.to_string())
-        })
+        .and_then(|start| start.with_label("ma2a.agent".to_owned(), definition.id.to_string()))
         .map_err(invalid)
 }
 

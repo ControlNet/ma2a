@@ -82,6 +82,10 @@ impl AgentManager {
         spec: AgentSpec,
     ) -> Result<((AgentRecord, bool), u64), ServiceError> {
         let definition = spec.definition()?;
+        // Every instance adds the adapter environment; a definition no instance could start
+        // with is refused here instead of failing every start.
+        let workspace = self.workspace(&definition.id);
+        super::instance::instance_start(&definition, &workspace.to_string_lossy())?;
         let at_ms = self.now_ms();
         let (defined, revision) = self
             .commit_at(move |repository| repository.define_agent(&definition, at_ms))

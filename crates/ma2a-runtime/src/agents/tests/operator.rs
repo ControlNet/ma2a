@@ -158,3 +158,35 @@ fn names_the_runtime_or_windows_keeps_are_reserved() {
         assert!(!super::reserved_name(name), "{name}");
     }
 }
+
+fn spec_with_env(
+    count: usize,
+) -> Result<super::AgentSpec, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(super::AgentSpec {
+        id: AgentId::new("crowded")?,
+        description: String::new(),
+        command: ("/bin/true".to_owned(), Vec::new()),
+        cwd: None,
+        env: (0..count)
+            .map(|index| (format!("K{index}"), "v".to_owned()))
+            .collect(),
+        tools: 0,
+        max_tasks: 1,
+    })
+}
+
+#[tokio::test]
+async fn a_definition_whose_instances_could_never_start_is_refused() -> TestResult {
+    // Given: every instance adds three adapter variables to the defined environment.
+    let reserved = Reserved::new().await?;
+
+    // When
+    let crowded = reserved.manager.define(spec_with_env(62)?).await;
+    let fitting = reserved.manager.define(spec_with_env(61)?).await;
+
+    // Then: 62 + 3 exceeds the 64 variables a Process may have; 61 + 3 does not.
+    reserved.finish().await?;
+    assert_eq!(crowded.err(), Some(ServiceError::InvalidInput));
+    assert!(fitting.is_ok(), "{fitting:?}");
+    Ok(())
+}

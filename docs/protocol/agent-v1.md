@@ -417,7 +417,9 @@ is never collected before the new reference is recorded.
 
 - a description of at most 256 bytes;
 - the program, arguments, optional absolute `cwd`, and environment, bounded like a Process
-  `spec`; environment names starting with `MA2A_AGENT_` are `invalid_input`;
+  `spec`; environment names starting with `MA2A_AGENT_` are `invalid_input`, and so is a
+  definition whose instance start, with the three adapter variables and the workspace added,
+  would break a Process bound (at most 61 defined variables therefore fit);
 - the allowed tool families, as the bit set in [Tool bridge](#tool-bridge);
 - `max_tasks`, the concurrent tasks per instance, 1–16. The local API has no default; the CLI
   defaults `--max-tasks` to 1.
