@@ -182,7 +182,7 @@ fn inspect_manifest(
         for name in replacements.keys() {
             violations.push(format!(
                 "{}: dependency `{name}` in [replace] is refused; use [patch]",
-                relative.display()
+                relative.to_string_lossy().replace('\\', "/")
             ));
         }
     }
@@ -216,7 +216,7 @@ fn inspect_dependencies(
                 .unwrap_or(inspection.manifest);
             inspection.violations.push(format!(
                 "{}: dependency `{name}` in [{table_name}] violates exact-version/workspace-path policy",
-                relative.display()
+                relative.to_string_lossy().replace('\\', "/")
             ));
         }
     }
