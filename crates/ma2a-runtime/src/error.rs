@@ -162,7 +162,7 @@ impl fmt::Display for RuntimeError {
                 formatter.write_str("Runtime observation count exceeded u64")
             }
             RuntimeErrorKind::AddressObservationUnavailable => {
-                formatter.write_str("Iroh has not supplied a live address observation yet")
+                formatter.write_str("Iroh has not supplied a publishable address observation yet")
             }
             RuntimeErrorKind::Shutdown => {
                 formatter.write_str("Runtime shutdown did not join every owned task")
@@ -208,7 +208,10 @@ impl From<ma2a_net::AddressPublisherError> for RuntimeError {
             | ma2a_net::AddressPublisherError::Validation(
                 ma2a_net::AddressRecordValidationError::Store(error),
             ) => Self::from(error),
-            ma2a_net::AddressPublisherError::ObservationUnavailable => {
+            // An observation outside protocol bounds, such as a host briefly holding more
+            // addresses than a record carries, passes like a missing one.
+            ma2a_net::AddressPublisherError::ObservationUnavailable
+            | ma2a_net::AddressPublisherError::ObservationInvalid(_) => {
                 Self::new(RuntimeErrorKind::AddressObservationUnavailable)
             }
             _ => Self::new(RuntimeErrorKind::Control),
@@ -248,10 +251,19 @@ mod background_policy_test {
     use super::RuntimeError;
 
     #[test]
-    fn only_unavailable_live_address_observation_is_retryable() {
+    fn only_an_unavailable_or_unpublishable_address_observation_is_retryable() {
         assert!(
             RuntimeError::from(ma2a_net::AddressPublisherError::ObservationUnavailable)
                 .is_retryable_background()
+        );
+        // A host can briefly hold more addresses than a record carries; the next valid
+        // observation publishes again, so the Runtime keeps running meanwhile.
+        let invalid = RuntimeError::from(ma2a_net::AddressPublisherError::ObservationInvalid(
+            ma2a_core::ProtocolError::INVALID_INPUT,
+        ));
+        assert!(
+            crate::actor::Actor::absorb_background("control publication refresh", Err(invalid))
+                .is_ok()
         );
         assert!(
             !RuntimeError::from(ma2a_net::AddressPublisherError::ObservationPoisoned)
