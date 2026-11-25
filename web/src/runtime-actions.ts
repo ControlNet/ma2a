@@ -5,6 +5,7 @@ import type {
   PrivateRelayConfiguration,
   RuntimeMutationClient,
 } from "./api/mutations"
+import { sessionIsGone } from "./api/web-auth"
 
 export type RuntimeActions = {
   readonly createSpace: (name: string) => Promise<void>
@@ -19,12 +20,25 @@ export type RuntimeActions = {
   readonly revokeSessions: () => Promise<void>
 }
 
+/**
+ * The console's commands. One refused because its session is gone reports `onSessionExpired`
+ * and still fails, as the console signs out only on that answer.
+ */
 export function createRuntimeActions(
   client: RuntimeMutationClient,
   refresh: () => Promise<void>,
+  onSessionExpired: () => void,
 ): RuntimeActions {
+  const send = async <Value>(operation: () => Promise<Value>): Promise<Value> => {
+    try {
+      return await operation()
+    } catch (error) {
+      if (sessionIsGone(error)) onSessionExpired()
+      throw error
+    }
+  }
   const mutate = async <Value>(operation: () => Promise<Value>): Promise<Value> => {
-    const value = await operation()
+    const value = await send(operation)
     await refresh()
     return value
   }
@@ -39,6 +53,6 @@ export function createRuntimeActions(
       mutate(() => client.configurePrivateRelay(configuration)),
     configurePublicRelay: (url) => mutate(() => client.configurePublicRelay(url)),
     echo: (endpointId, payload) => mutate(() => client.echo(endpointId, payload)),
-    revokeSessions: async () => void (await client.revokeSessions()),
+    revokeSessions: async () => void (await send(() => client.revokeSessions())),
   }
 }

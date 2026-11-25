@@ -44,22 +44,6 @@ export function App({
   // The sign-in and setup screens show nothing of the Runtime, so nothing is loaded for them.
   const consoleShown = path !== ROUTE_PATHS.login && path !== ROUTE_PATHS.setup
   const displayedRuntime = controlled ? runtime : liveRuntime
-  const liveServices = useServices(
-    !controlled && session !== undefined && path === ROUTE_PATHS.services,
-  )
-  const displayedServices = controlled
-    ? services === undefined
-      ? ({ status: "pending" } as const)
-      : ({ status: "ready", data: services } as const)
-    : liveServices
-
-  const actions = useMemo(() => {
-    if (session === undefined || controller === undefined) return undefined
-    const csrfToken = (): string => currentWebSession()?.csrfToken ?? session.csrfToken
-    return createRuntimeActions(createRuntimeMutationClient({ csrfToken }), () =>
-      controller.refresh(),
-    )
-  }, [controller, session])
 
   useEffect(() => {
     if (controlled) {
@@ -96,6 +80,26 @@ export function App({
     forgetSession()
     navigate(ROUTE_PATHS.login)
   }, [forgetSession, navigate])
+
+  const liveServices = useServices(
+    !controlled && session !== undefined && path === ROUTE_PATHS.services,
+    signedOut,
+  )
+  const displayedServices = controlled
+    ? services === undefined
+      ? ({ status: "pending" } as const)
+      : ({ status: "ready", data: services } as const)
+    : liveServices
+
+  const actions = useMemo(() => {
+    if (session === undefined || controller === undefined) return undefined
+    const csrfToken = (): string => currentWebSession()?.csrfToken ?? session.csrfToken
+    return createRuntimeActions(
+      createRuntimeMutationClient({ csrfToken }),
+      () => controller.refresh(),
+      signedOut,
+    )
+  }, [controller, session, signedOut])
 
   useEffect(() => {
     if (controlled || session === undefined || !consoleShown) return

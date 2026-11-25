@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 
 import { fetchServicesData, type ServicesData } from "../api/services"
+import { sessionIsGone } from "../api/web-auth"
 import type { ServicesState } from "./services"
 
 /** Operations change without a snapshot revision, so the open Services view polls. */
@@ -13,9 +14,14 @@ const DEFAULT_POLL: ServicesPoll = { load: fetchServicesData, everyMs: SERVICES_
 
 /**
  * Polls while `active`. The next read starts only once the last one settled, so a slow read
- * can never land after, and overwrite, a newer one.
+ * can never land after, and overwrite, a newer one. A read refused because the session is gone
+ * stops the polling and reports `onSessionExpired`.
  */
-export function useServices(active: boolean, poll: ServicesPoll = DEFAULT_POLL): ServicesState {
+export function useServices(
+  active: boolean,
+  onSessionExpired: () => void,
+  poll: ServicesPoll = DEFAULT_POLL,
+): ServicesState {
   const [state, setState] = useState<ServicesState>({ status: "pending" })
   useEffect(() => {
     if (!active) {
@@ -31,8 +37,14 @@ export function useServices(active: boolean, poll: ServicesPoll = DEFAULT_POLL):
           (data) => {
             if (!stopped) setState({ status: "ready", data })
           },
-          () => {
-            if (!stopped) setState({ status: "failed" })
+          (error: unknown) => {
+            if (stopped) return
+            if (sessionIsGone(error)) {
+              stopped = true
+              onSessionExpired()
+              return
+            }
+            setState({ status: "failed" })
           },
         )
         .finally(() => {
@@ -44,6 +56,6 @@ export function useServices(active: boolean, poll: ServicesPoll = DEFAULT_POLL):
       stopped = true
       window.clearTimeout(timer)
     }
-  }, [active, poll])
+  }, [active, onSessionExpired, poll])
   return state
 }

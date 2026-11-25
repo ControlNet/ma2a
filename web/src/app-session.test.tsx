@@ -176,3 +176,27 @@ test("signing in again after going back does not show the last load failure", as
   await screen.findByRole("main", { name: "Runtime content" })
   expect(screen.queryByText("Runtime snapshot is unavailable")).not.toBeInTheDocument()
 })
+
+test.each([
+  [401, true],
+  [403, false],
+])("a mutation answered %i signs out: %s", async (status, signsOut) => {
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status }))
+  window.history.replaceState(null, "", "/settings")
+  holdControllers()
+  const user = userEvent.setup()
+  render(<App />)
+  act(() => controllers[0]?.onRuntime(MANY_RUNTIME_FIXTURE))
+
+  await user.click(screen.getByRole("button", { name: "Revoke all sessions" }))
+
+  if (signsOut) {
+    await screen.findByRole("heading", { name: "Sign in to this Runtime" })
+  } else {
+    await screen.findByText("Sessions could not be revoked.")
+  }
+})
