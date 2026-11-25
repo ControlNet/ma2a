@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use ma2a_core::service::{
-    AgentAccept, AgentMessage, AgentReply, AgentTaskDetails, AgentTaskId, AgentTaskState,
-    FrameKind, MessagePart, MessageRole, ServiceError,
+    AgentAccept, AgentEvent, AgentEventBody, AgentMessage, AgentReply, AgentTaskDetails,
+    AgentTaskId, AgentTaskState, FrameKind, MessagePart, MessageRole, ServiceError,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -150,5 +150,57 @@ async fn a_remote_result_is_kept_in_full_however_long_it_escapes() -> TestResult
         .and_then(Value::as_str);
     assert_eq!(content, Some(text.as_str()));
     assert_eq!(got.get("result_elided"), Some(&Value::Bool(false)));
+    Ok(())
+}
+
+/// How a wait for [`TASK`], running at event 1, to settle ends through a watch answering
+/// `script`, or `None` while it still waits after a minute.
+async fn waited(script: Script) -> TestResult<Option<Result<(), Refusal>>> {
+    let daemon = Daemon::start("wait", script)?;
+    let (backend, route) = Backend::standing_in(&daemon)?;
+    let served = crate::a2a::view::Served {
+        backend: &backend,
+        route: &route,
+        base: "http://127.0.0.1",
+    };
+    let running =
+        serde_json::json!({"task_id": TASK.to_string(), "state": "running", "last_seq": 1});
+    let waiting = crate::a2a::view::wait(served, (&running, false), crate::a2a::view::settled);
+    Ok(tokio::time::timeout(Duration::from_secs(60), waiting)
+        .await
+        .ok())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_wait_ends_on_the_task_end_only_once_the_watch_confirmed_it() -> TestResult {
+    // Given: a watch that delivers the task completed at event 2, then the Summary of a failure.
+    let completed = {
+        let mut data = vec![1];
+        let body = AgentEventBody::State(AgentTaskState::Completed, None);
+        data.extend(AgentEvent::new(2, 2_000, body).to_bytes()?);
+        (FrameKind::Data, data)
+    };
+    let ending = |state| -> TestResult<Script> {
+        let mut ended = summary(TASK, "worker")?;
+        (ended.state, ended.last_seq) = (state, 2);
+        let accept = AgentAccept::Watching(AgentTaskState::Running, 2).encode()?;
+        let outcome = AgentReply::encode_outcome(&Ok(AgentReply::Summary(ended)))?;
+        Ok(vec![
+            (FrameKind::Accept, accept),
+            completed.clone(),
+            (FrameKind::Outcome, outcome),
+        ])
+    };
+
+    // Then: the wait fails instead of taking an end the watch did not confirm.
+    let contradicted = waited(ending(AgentTaskState::Failed)?).await?;
+    assert_eq!(contradicted, Some(Err(Refusal::named("internal"))));
+    // The same end confirmed by its Summary ends the wait.
+    let confirmed = waited(ending(AgentTaskState::Completed)?).await?;
+    assert_eq!(confirmed, Some(Ok(())));
+    // An end the target never confirms does not end it.
+    let mut unconfirmed = ending(AgentTaskState::Completed)?;
+    unconfirmed.pop();
+    assert_eq!(waited(unconfirmed).await?, None);
     Ok(())
 }

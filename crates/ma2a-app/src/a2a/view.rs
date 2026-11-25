@@ -126,7 +126,8 @@ pub(super) async fn of(
 /// Waits until a task whose summary is `summary` reaches a state `until` accepts.
 ///
 /// With `fresh`, only a state the task reaches after `summary` counts: a message just sent
-/// to a waiting task leaves its summary waiting until the Agent takes the message.
+/// to a waiting task leaves its summary waiting until the Agent takes the message. The task's
+/// end counts only once the follow confirmed it, as a stream shows it.
 pub(super) async fn wait(
     served: Served<'_>,
     (summary, fresh): (&Value, bool),
@@ -142,7 +143,11 @@ pub(super) async fn wait(
         .backend
         .follow((served.route, (task, last_seq(summary))), &events);
     tokio::pin!(following);
-    let reached = |event: &Value| text(event, "/kind") == "state" && until(text(event, "/state"));
+    // An end is left to the follow, which returns once it confirmed it.
+    let reached = |event: &Value| {
+        let state = text(event, "/state");
+        text(event, "/kind") == "state" && until(state) && !ended(state)
+    };
     loop {
         tokio::select! {
             Some(event) = received.recv() => if reached(&event) {
