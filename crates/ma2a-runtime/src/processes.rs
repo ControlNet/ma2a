@@ -144,18 +144,14 @@ impl ProcessManager {
 
     /// Returns one Process record with the Store revision it was read at.
     ///
-    /// Both are read in one Store call, which no other write can come between.
+    /// Both are read in one transaction, so they come from the same snapshot even when another
+    /// connection to the database commits between them.
     async fn record_at(
         &self,
         id: ProcessId,
     ) -> Result<Committed<Option<ProcessRecord>>, ServiceError> {
         self.store()
-            .processes(move |repository| {
-                Ok::<_, ma2a_store::StoreError>(Committed::new(
-                    repository.revision()?,
-                    repository.process(id)?,
-                ))
-            })
+            .processes(move |repository| repository.process_at(id))
             .await?
             .map_err(|_| ServiceError::Unavailable)
     }

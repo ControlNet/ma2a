@@ -267,6 +267,21 @@ impl Repository {
         Ok(record)
     }
 
+    /// Returns one Process, archived or not, with the revision of the same read.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the row is malformed.
+    pub fn process_at(
+        &self,
+        id: ProcessId,
+    ) -> Result<Committed<Option<ProcessRecord>>, StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let revision = crate::service_exposures::current_revision(&transaction)?;
+        let record = load(&transaction, id)?;
+        transaction.commit()?;
+        Ok(Committed::new(revision, record))
+    }
+
     /// Lists Processes in identifier order with the revision of the same read.
     ///
     /// # Errors

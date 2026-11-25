@@ -82,6 +82,38 @@ fn one_request_id_binds_exactly_one_process_per_creator() -> TestResult {
 }
 
 #[test]
+fn a_process_and_its_revision_are_read_together() -> TestResult {
+    // Given: a Process another connection moves forward.
+    let state = TempState::new("process-at")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let id = created(
+        repository
+            .create_process(&new_process(1, (endpoint(1), request(1)?), 7))?
+            .value(),
+    )?;
+    let moved =
+        Repository::open(&config)?.transition_process(id, step(ProcessState::Starting, 2))?;
+
+    // When
+    let read = repository.process_at(id)?;
+
+    // Then: the record is the one that revision committed.
+    assert_eq!(read.revision(), moved.revision());
+    assert_eq!(
+        read.value().as_ref().map(|record| record.state),
+        Some(ProcessState::Starting)
+    );
+    assert_eq!(
+        repository
+            .process_at(ProcessId::from_bytes([9; 16]))?
+            .value(),
+        &None
+    );
+    Ok(())
+}
+
+#[test]
 fn a_creator_limit_refuses_without_recording_anything() -> TestResult {
     let state = TempState::new("process-limit")?;
     let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
