@@ -663,3 +663,179 @@ async fn a_task_and_its_artifacts_are_read_as_of_one_moment() -> TestResult {
     );
     Ok(())
 }
+
+/// Records the bound Process `[4; 16]` as exited and writes `records` to its durable log.
+fn write_ended_instance_log(
+    live: &Live,
+    records: &[(ma2a_core::service::Channel, &[u8])],
+) -> TestResult {
+    use ma2a_core::service::{ProcessState, Termination};
+    use ma2a_services::supervisor::{log::LogWriter, log_directory};
+    use ma2a_store::{NewProcess, ProcessTransition};
+
+    let process = ProcessId::from_bytes([4; 16]);
+    let mut repository = Repository::open(&live.config)?;
+    let local = repository.endpoint()?.ok_or("no endpoint")?.endpoint_id();
+    let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
+    let start = ProcessStart::new(spec, true, MAX_LOG_LIMIT)?.to_bytes()?;
+    let new = NewProcess {
+        id: process,
+        binding: (local, RequestId::random()?),
+        fingerprint: [7; 32],
+        start: (&start, None),
+        secret: [8; 32],
+        created_ms: 3,
+    };
+    repository.create_process(&new)?;
+    repository.transition_process(
+        process,
+        ProcessTransition {
+            to: ProcessState::Starting,
+            reason: None,
+            termination: None,
+            at_ms: 4,
+        },
+    )?;
+    repository.transition_process(
+        process,
+        ProcessTransition {
+            to: ProcessState::Running,
+            reason: None,
+            termination: None,
+            at_ms: 5,
+        },
+    )?;
+    repository.transition_process(
+        process,
+        ProcessTransition {
+            to: ProcessState::Exited,
+            reason: None,
+            termination: Some(Termination::Exited(0)),
+            at_ms: 9,
+        },
+    )?;
+    let dir = live.dir.join("processes-v1").join(process.to_string());
+    let mut log = LogWriter::create(&log_directory(&dir), u64::from(MAX_LOG_LIMIT))?;
+    for (channel, bytes) in records {
+        log.append(*channel, bytes)?;
+    }
+    log.sync()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_ended_instance_drains_unread_stdout_before_concluding() -> TestResult {
+    // Given: a live instance at cursor 1 whose Process already exited after writing a
+    // stderr line and a final `completed` line with an inline result, plus a queued task.
+    let live = Live::new().await?;
+    let mut repository = Repository::open(&live.config)?;
+    let local = repository.endpoint()?.ok_or("no endpoint")?.endpoint_id();
+    let queued_task = NewAgentTask {
+        id: AgentTaskId::random()?,
+        agent: live.agent.clone(),
+        binding: (local, RequestId::random()?),
+        fingerprint: [9; 32],
+        from_agent: None,
+        input: AgentMessage::text(MessageRole::User, "next")?,
+        created_ms: 8,
+    };
+    let AgentTaskCreation::Created(queued) =
+        repository.create_agent_task(&queued_task)?.into_value()
+    else {
+        return Err("queued task was not created".into());
+    };
+    drop(repository);
+
+    let completed = serde_json::json!({
+        "t": "state",
+        "task": live.task.to_string(),
+        "state": "completed",
+        "message": {"role": "agent", "parts": [{"kind": "text", "text": "drained result"}]},
+    });
+    let mut payload = serde_json::to_vec(&completed)?;
+    payload.push(b'\n');
+    write_ended_instance_log(
+        &live,
+        &[
+            (ma2a_core::service::Channel::Output, b"\n"),
+            (ma2a_core::service::Channel::Error, b"stderr note\n"),
+            (ma2a_core::service::Channel::Output, &payload),
+        ],
+    )?;
+
+    // When: the link follows the ended instance.
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        live.manager.follow_instance(&live.agent, live.generation),
+    )
+    .await?;
+
+    // Then: the unread completion applied, the queued task stayed queued for the next
+    // instance, and the ended instance is concluded.
+    let repository = Repository::open(&live.config)?;
+    let record = repository.agent_task(live.task)?.ok_or("missing task")?;
+    let queued_record = repository
+        .agent_task(queued.summary.id)?
+        .ok_or("missing queued")?;
+    let instance = repository
+        .agent(&live.agent)?
+        .and_then(|agent| agent.instance)
+        .ok_or("missing instance")?;
+    live.finish().await?;
+    assert_eq!(record.summary.state, AgentTaskState::Completed);
+    assert_eq!(
+        record.result,
+        Some(AgentMessage::text(MessageRole::Agent, "drained result")?)
+    );
+    assert_eq!(queued_record.summary.state, AgentTaskState::Queued);
+    assert!(!instance.is_live());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transient_store_failure_during_ended_drain_retries_before_concluding() -> TestResult {
+    // Given: an ended instance with an unread `completed` line while the Store briefly rejects
+    // task event writes.
+    let live = Live::new().await?;
+    let completed = serde_json::json!({
+        "t": "state",
+        "task": live.task.to_string(),
+        "state": "completed",
+        "message": {"role": "agent", "parts": [{"kind": "text", "text": "retried result"}]},
+    });
+    let mut payload = serde_json::to_vec(&completed)?;
+    payload.push(b'\n');
+    write_ended_instance_log(
+        &live,
+        &[
+            (ma2a_core::service::Channel::Output, b"\n"),
+            (ma2a_core::service::Channel::Output, &payload),
+        ],
+    )?;
+    let sql = rusqlite::Connection::open(live.config.database_path())?;
+    sql.execute_batch("ALTER TABLE agent_task_events RENAME TO agent_task_events_away;")?;
+    let restoring = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sql.execute_batch("ALTER TABLE agent_task_events_away RENAME TO agent_task_events;")
+    });
+
+    // When: the link follows the instance through the transient failure.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        live.manager.follow_instance(&live.agent, live.generation),
+    )
+    .await?;
+    restoring.await??;
+
+    // Then: the link retried instead of concluding early, and the task completed.
+    let record = Repository::open(&live.config)?
+        .agent_task(live.task)?
+        .ok_or("missing task")?;
+    live.finish().await?;
+    assert_eq!(record.summary.state, AgentTaskState::Completed);
+    assert_eq!(
+        record.result,
+        Some(AgentMessage::text(MessageRole::Agent, "retried result")?)
+    );
+    Ok(())
+}

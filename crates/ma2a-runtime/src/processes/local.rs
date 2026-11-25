@@ -84,4 +84,27 @@ impl ProcessManager {
     ) -> Result<Option<ProcessRecord>, ServiceError> {
         self.record(id).await
     }
+
+    /// Reads up to `max` content bytes from `cursor` of a local Process's durable log, or
+    /// `None` when the Process has no log or was archived.
+    pub(crate) async fn read_local_log(
+        &self,
+        record: &ProcessRecord,
+        (cursor, max): (u64, usize),
+    ) -> Result<Option<ma2a_services::supervisor::log::LogRead>, ServiceError> {
+        if record.is_archived() {
+            return Ok(None);
+        }
+        let directory = ma2a_services::supervisor::log_directory(&self.directory(record.id));
+        let read = tokio::task::spawn_blocking(move || {
+            ma2a_services::supervisor::log::read(&directory, cursor, max)
+        })
+        .await
+        .map_err(|_| ServiceError::Internal)?;
+        match read {
+            Ok(read) => Ok(Some(read)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(ServiceError::Io),
+        }
+    }
 }

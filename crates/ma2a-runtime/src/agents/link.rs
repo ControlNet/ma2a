@@ -10,16 +10,19 @@ use std::time::Duration;
 
 use ma2a_core::service::{
     AgentId, Channel as DataChannel, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, ProcessReason,
-    ServiceError, decode_skipped,
+    decode_skipped,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
     supervisor::{SupervisorStatus, protocol::decode_reading},
 };
-use ma2a_store::{AgentInstanceRecord, AgentOutput, AgentOutputApplied};
+use ma2a_store::AgentInstanceRecord;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{AgentManager, lines::Lines, render};
+
+#[path = "link_drain.rs"]
+mod drain;
 
 /// How long a new instance has to announce `ready`.
 const READY_DEADLINE_MS: u64 = 30_000;
@@ -58,7 +61,7 @@ impl AgentManager {
         });
     }
 
-    async fn follow_instance(&self, agent: &AgentId, generation: u64) {
+    pub(super) async fn follow_instance(&self, agent: &AgentId, generation: u64) {
         let mut backoff = Duration::from_millis(250);
         loop {
             let Some(instance) = self.live_instance(agent, generation).await else {
@@ -91,7 +94,7 @@ impl AgentManager {
         let Ok((_, (reader, mut writer), accepted)) =
             self.0.processes.attach_local(process, from).await
         else {
-            return self.process_ended(process).await;
+            return self.process_ended((agent, instance), process).await;
         };
         let Ok(((start, _, _), _)) = decode_reading(&accepted) else {
             return Linked::Broken;
@@ -111,15 +114,6 @@ impl AgentManager {
             linked = output => linked,
             () = deliveries => Linked::Broken,
             () = deadline => Linked::Broken,
-        }
-    }
-
-    /// Decides a Process the link cannot attach to: ended, or only unreachable now.
-    async fn process_ended(&self, process: ma2a_core::service::ProcessId) -> Linked {
-        match self.0.processes.local_record(process).await {
-            Ok(Some(record)) if !record.state.is_terminal() => Linked::Broken,
-            Ok(_) => Linked::Ended,
-            Err(_) => Linked::Broken,
         }
     }
 
@@ -148,40 +142,14 @@ impl AgentManager {
                 (FrameKind::Outcome, _) => return concluded(frame.payload()),
                 _ => return Linked::Broken,
             };
-            for (line, cursor) in complete {
-                let effect = super::lines::effect(line.as_deref());
-                let output = AgentOutput {
-                    agent: agent.clone(),
-                    generation,
-                    cursor,
-                    at_ms: self.now_ms(),
-                };
-                if self.apply_output(output, effect).await.is_err() {
-                    return Linked::Broken;
-                }
+            if self
+                .apply_lines((agent, generation), (complete, true))
+                .await
+                .is_err()
+            {
+                return Linked::Broken;
             }
         }
-    }
-
-    async fn apply_output(
-        &self,
-        output: AgentOutput,
-        effect: ma2a_store::AgentOutputEffect,
-    ) -> Result<(), ServiceError> {
-        let agent = output.agent.clone();
-        let applied = self
-            .commit(move |repository| repository.apply_agent_output(&output, effect))
-            .await?;
-        match applied {
-            AgentOutputApplied::Task(record) if record.summary.state.is_terminal() => {
-                self.task_ended(record.summary.id);
-                self.assign(&agent).await;
-            }
-            AgentOutputApplied::Instance => self.assign(&agent).await,
-            AgentOutputApplied::ToolCall(task, call) => self.run_tool((task, call)),
-            _ => {}
-        }
-        Ok(())
     }
 
     /// Writes every delivery the instance has not acknowledged, then each new one.
