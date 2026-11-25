@@ -7,6 +7,7 @@
 
 mod agent;
 #[cfg(test)]
+#[path = "tests/tool_calls.rs"]
 mod call_tests;
 mod exec;
 mod files;
