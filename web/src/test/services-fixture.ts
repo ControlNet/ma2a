@@ -155,6 +155,7 @@ export const SERVICES_FIXTURE: ServicesData = {
         created_at_ms: 1_000,
         started_at_ms: 1_100,
         ended_at_ms: null,
+        changed_at_ms: 1_100,
         last_seq: 3,
       },
       {
@@ -168,6 +169,7 @@ export const SERVICES_FIXTURE: ServicesData = {
         created_at_ms: 2_000,
         started_at_ms: 2_100,
         ended_at_ms: 9_000,
+        changed_at_ms: 9_000,
         last_seq: 5,
       },
     ],

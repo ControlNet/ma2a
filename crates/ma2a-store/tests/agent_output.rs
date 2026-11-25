@@ -386,6 +386,77 @@ fn a_tool_call_for_an_ended_task_past_the_call_limit_is_ignored() -> TestResult 
     Ok(())
 }
 
+#[test]
+fn a_task_records_when_its_state_last_changed() -> TestResult {
+    let (_state, mut repository, generation, task) = running("agent-state-time")?;
+    let summary = |repository: &Repository, task| -> TestValue<_> {
+        Ok(repository.agent_task(task)?.ok_or("missing")?.summary)
+    };
+    // A queued task changed when it was created; an assigned one when it started.
+    let queued = created(
+        &repository
+            .create_agent_task(&new_task(2, endpoint(1))?)?
+            .into_value(),
+    )?;
+    let queued = summary(&repository, queued)?;
+    assert_eq!(queued.changed_ms, queued.times.0);
+    let started = summary(&repository, task)?;
+    assert_eq!(Some(started.changed_ms), started.times.1);
+    // Wait, report progress, resume, and complete, each at its own time (2,000 + cursor).
+    apply(
+        &mut repository,
+        (generation, 12),
+        state(task, AgentTaskState::Waiting),
+    )?;
+    assert_eq!(summary(&repository, task)?.changed_ms, 2_012);
+    let progress = AgentOutputEffect::Progress(task, "half".to_owned());
+    apply(&mut repository, (generation, 13), progress)?;
+    // Progress is no state change.
+    assert_eq!(summary(&repository, task)?.changed_ms, 2_012);
+    apply(
+        &mut repository,
+        (generation, 14),
+        state(task, AgentTaskState::Running),
+    )?;
+    let resumed = summary(&repository, task)?;
+    assert_eq!(
+        (resumed.times.1, resumed.changed_ms),
+        (started.times.1, 2_014)
+    );
+    apply(
+        &mut repository,
+        (generation, 15),
+        state(task, AgentTaskState::Completed),
+    )?;
+    let ended = summary(&repository, task)?;
+    assert_eq!((ended.times.2, ended.changed_ms), (Some(2_015), 2_015));
+    Ok(())
+}
+
+#[test]
+fn a_task_stored_before_schema_twelve_takes_its_newest_recorded_time() -> TestResult {
+    let (state, repository, _generation, task) = running("agent-state-time-migration")?;
+    let started = repository
+        .agent_task(task)?
+        .ok_or("missing")?
+        .summary
+        .times
+        .1;
+    drop(repository);
+    let config = StoreConfig::new(state.path());
+    let connection = rusqlite::Connection::open(config.database_path())?;
+    connection.execute_batch(
+        "ALTER TABLE agent_tasks DROP COLUMN changed_at_ms;
+         DELETE FROM schema_migrations WHERE version = 12; PRAGMA user_version = 11;",
+    )?;
+    drop(connection);
+
+    let repository = Repository::open(&config)?;
+    let summary = repository.agent_task(task)?.ok_or("missing")?.summary;
+    assert_eq!(Some(summary.changed_ms), started);
+    Ok(())
+}
+
 /// Asserts the instance holding the task was last sent its cancellation, so a handler waiting
 /// in `ask` for a message that will never come returns.
 fn told_to_stop(repository: &Repository, (generation, task): (u64, AgentTaskId)) -> TestResult {

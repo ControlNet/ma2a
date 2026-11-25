@@ -164,6 +164,7 @@ fn summary() -> TestResult<AgentTaskSummary> {
     summary.state = AgentTaskState::Failed;
     summary.reason = Some(AgentTaskReason::AgentLost);
     summary.times = (1_000, Some(1_100), Some(1_200));
+    summary.changed_ms = 1_200;
     summary.last_seq = 9;
     Ok(summary)
 }

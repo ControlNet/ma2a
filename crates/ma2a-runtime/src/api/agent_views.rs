@@ -99,6 +99,7 @@ pub fn summary_value(summary: &AgentTaskSummary) -> Value {
         "created_at_ms": created,
         "started_at_ms": started,
         "ended_at_ms": ended,
+        "changed_at_ms": summary.changed_ms,
         "last_seq": summary.last_seq,
     })
 }

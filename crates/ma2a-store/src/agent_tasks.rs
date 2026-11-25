@@ -161,8 +161,8 @@ impl Repository {
         make_room(&transaction, creator)?;
         transaction.execute(
             "INSERT INTO agent_tasks (task_id, agent_id, creator_endpoint_id, request_id,
-             fingerprint, from_agent, state, input, last_seq, created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 0, ?8)",
+             fingerprint, from_agent, state, input, last_seq, created_at_ms, changed_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 0, ?8, ?8)",
             params![
                 new.id.as_bytes().as_slice(),
                 new.agent.as_str(),

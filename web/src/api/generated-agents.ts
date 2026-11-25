@@ -119,6 +119,7 @@ export type AgentTaskView = {
   readonly created_at_ms: number
   readonly started_at_ms: number | null
   readonly ended_at_ms: number | null
+  readonly changed_at_ms: number
   readonly last_seq: number
 }
 

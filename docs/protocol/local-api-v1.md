@@ -18,7 +18,7 @@ Unknown fields, duplicate JSON object members, and unknown operations are reject
 
 ## Commands And Results
 
-The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `110f4ca3729df0b3f5236c33db6420ff4d79ec80c69c08e2f4af07cdc0f9a587`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 55 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
+The canonical machine schema is embedded in `LOCAL_API_SCHEMA_JSON` and pinned by SHA-256 `d9d0b863136863b12ea9dc44c61721363f3fb4606cadef89495430b08eef2612`. It defines every command field, nested result model, success/error response envelope, event payload, literal, nullability rule, numeric width, string bound, and collection bound. Rust tests recursively validate serialized commands, all 55 results, both response envelopes, all nine errors, and all nine events against it. Web tests use the TypeScript compiler API to recursively compare the exported command, result, response, nested model, and event types against the same schema, including primitive kinds, requiredness, nullability, literals, arrays, and references.
 
 Successful responses contain required `version`, nullable `request_id`, `revision`, and discriminated `result` fields. Error responses contain required `version`, `error`, and nullable `remediation` fields. TypeScript exposes `LocalApiSuccessResponse`, `LocalApiErrorResponse`, and their `LocalApiResponse` union.
 
@@ -266,6 +266,7 @@ A task summary carries:
 - `state` (`queued`, `running`, `waiting`, `completed`, `failed`, or `cancelled`) and a nullable
   `reason`;
 - `created_at_ms`, and nullable `started_at_ms` and `ended_at_ms`;
+- `changed_at_ms`, when `state` last changed, including between `running` and `waiting`;
 - `last_seq`.
 
 `from_agent` is attribution only.

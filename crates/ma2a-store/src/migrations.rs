@@ -3,7 +3,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use crate::StoreError;
 
 /// The newest schema version this store can read or write.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 const MIGRATION_V1: &str = include_str!("../migrations/0001_init.sql");
 const MIGRATION_V2: &str = include_str!("../migrations/0002_web_auth.sql");
 const MIGRATION_V3: &str = include_str!("../migrations/0003_relay_persistence.sql");
@@ -16,6 +16,7 @@ const MIGRATION_V8: &str = include_str!("../migrations/0008_processes.sql");
 const MIGRATION_V9: &str = include_str!("../migrations/0009_agents.sql");
 const MIGRATION_V10: &str = include_str!("../migrations/0010_hosted_services.sql");
 const MIGRATION_V11: &str = include_str!("../migrations/0011_departure_receipts.sql");
+const MIGRATION_V12: &str = include_str!("../migrations/0012_agent_task_changed.sql");
 
 pub(crate) fn current_version(connection: &Connection) -> Result<u32, StoreError> {
     Ok(connection.query_row("PRAGMA user_version", [], |row| row.get(0))?)
@@ -81,6 +82,10 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     }
     if current_version(&transaction)? == 10 {
         transaction.execute_batch(MIGRATION_V11)?;
+        transaction.pragma_update(None, "user_version", 11_u32)?;
+    }
+    if current_version(&transaction)? == 11 {
+        transaction.execute_batch(MIGRATION_V12)?;
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     validate(&transaction)?;
@@ -105,7 +110,8 @@ fn validate(connection: &Connection) -> Result<(), StoreError> {
          OR (version = 8 AND name = 'processes')
          OR (version = 9 AND name = 'agents')
          OR (version = 10 AND name = 'hosted_services')
-         OR (version = 11 AND name = 'departure_receipts')",
+         OR (version = 11 AND name = 'departure_receipts')
+         OR (version = 12 AND name = 'agent_task_changed')",
         [],
         |row| row.get::<_, u32>(0),
     )?;

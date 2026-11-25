@@ -126,7 +126,7 @@ pub(crate) fn set_state(
     transaction.execute(
         "UPDATE agent_tasks SET state = ?2, reason = ?3,
          started_at_ms = CASE WHEN ?2 = 1 AND started_at_ms IS NULL THEN ?4 ELSE started_at_ms END,
-         ended_at_ms = CASE WHEN ?5 THEN ?4 ELSE NULL END
+         ended_at_ms = CASE WHEN ?5 THEN ?4 ELSE NULL END, changed_at_ms = ?4
          WHERE task_id = ?1",
         params![
             task.as_bytes().as_slice(),

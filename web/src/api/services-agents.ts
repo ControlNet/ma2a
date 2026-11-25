@@ -47,6 +47,7 @@ const AgentTaskSchema = z.strictObject({
   created_at_ms: U64,
   started_at_ms: U64.nullable(),
   ended_at_ms: U64.nullable(),
+  changed_at_ms: U64,
   last_seq: U64,
 })
 export const AgentsSchema = z.strictObject({

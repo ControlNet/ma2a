@@ -58,6 +58,7 @@ const TASK = {
   created_at_ms: 1_000,
   started_at_ms: 1_100,
   ended_at_ms: null,
+  changed_at_ms: 1_100,
   last_seq: 3,
 }
 const AGENTS = { agents: [AGENT], more_agents: false, tasks: [TASK], more_tasks: true }

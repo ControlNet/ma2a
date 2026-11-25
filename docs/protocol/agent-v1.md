@@ -160,12 +160,12 @@ success, and otherwise one of the status codes with a `null` result. A successfu
 `true` while the operator has the Agent started, so a `submit` is accepted. `description` is at
 most 256 bytes without NUL, and `max_tasks` is 1–16.
 
-**Summary.** An 11-item array, content-free:
+**Summary.** A 12-item array, content-free:
 
 ```text
 [id: bstr(16), agent: tstr, creator: bstr(32), from_agent: tstr / null,
  request_id: bstr(16), state: uint, reason: uint / null, created_ms: uint,
- started_ms: uint / null, ended_ms: uint / null, last_seq: uint]
+ started_ms: uint / null, ended_ms: uint / null, changed_ms: uint, last_seq: uint]
 ```
 
 - **creator** is the Endpoint that submitted the task, or the hosting Endpoint for local tasks.
@@ -173,7 +173,8 @@ most 256 bytes without NUL, and `max_tasks` is 1–16.
 - **reason** is `requested` 0, `unauthorized` 1, `agent_failed` 2, `agent_lost` 3,
   `agent_stopped` 4, or `limit` 5.
 - **times** are Unix milliseconds. `started_ms` is set when the task first becomes `running`.
-  `ended_ms` is set exactly when the state is terminal.
+  `ended_ms` is set exactly when the state is terminal. `changed_ms` is when the state last
+  changed, each move between `running` and `waiting` included; a queued task's is `created_ms`.
 - **last_seq** is the sequence number of the newest event.
 
 **Details.** `[summary, input: message, result: message / null, error: tstr / null,

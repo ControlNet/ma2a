@@ -122,7 +122,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 | `cancelled` | `TASK_STATE_CANCELED` |
 
 - **Identity.** `id` is the 32-hex `AgentTaskId`, and `contextId` is always the same value.
-- **`status.timestamp`** is when the task ended, started, or was created, whichever is latest, in ISO 8601 UTC.
+- **`status.timestamp`** is when the task's state last changed, each move between working and input-required included, in ISO 8601 UTC. Progress and messages do not change it.
 - **`status.message`** depends on the state:
   - completed: the result;
   - failed: the error as an agent text message;

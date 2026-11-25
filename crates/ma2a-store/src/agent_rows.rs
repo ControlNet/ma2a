@@ -121,7 +121,8 @@ impl AgentTaskRecord {
 
 pub(crate) const TASK_COLUMNS: &str = "task_id, agent_id, creator_endpoint_id, request_id, \
     fingerprint, from_agent, state, reason, generation, input, result, error, progress, \
-    cancel_reason, cancel_requested_at_ms, last_seq, created_at_ms, started_at_ms, ended_at_ms";
+    cancel_reason, cancel_requested_at_ms, last_seq, created_at_ms, started_at_ms, ended_at_ms, \
+    changed_at_ms";
 
 pub(crate) const AGENT_COLUMNS: &str = "a.agent_id, a.description, a.start, a.tools, \
     a.max_tasks, a.enabled, a.generation, a.created_at_ms, a.updated_at_ms, i.generation, \
@@ -157,6 +158,7 @@ pub(crate) fn read_task(row: &Row<'_>) -> rusqlite::Result<Result<AgentTaskRecor
     let cancel: (Option<u8>, Option<u64>) = (row.get(13)?, row.get(14)?);
     let last_seq: u32 = row.get(15)?;
     let times: (u64, Option<u64>, Option<u64>) = (row.get(16)?, row.get(17)?, row.get(18)?);
+    let changed_ms: u64 = row.get(19)?;
     Ok((|| {
         let mut summary = AgentTaskSummary::new(
             (task_id(&id)?, agent_id(&agent)?),
@@ -172,6 +174,7 @@ pub(crate) fn read_task(row: &Row<'_>) -> rusqlite::Result<Result<AgentTaskRecor
             .map(|reason| AgentTaskReason::from_code(reason.into()).map_err(|_| MALFORMED))
             .transpose()?;
         summary.times = times;
+        summary.changed_ms = changed_ms;
         summary.last_seq = last_seq;
         let cancel = match cancel {
             (Some(reason), Some(at_ms)) => Some((

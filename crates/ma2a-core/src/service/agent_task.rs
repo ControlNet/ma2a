@@ -119,6 +119,8 @@ pub struct AgentTaskSummary {
     pub reason: Option<AgentTaskReason>,
     /// Creation, start, and end times in Unix milliseconds.
     pub times: (u64, Option<u64>, Option<u64>),
+    /// When the state last changed, in Unix milliseconds: the creation time while queued.
+    pub changed_ms: u64,
     /// The sequence number of the newest event.
     pub last_seq: u32,
 }
@@ -139,13 +141,14 @@ impl AgentTaskSummary {
             state: AgentTaskState::Queued,
             reason: None,
             times: (created_ms, None, None),
+            changed_ms: created_ms,
             last_seq: 0,
         }
     }
 
     pub(crate) fn encode(&self, writer: &mut Writer) -> Result<(), ProtocolError> {
         writer
-            .array(11)?
+            .array(12)?
             .bytes(self.id.as_bytes())?
             .text(self.agent.as_str())?
             .bytes(self.creator.as_bytes())?
@@ -156,12 +159,13 @@ impl AgentTaskSummary {
             .uint(self.times.0)
             .optional_uint(self.times.1)
             .optional_uint(self.times.2)
+            .uint(self.changed_ms)
             .uint(u64::from(self.last_seq));
         Ok(())
     }
 
     pub(crate) fn decode(decoder: &mut Decoder<'_>) -> Result<Self, ProtocolError> {
-        decoder.array_exact(11)?;
+        decoder.array_exact(12)?;
         let id = AgentTaskId::decode_from(decoder)?;
         let agent = AgentId::decode_from(decoder)?;
         let creator = EndpointId::try_from(decoder.bytes(32)?)?;
@@ -180,6 +184,7 @@ impl AgentTaskSummary {
             cbor::optional_uint(decoder)?,
             cbor::optional_uint(decoder)?,
         );
+        let changed_ms = decoder.uint()?;
         let last_seq = cbor::u32_value(decoder)?;
         Ok(Self {
             id,
@@ -190,6 +195,7 @@ impl AgentTaskSummary {
             state,
             reason,
             times,
+            changed_ms,
             last_seq,
         })
     }

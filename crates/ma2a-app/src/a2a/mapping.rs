@@ -107,9 +107,9 @@ pub(super) fn status(details: &Value, latest: Option<&Value>) -> Value {
     let summary = details.get("task").unwrap_or(details);
     let task = text(summary, "/task_id").unwrap_or_default();
     let local_state = text(summary, "/state").unwrap_or_default();
-    let at_ms = ["/ended_at_ms", "/started_at_ms", "/created_at_ms"]
-        .iter()
-        .find_map(|pointer| summary.pointer(pointer).and_then(Value::as_u64))
+    let at_ms = summary
+        .get("changed_at_ms")
+        .and_then(Value::as_u64)
         .unwrap_or_default();
     let explanation = match local_state {
         "completed" => details
@@ -172,7 +172,7 @@ pub(super) fn task(details: &Value, (history, base): (&[Value], &str), detail: D
 mod tests {
     use serde_json::json;
 
-    use super::{Detail, segment, state, task};
+    use super::{Detail, segment, state, status, task};
 
     #[test]
     fn a_message_the_local_view_left_out_is_flagged_as_left_out() {
@@ -226,6 +226,20 @@ mod tests {
                 "TASK_STATE_FAILED",
                 "TASK_STATE_CANCELED",
             ]
+        );
+    }
+
+    #[test]
+    fn the_status_is_timed_by_the_last_state_change() {
+        // A task that started at 1 s and has waited since 5 s.
+        let summary = json!({
+            "task_id": "t", "state": "waiting", "created_at_ms": 500,
+            "started_at_ms": 1_000, "ended_at_ms": null, "changed_at_ms": 5_000,
+        });
+        let shown = status(&summary, None);
+        assert_eq!(
+            shown.get("timestamp"),
+            Some(&json!("1970-01-01T00:00:05.000Z"))
         );
     }
 

@@ -27,9 +27,9 @@ struct Filter<'a> {
 
 impl Filter<'_> {
     fn keeps(&self, task: &Value) -> bool {
-        let changed_ms = ["/ended_at_ms", "/started_at_ms", "/created_at_ms"]
-            .iter()
-            .find_map(|pointer| task.pointer(pointer).and_then(Value::as_u64))
+        let changed_ms = task
+            .get("changed_at_ms")
+            .and_then(Value::as_u64)
             .unwrap_or_default();
         let state = task
             .get("state")
@@ -183,6 +183,20 @@ mod tests {
             -32_603
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_task_is_kept_by_the_time_of_its_last_state_change() {
+        // Started at 1 s, waiting since 5 s; the filter's bound is inclusive.
+        let task = json!({"task_id": "t", "state": "waiting", "created_at_ms": 500,
+            "started_at_ms": 1_000, "ended_at_ms": null, "changed_at_ms": 5_000});
+        let after = |changed_after_ms| super::Filter {
+            context: None,
+            status: None,
+            changed_after_ms: Some(changed_after_ms),
+        };
+        assert!(after(3_000).keeps(&task) && after(5_000).keeps(&task));
+        assert!(!after(5_001).keeps(&task));
     }
 
     #[tokio::test]
