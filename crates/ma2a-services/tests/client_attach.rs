@@ -260,7 +260,7 @@ async fn attach_writing_through<I, W>(
 ) -> TestResult<(Result<hosted::Attached, ClientError>, Vec<FrameKind>)>
 where
     I: AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
+    W: tokio::io::AsyncWrite + Unpin + Send,
 {
     let ((mut reader, writer), (mut service_reader, mut service_writer)) = pipe();
     let mut writer = ma2a_services::FrameWriter::new(wrap(writer.into_inner()));
@@ -515,7 +515,7 @@ async fn stdin_answered_over<R, W>(
 ) -> TestResult<Result<(u64, bool), ClientError>>
 where
     R: AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
+    W: tokio::io::AsyncWrite + Unpin + Send,
 {
     let target = async {
         service_writer.frame(FrameKind::Accept, &accept).await?;

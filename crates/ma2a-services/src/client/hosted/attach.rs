@@ -18,7 +18,8 @@ use super::{Gaps, accepted, advanced, deliver, reading, reply, skipped, until};
 use crate::{
     FrameReader, FrameWriter,
     client::{
-        ClientError, First, first_or_cancel, next, process::ProcessIo, sinks::settled, unexpected,
+        ClientError, First, Sender, drained, first_or_cancel, next, process::ProcessIo,
+        sinks::settled, unexpected,
     },
 };
 
@@ -60,14 +61,14 @@ pub async fn attach<R, W, I, O, E, D>(
 ) -> Result<Attached, ClientError>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send,
     I: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
     E: AsyncWrite + Unpin,
     D: Future<Output = ()>,
 {
     tokio::pin!(detach);
-    let (answer, detached) = first_or_cancel((reader, writer), detach.as_mut()).await?;
+    let (answer, sender) = first_or_cancel((reader, writer), detach.as_mut()).await?;
     let accept = match answer {
         First::Finished(frame) if local.input.is_some() => {
             return attached((None, &frame), (id, None), Gaps::default());
@@ -83,18 +84,20 @@ where
     } = local;
     let lost = Notify::new();
     let outbound = outbound(reader, (output, error), (&lost, start));
+    tokio::pin!(outbound);
     // A failed local read is kept even when the outcome arrives before the detach is sent.
     let mut unread = None;
-    // Once detached, nothing more is sent; the outcome still follows.
-    let (frame, gaps, reached, unwritten) = if detached {
-        outbound.await?
-    } else {
-        let inbound = inbound(writer, (input, detach), (&lost, &mut unread));
-        tokio::pin!(outbound, inbound);
-        tokio::select! {
-            biased;
-            read = &mut outbound => read?,
-            () = &mut inbound => outbound.await?,
+    // Once detached, nothing but the rest of that `cancel` is sent; the outcome still follows.
+    let (frame, gaps, reached, unwritten) = match sender {
+        Sender::Cancelled(rest) => drained(outbound.as_mut(), rest).await?,
+        Sender::Open(writer) => {
+            let inbound = inbound(writer, (input, detach), (&lost, &mut unread));
+            tokio::pin!(inbound);
+            tokio::select! {
+                biased;
+                read = &mut outbound => read?,
+                () = &mut inbound => outbound.await?,
+            }
         }
     };
     let attached = attached((Some(accept), &frame), (id, Some(reached)), gaps);

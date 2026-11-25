@@ -111,33 +111,69 @@ pub(crate) async fn first<R: AsyncRead + Unpin>(
     }
 }
 
-/// Reads the target's first answer while watching `cancel`, and tells whether it fired.
+/// The rest of sending a `cancel`: a failed write is answered by the target's terminal anyway.
+pub(crate) type Cancelling<'w> = Pin<Box<dyn Future<Output = ()> + Send + 'w>>;
+
+/// The caller's write side once the target's first answer arrived.
+pub(crate) enum Sender<'w, W> {
+    /// Not cancelled: the caller may still send.
+    Open(&'w mut FrameWriter<W>),
+    /// Cancelled, with the rest of that `cancel` when it is still on its way. That rest must go
+    /// on while the caller reads the target's answer: the target may need it to end.
+    Cancelled(Option<Cancelling<'w>>),
+}
+
+/// Reads the target's first answer while watching `cancel`, and hands back the write side:
+/// still open, or cancelled.
 ///
 /// A cancel before that answer is sent at once: a unary operation may answer only with its
-/// outcome, so waiting for its `accept` would never let the target hear it.
-pub(crate) async fn first_or_cancel<R, W, C>(
-    (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
+/// outcome, so waiting for its `accept` would never let the target hear it. The answer is
+/// still read while the `cancel` is on its way, since the target may answer before it reads.
+pub(crate) async fn first_or_cancel<'w, R, W, C>(
+    (reader, writer): (&mut FrameReader<R>, &'w mut FrameWriter<W>),
     cancel: Pin<&mut C>,
-) -> Result<(First, bool), ClientError>
+) -> Result<(First, Sender<'w, W>), ClientError>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send,
     C: Future<Output = ()>,
 {
     let answer = first(reader);
     tokio::pin!(answer);
     tokio::select! {
         biased;
-        first = &mut answer => return first.map(|first| (first, false)),
+        first = &mut answer => return first.map(|first| (first, Sender::Open(writer))),
         () = cancel => {}
     }
-    // A failed write is answered by the target's terminal anyway.
-    let _sent = async {
-        writer.frame(FrameKind::Cancel, &[]).await?;
-        writer.flush().await
+    let mut sending: Cancelling<'w> = Box::pin(async move {
+        let _sent = async {
+            writer.frame(FrameKind::Cancel, &[]).await?;
+            writer.flush().await
+        }
+        .await;
+    });
+    tokio::select! {
+        biased;
+        first = &mut answer => Ok((first?, Sender::Cancelled(Some(sending)))),
+        () = &mut sending => Ok((answer.await?, Sender::Cancelled(None))),
     }
-    .await;
-    Ok((answer.await?, true))
+}
+
+/// Reads the answer `outcome` gives while the rest of a `cancel`, if any, goes on; the answer
+/// does not wait for it.
+pub(crate) async fn drained<T>(
+    outcome: impl Future<Output = T>,
+    rest: Option<Cancelling<'_>>,
+) -> T {
+    let Some(rest) = rest else {
+        return outcome.await;
+    };
+    tokio::pin!(outcome);
+    tokio::select! {
+        biased;
+        answer = &mut outcome => answer,
+        () = rest => outcome.await,
+    }
 }
 
 /// Reads one frame, treating a stream that ends without a terminal as an unknown outcome.

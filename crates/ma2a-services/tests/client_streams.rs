@@ -317,7 +317,7 @@ async fn exec_scripted<I, W>(
 )>
 where
     I: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
+    W: tokio::io::AsyncWrite + Unpin + Send,
 {
     let ((mut reader, writer), (mut target_reader, mut target_writer)) = pipe_with(1 << 16);
     let mut writer = ma2a_services::FrameWriter::new(wrap(writer.into_inner()));

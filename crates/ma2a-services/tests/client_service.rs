@@ -26,7 +26,7 @@ use ma2a_services::{
         service,
     },
 };
-use support::{TestResult, pipe};
+use support::{Flushes, TestResult, pipe};
 use tokio::io::AsyncWrite;
 
 async fn within<T>(future: impl std::future::Future<Output = T>) -> TestResult<T> {
@@ -224,6 +224,78 @@ async fn a_process_cancelled_before_its_accept_is_cancelled_once() -> TestResult
     drop((reader, writer));
     let after = within(service_reader.next()).await??;
     assert!(after.is_none(), "a second frame was sent: {after:?}");
+    Ok(())
+}
+
+/// Cancels a process, or a call when `call`, before any answer, over a caller stream whose
+/// flushes never finish, against a target that reads the `cancel` and then sends `accept`
+/// first when `accepting`, and its failed outcome. Returns the answer and whether the caller
+/// sent anything after its `cancel`.
+async fn cancelled_unflushed(
+    call: bool,
+    accepting: bool,
+) -> TestResult<(Result<(), ClientError>, bool)> {
+    let ((mut reader, writer), (mut service_reader, mut service_writer)) = pipe();
+    let mut writer = FrameWriter::new(Flushes(writer.into_inner(), 0));
+    let script = async {
+        assert_eq!(service_reader.expect().await?.kind(), FrameKind::Cancel);
+        let (accept, outcome) = if call {
+            (
+                encode_call_accept(b"")?,
+                encode_call_outcome(Err(ServiceError::Cancelled))?,
+            )
+        } else {
+            (
+                EMPTY_ACCEPT.to_vec(),
+                failed_outcome(ServiceError::Cancelled)?,
+            )
+        };
+        if accepting {
+            service_writer.frame(FrameKind::Accept, &accept).await?;
+        }
+        service_writer.frame(FrameKind::Outcome, &outcome).await?;
+        service_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let answer = if call {
+        let calling = service::call((&mut reader, &mut writer), no_input(), async {});
+        let (called, scripted) = within(async { tokio::join!(calling, script) }).await?;
+        scripted?;
+        called.map(drop)
+    } else {
+        let control = ProcessControl {
+            resizes: None,
+            cancel: async {},
+        };
+        let running = process::run_streamed((&mut reader, &mut writer), no_input(), control);
+        let (ran, scripted) = within(async { tokio::join!(running, script) }).await?;
+        scripted?;
+        ran.map(drop)
+    };
+    drop((reader, writer));
+    let after = within(service_reader.next()).await??;
+    Ok((answer, after.is_some()))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_still_on_its_way_does_not_hold_back_the_answer() -> TestResult {
+    for call in [false, true] {
+        for accepting in [false, true] {
+            // Given: a cancel before any answer, whose flush never finishes.
+            // When: the target answers it, with or without accepting first.
+            let (answer, more) = cancelled_unflushed(call, accepting).await?;
+
+            // Then: the answer is read anyway, and the cancel is not sent twice.
+            assert!(
+                matches!(answer, Err(ClientError::Failed(ServiceError::Cancelled))),
+                "call {call}, accepting {accepting}: {answer:?}"
+            );
+            assert!(
+                !more,
+                "call {call}, accepting {accepting}: sent after cancel"
+            );
+        }
+    }
     Ok(())
 }
 

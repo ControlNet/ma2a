@@ -11,7 +11,7 @@ use tokio::{
 };
 
 use super::{
-    ClientError, First, decoded, empty_accept, first_or_cancel, next,
+    ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next,
     sinks::{Sinks, settled},
 };
 use crate::{FrameReader, FrameWriter};
@@ -74,7 +74,7 @@ pub async fn run<R, W, I, O, E, C>(
 ) -> Result<ProcessResult, ClientError>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send,
     I: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
     E: AsyncWrite + Unpin,
@@ -94,7 +94,7 @@ pub async fn run_streamed<R, W, I, O, E, C>(
 ) -> Result<Streamed, ClientError>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send,
     I: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
     E: AsyncWrite + Unpin,
@@ -102,7 +102,7 @@ where
 {
     let ProcessControl { resizes, cancel } = control;
     tokio::pin!(cancel);
-    let (answer, cancelled) = first_or_cancel((reader, writer), cancel.as_mut()).await?;
+    let (answer, sender) = first_or_cancel((reader, writer), cancel.as_mut()).await?;
     // A running process is always accepted first; an outcome without that is a replay.
     match answer {
         First::Finished(frame) => {
@@ -122,19 +122,21 @@ where
     let lost = Notify::new();
     let errors = error.is_some();
     let outbound = outbound(reader, Sinks::new((output, error), errors, &lost));
+    tokio::pin!(outbound);
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
-    // Once cancelled, nothing more is sent; the outcome still follows.
-    let answer = if cancelled {
-        outbound.await
-    } else {
-        let control = ProcessControl { resizes, cancel };
-        let inbound = inbound(writer, (input, control), (&lost, &mut unread));
-        tokio::pin!(outbound, inbound);
-        tokio::select! {
-            biased;
-            answer = &mut outbound => answer,
-            () = &mut inbound => outbound.await,
+    // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
+    let answer = match sender {
+        Sender::Cancelled(rest) => drained(outbound.as_mut(), rest).await,
+        Sender::Open(writer) => {
+            let control = ProcessControl { resizes, cancel };
+            let inbound = inbound(writer, (input, control), (&lost, &mut unread));
+            tokio::pin!(inbound);
+            tokio::select! {
+                biased;
+                answer = &mut outbound => answer,
+                () = &mut inbound => outbound.await,
+            }
         }
     };
     Ok(Streamed {
