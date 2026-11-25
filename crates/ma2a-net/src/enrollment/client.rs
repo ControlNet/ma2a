@@ -1,6 +1,9 @@
 //! The candidate's side of one enrollment exchange with a Space owner.
 
-use iroh::{EndpointAddr, endpoint::Connection};
+use iroh::{
+    EndpointAddr,
+    endpoint::{Connection, ConnectionError},
+};
 use ma2a_core::MAX_ENROLLMENT_BOOTSTRAP_FRAME_BYTES;
 use tokio::time::timeout;
 
@@ -8,7 +11,7 @@ use super::{
     ENROLLMENT_EXCHANGE_TIMEOUT, ENROLLMENT_IO_TIMEOUT, MAX_ENROLLMENT_REQUEST_BYTES,
     validate_response_count,
 };
-use crate::{ENROLLMENT_ALPN, NetError};
+use crate::{ENROLLMENT_ALPN, NetError, inbound::BUSY_CLOSE_CODE};
 
 pub(crate) async fn exchange(
     endpoint: &iroh::Endpoint,
@@ -39,9 +42,17 @@ async fn exchange_bounded(
     .map_err(|_| NetError::enrollment_at("owner_dial_and_alpn"))?
     .map_err(|_| NetError::enrollment_at("owner_dial_and_alpn"))?;
     let result = exchange_connected(&connection, request).await;
+    let refused = matches!(
+        connection.close_reason(),
+        Some(ConnectionError::ApplicationClosed(close))
+            if close.error_code == BUSY_CLOSE_CODE.into()
+    );
     // A failed stream must not leave its connection alive into the exact retry.
     connection.close(0_u8.into(), b"");
-    result
+    match result {
+        Err(_) if refused => Err(NetError::enrollment_busy()),
+        result => result,
+    }
 }
 
 async fn exchange_connected(
@@ -105,7 +116,11 @@ pub(crate) async fn exchange_replayable(
         match exchange_bounded(endpoint, owner.clone(), request).await {
             Err(error) if error.is_lost_enrollment_response() => {
                 eprintln!("retrying exact enrollment redemption after {error}");
-                exchange_bounded(endpoint, owner, request).await
+                match exchange_bounded(endpoint, owner, request).await {
+                    // The first request may have taken effect, so the outcome stays unknown.
+                    Err(retry) if retry.is_enrollment_busy() => Err(error),
+                    outcome => outcome,
+                }
             }
             outcome => outcome,
         }

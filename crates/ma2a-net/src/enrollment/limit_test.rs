@@ -135,3 +135,32 @@ async fn an_answered_peer_that_keeps_its_connection_holds_no_slot() -> TestResul
     answering.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn an_exchange_refused_over_the_bound_reads_as_busy() -> TestResult {
+    // Given: every slot is held by other peers.
+    let (calls, _never_taken) = mpsc::channel(1);
+    let handler = EnrollmentHandler::new(calls);
+    let permits = (0..ENROLLMENT_GLOBAL_LIMIT)
+        .map(|_| {
+            handler
+                .limiter
+                .try_acquire(EndpointSecret::generate().endpoint_id())
+                .ok_or_else(|| io::Error::other("global enrollment permit missing"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let router = Router::builder(test_endpoint("ma2a_enrollment_busy_server").await?)
+        .accept(ENROLLMENT_ALPN, handler)
+        .spawn();
+    let client = test_endpoint("ma2a_enrollment_busy_client").await?;
+
+    // When
+    let refused = super::exchange_replayable(&client, router.endpoint().addr(), b"request").await;
+
+    // Then: the candidate learns that nothing was done, not that the outcome is unknown.
+    assert!(refused.is_err_and(|error| error.is_enrollment_busy()));
+    drop(permits);
+    client.close().await;
+    router.shutdown().await.map_err(io::Error::other)?;
+    Ok(())
+}

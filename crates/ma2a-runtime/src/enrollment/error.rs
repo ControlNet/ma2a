@@ -45,8 +45,9 @@ impl EnrollmentErrorCode {
     pub const CANCELLED: Self = Self(EnrollmentErrorKind::Cancelled);
     /// Another candidate or request already consumed the invitation.
     pub const CONFLICT: Self = Self(EnrollmentErrorKind::Conflict);
-    /// Too many redemptions are already waiting on their Space owners; nothing was done, so the
-    /// same redemption can be retried once one of them ends.
+    /// Too many redemptions are already waiting on their Space owners, or the owner was serving
+    /// as many enrollments as it allows; nothing was done, so the same redemption can be retried
+    /// once one of them ends.
     pub const BUSY: Self = Self(EnrollmentErrorKind::Busy);
 }
 

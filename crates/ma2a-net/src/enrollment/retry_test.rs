@@ -19,6 +19,8 @@ enum FirstResponse {
     Lost,
     Invalid,
     Denied,
+    Busy,
+    LostThenBusy,
 }
 
 #[derive(Clone, Debug)]
@@ -29,6 +31,13 @@ struct ResponseLoss {
 
 impl ProtocolHandler for ResponseLoss {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let answered = self.requests.lock().expect("request mutex").len();
+        if matches!(self.first, FirstResponse::Busy)
+            || (answered == 1 && matches!(self.first, FirstResponse::LostThenBusy))
+        {
+            connection.close(crate::inbound::BUSY_CLOSE_CODE.into(), b"");
+            return Ok(());
+        }
         let (mut send, mut receive) = connection.accept_bi().await?;
         let request = receive.read_to_end(4096).await.map_err(io::Error::other)?;
         let attempt = {
@@ -37,7 +46,11 @@ impl ProtocolHandler for ResponseLoss {
             requests.len()
         };
         if matches!(self.first, FirstResponse::AlwaysLost)
-            || (attempt == 1 && matches!(self.first, FirstResponse::Lost))
+            || (attempt == 1
+                && matches!(
+                    self.first,
+                    FirstResponse::Lost | FirstResponse::LostThenBusy
+                ))
         {
             connection.close(1_u8.into(), b"test response loss");
             return Ok(());
@@ -45,7 +58,10 @@ impl ProtocolHandler for ResponseLoss {
         // Test-only framing fixtures: Core signed-bootstrap validation is a
         // separate layer. Success contains one single-byte transport frame.
         let bytes: &[u8] = match self.first {
-            FirstResponse::Lost | FirstResponse::AlwaysLost => &[0, 0, 1, 0, 0, 0, 1, 42],
+            FirstResponse::Lost
+            | FirstResponse::AlwaysLost
+            | FirstResponse::Busy
+            | FirstResponse::LostThenBusy => &[0, 0, 1, 0, 0, 0, 1, 42],
             FirstResponse::Invalid => &[0, 0, 0],
             FirstResponse::Denied => &[1, 0, 0],
         };
@@ -105,6 +121,15 @@ async fn scenario(first: FirstResponse, replayable: bool) -> TestResult {
             assert_eq!(result?, (1, vec![]));
             assert_eq!(requests.len(), 1);
         }
+        FirstResponse::Busy => {
+            assert!(result.is_err_and(|error| error.is_enrollment_busy()));
+            assert!(requests.is_empty());
+        }
+        // The first request may have taken effect, so a busy retry keeps the outcome unknown.
+        FirstResponse::LostThenBusy => {
+            assert!(result.is_err_and(|error| error.is_lost_enrollment_response()));
+            assert_eq!(requests.len(), 1);
+        }
     }
     assert!(requests.iter().all(|bytes| bytes == request));
     drop(requests);
@@ -131,4 +156,14 @@ async fn explicit_enrollment_denial_is_not_retried() -> TestResult {
 #[tokio::test]
 async fn repeated_response_loss_stops_after_one_retry() -> TestResult {
     scenario(FirstResponse::AlwaysLost, true).await
+}
+
+#[tokio::test]
+async fn a_busy_owner_is_reported_as_busy_without_a_retry() -> TestResult {
+    scenario(FirstResponse::Busy, true).await
+}
+
+#[tokio::test]
+async fn a_busy_retry_after_a_lost_answer_stays_unknown() -> TestResult {
+    scenario(FirstResponse::LostThenBusy, true).await
 }

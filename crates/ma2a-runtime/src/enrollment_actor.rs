@@ -155,7 +155,12 @@ impl Actor {
     ) -> Result<EstablishedEnrollment, EnrollmentError> {
         let (status, response_pages) = exchanged.map_err(|error| {
             eprintln!("enrollment transport: {error}");
-            EnrollmentError::internal().at_stage(crate::EnrollmentStage::Exchange)
+            if error.is_enrollment_busy() {
+                // The owner read nothing, so the same redemption can be retried.
+                EnrollmentError::busy().at_stage(crate::EnrollmentStage::Exchange)
+            } else {
+                EnrollmentError::internal().at_stage(crate::EnrollmentStage::Exchange)
+            }
         })?;
         if status != 0 {
             return Err(EnrollmentError::from_status(status)

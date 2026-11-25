@@ -6,7 +6,7 @@ use ma2a_core::{EndpointId, MAX_ENROLLMENT_BOOTSTRAP_FRAME_BYTES, MAX_ENROLLMENT
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, timeout};
 
-use crate::NetError;
+use crate::{NetError, inbound::BUSY_CLOSE_CODE};
 pub(crate) use client::{exchange, exchange_replayable};
 use limit::EnrollmentLimiter;
 
@@ -72,7 +72,7 @@ impl ProtocolHandler for EnrollmentHandler {
         // stream is awaited or read.
         let remote_endpoint_id = connection.remote_id().into();
         let Some(permit) = self.limiter.try_acquire(remote_endpoint_id) else {
-            connection.close(1_u8.into(), b"");
+            connection.close(BUSY_CLOSE_CODE.into(), b"");
             return Ok(());
         };
         let result = timeout(ENROLLMENT_EXCHANGE_TIMEOUT, async {
@@ -100,7 +100,8 @@ impl ProtocolHandler for EnrollmentHandler {
             .await
             .map_or(true, |result| result.is_err())
             {
-                connection.close(1_u8.into(), b"");
+                // The Runtime never saw the request, so the candidate may send it again.
+                connection.close(BUSY_CLOSE_CODE.into(), b"");
                 return Ok(());
             }
             let (status, pages) = timeout(ENROLLMENT_IO_TIMEOUT, response)

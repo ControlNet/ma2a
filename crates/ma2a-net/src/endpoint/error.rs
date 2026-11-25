@@ -42,6 +42,7 @@ enum NetErrorKind {
     Shutdown,
     Enrollment(&'static str),
     EnrollmentResponseLost(&'static str),
+    EnrollmentBusy,
     Control(ControlFailure),
     Reconfigure(crate::RelayReconfigureError),
 }
@@ -62,6 +63,9 @@ impl fmt::Display for NetError {
             NetErrorKind::Shutdown => formatter.write_str("Iroh Endpoint shutdown task failed"),
             NetErrorKind::Enrollment(stage) | NetErrorKind::EnrollmentResponseLost(stage) => {
                 write!(formatter, "Iroh enrollment exchange failed at {stage}")
+            }
+            NetErrorKind::EnrollmentBusy => {
+                formatter.write_str("Space owner refused the enrollment before reading it")
             }
             NetErrorKind::Control(_) => formatter.write_str("Iroh control exchange failed"),
             NetErrorKind::Reconfigure(error) => error.fmt(formatter),
@@ -96,6 +100,16 @@ impl NetError {
 
     pub(crate) const fn is_lost_enrollment_response(&self) -> bool {
         matches!(self.0, NetErrorKind::EnrollmentResponseLost(_))
+    }
+
+    pub(crate) const fn enrollment_busy() -> Self {
+        Self(NetErrorKind::EnrollmentBusy)
+    }
+
+    /// Returns whether the Space owner refused the enrollment exchange before reading its
+    /// request, so it had no effect there and the same request may be retried.
+    pub const fn is_enrollment_busy(&self) -> bool {
+        matches!(self.0, NetErrorKind::EnrollmentBusy)
     }
 
     pub(crate) const fn control_transient() -> Self {
@@ -137,6 +151,7 @@ impl Error for NetError {
             NetErrorKind::Shutdown
             | NetErrorKind::Enrollment(_)
             | NetErrorKind::EnrollmentResponseLost(_)
+            | NetErrorKind::EnrollmentBusy
             | NetErrorKind::Control(_) => None,
         }
     }

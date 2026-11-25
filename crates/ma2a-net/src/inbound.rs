@@ -14,6 +14,10 @@ use crate::peer_limit::PeerLimiter;
 /// room for a dial that replaces a stale connection.
 pub const PEER_CONNECTION_LIMIT: usize = 64;
 
+/// Application close code of a connection refused before its handler read anything from it,
+/// so whatever it carried had no effect and may be sent again later.
+pub(crate) const BUSY_CLOSE_CODE: u8 = 3;
+
 /// Counts every inbound connection against its peer from accept until its handler returns,
 /// including any wait for the peer to close. There is no Runtime-wide connection bound.
 #[derive(Clone, Debug)]
@@ -44,7 +48,7 @@ pub(crate) struct Bounded<H> {
 impl<H: ProtocolHandler> ProtocolHandler for Bounded<H> {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let Some(_permit) = self.connections.try_acquire(connection.remote_id().into()) else {
-            connection.close(1_u8.into(), b"");
+            connection.close(BUSY_CLOSE_CODE.into(), b"");
             return Ok(());
         };
         self.handler.accept(connection).await
