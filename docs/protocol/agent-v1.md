@@ -228,8 +228,10 @@ recorded and still ends the task.
 
 **Refusals.** Every refusal decided before an effect is a `reject` frame: `invalid_input`,
 `unknown_agent`, `unknown_task`, `unknown_artifact`, `agent_unavailable`, `task_ended`,
-`conflict`, `concurrency_exceeded`, and `unavailable` (Store failure). Only `cancel`'s
-`outcome_unknown` and the ends of `watch` are failed outcomes after `accept`.
+`conflict`, `concurrency_exceeded`, and `unavailable` (Store failure). The failed outcomes after
+`accept` are the ones described with each operation: `send`'s `task_ended` at the durable-event
+bound, `cancel`'s `outcome_unknown`, the ends of `watch`, and `artifact`'s download failures such as
+`content_changed`, `integrity_mismatch`, and `timed_out`.
 
 ## Task state machine
 
