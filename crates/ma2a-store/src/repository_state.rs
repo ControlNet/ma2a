@@ -37,68 +37,7 @@ impl Repository {
     ///
     /// Returns [`StoreError`] when runtime metadata is malformed or cannot be read.
     pub fn runtime_metadata(&self) -> Result<RuntimeMetadata, StoreError> {
-        type MetadataRow = (
-            u64,
-            Option<Vec<u8>>,
-            Option<bool>,
-            Option<i64>,
-            Option<i64>,
-            Option<bool>,
-            Option<u64>,
-            Option<u64>,
-            Option<u64>,
-        );
-        let row: MetadataRow = self.connection.query_row(
-            "SELECT revision, boot_id, last_shutdown_clean, last_shutdown_at_ms,
-             endpoint_observed_at_ms, endpoint_ready, direct_address_count,
-             relay_address_count, membership_count FROM runtime_metadata WHERE singleton = 1",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                    row.get(8)?,
-                ))
-            },
-        )?;
-        let boot_id = row
-            .1
-            .map(|bytes| {
-                <[u8; 16]>::try_from(bytes).map_err(|_| StoreError::SchemaMismatch {
-                    detail: "persisted Runtime boot identifier has invalid length",
-                })
-            })
-            .transpose()?;
-        let endpoint_observation = match (row.4, row.5, row.6, row.7, row.8) {
-            (Some(observed_at_ms), Some(ready), Some(direct), Some(relay), Some(memberships)) => {
-                Some(EndpointObservationUpdate {
-                    observed_at_ms,
-                    ready,
-                    direct_address_count: direct,
-                    relay_address_count: relay,
-                    membership_count: memberships,
-                })
-            }
-            (None, None, None, None, None) => None,
-            _ => {
-                return Err(StoreError::SchemaMismatch {
-                    detail: "persisted Endpoint observation is incomplete",
-                });
-            }
-        };
-        Ok(RuntimeMetadata {
-            revision: row.0,
-            boot_id,
-            last_shutdown_clean: row.2,
-            last_shutdown_at_ms: row.3,
-            endpoint_observation,
-        })
+        load_runtime_metadata(&self.connection)
     }
 
     /// Stores boot/shutdown metadata and advances revision atomically.
@@ -135,19 +74,7 @@ impl Repository {
         observation: &EndpointObservationUpdate,
     ) -> Result<u64, StoreError> {
         let transaction = self.immediate()?;
-        transaction.execute(
-            "UPDATE runtime_metadata SET endpoint_observed_at_ms = ?1, endpoint_ready = ?2,
-             direct_address_count = ?3, relay_address_count = ?4, membership_count = ?5
-             WHERE singleton = 1",
-            (
-                observation.observed_at_ms,
-                observation.ready,
-                observation.direct_address_count,
-                observation.relay_address_count,
-                observation.membership_count,
-            ),
-        )?;
-        let revision = increment_revision(&transaction)?;
+        let revision = write_endpoint_observation(&transaction, observation)?;
         transaction.commit()?;
         Ok(revision)
     }
@@ -160,16 +87,21 @@ impl Repository {
         &mut self,
         observation: &EndpointObservationUpdate,
     ) -> Result<u64, StoreError> {
-        let current = self.runtime_metadata()?.endpoint_observation();
-        if current.is_some_and(|old| {
+        // The comparison runs inside the write transaction, so two writers recording the same
+        // change at once commit it once.
+        let transaction = self.immediate()?;
+        let current = load_runtime_metadata(&transaction)?;
+        if current.endpoint_observation().is_some_and(|old| {
             old.ready == observation.ready
                 && old.direct_address_count == observation.direct_address_count
                 && old.relay_address_count == observation.relay_address_count
                 && old.membership_count == observation.membership_count
         }) {
-            return self.revision();
+            return Ok(current.revision());
         }
-        self.record_endpoint_observation(observation)
+        let revision = write_endpoint_observation(&transaction, observation)?;
+        transaction.commit()?;
+        Ok(revision)
     }
 
     /// Replaces desired relay configuration and advances revision atomically.
@@ -279,4 +211,88 @@ impl Repository {
         transaction.commit()?;
         Ok(revision)
     }
+}
+
+fn load_runtime_metadata(connection: &rusqlite::Connection) -> Result<RuntimeMetadata, StoreError> {
+    type MetadataRow = (
+        u64,
+        Option<Vec<u8>>,
+        Option<bool>,
+        Option<i64>,
+        Option<i64>,
+        Option<bool>,
+        Option<u64>,
+        Option<u64>,
+        Option<u64>,
+    );
+    let row: MetadataRow = connection.query_row(
+        "SELECT revision, boot_id, last_shutdown_clean, last_shutdown_at_ms,
+         endpoint_observed_at_ms, endpoint_ready, direct_address_count,
+         relay_address_count, membership_count FROM runtime_metadata WHERE singleton = 1",
+        [],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+            ))
+        },
+    )?;
+    let boot_id = row
+        .1
+        .map(|bytes| {
+            <[u8; 16]>::try_from(bytes).map_err(|_| StoreError::SchemaMismatch {
+                detail: "persisted Runtime boot identifier has invalid length",
+            })
+        })
+        .transpose()?;
+    let endpoint_observation = match (row.4, row.5, row.6, row.7, row.8) {
+        (Some(observed_at_ms), Some(ready), Some(direct), Some(relay), Some(memberships)) => {
+            Some(EndpointObservationUpdate {
+                observed_at_ms,
+                ready,
+                direct_address_count: direct,
+                relay_address_count: relay,
+                membership_count: memberships,
+            })
+        }
+        (None, None, None, None, None) => None,
+        _ => {
+            return Err(StoreError::SchemaMismatch {
+                detail: "persisted Endpoint observation is incomplete",
+            });
+        }
+    };
+    Ok(RuntimeMetadata {
+        revision: row.0,
+        boot_id,
+        last_shutdown_clean: row.2,
+        last_shutdown_at_ms: row.3,
+        endpoint_observation,
+    })
+}
+
+fn write_endpoint_observation(
+    transaction: &rusqlite::Transaction<'_>,
+    observation: &EndpointObservationUpdate,
+) -> Result<u64, StoreError> {
+    transaction.execute(
+        "UPDATE runtime_metadata SET endpoint_observed_at_ms = ?1, endpoint_ready = ?2,
+         direct_address_count = ?3, relay_address_count = ?4, membership_count = ?5
+         WHERE singleton = 1",
+        (
+            observation.observed_at_ms,
+            observation.ready,
+            observation.direct_address_count,
+            observation.relay_address_count,
+            observation.membership_count,
+        ),
+    )?;
+    increment_revision(transaction)
 }

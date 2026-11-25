@@ -1,10 +1,12 @@
-//! Relay state: bounds on new URLs, and observation replays that change nothing.
+//! Relay and Endpoint state: bounds on new URLs, and observation replays that change nothing.
 
 #[path = "common/support.rs"]
 mod support;
 
 use ma2a_core::MAX_RELAY_URL_LEN;
-use ma2a_store::{RelayConfiguration, RelayObservation, Repository, StoreConfig};
+use ma2a_store::{
+    EndpointObservationUpdate, RelayConfiguration, RelayObservation, Repository, StoreConfig,
+};
 use rusqlite::Connection;
 use support::{TempState, TestResult};
 
@@ -135,6 +137,40 @@ fn concurrent_identical_replacements_advance_the_revision_once() -> TestResult {
         std::thread::spawn(move || {
             repository
                 .replace_relay_observations(&[observation("https://relay.invalid/".to_owned(), 4)])
+        })
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    holder.execute_batch("COMMIT")?;
+    let mut revisions = Vec::new();
+    for writer in writers {
+        revisions.push(writer.join().map_err(|_| "writer panicked")??);
+    }
+
+    // Then the change is committed once, and both callers see that one revision.
+    assert_eq!(revisions, vec![before + 1, before + 1]);
+    Ok(())
+}
+
+#[test]
+fn concurrent_identical_endpoint_observations_advance_the_revision_once() -> TestResult {
+    // Given two connections to one Store, and a third holding the write lock.
+    let state = TempState::new("endpoint-observation-concurrent")?;
+    let config = StoreConfig::new(state.path());
+    let repositories = [Repository::open(&config)?, Repository::open(&config)?];
+    let before = repositories[0].revision()?;
+    let holder = Connection::open(config.database_path())?;
+    holder.execute_batch("BEGIN IMMEDIATE")?;
+
+    // When both record the same changed observation while the lock is held.
+    let writers = repositories.map(|mut repository| {
+        std::thread::spawn(move || {
+            repository.record_endpoint_observation_if_changed(&EndpointObservationUpdate {
+                observed_at_ms: 70,
+                ready: true,
+                direct_address_count: 2,
+                relay_address_count: 1,
+                membership_count: 3,
+            })
         })
     });
     std::thread::sleep(std::time::Duration::from_millis(200));
