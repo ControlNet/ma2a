@@ -107,6 +107,7 @@ pub(in crate::control_sync) fn pull_page(
     }
     for advertisement in state.active_relay_advertisements() {
         if authorization.allows_private_relay_provider(advertisement.provider_endpoint_id())
+            && super::is_exportable(advertisement)
             && is_unseen(
                 cursor.relay_cursors(),
                 (

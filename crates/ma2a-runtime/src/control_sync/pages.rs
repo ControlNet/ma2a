@@ -16,6 +16,16 @@ pub(super) use pull::pull_pages;
 pub(crate) use staging::ControlChanges;
 pub(super) use staging::apply_pages;
 
+/// Whether a stored advertisement still passes the checks a receiver applies to it. One an
+/// earlier version accepted, such as one whose URL names a user, stays stored so its sequence
+/// still refuses a rollback, but is not sent, as the receiver would refuse the whole page.
+fn is_exportable(advertisement: &ma2a_store::PersistedRelayAdvertisement) -> bool {
+    ma2a_core::SignedPrivateRelayAdvertisementV1::parse_canonical_bytes(
+        advertisement.signed_advertisement(),
+    )
+    .is_ok()
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct PushPageRequest {
     pub(super) local_endpoint_id: ma2a_core::EndpointId,
@@ -81,6 +91,7 @@ pub(super) fn push_page(
     }
     for advertisement in state.active_relay_advertisements() {
         if advertisement.provider_endpoint_id() == request.local_endpoint_id
+            && is_exportable(advertisement)
             && state
                 .authorization()
                 .allows_private_relay_provider(request.local_endpoint_id)
