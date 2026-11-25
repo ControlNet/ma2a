@@ -17,7 +17,7 @@ use tokio::io::{AsyncWrite, ReadHalf, WriteHalf};
 
 use crate::{
     Error,
-    call::{Party, sends_on},
+    call::{Channels, Party},
     wire,
 };
 
@@ -46,14 +46,16 @@ pub struct CallStream {
     writer: FrameWriter<WriteHalf<LocalStream>>,
     /// What the service sent so far.
     seen: Seen,
+    /// The caller's channels it ended.
+    ended: Channels,
 }
 
 /// What the service sent so far on one call.
 #[derive(Debug, Default)]
 struct Seen {
     accepted: bool,
-    /// Whether the service ended its output and its error channel.
-    ended: (bool, bool),
+    /// The service's channels it ended.
+    ended: Channels,
     /// Whether the call ended with a terminal.
     finished: bool,
 }
@@ -76,10 +78,11 @@ impl CallStream {
     /// Sends 1–64 KiB on one channel; input is channel 0, the only one a caller sends on.
     ///
     /// # Errors
-    /// Returns [`Error::Protocol`] for another channel, sending nothing, and
-    /// [`Error::Service`] when the bytes are out of bounds or the connection is gone.
+    /// Returns [`Error::Protocol`] for another channel or after the `end` of input, sending
+    /// nothing, and [`Error::Service`] when the bytes are out of bounds or the connection is
+    /// gone.
     pub async fn send(&mut self, channel: Channel, bytes: &[u8]) -> Result<(), Error> {
-        sends_on(channel, Party::Caller)?;
+        self.ended.take((channel, Party::Caller), false)?;
         self.writer.data(channel, bytes).await?;
         Ok(self.writer.flush().await?)
     }
@@ -89,7 +92,7 @@ impl CallStream {
     /// # Errors
     /// The same as [`Self::send`].
     pub async fn end(&mut self, channel: Channel) -> Result<(), Error> {
-        sends_on(channel, Party::Caller)?;
+        self.ended.take((channel, Party::Caller), true)?;
         self.writer.end(channel).await?;
         Ok(self.writer.flush().await?)
     }
@@ -135,17 +138,10 @@ fn received(frame: Frame, seen: &mut Seen) -> Result<Received, Error> {
     }
     // The channel a `data` or `end` is on must still be open.
     let mut open = |channel, ends| {
-        sends_on(channel, Party::Service).map_err(|_| out_of_order())?;
-        let ended = if channel == Channel::Output {
-            &mut seen.ended.0
-        } else {
-            &mut seen.ended.1
-        };
-        if *ended {
-            return Err(out_of_order());
-        }
-        *ended = ends;
-        Ok(channel)
+        seen.ended
+            .take((channel, Party::Service), ends)
+            .map(|()| channel)
+            .map_err(|_| out_of_order())
     };
     Ok(match frame.kind() {
         FrameKind::Accept => {
@@ -281,6 +277,7 @@ impl Caller {
             reader: FrameReader::new(read),
             writer: FrameWriter::new(write),
             seen: Seen::default(),
+            ended: Channels::default(),
         };
         let header = OpenHeader::new(request_id, target, OpenBody::Service(request))
             .encode()

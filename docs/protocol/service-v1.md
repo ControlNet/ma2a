@@ -146,7 +146,8 @@ channel after its `end`. Caller `data` or `end` on another channel than input, o
 of input, reaches the service as `cancel` instead. A service frame out of order (`data`, `end`, or
 `control` before `accept`, or a second `accept`), `data` or `end` on the input channel, or `data`
 or `end` on a channel the service already ended, ends the call there, and the caller learns
-`outcome_unknown`. The SDK refuses to send on the other party's channels in the first place.
+`outcome_unknown`. The SDK refuses to send on the other party's channels, or on a channel it
+already ended, in the first place.
 
 ## Hosting and lifecycle
 

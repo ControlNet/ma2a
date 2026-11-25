@@ -34,22 +34,23 @@ pub enum Input {
 
 /// The caller-to-service frames of one call.
 #[derive(Debug)]
-pub struct CallInput(FrameReader<ReadHalf<LocalStream>>);
+pub struct CallInput(FrameReader<ReadHalf<LocalStream>>, Channels);
 
 impl CallInput {
     /// Waits for the caller's next frame. Safe to use in `tokio::select!`.
     ///
     /// # Errors
     /// Returns [`Error::Protocol`] for a frame the caller may not send, such as data on
-    /// another channel than input.
+    /// another channel than input, or after its `end` of input.
     pub async fn recv(&mut self) -> Result<Input, Error> {
-        caller_input(&mut self.0).await
+        caller_input(&mut self.0, &mut self.1).await
     }
 }
 
-/// Reads the caller's next frame; see [`CallInput::recv`].
+/// Reads the caller's next frame, given the channels it `ended`; see [`CallInput::recv`].
 pub(crate) async fn caller_input<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,
+    ended: &mut Channels,
 ) -> Result<Input, Error> {
     let Ok(Some(frame)) = reader.next().await else {
         return Ok(Input::Cancelled);
@@ -58,12 +59,12 @@ pub(crate) async fn caller_input<R: AsyncRead + Unpin>(
     match frame.kind() {
         FrameKind::Data => {
             let (channel, bytes) = frame.data().map_err(malformed)?;
-            sends_on(channel, Party::Caller)?;
+            ended.take((channel, Party::Caller), false)?;
             Ok(Input::Data(channel, bytes.to_vec()))
         }
         FrameKind::End => {
             let channel = frame.end().map_err(malformed)?;
-            sends_on(channel, Party::Caller)?;
+            ended.take((channel, Party::Caller), true)?;
             Ok(Input::End(channel))
         }
         FrameKind::Control => Ok(Input::Control(frame.into_payload())),
@@ -95,11 +96,42 @@ pub(crate) const fn sends_on(channel: Channel, party: Party) -> Result<(), Error
     }
 }
 
+/// The channels one party ended: it sends nothing more on them.
+#[derive(Debug, Default)]
+pub(crate) struct Channels {
+    input: bool,
+    output: bool,
+    error: bool,
+}
+
+impl Channels {
+    /// Checks that `party` may send `data` on `channel`, or its `end` when `ends`, which it
+    /// records.
+    pub(crate) fn take(
+        &mut self,
+        (channel, party): (Channel, Party),
+        ends: bool,
+    ) -> Result<(), Error> {
+        sends_on(channel, party)?;
+        let ended = match channel {
+            Channel::Input => &mut self.input,
+            Channel::Output => &mut self.output,
+            Channel::Error => &mut self.error,
+        };
+        if *ended {
+            return Err(Error::Protocol("nothing follows the end of a channel"));
+        }
+        *ended = ends;
+        Ok(())
+    }
+}
+
 /// The service-to-caller frames of one call.
 #[derive(Debug)]
 pub struct CallOutput {
     writer: FrameWriter<WriteHalf<LocalStream>>,
     accepted: bool,
+    ended: Channels,
 }
 
 impl CallOutput {
@@ -124,11 +156,12 @@ impl CallOutput {
     /// Sends 1–64 KiB on one channel; output is channel 1 and errors channel 2.
     ///
     /// # Errors
-    /// Returns [`Error::Protocol`] before `accept` or on the input channel, sending nothing,
-    /// and [`Error::Service`] when the bytes are out of bounds or the connection is gone.
+    /// Returns [`Error::Protocol`] before `accept`, on the input channel, or after that
+    /// channel's `end`, sending nothing, and [`Error::Service`] when the bytes are out of
+    /// bounds or the connection is gone.
     pub async fn send(&mut self, channel: Channel, bytes: &[u8]) -> Result<(), Error> {
         self.require_accepted()?;
-        sends_on(channel, Party::Service)?;
+        self.ended.take((channel, Party::Service), false)?;
         self.writer.data(channel, bytes).await?;
         Ok(self.writer.flush().await?)
     }
@@ -139,7 +172,7 @@ impl CallOutput {
     /// The same as [`Self::send`].
     pub async fn end(&mut self, channel: Channel) -> Result<(), Error> {
         self.require_accepted()?;
-        sends_on(channel, Party::Service)?;
+        self.ended.take((channel, Party::Service), true)?;
         self.writer.end(channel).await?;
         Ok(self.writer.flush().await?)
     }
@@ -229,10 +262,11 @@ impl Call {
             version,
             operation,
             body,
-            input: CallInput(FrameReader::new(read)),
+            input: CallInput(FrameReader::new(read), Channels::default()),
             output: CallOutput {
                 writer: FrameWriter::new(write),
                 accepted: false,
+                ended: Channels::default(),
             },
         }
     }
