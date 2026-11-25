@@ -518,6 +518,41 @@ async fn a_missing_or_stale_endpoint_is_unreachable_not_slow() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_lost_or_speaking_no_frames_during_the_proof_is_never_a_cancel() -> TestResult {
+    use interprocess::local_socket::traits::tokio::{Listener as _, Stream as _};
+    use tokio::io::AsyncWriteExt as _;
+    let root = TempRoot::new("sup-peer")?;
+    let path = root.path().join("peer.sock");
+    let address = SupervisorAddress::new(path.to_str().ok_or("path")?.to_owned());
+    let listener = address.bind()?;
+    let credentials = credentials()?;
+    for (speaks, expected) in [
+        // Gone before it answered: maybe a supervisor that just ended, so tried again later.
+        (false, ServiceError::Unavailable),
+        // Something that does not speak frames is not this Process's supervisor.
+        (true, ServiceError::Unauthorized),
+    ] {
+        let peer = async {
+            let stream = listener.accept().await?;
+            if speaks {
+                let (_receive, mut send) = stream.split();
+                send.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await?;
+                send.flush().await?;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            TestResult::Ok(())
+        };
+        let (connected, accepted) = tokio::join!(address.connect(&credentials), peer);
+        accepted?;
+        assert!(
+            matches!(connected, Err(ref error) if *error == expected),
+            "{expected:?}: {connected:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pipes_a_grandchild_keeps_open_are_drained_once_and_never_logged_after_the_end()
 -> TestResult {
     // Given: a child that leaves a grandchild in its own session holding stdout and stderr,

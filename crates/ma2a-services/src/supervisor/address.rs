@@ -93,7 +93,16 @@ impl SupervisorAddress {
             same_user(&stream)?;
             let (receive, send) = stream.split();
             let mut channel = (FrameReader::new(receive), FrameWriter::new(send));
-            prove_daemon((&mut channel.0, &mut channel.1), credentials).await?;
+            prove_daemon((&mut channel.0, &mut channel.1), credentials)
+                .await
+                .map_err(|error| match error {
+                    // Gone before it was proven: maybe a supervisor that just ended, so this
+                    // proves nothing yet, never a cancel by anyone.
+                    ServiceError::Cancelled => ServiceError::Unavailable,
+                    // A peer that does not speak frames is not this Process's supervisor.
+                    ServiceError::InvalidInput => ServiceError::Unauthorized,
+                    error => error,
+                })?;
             Ok(channel)
         };
         tokio::time::timeout(CONNECT_DEADLINE, attempt)
