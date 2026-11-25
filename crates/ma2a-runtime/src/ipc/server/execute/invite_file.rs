@@ -52,7 +52,9 @@ pub(super) use unix::Destination;
 /// On Windows the destination's directory is already pinned and the ticket's protected staging
 /// directory and file already created in it, so a directory nothing can be created in is refused
 /// before anything is committed rather than after. Staging, publishing, and cleanup all go
-/// through the pinned directory's final path, so they all happen in that one directory. A
+/// through the pinned directory's final path, so they all happen in that one directory. The
+/// staging directory is pinned as well from just after it is made until it is removed, so
+/// nothing can move it away and put another directory, with another ticket, at its name. A
 /// destination dropped unwritten removes its staging.
 #[cfg(windows)]
 pub(super) struct Destination {
@@ -60,6 +62,7 @@ pub(super) struct Destination {
     directory: std::path::PathBuf,
     name: std::ffi::OsString,
     staging: std::path::PathBuf,
+    staging_pin: Option<std::fs::File>,
     file: Option<std::fs::File>,
 }
 
@@ -85,11 +88,15 @@ impl Destination {
             windows_files::pin_directory(parent).map_err(|_| ProtocolError::INVALID_INPUT)?;
         let staging = directory.join(staging_name()?);
         windows_files::create_protected_dir(&staging).map_err(|_| ProtocolError::INVALID_INPUT)?;
+        // A directory another account swapped in meanwhile is not private, and is left alone.
+        let staging_pin = windows_files::pin_private_directory(&staging)
+            .map_err(|_| ProtocolError::INVALID_INPUT)?;
         let mut opened = Self {
             _pin: pin,
             directory,
             name: name.to_owned(),
             staging,
+            staging_pin: Some(staging_pin),
             file: None,
         };
         let file = windows_files::create_protected_file(&opened.staged())
@@ -126,6 +133,8 @@ impl Drop for Destination {
     fn drop(&mut self) {
         drop(self.file.take());
         let _removed = std::fs::remove_file(self.staged());
+        // The pin refuses removal too, so it goes just before the directory does.
+        drop(self.staging_pin.take());
         let _removed = std::fs::remove_dir(&self.staging);
     }
 }

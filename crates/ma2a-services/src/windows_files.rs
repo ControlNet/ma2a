@@ -133,6 +133,39 @@ pub fn pin_directory(path: &Path) -> io::Result<(File, PathBuf)> {
     Ok((handle, resolved))
 }
 
+/// Opens the directory `path` itself, never a link or junction there, and holds it so it can be
+/// neither renamed nor removed while the handle lives.
+///
+/// # Errors
+/// Returns the operating system's error, or `PermissionDenied` when `path` is a reparse point or
+/// not a directory, or when anyone but this account, SYSTEM, and the Administrators group may
+/// use it.
+pub fn pin_private_directory(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+    };
+
+    // A handle with attribute access alone takes no part in sharing checks, so it is opened
+    // to list the directory as well.
+    let handle = std::fs::OpenOptions::new()
+        .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let metadata = handle.metadata()?;
+    let linked = metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    let sddl = crate::windows_acl::owner_and_dacl(&handle)?;
+    if linked
+        || !metadata.is_dir()
+        || !crate::sddl::is_private(&sddl, crate::windows_acl::current_user_matcher()?)
+    {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(handle)
+}
+
 fn with_private_object<T>(
     path: &Path,
     ace_flags: &str,
@@ -237,53 +270,5 @@ pub fn rename_no_clobber(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::os::windows::fs::OpenOptionsExt as _;
-
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, READ_CONTROL,
-    };
-
-    use super::{create_protected_dir, file_id, final_path};
-    use crate::windows_acl::{current_user_matcher, owner_and_dacl};
-
-    fn open_directory(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-        std::fs::OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-            .open(path)
-    }
-
-    #[test]
-    fn a_protected_directory_is_private_from_the_moment_it_exists()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let user = current_user_matcher()?;
-        let base = std::env::temp_dir().join(format!("ma2a-acl-{}", std::process::id()));
-        let _stale = std::fs::remove_dir_all(&base);
-        std::fs::create_dir(&base)?;
-        let path = base.join("private");
-        create_protected_dir(&path)?;
-        assert!(
-            create_protected_dir(&path)
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
-        );
-        let (private, inherited) = (open_directory(&path)?, open_directory(&base)?);
-        let sddl = owner_and_dacl(&private)?;
-        assert!(crate::sddl::is_private(&sddl, &user), "{sddl}");
-        // The user's own SID text and its system alias, where it has one, both resolve to it.
-        let full = crate::windows_security::current_process_user_sid()?.to_sddl()?;
-        assert!(user(&full));
-        assert!(!user("SY") || full == "S-1-5-18");
-        assert!(!user("S-1-5-21-1-2-3-500"));
-        // A directory made the ordinary way inherits from the temporary directory.
-        let sddl = owner_and_dacl(&inherited)?;
-        assert!(!crate::sddl::is_private(&sddl, &user), "{sddl}");
-        // Identity and location come from the handle.
-        assert_eq!(file_id(&private)?, file_id(&open_directory(&path)?)?);
-        assert_ne!(file_id(&private)?, file_id(&inherited)?);
-        assert_eq!(final_path(&private)?, std::fs::canonicalize(&path)?);
-        drop((private, inherited));
-        std::fs::remove_dir_all(&base)?;
-        Ok(())
-    }
-}
+#[path = "windows_files_tests.rs"]
+mod tests;

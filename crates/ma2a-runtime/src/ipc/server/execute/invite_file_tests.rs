@@ -113,8 +113,34 @@ fn a_replaced_staging_entry_is_never_published_or_removed() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Windows: once the ticket file is closed, as `write` closes it before it publishes the ticket,
+/// its staging directory is still held, so it cannot be moved away and replaced by another.
+#[cfg(windows)]
+#[test]
+fn a_staging_directory_stays_pinned_after_its_ticket_is_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Given: the ticket is staged.
+    let base = std::env::temp_dir().join(format!("ma2a-invite-pinned-{}", std::process::id()));
+    let _stale = std::fs::remove_dir_all(&base);
+    std::fs::create_dir(&base)?;
+    let output = base.join("ticket");
+    let mut destination = super::Destination::open(output.to_str().ok_or("path")?)?;
+    let stage = base.join(names(&base)?.first().ok_or("no staging")?);
+
+    // When: the ticket file is closed and something tries to move the staging directory away.
+    drop(destination.file.take());
+    let moved = std::fs::rename(&stage, base.join("moved"));
+    drop(destination);
+
+    // Then: the move is refused, and the staging is still removed.
+    let left = names(&base)?;
+    std::fs::remove_dir_all(&base)?;
+    assert!(moved.is_err(), "{moved:?}");
+    assert!(left.is_empty(), "{left:?}");
+    Ok(())
+}
+
 /// The names of the entries in `directory`.
-#[cfg(unix)]
 fn names(directory: &std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>> {
     std::fs::read_dir(directory)?
         .map(|entry| Ok(entry?.file_name()))
