@@ -7,7 +7,7 @@ use ma2a_core::{
 };
 use ma2a_services::{FrameReader, FrameWriter};
 
-use super::{Received, continuing, control, received};
+use super::{Received, Seen, continuing, control, received};
 use crate::Error;
 
 #[test]
@@ -83,11 +83,11 @@ async fn taken(sent: &[Sent]) -> Result<Vec<Result<Received, Error>>, Box<dyn st
         }
     }
     writer.flush().await?;
-    let mut accepted = false;
+    let mut seen = Seen::default();
     let mut taken = Vec::new();
     for _ in sent {
         let frame = reader.expect().await?;
-        let one = received(frame, &mut accepted);
+        let one = received(frame, &mut seen);
         let refused = one.is_err();
         taken.push(one);
         if refused {
@@ -126,6 +126,11 @@ async fn a_call_takes_frames_only_in_the_order_and_direction_services_v1_allows(
         vec![Sent::Accept, Sent::Reject],
         vec![Sent::Accept, Sent::Data(input)],
         vec![Sent::Accept, Sent::End(input)],
+        vec![Sent::Accept, Sent::End(output), Sent::Data(output)],
+        vec![Sent::Accept, Sent::End(error), Sent::End(error)],
+        vec![Sent::Outcome, Sent::Outcome],
+        vec![Sent::Reject, Sent::Outcome],
+        vec![Sent::Accept, Sent::Outcome, Sent::Data(output)],
     ];
     for sent in refused {
         let taken = taken(&sent).await?;

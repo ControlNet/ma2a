@@ -8,7 +8,7 @@ use ma2a_core::{
 };
 use ma2a_runtime::ipc::LocalStream;
 use ma2a_services::{FrameReader, FrameWriter};
-use tokio::io::{ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, ReadHalf, WriteHalf};
 
 use crate::Error;
 
@@ -40,22 +40,58 @@ impl CallInput {
     /// Waits for the caller's next frame. Safe to use in `tokio::select!`.
     ///
     /// # Errors
-    /// Returns [`Error::Protocol`] for a frame the caller may not send.
+    /// Returns [`Error::Protocol`] for a frame the caller may not send, such as data on
+    /// another channel than input.
     pub async fn recv(&mut self) -> Result<Input, Error> {
-        let Ok(Some(frame)) = self.0.next().await else {
-            return Ok(Input::Cancelled);
-        };
-        let malformed = |_| Error::Protocol("the caller sent a malformed frame");
-        match frame.kind() {
-            FrameKind::Data => {
-                let (channel, bytes) = frame.data().map_err(malformed)?;
-                Ok(Input::Data(channel, bytes.to_vec()))
-            }
-            FrameKind::End => Ok(Input::End(frame.end().map_err(malformed)?)),
-            FrameKind::Control => Ok(Input::Control(frame.into_payload())),
-            FrameKind::Cancel => Ok(Input::Cancelled),
-            _ => Err(Error::Protocol("the caller sent a frame it may not send")),
+        caller_input(&mut self.0).await
+    }
+}
+
+/// Reads the caller's next frame; see [`CallInput::recv`].
+pub(crate) async fn caller_input<R: AsyncRead + Unpin>(
+    reader: &mut FrameReader<R>,
+) -> Result<Input, Error> {
+    let Ok(Some(frame)) = reader.next().await else {
+        return Ok(Input::Cancelled);
+    };
+    let malformed = |_| Error::Protocol("the caller sent a malformed frame");
+    match frame.kind() {
+        FrameKind::Data => {
+            let (channel, bytes) = frame.data().map_err(malformed)?;
+            sends_on(channel, Party::Caller)?;
+            Ok(Input::Data(channel, bytes.to_vec()))
         }
+        FrameKind::End => {
+            let channel = frame.end().map_err(malformed)?;
+            sends_on(channel, Party::Caller)?;
+            Ok(Input::End(channel))
+        }
+        FrameKind::Control => Ok(Input::Control(frame.into_payload())),
+        FrameKind::Cancel => Ok(Input::Cancelled),
+        _ => Err(Error::Protocol("the caller sent a frame it may not send")),
+    }
+}
+
+/// Who sends one frame of a call.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Party {
+    Caller,
+    Service,
+}
+
+/// Checks that `party` may send `data` or `end` on `channel`: the caller sends only input, on
+/// channel 0, and the service only output and errors, on channels 1 and 2.
+pub(crate) const fn sends_on(channel: Channel, party: Party) -> Result<(), Error> {
+    match (party, channel) {
+        (Party::Caller, Channel::Input) | (Party::Service, Channel::Output | Channel::Error) => {
+            Ok(())
+        }
+        (Party::Caller, _) => Err(Error::Protocol(
+            "the caller sends only on the input channel",
+        )),
+        (Party::Service, _) => Err(Error::Protocol(
+            "the service sends only on the output and error channels",
+        )),
     }
 }
 
@@ -88,10 +124,11 @@ impl CallOutput {
     /// Sends 1–64 KiB on one channel; output is channel 1 and errors channel 2.
     ///
     /// # Errors
-    /// Returns [`Error::Protocol`] before `accept`, and [`Error::Service`] when the bytes are
-    /// out of bounds or the connection is gone.
+    /// Returns [`Error::Protocol`] before `accept` or on the input channel, sending nothing,
+    /// and [`Error::Service`] when the bytes are out of bounds or the connection is gone.
     pub async fn send(&mut self, channel: Channel, bytes: &[u8]) -> Result<(), Error> {
         self.require_accepted()?;
+        sends_on(channel, Party::Service)?;
         self.writer.data(channel, bytes).await?;
         Ok(self.writer.flush().await?)
     }
@@ -102,6 +139,7 @@ impl CallOutput {
     /// The same as [`Self::send`].
     pub async fn end(&mut self, channel: Channel) -> Result<(), Error> {
         self.require_accepted()?;
+        sends_on(channel, Party::Service)?;
         self.writer.end(channel).await?;
         Ok(self.writer.flush().await?)
     }
@@ -255,3 +293,7 @@ impl Call {
         self.output.reject(error).await
     }
 }
+
+#[cfg(test)]
+#[path = "call_tests.rs"]
+mod tests;

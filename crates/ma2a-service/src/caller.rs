@@ -15,7 +15,11 @@ use ma2a_services::{Frame, FrameReader, FrameWriter};
 use serde_json::{Map, json};
 use tokio::io::{AsyncWrite, ReadHalf, WriteHalf};
 
-use crate::{Error, wire};
+use crate::{
+    Error,
+    call::{Party, sends_on},
+    wire,
+};
 
 /// What the service sent on one call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,27 +44,42 @@ pub enum Received {
 pub struct CallStream {
     reader: FrameReader<ReadHalf<LocalStream>>,
     writer: FrameWriter<WriteHalf<LocalStream>>,
-    /// Whether the service accepted the call.
+    /// What the service sent so far.
+    seen: Seen,
+}
+
+/// What the service sent so far on one call.
+#[derive(Debug, Default)]
+struct Seen {
     accepted: bool,
+    /// Whether the service ended its output and its error channel.
+    ended: (bool, bool),
+    /// Whether the call ended with a terminal.
+    finished: bool,
 }
 
 impl CallStream {
     /// Waits for the service's next frame; [`Received::Rejected`] and
-    /// [`Received::Outcome`] are terminal.
+    /// [`Received::Outcome`] are terminal, and nothing follows them.
     ///
     /// # Errors
-    /// Returns [`Error::Protocol`] for a malformed frame, and [`Error::Service`] when the
-    /// connection ends without a terminal.
+    /// Returns [`Error::Protocol`] for a malformed frame or once the call ended, and
+    /// [`Error::Service`] when the connection ends without a terminal.
     pub async fn next(&mut self) -> Result<Received, Error> {
+        if self.seen.finished {
+            return Err(Error::Protocol("the call already ended"));
+        }
         let frame = self.reader.expect().await?;
-        received(frame, &mut self.accepted)
+        received(frame, &mut self.seen)
     }
 
-    /// Sends 1–64 KiB on one channel; input is channel 0.
+    /// Sends 1–64 KiB on one channel; input is channel 0, the only one a caller sends on.
     ///
     /// # Errors
-    /// Returns [`Error::Service`] when the bytes are out of bounds or the connection is gone.
+    /// Returns [`Error::Protocol`] for another channel, sending nothing, and
+    /// [`Error::Service`] when the bytes are out of bounds or the connection is gone.
     pub async fn send(&mut self, channel: Channel, bytes: &[u8]) -> Result<(), Error> {
+        sends_on(channel, Party::Caller)?;
         self.writer.data(channel, bytes).await?;
         Ok(self.writer.flush().await?)
     }
@@ -68,8 +87,9 @@ impl CallStream {
     /// Finishes one channel.
     ///
     /// # Errors
-    /// Returns [`Error::Service`] when the connection is gone.
+    /// The same as [`Self::send`].
     pub async fn end(&mut self, channel: Channel) -> Result<(), Error> {
+        sends_on(channel, Party::Caller)?;
         self.writer.end(channel).await?;
         Ok(self.writer.flush().await?)
     }
@@ -93,41 +113,58 @@ impl CallStream {
     }
 }
 
-/// What one service frame means to a call the service `accepted` so far, which it updates.
+/// What one service frame means to a call after what the service sent so far, which it
+/// updates.
 ///
 /// Services v1 allows `reject` only before `accept`, `data`, `end`, and `control` only after
-/// it, and `data` and `end` from the service only on its output and error channels; `accept`
-/// comes at most once. A frame out of that order is malformed rather than taken: a `reject`
-/// after `accept` would say an accepted call had no effect.
-fn received(frame: Frame, accepted: &mut bool) -> Result<Received, Error> {
+/// it, and `data` and `end` from the service only on its output and error channels, each until
+/// that channel's `end`; `accept` comes at most once, and nothing after a terminal. A frame out
+/// of that order is malformed rather than taken: a `reject` after `accept` would say an accepted
+/// call had no effect.
+fn received(frame: Frame, seen: &mut Seen) -> Result<Received, Error> {
     let malformed = Error::Protocol("the service sent a malformed frame");
-    let out_of_order = Error::Protocol("the service sent a frame out of order");
-    let from_service = |channel| channel != Channel::Input;
+    let out_of_order = || Error::Protocol("the service sent a frame out of order");
     let in_order = match frame.kind() {
-        FrameKind::Accept | FrameKind::Reject => !*accepted,
-        FrameKind::Data | FrameKind::End | FrameKind::Control => *accepted,
+        _ if seen.finished => false,
+        FrameKind::Accept | FrameKind::Reject => !seen.accepted,
+        FrameKind::Data | FrameKind::End | FrameKind::Control => seen.accepted,
         _ => true,
     };
     if !in_order {
-        return Err(out_of_order);
+        return Err(out_of_order());
     }
+    // The channel a `data` or `end` is on must still be open.
+    let mut open = |channel, ends| {
+        sends_on(channel, Party::Service).map_err(|_| out_of_order())?;
+        let ended = if channel == Channel::Output {
+            &mut seen.ended.0
+        } else {
+            &mut seen.ended.1
+        };
+        if *ended {
+            return Err(out_of_order());
+        }
+        *ended = ends;
+        Ok(channel)
+    };
     Ok(match frame.kind() {
         FrameKind::Accept => {
             let header = decode_call_accept(frame.payload()).map_err(|_| malformed)?;
-            *accepted = true;
+            seen.accepted = true;
             Received::Accepted(header)
         }
-        FrameKind::Data => match frame.data()? {
-            (channel, bytes) if from_service(channel) => Received::Data(channel, bytes.to_vec()),
-            _ => return Err(out_of_order),
-        },
-        FrameKind::End => match frame.end()? {
-            channel if from_service(channel) => Received::End(channel),
-            _ => return Err(out_of_order),
-        },
+        FrameKind::Data => {
+            let (channel, bytes) = frame.data()?;
+            Received::Data(open(channel, false)?, bytes.to_vec())
+        }
+        FrameKind::End => Received::End(open(frame.end()?, true)?),
         FrameKind::Control => Received::Control(frame.into_payload()),
-        FrameKind::Reject => Received::Rejected(frame.rejection()?),
+        FrameKind::Reject => {
+            seen.finished = true;
+            Received::Rejected(frame.rejection()?)
+        }
         FrameKind::Outcome => {
+            seen.finished = true;
             Received::Outcome(decode_call_outcome(frame.payload()).map_err(|_| malformed)?)
         }
         _ => return Err(malformed),
@@ -243,7 +280,7 @@ impl Caller {
         let mut opened = CallStream {
             reader: FrameReader::new(read),
             writer: FrameWriter::new(write),
-            accepted: false,
+            seen: Seen::default(),
         };
         let header = OpenHeader::new(request_id, target, OpenBody::Service(request))
             .encode()
