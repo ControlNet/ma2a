@@ -21,7 +21,8 @@ pub(super) type Relayed = ((SupervisorStatus, bool), u64, (u64, u64));
 enum Upstream {
     /// The supervisor took the detach.
     Detached,
-    /// The supervisor's connection is closed; what it sent before still follows.
+    /// The caller detached, but the supervisor's connection was closed and could not take it;
+    /// what the supervisor sent before still follows.
     Closed,
     /// The supervisor did not take input or the detach in time.
     Stalled,
@@ -75,9 +76,17 @@ where
             // Returning detaches: the supervisor then reports where the Process is. Input the
             // Process does not take within the stall bound detaches too, so a caller's detach
             // is never stuck behind it. A supervisor that closed its connection, for example
-            // once the child ended, takes nothing more but still has its output delivered.
+            // once the child ended, takes nothing more: later input is dropped, its output is
+            // still delivered, and the caller's detach is still seen.
+            let mut open = true;
             while let Ok(Some(frame)) = reader.next().await {
                 let forwarded = match (frame.kind(), frame.data(), frame.end()) {
+                    (FrameKind::Data, Ok((DataChannel::Input, _)), _)
+                    | (FrameKind::End, _, Ok(DataChannel::Input))
+                        if stdin && !open =>
+                    {
+                        continue;
+                    }
                     (FrameKind::Data, Ok((DataChannel::Input, bytes)), _) if stdin => {
                         bytes_in += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                         let write = to_supervisor.data(DataChannel::Input, bytes);
@@ -91,11 +100,14 @@ where
                 };
                 match forwarded {
                     Ok(Ok(())) => {}
-                    Ok(Err(ServiceError::Cancelled)) => return Upstream::Closed,
+                    Ok(Err(ServiceError::Cancelled)) => open = false,
                     // A write cut short by the stall bound left a torn frame: no detach follows.
                     Err(_) => return Upstream::Stalled,
                     Ok(Err(_)) => break,
                 }
+            }
+            if !open {
+                return Upstream::Closed;
             }
             let cancel = to_supervisor.frame(FrameKind::Cancel, &[]);
             match tokio::time::timeout(DETACH_GRACE, cancel).await {
@@ -117,10 +129,10 @@ where
                     match ended {
                         // A detach the supervisor did not take has used up the grace already.
                         Upstream::Stalled => break Err(ServiceError::Cancelled),
-                        // Its output, then its outcome or the end of its stream, ends this.
-                        Upstream::Closed => {}
-                        Upstream::Detached => {
-                            told = true;
+                        // Its output, then its outcome or the end of its stream, ends this
+                        // within the grace.
+                        Upstream::Closed | Upstream::Detached => {
+                            told = matches!(ended, Upstream::Detached);
                             grace.as_mut().reset(tokio::time::Instant::now() + DETACH_GRACE);
                         }
                     }
