@@ -5,10 +5,11 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use ma2a_core::{
     RequestId,
     service::{
-        AgentId, AgentMessage, AgentTaskId, AgentTaskReason, MAX_LOG_LIMIT, MessageRole, ProcessId,
-        ProcessSpec, ProcessStart, ServiceError,
+        AgentId, AgentMessage, AgentReply, AgentTaskId, AgentTaskReason, AgentTaskState, FrameKind,
+        MAX_LOG_LIMIT, MessageRole, ProcessId, ProcessSpec, ProcessStart, ServiceError,
     },
 };
+use ma2a_services::{FrameReader, FrameWriter};
 use ma2a_store::{
     AgentDefinition, AgentOutput, AgentOutputEffect, AgentTaskCreation, NewAgentTask, Repository,
     StoreConfig,
@@ -355,5 +356,75 @@ async fn a_staging_file_that_vanishes_during_a_sweep_leaves_the_rest_swept() -> 
     // Then: every orphan went, whatever vanished beside it.
     live.finish().await?;
     assert_eq!(kept, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_hears_its_cancellation_while_history_is_still_sent() -> TestResult {
+    // Given: an ended task with far more retained events than one batch read.
+    let live = Live::new().await?;
+    let mut repository = Repository::open(&live.config)?;
+    let output = |cursor| AgentOutput {
+        agent: live.agent.clone(),
+        generation: live.generation,
+        cursor,
+        at_ms: 3_000,
+    };
+    for cursor in 100..300 {
+        let note = AgentMessage::text(MessageRole::Agent, "note")?;
+        let effect = AgentOutputEffect::Message(live.task, note);
+        repository.apply_agent_output(&output(cursor), effect)?;
+    }
+    let ended = AgentOutputEffect::State {
+        task: live.task,
+        state: AgentTaskState::Completed,
+        message: None,
+        error: None,
+    };
+    repository.apply_agent_output(&output(300), ended)?;
+
+    // When: the caller cancels the watch once it is accepted, and reads what follows.
+    let (caller, host) = tokio::io::duplex(1_024);
+    let (caller_read, caller_write) = tokio::io::split(caller);
+    let (mut caller_reader, mut caller_writer) = (
+        FrameReader::new(caller_read),
+        FrameWriter::new(caller_write),
+    );
+    let (host_read, host_write) = tokio::io::split(host);
+    let (mut host_reader, mut host_writer) =
+        (FrameReader::new(host_read), FrameWriter::new(host_write));
+    let stop = CancellationToken::new();
+    let watched = live.manager.watch(
+        ((None, None), &stop, (live.task, 0)),
+        (&mut host_reader, &mut host_writer),
+    );
+    let caller = async {
+        let accept = caller_reader.next().await?.ok_or("no accept")?;
+        assert_eq!(accept.kind(), FrameKind::Accept);
+        caller_writer.frame(FrameKind::Cancel, &[]).await?;
+        caller_writer.flush().await?;
+        let mut events = 0;
+        loop {
+            let frame = caller_reader.next().await?.ok_or("no outcome")?;
+            if frame.kind() != FrameKind::Data {
+                let outcome = AgentReply::decode_outcome(frame.payload())?;
+                return Ok::<_, Box<dyn std::error::Error + Send + Sync>>((events, outcome));
+            }
+            events += 1;
+        }
+    };
+    let (_report, read) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(watched, caller)
+    })
+    .await?;
+    let (events, outcome) = read?;
+
+    // Then: the watch ends cancelled, without sending the rest of the history first.
+    live.finish().await?;
+    assert_eq!(outcome, Err(ServiceError::Cancelled));
+    assert!(
+        events < 200,
+        "{events} events were sent after the cancellation"
+    );
     Ok(())
 }

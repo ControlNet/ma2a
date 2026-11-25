@@ -32,6 +32,24 @@ where
     }
 }
 
+/// Whether `caller_gone` already ended, without waiting for it.
+async fn heard(caller_gone: std::pin::Pin<&mut impl std::future::Future<Output = ()>>) -> bool {
+    tokio::select! {
+        biased;
+        () = caller_gone => true,
+        () = std::future::ready(()) => false,
+    }
+}
+
+/// Ends a watch its caller cancelled, after `sent` event bytes.
+async fn cancelled<W: AsyncWrite + Unpin + Send>(
+    writer: &mut FrameWriter<W>,
+    sent: u64,
+) -> OperationReport {
+    let _ended = finish(writer, Err(ServiceError::Cancelled)).await;
+    OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled)).with_bytes(0, sent)
+}
+
 impl AgentManager {
     pub(super) async fn watch<R, W>(
         &self,
@@ -65,6 +83,11 @@ impl AgentManager {
         let mut changes = self.subscribe();
         let mut sent = 0_u64;
         loop {
+            // A cancellation is heard between batches too, so a long history or a busy task
+            // never holds it back until every event was sent.
+            if heard(caller_gone.as_mut()).await {
+                return cancelled(writer, sent).await;
+            }
             changes.mark_unchanged();
             // The task is read before its events, so an ended task has no event left after
             // the ones read next.
@@ -111,11 +134,7 @@ impl AgentManager {
                         .await
                         .with_bytes(0, sent);
                 }
-                () = &mut caller_gone => {
-                    let _ended = finish(writer, Err(ServiceError::Cancelled)).await;
-                    return OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled))
-                        .with_bytes(0, sent);
-                }
+                () = &mut caller_gone => return cancelled(writer, sent).await,
                 woke = changes.changed() => if woke.is_err() {
                     return finish(writer, Err(ServiceError::Unavailable))
                         .await
