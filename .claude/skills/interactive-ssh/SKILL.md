@@ -41,13 +41,13 @@ bash .claude/skills/interactive-ssh/scripts/open-session.sh \
 - `cd` into the workspace from `<out>/<os>/workspace.txt` first. That path is POSIX (`/d/a/...`): use
   it inside `bash -lc`; PowerShell (pwsh 7 over ssh) wants `D:\a\...` and already starts there.
 - Redirect long output to a log file on the runner and read it in pieces.
-- A session's token can have SeBackupPrivilege and SeRestorePrivilege enabled (seen in some
-  sessions, not all; check with `C:\Windows\System32\whoami.exe /priv`), which a CI job step does
-  not; with them, Windows skips file access checks. Run ACL and permission tests through
+- Anything run through Git Bash (`bash -lc`, or a CI step with `shell: bash`) has
+  SeBackupPrivilege and SeRestorePrivilege enabled, which a PowerShell CI step does not; with them,
+  Windows skips file access checks. Check with `C:\Windows\System32\whoami.exe /priv`. Run ACL and permission tests through
   `scripts/drop-privileges.ps1`: copy it with
   `scp -F <config> .claude/skills/interactive-ssh/scripts/drop-privileges.ps1 windows-latest:D:/a/`, then
   `ssh -F <config> windows-latest 'cd D:\a\ma2a\ma2a; D:\a\drop-privileges.ps1 -Command "cargo test ..."; exit $LASTEXITCODE'`,
-  or a test can pass in the session and fail in CI. PowerShell needs the Windows form of the
+  or a test can pass in one shell and fail in the other. PowerShell needs the Windows form of the
   workspace path (`/d/a/ma2a/ma2a` is `D:\a\ma2a\ma2a`). The script exits with the command's exit
   code, and the trailing `exit $LASTEXITCODE` hands it to ssh; without it a failure ends as 1.
 - Known session-only failures on master (they pass in CI): `backup::a_destination_name_near_the_component_limit_is_backed_up`
