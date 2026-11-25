@@ -5,7 +5,7 @@ use crate::StoreError;
 pub(crate) fn ensure_private_dir(path: &Path, target: &'static str) -> Result<(), StoreError> {
     validate_local_absolute(path)?;
     if !path.exists() {
-        create_private_dir(path)?;
+        create_private_dir(path, target)?;
     }
     validate_private_path(path, target, PathKind::Directory)
 }
@@ -33,7 +33,7 @@ pub fn protect_private_directory(path: &Path, target: &'static str) -> Result<()
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
     #[cfg(windows)]
-    apply_windows_acl(path, PathKind::Directory)?;
+    apply_windows_acl(path, target, PathKind::Directory)?;
     validate_private_path(path, target, PathKind::Directory)
 }
 
@@ -56,7 +56,7 @@ pub(crate) fn create_new_private_dir(path: &Path) -> Result<(), StoreError> {
     #[cfg(windows)]
     {
         fs::create_dir(path)?;
-        apply_windows_acl(path, PathKind::Directory)
+        apply_windows_acl(path, "private directory", PathKind::Directory)
     }
 }
 
@@ -71,7 +71,7 @@ pub fn protect_private_file(path: &Path, target: &'static str) -> Result<(), Sto
 
 pub(crate) fn protect_new_file(path: &Path, target: &'static str) -> Result<(), StoreError> {
     refuse_symlink(path, target)?;
-    protect_file(path)?;
+    protect_file(path, target)?;
     validate_private_path(path, target, PathKind::File)
 }
 
@@ -104,7 +104,7 @@ pub fn is_local_absolute(path: &Path) -> bool {
 }
 
 #[cfg(unix)]
-fn create_private_dir(path: &Path) -> Result<(), StoreError> {
+fn create_private_dir(path: &Path, _target: &'static str) -> Result<(), StoreError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
     let mut builder = fs::DirBuilder::new();
@@ -113,13 +113,13 @@ fn create_private_dir(path: &Path) -> Result<(), StoreError> {
 }
 
 #[cfg(windows)]
-fn create_private_dir(path: &Path) -> Result<(), StoreError> {
+fn create_private_dir(path: &Path, target: &'static str) -> Result<(), StoreError> {
     fs::create_dir_all(path)?;
-    apply_windows_acl(path, PathKind::Directory)
+    apply_windows_acl(path, target, PathKind::Directory)
 }
 
 #[cfg(unix)]
-fn protect_file(path: &Path) -> Result<(), StoreError> {
+fn protect_file(path: &Path, _target: &'static str) -> Result<(), StoreError> {
     use std::os::unix::fs::PermissionsExt as _;
 
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
@@ -127,8 +127,8 @@ fn protect_file(path: &Path) -> Result<(), StoreError> {
 }
 
 #[cfg(windows)]
-fn protect_file(path: &Path) -> Result<(), StoreError> {
-    apply_windows_acl(path, PathKind::File)
+fn protect_file(path: &Path, target: &'static str) -> Result<(), StoreError> {
+    apply_windows_acl(path, target, PathKind::File)
 }
 
 #[cfg(unix)]
@@ -196,19 +196,22 @@ fn validate_private_path(
     Ok(())
 }
 
+/// Protects the object `path` names, after checking through the same handle that it is not a
+/// link or another kind of object put there since the caller looked.
 #[cfg(windows)]
-fn apply_windows_acl(path: &Path, kind: PathKind) -> Result<(), StoreError> {
+fn apply_windows_acl(path: &Path, target: &'static str, kind: PathKind) -> Result<(), StoreError> {
     use windows_sys::Win32::Security::{CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE};
 
     let inherit = match kind {
         PathKind::Directory => CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
         PathKind::File => 0,
     };
-    windows_acl::open(path, true)
-        .and_then(|file| windows_acl::protect(&file, inherit))
-        .map_err(|_| StoreError::WindowsAcl {
-            operation: "application",
-        })
+    let failed = |_: std::io::Error| StoreError::WindowsAcl {
+        operation: "application",
+    };
+    let file = windows_acl::open(path, true).map_err(failed)?;
+    check_type(&file.metadata()?, target, kind)?;
+    windows_acl::protect(&file, inherit).map_err(failed)
 }
 
 #[cfg(not(windows))]

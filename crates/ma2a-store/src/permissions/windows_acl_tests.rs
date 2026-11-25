@@ -6,8 +6,8 @@ use windows_sys::Win32::{
 };
 
 use super::{
-    PathKind, apply_windows_acl, validate_local_absolute, validate_private_file,
-    validate_private_path, windows_acl, windows_sid,
+    PathKind, apply_windows_acl, ensure_private_dir, validate_local_absolute,
+    validate_private_file, validate_private_path, windows_acl, windows_sid,
 };
 use crate::StoreError;
 
@@ -29,7 +29,7 @@ fn only_full_control_for_the_user_and_system_counts_as_private()
     std::fs::write(&path, b"")?;
     // A file made the ordinary way inherits from the temporary directory.
     assert!(validate_private_file(&path, "test").is_err());
-    apply_windows_acl(&path, PathKind::File)?;
+    apply_windows_acl(&path, "test", PathKind::File)?;
     assert!(validate_private_file(&path, "test").is_ok());
     // A missing SYSTEM rule, and partial rights for the user, are refused. Partial rights come
     // last: they take away the right to change the owner again, and without the backup and
@@ -87,5 +87,34 @@ fn a_rule_for_children_alone_is_not_full_control_over_the_directory()
     set_system_flags(inherit)?;
     validate_private_path(&path, "test", PathKind::Directory)?;
     std::fs::remove_dir(&path)?;
+    Ok(())
+}
+
+#[test]
+fn a_junction_is_refused_as_a_link_and_never_protected() -> Result<(), Box<dyn std::error::Error>> {
+    let base = std::env::temp_dir().join(format!("ma2a-acl-junction-{}", std::process::id()));
+    let _stale = std::fs::remove_dir_all(&base);
+    let (target, link) = (base.join("target"), base.join("link"));
+    std::fs::create_dir_all(&target)?;
+    apply_windows_acl(&target, "test", PathKind::Directory)?;
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .args([&link, &target])
+        .stdout(std::process::Stdio::null())
+        .status()?;
+    assert!(status.success(), "mklink /J failed: {status}");
+
+    let validated = ensure_private_dir(&link, "test");
+    assert!(
+        matches!(validated, Err(StoreError::InsecurePermissions { .. })),
+        "{validated:?}"
+    );
+    let applied = apply_windows_acl(&link, "test", PathKind::Directory);
+    assert!(
+        matches!(applied, Err(StoreError::InsecurePermissions { .. })),
+        "{applied:?}"
+    );
+    std::fs::remove_dir(&link)?;
+    std::fs::remove_dir_all(&base)?;
     Ok(())
 }
