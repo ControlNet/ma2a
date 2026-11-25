@@ -723,6 +723,44 @@ async fn a_detached_answer_only_completes_or_cancels() -> TestResult {
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_failed_local_read_cancels_a_stdin_write_within_the_grace() -> TestResult {
+    // Given: a target that admits the write and waits for input while the caller keeps the
+    // stream open after the call returns.
+    let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();
+    let admitted = ProcessAccept::Admitted.encode()?;
+    service_writer.frame(FrameKind::Accept, &admitted).await?;
+    service_writer.flush().await?;
+
+    // When: local input fails after one chunk.
+    let written = tokio::time::timeout(
+        Duration::from_secs(5),
+        hosted::stdin((&mut reader, &mut writer), (FailsAfter(Some(b"ab")), true)),
+    )
+    .await?;
+
+    // Then: the local error is returned and the target receives `cancel` even while the
+    // caller's stream halves remain open.
+    assert!(matches!(written, Err(ClientError::Local(_))), "{written:?}");
+    let first = tokio::time::timeout(Duration::from_secs(1), service_reader.expect()).await??;
+    assert_eq!(first.data()?, (Channel::Input, &b"ab"[..]));
+    let second = tokio::time::timeout(Duration::from_secs(1), service_reader.expect()).await??;
+    assert_eq!(second.kind(), FrameKind::Cancel);
+    drop((reader, writer));
+
+    // And: if flushing that cancel stalls against an unresponsive peer, the local error still
+    // returns by FRAME_GRACE.
+    let ((mut reader, writer), (_service_reader, mut service_writer)) = pipe();
+    let mut writer = ma2a_services::FrameWriter::new(Flushes(writer.into_inner(), 0));
+    service_writer.frame(FrameKind::Accept, &admitted).await?;
+    service_writer.flush().await?;
+    let started = tokio::time::Instant::now();
+    let stalled = hosted::stdin((&mut reader, &mut writer), (FailsAfter(Some(b"ab")), true)).await;
+    assert!(matches!(stalled, Err(ClientError::Local(_))), "{stalled:?}");
+    assert_eq!(started.elapsed(), ma2a_services::reply::FRAME_GRACE);
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_failed_local_read_is_reported_when_the_outcome_comes_first() -> TestResult {
     // Given: local input that fails after one chunk, and a caller stream whose flush of the

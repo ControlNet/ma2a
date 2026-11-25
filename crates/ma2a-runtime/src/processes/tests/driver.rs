@@ -423,3 +423,79 @@ async fn a_stdin_write_the_process_never_takes_after_end_times_out() -> TestResu
     shutdown.cancel();
     Ok(())
 }
+
+/// Local input that delivers one chunk and then fails with `BrokenPipe`.
+struct FailsAfter(Option<&'static [u8]>);
+
+impl tokio::io::AsyncRead for FailsAfter {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(self.0.take().map_or_else(
+            || Err(std::io::ErrorKind::BrokenPipe.into()),
+            |chunk| {
+                buffer.put_slice(chunk);
+                Ok(())
+            },
+        ))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_local_stdin_read_releases_the_writer_lease_while_stream_stays_open() -> TestResult
+{
+    // Given: a running `cat` Process with stdin open.
+    let harness = Harness::new("driver-stdin-local-err").await?;
+    let (manager, shutdown) = harness.manager();
+    let id = start_cat(&harness, &manager, 75).await?;
+    let ((mut reader, mut writer), (mut host_reader, mut host_writer)) = pipe();
+    let stop = CancellationToken::new();
+    let scope = (
+        (harness.creator, request_id(76)?),
+        ProcessRequest::Stdin(id, false),
+        &stop,
+    );
+    let host = tokio::spawn({
+        let manager = manager.clone();
+        let stop = stop.clone();
+        async move {
+            let scope = (
+                (harness.creator, scope.0.1),
+                ProcessRequest::Stdin(id, false),
+                &stop,
+            );
+            serve(&manager, scope, (&mut host_reader, &mut host_writer)).await
+        }
+    });
+
+    // When: the local reader fails, and the caller keeps its stream halves open.
+    let first = tokio::time::timeout(
+        Duration::from_secs(5),
+        hosted::stdin((&mut reader, &mut writer), (FailsAfter(Some(b"ab")), false)),
+    )
+    .await?;
+    assert!(matches!(first, Err(ClientError::Local(_))), "{first:?}");
+    let _report = tokio::time::timeout(Duration::from_secs(5), host).await??;
+
+    // Then: another stdin writer can immediately acquire the lease even though the first
+    // caller still holds its stream halves open.
+    let ((mut reader2, mut writer2), (mut host_reader2, mut host_writer2)) = pipe();
+    let scope2 = (
+        (harness.creator, request_id(77)?),
+        ProcessRequest::Stdin(id, true),
+        &stop,
+    );
+    let host2 = serve(&manager, scope2, (&mut host_reader2, &mut host_writer2));
+    let caller2 = hosted::stdin((&mut reader2, &mut writer2), (&b"cd\n"[..], true));
+    let (_report2, second) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(host2, caller2)
+    })
+    .await?;
+    assert_eq!(second?, (3, true));
+    drop((reader, writer));
+    reaches(&manager, id, ProcessState::Exited).await?;
+    shutdown.cancel();
+    Ok(())
+}

@@ -24,7 +24,7 @@ type Progress = (u64, bool);
 ///
 /// # Errors
 /// Returns the refusal (`writer_busy`, `stdin_closed`, `not_running`), the failed outcome,
-/// or the stream failure.
+/// the stream failure, or the failed local read (after cancelling the write).
 pub async fn stdin<R, W, I>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     (input, close): (I, bool),
@@ -58,8 +58,22 @@ where
         Err(Ok(())) => next(reader).await?,
         // A target that stopped reading may still have said why.
         Err(Err(error @ ClientError::Stream(_))) => next(reader).await.map_err(|_| error)?,
-        // Local input failed: the target still waits for more of it.
-        Err(Err(error)) => return Err(error),
+        // Local input failed: cancel the write within the grace so the target releases its
+        // writer lease even if the caller keeps this stream open.
+        Err(Err(error)) => {
+            let cancel = async {
+                writer.frame(FrameKind::Cancel, &[]).await?;
+                writer.flush().await
+            };
+            let _cancelled = tokio::time::timeout(crate::reply::FRAME_GRACE, async {
+                tokio::select! {
+                    _ = cancel => {}
+                    _ = reader.next() => {}
+                }
+            })
+            .await;
+            return Err(error);
+        }
     };
     written(&frame, (Some(progress), close))
 }
