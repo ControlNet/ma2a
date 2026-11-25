@@ -14,11 +14,14 @@ use ma2a_core::{
     SpacePolicyV1,
 };
 use ma2a_net::{
-    AdvertisementPublicationRequest, PrivateRelayAdvertisementPublisher,
-    PrivateRelayProviderConfig, PrivateRelayProviderLocation, PrivateRelayTransport,
-    PublicRelayFallbackConfig, RuntimeRelayConfiguration,
+    AdvertisementPublicationRequest, AdvertisementValidationContext,
+    PrivateRelayAdvertisementPublishError, PrivateRelayAdvertisementPublisher,
+    PrivateRelayAdvertisementValidator, PrivateRelayProviderConfig, PrivateRelayProviderLocation,
+    PrivateRelayTransport, PublicRelayFallbackConfig, RuntimeRelayConfiguration,
 };
-use ma2a_store::{RelayConfiguration, RelayTransportConfiguration, Repository, StoreConfig};
+use ma2a_store::{
+    RelayConfiguration, RelayTransportConfiguration, Repository, SpaceRecord, StoreConfig,
+};
 
 const NOW_MS: u64 = 1_700_000_000_000;
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -322,5 +325,97 @@ fn a_relay_url_may_not_carry_a_user_name_or_password() -> TestResult {
     assert!(provider(at_in_path.clone()).is_ok());
     assert!(PublicRelayFallbackConfig::new(vec![at_in_path.clone()]).is_ok());
     assert!(advertisement(at_in_path).is_ok());
+    Ok(())
+}
+
+#[test]
+fn publisher_refuses_a_clock_behind_a_stored_advertisement() -> TestResult {
+    // Given: a provider with one persisted advertisement issued at NOW_MS.
+    let secret_bytes = [0x39; 32];
+    let provider = SecretKey::from_bytes(&secret_bytes);
+    let (genesis, auth) = authorization(&provider, 0x49, true)?;
+    let space_id = auth.space_id();
+    let config = PrivateRelayProviderConfig::new(
+        PrivateRelayProviderLocation::new(
+            "127.0.0.1:0".parse()?,
+            "https://relay.example.invalid".parse()?,
+        ),
+        vec![space_id],
+        PrivateRelayTransport::ExternalTlsTermination,
+    )?;
+    let publisher = PrivateRelayAdvertisementPublisher::new(
+        ma2a_net::EndpointSecret::parse(&secret_bytes)?,
+        config,
+    );
+    let state = TempState::new("relay-publisher-clock-back")?;
+    let store_config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&store_config)?;
+    repository.create_space(&SpaceRecord::new(
+        genesis.space_id(),
+        genesis.canonical_bytes().to_vec(),
+    ))?;
+    let initial = publisher.advertisements(
+        &mut repository,
+        AdvertisementPublicationRequest::new(std::slice::from_ref(&auth), NOW_MS, NOW_MS + 600_000),
+    )?;
+    let first = initial.first().ok_or("missing initial advertisement")?;
+    PrivateRelayAdvertisementValidator::validate_and_store(
+        &mut repository,
+        first.canonical_bytes(),
+        AdvertisementValidationContext::new(&auth, NOW_MS),
+    )?;
+
+    // When: the clock steps back below the stored issue time (both valid and undecodable rows).
+    let behind_valid = publisher.advertisements(
+        &mut repository,
+        AdvertisementPublicationRequest::new(
+            std::slice::from_ref(&auth),
+            NOW_MS - 5_000,
+            NOW_MS + 595_000,
+        ),
+    );
+    assert!(
+        matches!(
+            behind_valid,
+            Err(PrivateRelayAdvertisementPublishError::ClockRollback)
+        ),
+        "backdated publication must fail with ClockRollback"
+    );
+    drop(repository);
+    rusqlite::Connection::open(store_config.database_path())?.execute(
+        "UPDATE relay_advertisement_state SET signed_advertisement = x'00'",
+        [],
+    )?;
+    let mut repository = Repository::open(&store_config)?;
+    let behind_undecodable = publisher.advertisements(
+        &mut repository,
+        AdvertisementPublicationRequest::new(
+            std::slice::from_ref(&auth),
+            NOW_MS - 1_000,
+            NOW_MS + 599_000,
+        ),
+    );
+    assert!(
+        matches!(
+            behind_undecodable,
+            Err(PrivateRelayAdvertisementPublishError::ClockRollback)
+        ),
+        "backdated publication behind undecodable bytes must fail with ClockRollback"
+    );
+
+    // Then: no sequence was reserved by the refused attempts, and publishing at NOW_MS uses 2.
+    let resumed = publisher.advertisements(
+        &mut repository,
+        AdvertisementPublicationRequest::new(std::slice::from_ref(&auth), NOW_MS, NOW_MS + 600_000),
+    )?;
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(
+        resumed
+            .first()
+            .ok_or("missing resumed advertisement")?
+            .advertisement()
+            .sequence(),
+        2
+    );
     Ok(())
 }

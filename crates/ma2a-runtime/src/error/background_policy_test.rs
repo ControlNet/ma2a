@@ -24,6 +24,10 @@ fn only_temporary_publication_failures_are_retryable() {
         RuntimeError::from(ma2a_net::AddressPublisherError::ClockRollback)
             .is_retryable_background()
     );
+    assert!(
+        RuntimeError::from(ma2a_net::PrivateRelayAdvertisementPublishError::ClockRollback)
+            .is_retryable_background()
+    );
 }
 
 #[test]

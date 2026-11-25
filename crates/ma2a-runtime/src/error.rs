@@ -241,6 +241,9 @@ impl From<ma2a_net::PrivateRelayAdvertisementPublishError> for RuntimeError {
     fn from(error: ma2a_net::PrivateRelayAdvertisementPublishError) -> Self {
         match error {
             ma2a_net::PrivateRelayAdvertisementPublishError::Store(error) => Self::from(error),
+            ma2a_net::PrivateRelayAdvertisementPublishError::ClockRollback => {
+                Self::new(RuntimeErrorKind::ClockBehind)
+            }
             _ => Self::new(RuntimeErrorKind::Control),
         }
     }
