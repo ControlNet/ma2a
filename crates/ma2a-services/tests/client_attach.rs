@@ -76,12 +76,30 @@ fn detached(reason: EndReason, id: ProcessId, cursor: u64) -> TestResult<Sent> {
     detached_as(reason, summary, cursor)
 }
 
+/// A Detached `outcome`; one for a reason it never has is written by hand, as the encoder
+/// refuses it.
 fn detached_as(reason: EndReason, summary: ProcessSummary, cursor: u64) -> TestResult<Sent> {
-    let reply = ProcessReply::Detached(reason, summary, cursor);
-    Ok((
-        FrameKind::Outcome,
-        ProcessReply::encode_outcome(&Ok(reply))?,
-    ))
+    let name: &[u8] = match reason {
+        EndReason::TimedOut => b"\x69timed_out",
+        EndReason::Shutdown => b"\x68shutdown",
+        _ => {
+            let reply = ProcessReply::Detached(reason, summary, cursor);
+            return Ok((
+                FrameKind::Outcome,
+                ProcessReply::encode_outcome(&Ok(reply))?,
+            ));
+        }
+    };
+    let reply = ProcessReply::Detached(EndReason::Cancelled, summary, cursor);
+    let encoded = ProcessReply::encode_outcome(&Ok(reply))?;
+    let at = encoded
+        .windows(10)
+        .position(|window| window == b"\x69cancelled")
+        .ok_or("no reason")?;
+    let mut payload = encoded.get(..at).ok_or("prefix")?.to_vec();
+    payload.extend_from_slice(name);
+    payload.extend_from_slice(encoded.get(at + 10..).ok_or("suffix")?);
+    Ok((FrameKind::Outcome, payload))
 }
 
 /// Attaches to Process 1 from `from`, with stdin when `input` is given, against a target that

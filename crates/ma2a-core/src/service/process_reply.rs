@@ -154,7 +154,8 @@ impl ProcessReply {
     /// Encodes one terminal outcome frame payload.
     ///
     /// # Errors
-    /// Returns [`ProtocolError::INVALID_INPUT`] when the outcome exceeds its bounds.
+    /// Returns [`ProtocolError::INVALID_INPUT`] when the outcome exceeds its bounds, or is
+    /// Detached for a reason other than `completed` or `cancelled`.
     pub fn encode_outcome(outcome: &ProcessReplyOutcome) -> Result<Vec<u8>, ProtocolError> {
         cbor::encode_outcome(outcome.as_ref().map_err(|error| *error), Self::encode)
     }
@@ -191,6 +192,7 @@ impl ProcessReply {
                 writer.array(3)?.uint(3).uint(*next).boolean(*ended);
             }
             Self::Detached(reason, summary, cursor) => {
+                let reason = detach_reason(reason.name())?;
                 writer.array(4)?.uint(4).text(reason.name())?;
                 summary.encode(writer)?;
                 writer.uint(*cursor);

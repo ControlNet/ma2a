@@ -209,16 +209,31 @@ fn a_detached_outcome_only_completes_or_cancels() -> TestResult {
         let encoded = ProcessReply::encode_outcome(&reply)?;
         assert_eq!(ProcessReply::decode_outcome(&encoded)?, reply);
     }
-    // A timeout or shutdown ends an attachment with a failed outcome, never a Detached one.
+    // A timeout or shutdown ends an attachment with a failed outcome, never a Detached one:
+    // neither is encoded, nor decoded from bytes written by hand.
     for reason in [EndReason::TimedOut, EndReason::Shutdown] {
         let reply = Ok(ProcessReply::Detached(reason, summary()?, 41));
-        let encoded = ProcessReply::encode_outcome(&reply)?;
-        assert!(
-            ProcessReply::decode_outcome(&encoded).is_err(),
-            "{reason:?}"
-        );
+        assert!(ProcessReply::encode_outcome(&reply).is_err(), "{reason:?}");
+    }
+    let completed = Ok(ProcessReply::Detached(EndReason::Completed, summary()?, 41));
+    let completed = ProcessReply::encode_outcome(&completed)?;
+    for reason in [&b"\x69timed_out"[..], b"\x68shutdown"] {
+        let malformed = replaced(&completed, b"\x69completed", reason)?;
+        assert!(ProcessReply::decode_outcome(&malformed).is_err());
     }
     Ok(())
+}
+
+/// `bytes` with its one occurrence of `from` replaced by `to`.
+fn replaced(bytes: &[u8], from: &[u8], to: &[u8]) -> TestResult<Vec<u8>> {
+    let at = bytes
+        .windows(from.len())
+        .position(|window| window == from)
+        .ok_or("not found")?;
+    let mut replaced = bytes.get(..at).ok_or("prefix")?.to_vec();
+    replaced.extend_from_slice(to);
+    replaced.extend_from_slice(bytes.get(at + from.len()..).ok_or("suffix")?);
+    Ok(replaced)
 }
 
 #[test]
