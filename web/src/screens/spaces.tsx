@@ -1,6 +1,6 @@
 import { type ReactNode, useRef, useState } from "react"
 
-import { mutationOutcomeUnknown, RuntimeMutationRejectedError } from "../api/mutations"
+import { mutationFailureText } from "../api/mutations"
 import { EmptyState, PendingSnapshot } from "../components/feedback"
 import { Field, Form, text } from "../components/form"
 import { Inspector } from "../components/inspector"
@@ -100,13 +100,7 @@ export function SpacesInspector({
         (error: unknown) =>
           setStatus((current) => ({
             ...current,
-            [slot]: mutationOutcomeUnknown(error)
-              ? unknown
-              : error instanceof RuntimeMutationRejectedError &&
-                  typeof error.remediation === "string" &&
-                  error.remediation.length > 0
-                ? error.remediation
-                : "The Runtime rejected the request.",
+            [slot]: mutationFailureText(error, unknown, "The Runtime rejected the request."),
           })),
       )
       .finally(() => {

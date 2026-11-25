@@ -89,3 +89,19 @@ test.each([
 
   expect(await form.findByText(status)).toBeInTheDocument()
 })
+
+// The relay may already be configured when its answer was lost.
+test("a relay configuration whose answer was lost does not say the Runtime rejected it", async () => {
+  const user = userEvent.setup()
+  const actions = {
+    ...runtimeActions(),
+    configurePublicRelay: async () => Promise.reject(new TypeError("Failed to fetch")),
+  }
+  render(<RelaysInspector actions={actions} />)
+  const form = within(screen.getByRole("form", { name: "Configure the public fallback" }))
+
+  await user.type(form.getByLabelText("HTTPS relay URL"), "https://relay.example")
+  await user.click(form.getByRole("button", { name: "Configure public" }))
+
+  expect(await form.findByText(/^No answer came back/)).toBeInTheDocument()
+})

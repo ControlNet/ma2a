@@ -240,3 +240,30 @@ test.each([
   expect(screen.queryByRole("heading", { name: "Sign in to this Runtime" })).not.toBeInTheDocument()
   expect(logouts).not.toContain("ef".repeat(32))
 })
+
+// A lost answer is not a rejection, and a rejection shows what the Runtime advised.
+test.each([
+  [async () => Promise.reject(new TypeError("Failed to fetch")), /^No answer came back/],
+  [
+    async () => Response.json({ version: 1, error: "unavailable", remediation: "Try later." }),
+    /^Try later\.$/,
+  ],
+])("a failed sync request says what the Runtime answered: %#", async (respond, status) => {
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+  vi.spyOn(globalThis, "fetch").mockImplementation(respond)
+  window.history.replaceState(null, "", "/endpoint")
+  holdControllers()
+  const user = userEvent.setup()
+  const given = render(<App />)
+  act(() => controllers[0]?.onRuntime(MANY_RUNTIME_FIXTURE))
+  const peer = given.container.querySelector<HTMLElement>(".peer")
+  if (peer === null) throw new Error("fixture has a peer")
+
+  await user.click(peer)
+  await user.click(screen.getByRole("button", { name: "Sync now" }))
+
+  expect(await screen.findByText(status)).toBeVisible()
+})

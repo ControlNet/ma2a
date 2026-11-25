@@ -54,6 +54,17 @@ export function mutationOutcomeUnknown(error: unknown): boolean {
   )
 }
 
+/**
+ * What to tell the operator about a failed mutation: `unknown` when it may still have taken
+ * effect, otherwise the Runtime's remediation, or `rejected` when it gave none.
+ */
+export function mutationFailureText(error: unknown, unknown: string, rejected: string): string {
+  if (mutationOutcomeUnknown(error)) return unknown
+  return error instanceof RuntimeMutationRejectedError && error.remediation
+    ? error.remediation
+    : rejected
+}
+
 export type RuntimeMutationClient = {
   readonly createSpace: (name: string) => Promise<MutationSpaceView>
   readonly createInvitation: (

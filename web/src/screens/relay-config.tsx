@@ -1,6 +1,6 @@
 import { type ReactNode, useRef, useState } from "react"
 
-import { RuntimeMutationRejectedError } from "../api/mutations"
+import { mutationFailureText } from "../api/mutations"
 import { Field, Form, text } from "../components/form"
 import { Inspector } from "../components/inspector"
 import { Card } from "../components/ui"
@@ -17,12 +17,12 @@ export function RelaysInspector({
   const [publicMessage, setPublicMessage] = useState<string | undefined>()
   const [native, setNative] = useState(true)
   const disabled = actions === undefined || busy
-  const rejection = (error: unknown): string =>
-    error instanceof RuntimeMutationRejectedError &&
-    typeof error.remediation === "string" &&
-    error.remediation.length > 0
-      ? error.remediation
-      : "The Runtime rejected the configuration."
+  const failure = (error: unknown, relay: string): string =>
+    mutationFailureText(
+      error,
+      `No answer came back, so the ${relay} may already be configured. Check the relay status before trying again.`,
+      "The Runtime rejected the configuration.",
+    )
   return (
     <Inspector eyebrow="Operations" title="Relay configuration">
       <Card label="Private provider">
@@ -59,7 +59,7 @@ export function RelaysInspector({
               .configurePrivateRelay(configuration)
               .then(
                 (relay) => setPrivateMessage(`Configured at ${relay.host}:${relay.port}.`),
-                (error: unknown) => setPrivateMessage(rejection(error)),
+                (error: unknown) => setPrivateMessage(failure(error, "Private Relay")),
               )
               .finally(() => {
                 busyRef.current = false
@@ -135,7 +135,7 @@ export function RelaysInspector({
               .configurePublicRelay(text(data, "url"))
               .then(
                 () => setPublicMessage("Public fallback updated."),
-                (error: unknown) => setPublicMessage(rejection(error)),
+                (error: unknown) => setPublicMessage(failure(error, "public fallback")),
               )
               .finally(() => {
                 busyRef.current = false

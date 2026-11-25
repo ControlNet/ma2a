@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { createRuntimeMutationClient } from "./api/mutations"
+import { createRuntimeMutationClient, mutationFailureText } from "./api/mutations"
 import type { ServicesData } from "./api/services"
 import {
   currentWebSession,
@@ -177,7 +177,14 @@ export function App({
       setSyncStatus((current) => (current === requested ? { endpointId, text } : current))
     void actions.triggerSync(endpointId).then(
       () => settle("Control round requested."),
-      () => settle("The Runtime rejected the request."),
+      (error: unknown) =>
+        settle(
+          mutationFailureText(
+            error,
+            "No answer came back, so the control round may already be requested.",
+            "The Runtime rejected the request.",
+          ),
+        ),
     )
   }
 
