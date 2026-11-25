@@ -39,7 +39,8 @@ pub struct Attached {
 /// Follows Process `id` from `from` until it ends or `detach` completes.
 ///
 /// With `input`, local input is forwarded as stdin and its EOF closes the Process stdin;
-/// the `open` must then have asked for the stdin writer. A failed local output write
+/// the `open` must then have asked for the stdin writer. A failed local read detaches
+/// instead, leaving the Process stdin open for a later writer. A failed local output write
 /// detaches, because nothing can observe the Process any more.
 ///
 /// Every byte's cursor is known, as for `logs`: the attachment starts where `from` resolves in
@@ -49,7 +50,7 @@ pub struct Attached {
 ///
 /// # Errors
 /// Returns the refusal (`writer_busy` when another attachment holds stdin), the failed
-/// outcome, or the stream failure.
+/// outcome, the stream failure, or, once detached, the failed local read.
 pub async fn attach<R, W, I, O, E, D>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     ((id, from), local): ((ProcessId, LogFrom), ProcessIo<I, O, E>),
@@ -81,32 +82,36 @@ where
     let lost = Notify::new();
     let outbound = outbound(reader, (output, error), (&lost, start));
     // Once detached, nothing more is sent; the outcome still follows.
-    let (frame, gaps, reached) = if detached {
-        outbound.await
+    let ((frame, gaps, reached), failed) = if detached {
+        (outbound.await?, None)
     } else {
         let inbound = inbound(writer, (input, detach), &lost);
         tokio::pin!(outbound, inbound);
         tokio::select! {
             biased;
-            read = &mut outbound => read,
-            () = &mut inbound => outbound.await,
+            read = &mut outbound => (read?, None),
+            failed = &mut inbound => (outbound.await?, failed),
         }
-    }?;
-    attached((Some(accept), &frame), (id, Some(reached)), gaps)
+    };
+    let attached = attached((Some(accept), &frame), (id, Some(reached)), gaps)?;
+    failed.map_or(Ok(attached), |failure| Err(ClientError::Local(failure)))
 }
 
-/// Caller → target: stdin until EOF, then at most one `cancel` on detach or lost output.
+/// Caller → target: stdin until EOF, then at most one `cancel` on detach, lost output, or a
+/// failed local read, which it returns.
 async fn inbound<W, I, D>(
     writer: &mut FrameWriter<W>,
     (mut input, detach): (Option<I>, D),
     lost: &Notify,
-) where
+) -> Option<std::io::Error>
+where
     W: AsyncWrite + Unpin,
     I: AsyncRead + Unpin,
     D: Future<Output = ()>,
 {
     tokio::pin!(detach);
     let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
+    let mut failed = None;
     loop {
         let reading = input.is_some();
         tokio::select! {
@@ -114,6 +119,14 @@ async fn inbound<W, I, D>(
             () = lost.notified() => break,
             () = &mut detach => break,
             read = read_input(input.as_mut(), &mut buffer), if reading => {
+                // Only EOF ends the Process stdin, which is for good; a failed read detaches.
+                let read = match read {
+                    Ok(read) => read,
+                    Err(error) => {
+                        failed = Some(error);
+                        break;
+                    }
+                };
                 let forwarded = match read.and_then(|length| buffer.get(..length)) {
                     Some(chunk) => writer.data(Channel::Input, chunk).await,
                     None => writer.end(Channel::Input).await,
@@ -130,6 +143,7 @@ async fn inbound<W, I, D>(
         writer.flush().await
     }
     .await;
+    failed
 }
 
 /// Target → caller until the outcome, from cursor `start`; returns the outcome, the gaps, and
@@ -180,15 +194,15 @@ where
     }
 }
 
-/// Reads local input; `None` is EOF, and a read failure ends input the same way.
+/// Reads local input; `None` is EOF.
 async fn read_input<I: AsyncRead + Unpin>(
     input: Option<&mut I>,
     buffer: &mut [u8],
-) -> Option<usize> {
-    match input?.read(buffer).await {
-        Ok(0) | Err(_) => None,
-        Ok(read) => Some(read),
-    }
+) -> std::io::Result<Option<usize>> {
+    let Some(input) = input else {
+        return Ok(None);
+    };
+    Ok(Some(input.read(buffer).await?).filter(|read| *read > 0))
 }
 
 /// Checks that an outcome reports this Process detached at the cursor `reached`, when known.

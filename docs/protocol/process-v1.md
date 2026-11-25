@@ -235,7 +235,9 @@ Process and its supervisor have ended.
 
 With `stdin = true`, the attachment also takes the single stdin writer lease. `data` on channel 0
 is written to the Process stdin. `end` on channel 0 closes the Process stdin permanently, and the
-attachment keeps reading. Without the lease, any `data` or `end` detaches the attachment.
+attachment keeps reading. Without the lease, any `data` or `end` detaches the attachment. A caller
+sends `end` only at the end of its input. When reading its input fails, it detaches with `cancel`
+instead and reports the failure, so a later attachment can still write to the Process.
 
 At most 8 readers are attached to one Process at a time. The ninth is
 `reject(concurrency_exceeded)`.

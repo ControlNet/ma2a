@@ -5,7 +5,11 @@
 #[path = "support/host.rs"]
 mod support;
 
-use std::time::Duration;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use ma2a_core::{
     RequestId,
@@ -16,6 +20,7 @@ use ma2a_core::{
 };
 use ma2a_services::client::{ClientError, hosted, process::ProcessIo};
 use support::{TestResult, pipe};
+use tokio::io::{AsyncRead, ReadBuf};
 
 async fn within<T>(future: impl std::future::Future<Output = T>) -> TestResult<T> {
     Ok(tokio::time::timeout(Duration::from_secs(30), future).await?)
@@ -170,5 +175,81 @@ async fn a_writing_attachment_may_be_replayed_but_only_for_its_own_process() -> 
         matches!(attached, Err(ClientError::Stream(_))),
         "{attached:?}"
     );
+    Ok(())
+}
+
+/// Local input that delivers one chunk and then fails.
+struct FailsAfter(Option<&'static [u8]>);
+
+impl AsyncRead for FailsAfter {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(self.0.take().map_or_else(
+            || Err(std::io::ErrorKind::BrokenPipe.into()),
+            |chunk| {
+                buffer.put_slice(chunk);
+                Ok(())
+            },
+        ))
+    }
+}
+
+/// Attaches with stdin read from `input`, against a target that takes two frames from the
+/// caller and then reports the attachment ended with `reason`; returns the answer and the
+/// kinds of those two frames.
+async fn attach_writing<I: AsyncRead + Unpin>(
+    input: I,
+    reason: EndReason,
+) -> TestResult<(Result<hosted::Attached, ClientError>, Vec<FrameKind>)> {
+    let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();
+    let target = async {
+        let (kind, accept) = reading(0, (0, 0))?;
+        service_writer.frame(kind, &accept).await?;
+        service_writer.flush().await?;
+        let first = service_reader.expect().await?;
+        assert_eq!(first.data()?, (Channel::Input, &b"ab"[..]));
+        let second = service_reader.expect().await?;
+        let (kind, outcome) = detached(reason, process(1), 0)?;
+        service_writer.frame(kind, &outcome).await?;
+        service_writer.flush().await?;
+        TestResult::Ok(vec![first.kind(), second.kind()])
+    };
+    let local = ProcessIo {
+        input: Some(input),
+        output: Vec::new(),
+        error: None::<Vec<u8>>,
+    };
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        ((process(1), LogFrom::Now), local),
+        std::future::pending(),
+    );
+    let (attached, kinds) = within(async { tokio::join!(caller, target) }).await?;
+    Ok((attached, kinds?))
+}
+
+#[tokio::test]
+async fn a_failed_local_read_detaches_without_closing_the_process_stdin() -> TestResult {
+    // Given: local input that fails after one chunk.
+    // When
+    let (attached, kinds) = attach_writing(FailsAfter(Some(b"ab")), EndReason::Cancelled).await?;
+
+    // Then: the attachment detaches instead of ending stdin, and the failure is reported.
+    assert_eq!(kinds, [FrameKind::Data, FrameKind::Cancel]);
+    assert!(
+        matches!(attached, Err(ClientError::Local(_))),
+        "{attached:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_end_of_local_input_closes_the_process_stdin() -> TestResult {
+    let (attached, kinds) = attach_writing(&b"ab"[..], EndReason::Completed).await?;
+    assert_eq!(kinds, [FrameKind::Data, FrameKind::End]);
+    assert_eq!(attached?.reason, EndReason::Completed);
     Ok(())
 }
