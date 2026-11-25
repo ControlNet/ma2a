@@ -2,6 +2,7 @@
 
 use ma2a_core::service::{Channel, FrameKind, LogFrom, ServiceError, encode_skipped};
 use tokio::io::AsyncWriteExt as _;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     host::Shared,
@@ -81,15 +82,19 @@ pub(super) async fn attach(
             detached(reader).await
         }
     };
+    let detach = CancellationToken::new();
+    let following = follow(writer, shared, (start, &detach));
+    tokio::pin!(following);
     tokio::select! {
         biased;
-        // The caller detached; the child keeps running and the outcome reports where it was.
+        // The caller detached; the child keeps running. The frame being written is finished
+        // first, so the outcome that reports where the child was follows whole frames.
         result = inbound => {
             result?;
-            let status = shared.status.borrow().to_bytes();
-            writer.frame(FrameKind::Outcome, &status).await
+            detach.cancel();
+            following.await
         }
-        result = follow(writer, shared, start) => result,
+        result = &mut following => result,
     }
 }
 
@@ -197,12 +202,21 @@ async fn detached(reader: &mut Reader) -> Result<(), ServiceError> {
     }
 }
 
-/// Sends retained then live output from `cursor` until the child ended and all was sent.
-async fn follow(writer: &mut Writer, shared: &Shared, mut cursor: u64) -> Result<(), ServiceError> {
+/// Sends retained then live output from `cursor` until the child ended and all was sent, or
+/// until `detach`, checked between frames; either way the outcome is the child's status.
+async fn follow(
+    writer: &mut Writer,
+    shared: &Shared,
+    (mut cursor, detach): (u64, &CancellationToken),
+) -> Result<(), ServiceError> {
     let mut output = shared.output.subscribe();
     let mut status = shared.status.subscribe();
     let directory = shared.log_directory();
     loop {
+        if detach.is_cancelled() {
+            let now = shared.status.borrow().to_bytes();
+            return writer.frame(FrameKind::Outcome, &now).await;
+        }
         // The final status is published only after every append, so reading it before the
         // window guarantees that a final status comes with the complete window.
         let ended = status.borrow_and_update().is_final();
@@ -223,6 +237,9 @@ async fn follow(writer: &mut Writer, shared: &Shared, mut cursor: u64) -> Result
                 writer.frame(FrameKind::Control, &skipped).await?;
             }
             for (channel, bytes) in &read.records {
+                if detach.is_cancelled() {
+                    break;
+                }
                 writer.data(*channel, bytes).await?;
             }
             cursor = read.next.max(read.start);
@@ -237,6 +254,7 @@ async fn follow(writer: &mut Writer, shared: &Shared, mut cursor: u64) -> Result
         tokio::select! {
             changed = output.changed() => changed.map_err(|_| ServiceError::Unavailable)?,
             changed = status.changed() => changed.map_err(|_| ServiceError::Unavailable)?,
+            () = detach.cancelled() => {}
         }
     }
 }

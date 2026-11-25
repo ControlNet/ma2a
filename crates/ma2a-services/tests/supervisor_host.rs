@@ -507,3 +507,36 @@ async fn pipes_a_grandchild_keeps_open_are_drained_once_and_never_logged_after_t
     harness.finish().await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_detach_while_output_is_backed_up_still_ends_in_whole_frames_and_a_status() -> TestResult
+{
+    // Given: an attachment to a busy child whose reader has stopped taking output.
+    let harness = host(
+        "sup-detach-busy",
+        start("head -c 4194304 /dev/zero; exec sleep 60", false)?,
+    )?;
+    harness.ask(SupervisorRequest::Go).await?;
+    let mut attached = harness
+        .open(SupervisorRequest::Attach(LogFrom::Start, false))
+        .await?;
+    assert_eq!(attached.0.expect().await?.kind(), FrameKind::Accept);
+    let output = log_directory(&harness.directory());
+    while log::window(&output)?.end < 4_194_304 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // When: the reader detaches.
+    attached.1.frame(FrameKind::Cancel, &[]).await?;
+
+    // Then: every frame up to the outcome arrives whole, and the outcome is the status.
+    let (_, _, frames) = follow(&mut attached).await?;
+    assert!(
+        matches!(last_status(&frames)?, SupervisorStatus::Running(..)),
+        "{frames:?}"
+    );
+    drop(attached);
+    harness.ask(SupervisorRequest::Terminate(0)).await?;
+    harness.finish().await?;
+    Ok(())
+}
