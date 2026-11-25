@@ -31,10 +31,10 @@ impl EchoClient {
         let response = timeout(ECHO_DEADLINE, self.exchange_inner(target, request))
             .await
             .map_err(|_| EchoError::TimedOut)??;
-        let body = response.result?;
         if response.responder != target {
             return Err(EchoError::InvalidInput);
         }
+        let body = response.result?;
         EchoResponse::decode(&body, response.responder, response.duration_ms)
             .map(EchoResponse::into_owned)
     }

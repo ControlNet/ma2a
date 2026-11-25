@@ -1,5 +1,5 @@
-use iroh::endpoint::{RecvStream, SendStream};
-use ma2a_core::{EchoError, EndpointId, MAX_WIRE_LEN};
+use iroh::endpoint::{ReadExactError, RecvStream, SendStream};
+use ma2a_core::{EchoError, EndpointId, MAX_ECHO_DURATION_MS, MAX_WIRE_LEN};
 
 const HEADER_LEN: usize = 37;
 
@@ -48,7 +48,11 @@ pub(super) async fn read(receive: &mut RecvStream) -> Result<EchoFrame, EchoErro
     let responder = EndpointId::try_from(&header[1..33]).map_err(EchoError::from)?;
     let duration_ms = u16::from_be_bytes([header[33], header[34]]);
     let length = usize::from(u16::from_be_bytes([header[35], header[36]]));
-    if length > MAX_WIRE_LEN {
+    // A refusal carries no body, and no frame reports more than the saturated duration.
+    if length > MAX_WIRE_LEN
+        || (header[0] != 0 && length != 0)
+        || duration_ms > MAX_ECHO_DURATION_MS
+    {
         return Err(EchoError::InvalidInput);
     }
     let mut body = vec![0_u8; length];
@@ -56,6 +60,12 @@ pub(super) async fn read(receive: &mut RecvStream) -> Result<EchoFrame, EchoErro
         .read_exact(&mut body)
         .await
         .map_err(|_| EchoError::Unavailable)?;
+    let mut trailing = [0_u8; 1];
+    match receive.read_exact(&mut trailing).await {
+        Err(ReadExactError::FinishedEarly(0)) => {}
+        Ok(()) => return Err(EchoError::InvalidInput),
+        Err(_) => return Err(EchoError::Unavailable),
+    }
     let result = match header[0] {
         0 => Ok(body),
         code => Err(EchoError::from_code(code).ok_or(EchoError::InvalidInput)?),

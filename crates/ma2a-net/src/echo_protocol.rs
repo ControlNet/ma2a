@@ -2,6 +2,8 @@
 
 mod call;
 mod client;
+#[cfg(test)]
+mod client_test;
 mod frame;
 mod handler;
 mod limit;
