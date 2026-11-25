@@ -20,8 +20,25 @@ use ma2a_services::{
 use ma2a_store::ProcessCreation;
 use tokio_util::sync::CancellationToken;
 
-use super::{Harness, MIB, TestResult, request_id};
+use super::{Harness, MIB, TestResult, pipe_with, request_id};
 use crate::processes::serve;
+
+/// One proven supervisor connection, as the stand-in holds it.
+type Proven = (
+    FrameReader<interprocess::local_socket::tokio::RecvHalf>,
+    FrameWriter<interprocess::local_socket::tokio::SendHalf>,
+);
+
+/// Takes one connection, proves itself, and reads the `open`.
+async fn proven(listener: &Listener, credentials: &Credentials) -> TestResult<Proven> {
+    use interprocess::local_socket::traits::tokio::Stream as _;
+    let (receive, send) = listener.accept().await?.split();
+    let (mut reader, mut writer) = (FrameReader::new(receive), FrameWriter::new(send));
+    let challenge = read_challenge(&mut reader).await?;
+    prove_supervisor(challenge, (&mut reader, &mut writer), credentials).await?;
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Open);
+    Ok((reader, writer))
+}
 
 /// Takes one connection, proves itself, reads the `open`, sends `accept` when given, and drops.
 async fn stand_in(
@@ -29,12 +46,7 @@ async fn stand_in(
     credentials: &Credentials,
     accept: Option<&[u8]>,
 ) -> TestResult {
-    use interprocess::local_socket::traits::tokio::Stream as _;
-    let (receive, send) = listener.accept().await?.split();
-    let (mut reader, mut writer) = (FrameReader::new(receive), FrameWriter::new(send));
-    let challenge = read_challenge(&mut reader).await?;
-    prove_supervisor(challenge, (&mut reader, &mut writer), credentials).await?;
-    assert_eq!(reader.expect().await?.kind(), FrameKind::Open);
+    let (_reader, mut writer) = proven(listener, credentials).await?;
     if let Some(accept) = accept {
         writer.frame(FrameKind::Accept, accept).await?;
         writer.flush().await?;
@@ -155,5 +167,116 @@ async fn a_lost_supervisor_connection_is_unavailable_not_cancelled() -> TestResu
     }
     std::fs::remove_file(address.as_str())?;
     shutdown.cancel();
+    Ok(())
+}
+
+/// A Store client whose requests stop reaching the Store once the returned token is cancelled;
+/// each one after that fails as an unreachable Store does.
+fn cuttable(store: &crate::store::StoreClient) -> (crate::store::StoreClient, CancellationToken) {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(crate::store::STORE_CAPACITY);
+    let cut = CancellationToken::new();
+    let (real, stop) = (store.sender.clone(), cut.clone());
+    tokio::spawn(async move {
+        while let Some(command) = receiver.recv().await {
+            // Dropped, so its reply never comes.
+            if !stop.is_cancelled() && real.send(command).await.is_err() {
+                break;
+            }
+        }
+    });
+    (crate::store::StoreClient::new(sender), cut)
+}
+
+/// A running `/bin/cat` Process with stdin whose socket path a stand-in took over, managed
+/// through `store`; returns its manager, id, credentials, and the stand-in's listener.
+async fn taken_over(
+    harness: &Harness,
+    store: crate::store::StoreClient,
+    byte: u8,
+) -> TestResult<(super::ProcessManager, ProcessId, Credentials, Listener)> {
+    let manager = super::ProcessManager::new(
+        (
+            harness.local,
+            store,
+            std::sync::Arc::new(crate::clock::SystemClock),
+        ),
+        (&harness.state.0, Some(super::ProcessHosting::in_process())),
+        CancellationToken::new(),
+    );
+    let spec = ProcessSpec::new(
+        Some("/bin/cat".to_owned()),
+        Vec::new(),
+        Some("/".to_owned()),
+    )?;
+    let start = ProcessStart::new(spec, true, MIB)?;
+    let (creation, credentials) = manager
+        .create((harness.creator, request_id(byte)?), &start)
+        .await?;
+    let ProcessCreation::Created(record) = creation else {
+        return Err("expected a new Process".into());
+    };
+    manager.bring_up(credentials, start).await?;
+    let address = manager.address(record.id);
+    std::fs::remove_file(address.as_str())?;
+    let listener = address.bind()?;
+    Ok((manager, record.id, credentials, listener))
+}
+
+/// The status a supervisor reports once its child exited with `code`.
+fn exited(code: u32) -> Vec<u8> {
+    ma2a_services::supervisor::status::SupervisorStatus::Ended(
+        ma2a_core::service::Termination::Exited(code),
+        ma2a_services::supervisor::status::EndCause::Exited,
+        1,
+    )
+    .to_bytes()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_exit_that_could_not_be_recorded_is_no_completed_attachment() -> TestResult {
+    // Given: an attachment whose supervisor reports the exit once the Store stopped answering.
+    let harness = Harness::new("attach-unrecorded").await?;
+    let (store, cut) = cuttable(&harness.store);
+    let (manager, id, credentials, listener) = taken_over(&harness, store, 60).await?;
+    let supervisor = async {
+        let (_reader, mut writer) = proven(&listener, &credentials).await?;
+        writer
+            .frame(FrameKind::Accept, &encode_reading((0, 0, 0), false))
+            .await?;
+        writer.flush().await?;
+        cut.cancel();
+        writer.frame(FrameKind::Outcome, &exited(7)).await?;
+        writer.flush().await?;
+        TestResult::Ok(())
+    };
+
+    // When
+    let ((mut reader, mut writer), (mut host_reader, mut host_writer)) = pipe_with(1 << 16);
+    let stop = CancellationToken::new();
+    let request = ProcessRequest::Attach(id, LogFrom::Now, false);
+    let scope = ((harness.creator, request_id(61)?), request, &stop);
+    let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
+    let local = ProcessIo::<&[u8], Vec<u8>, Vec<u8>> {
+        input: None,
+        output: Vec::new(),
+        error: None,
+    };
+    let target = (id, LogFrom::Now);
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (target, local),
+        std::future::pending(),
+    );
+    let (_report, attached, stood_in) = tokio::join!(host, caller, supervisor);
+    stood_in?;
+
+    // Then: the exit is not reported over a summary that still says running.
+    assert!(
+        matches!(
+            attached,
+            Err(ClientError::Failed(ServiceError::Unavailable))
+        ),
+        "{attached:?}"
+    );
     Ok(())
 }

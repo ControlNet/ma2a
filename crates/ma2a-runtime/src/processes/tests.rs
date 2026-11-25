@@ -97,6 +97,32 @@ fn start(script: &str) -> TestResult<ProcessStart> {
     Ok(ProcessStart::new(spec, false, MIB)?)
 }
 
+/// One end of an in-memory Process stream.
+type End = (
+    ma2a_services::FrameReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    ma2a_services::FrameWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+);
+
+/// Returns connected caller and host ends.
+fn pipe() -> (End, End) {
+    pipe_with(1 << 16)
+}
+
+/// Returns connected caller and host ends whose in-flight bytes are bounded by `capacity`.
+fn pipe_with(capacity: usize) -> (End, End) {
+    use ma2a_services::{FrameReader, FrameWriter};
+    let (caller, host) = tokio::io::duplex(capacity);
+    let (caller_read, caller_write) = tokio::io::split(caller);
+    let (host_read, host_write) = tokio::io::split(host);
+    (
+        (
+            FrameReader::new(caller_read),
+            FrameWriter::new(caller_write),
+        ),
+        (FrameReader::new(host_read), FrameWriter::new(host_write)),
+    )
+}
+
 fn request_id(byte: u8) -> TestResult<RequestId> {
     Ok(RequestId::try_from([byte; 16].as_slice())?)
 }

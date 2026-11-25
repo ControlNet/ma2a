@@ -6,33 +6,11 @@ use ma2a_core::service::{
     Channel, EndReason, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, MAX_LOGS_READ, ProcessAccept,
     ProcessId, ProcessReply, ProcessRequest, ProcessSpec, ProcessStart, ProcessState, ServiceError,
 };
-use ma2a_services::{
-    FrameReader, FrameWriter,
-    client::{ClientError, hosted, process::ProcessIo},
-};
-use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
+use ma2a_services::client::{ClientError, hosted, process::ProcessIo};
 use tokio_util::sync::CancellationToken;
 
-use super::{Harness, MIB, TestResult, reaches, request_id};
+use super::{End, Harness, MIB, TestResult, pipe, reaches, request_id};
 use crate::processes::{ProcessManager, serve};
-
-type End = (
-    FrameReader<ReadHalf<DuplexStream>>,
-    FrameWriter<WriteHalf<DuplexStream>>,
-);
-
-fn pipe() -> (End, End) {
-    let (caller, host) = tokio::io::duplex(1 << 16);
-    let (caller_read, caller_write) = tokio::io::split(caller);
-    let (host_read, host_write) = tokio::io::split(host);
-    (
-        (
-            FrameReader::new(caller_read),
-            FrameWriter::new(caller_write),
-        ),
-        (FrameReader::new(host_read), FrameWriter::new(host_write)),
-    )
-}
 
 fn stdin_start(script: &str) -> TestResult<ProcessStart> {
     let spec = ProcessSpec::new(

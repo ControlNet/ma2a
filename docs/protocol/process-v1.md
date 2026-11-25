@@ -220,7 +220,7 @@ Process and its supervisor have ended.
    cursor.
 3. The attachment ends in one of two ways:
    - when the Process has ended and every retained byte was delivered, the outcome is Detached
-     `completed`;
+     `completed`, or a failed `unavailable` when its end could not be recorded in the Store;
    - when the caller sends `cancel`, closes, or loses its stream, or sends any frame it may not
      send, the attachment detaches with Detached `cancelled`.
    A caller that takes no output for 30 seconds ends it with a failed `timed_out` outcome. Input
@@ -230,8 +230,9 @@ Process and its supervisor have ended.
 4. The Detached summary is the Process as it now is, and `cursor` is the position reached.
 5. The caller refuses, before writing any output, an `accept` that is not Reading or whose `start`
    and `truncated` are not where `from` resolves in the window it reports. It also refuses a
-   Skipped cursor that goes back, and a Detached outcome for another Process or at a cursor other
-   than where its bytes and skips ended. Only an attachment with `stdin` reserves its RequestId,
+   Skipped cursor that goes back, a Detached outcome for another Process or at a cursor other
+   than where its bytes and skips ended, and a Detached `completed` whose Process has not ended
+   or whose cursor is before the `end` of the window the accept reported. Only an attachment with `stdin` reserves its RequestId,
    so only that one may be answered from replay.
 
 With `stdin = true`, the attachment also takes the single stdin writer lease. `data` on channel 0

@@ -14,7 +14,7 @@ use tokio::{
     sync::Notify,
 };
 
-use super::{Gaps, accepted, advanced, deliver, reading, reply, skipped};
+use super::{Gaps, accepted, advanced, deliver, reading, reply, skipped, until};
 use crate::{
     FrameReader, FrameWriter,
     client::{ClientError, First, first_or_cancel, next, process::ProcessIo, unexpected},
@@ -45,8 +45,8 @@ pub struct Attached {
 ///
 /// Every byte's cursor is known, as for `logs`: the attachment starts where `from` resolves in
 /// the window the accept reports, and the outcome must name this Process and the cursor its
-/// bytes and skips reached. Only an attachment with stdin, a mutation, may be answered from
-/// replay.
+/// bytes and skips reached. A completed one must report the Process ended, at or past the end
+/// of that window. Only an attachment with stdin, a mutation, may be answered from replay.
 ///
 /// # Errors
 /// Returns the refusal (`writer_busy` when another attachment holds stdin), the failed
@@ -208,6 +208,8 @@ async fn read_input<I: AsyncRead + Unpin>(
 }
 
 /// Checks that an outcome reports this Process detached at the cursor `reached`, when known.
+/// An attachment completes only once the Process ended and every byte retained when it began
+/// was sent.
 fn attached(
     (accept, frame): (Option<ProcessAccept>, &crate::Frame),
     (id, reached): (ProcessId, Option<u64>),
@@ -216,9 +218,14 @@ fn attached(
     if frame.kind() != FrameKind::Outcome {
         return Err(unexpected(frame));
     }
+    let completes = |summary: &ProcessSummary, cursor: u64| {
+        summary.state.is_terminal() && accept.is_none_or(|accept| cursor >= until(&accept))
+    };
     match reply(frame)? {
         ProcessReply::Detached(reason, summary, cursor)
-            if summary.id == id && reached.is_none_or(|reached| cursor == reached) =>
+            if summary.id == id
+                && reached.is_none_or(|reached| cursor == reached)
+                && (reason != EndReason::Completed || completes(&summary, cursor)) =>
         {
             Ok(Attached {
                 accept,

@@ -160,11 +160,15 @@ impl ProcessManager {
             Ok(relayed) => relayed,
             Err(error) => return finish(writer, Err(error)).await,
         };
-        let record = self.apply(id, reported).await.unwrap_or(record);
-        let reason = if reported.is_final() {
-            EndReason::Completed
-        } else {
-            EndReason::Cancelled
+        let (record, reason) = match self.apply(id, reported).await {
+            Ok(record) if reported.is_final() => (record, EndReason::Completed),
+            // An end that could not be recorded is not reported over a summary still live.
+            Err(_) if reported.is_final() => {
+                return finish(writer, Err(ServiceError::Unavailable))
+                    .await
+                    .with_bytes(bytes.0, bytes.1);
+            }
+            applied => (applied.unwrap_or(record), EndReason::Cancelled),
         };
         let detached = ProcessReply::Detached(reason, record.summary(), cursor);
         finish(writer, Ok(detached))

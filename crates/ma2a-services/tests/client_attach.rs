@@ -63,8 +63,21 @@ fn skipped(cursor: u64) -> TestResult<Sent> {
     Ok((FrameKind::Control, encode_skipped(cursor)?))
 }
 
+/// The outcome of an attachment that ended with `reason`: a completed one saw the Process
+/// exit, a detached one left it running.
 fn detached(reason: EndReason, id: ProcessId, cursor: u64) -> TestResult<Sent> {
-    let reply = ProcessReply::Detached(reason, summary(id)?, cursor);
+    let mut summary = summary(id)?;
+    if reason == EndReason::Completed {
+        summary.state = ProcessState::Exited;
+        summary.termination = Some(ma2a_core::service::Termination::Exited(0));
+    } else {
+        summary.state = ProcessState::Running;
+    }
+    detached_as(reason, summary, cursor)
+}
+
+fn detached_as(reason: EndReason, summary: ProcessSummary, cursor: u64) -> TestResult<Sent> {
+    let reply = ProcessReply::Detached(reason, summary, cursor);
     Ok((
         FrameKind::Outcome,
         ProcessReply::encode_outcome(&Ok(reply))?,
@@ -102,7 +115,7 @@ async fn attach(
 #[tokio::test]
 async fn an_attachment_is_where_its_bytes_and_skips_put_it() -> TestResult {
     let frames = vec![
-        reading(100, (0, 1000))?,
+        reading(100, (0, 150))?,
         data(b"abc"),
         skipped(200)?,
         data(b"de"),
@@ -145,6 +158,23 @@ async fn an_attachment_answer_that_does_not_follow_its_request_is_refused() -> T
                 detached(EndReason::Completed, process(2), 100)?,
             ],
         ),
+        // Completed while output the accept reported as retained was never sent.
+        (
+            "completed early",
+            vec![
+                reading(100, (0, 1000))?,
+                data(b"abc"),
+                detached(EndReason::Completed, process(1), 103)?,
+            ],
+        ),
+        // Completed while the Process still runs.
+        (
+            "completed alive",
+            vec![
+                reading(100, (0, 100))?,
+                detached_as(EndReason::Completed, summary(process(1))?, 100)?,
+            ],
+        ),
     ] {
         let (attached, output) = attach(LogFrom::Cursor(100), None, frames).await?;
         assert!(
@@ -160,6 +190,19 @@ async fn an_attachment_answer_that_does_not_follow_its_request_is_refused() -> T
             assert!(output.is_empty(), "{case}: nothing printed");
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_detach_may_come_anywhere_while_the_process_runs() -> TestResult {
+    let frames = vec![
+        reading(100, (0, 1000))?,
+        data(b"abc"),
+        detached(EndReason::Cancelled, process(1), 103)?,
+    ];
+    let (attached, output) = attach(LogFrom::Cursor(100), None, frames).await?;
+    assert_eq!(attached?.cursor, 103);
+    assert_eq!(output, b"abc");
     Ok(())
 }
 
