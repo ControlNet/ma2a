@@ -185,11 +185,6 @@ impl AgentManager {
         Ok((committed.into_value(), revision))
     }
 
-    /// Returns the Store revision, which every committed operator change has reached.
-    pub(crate) async fn revision(&self) -> Result<u64, ServiceError> {
-        self.store(|repository| repository.revision()).await
-    }
-
     /// Returns the Endpoint this Runtime is: the creator of every local task.
     pub(crate) fn local(&self) -> ma2a_core::EndpointId {
         self.0.local

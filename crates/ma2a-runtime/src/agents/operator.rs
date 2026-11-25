@@ -112,33 +112,37 @@ impl AgentManager {
 
     /// Starts an Agent: its first instance starts at once. A reserved name, which only a
     /// definition stored before such names were refused can carry, is never started.
-    pub(crate) async fn start(&self, agent: &AgentId) -> Result<AgentRecord, ServiceError> {
+    ///
+    /// Answers the Agent as the start committed it, with that commit's revision.
+    pub(crate) async fn start(&self, agent: &AgentId) -> Result<(AgentRecord, u64), ServiceError> {
         if reserved_name(agent.as_str()) {
             return Err(ServiceError::InvalidInput);
         }
         let (id, at_ms) = (agent.clone(), self.now_ms());
-        let record = self
-            .commit(move |repository| repository.set_agent_enabled(&id, (true, at_ms)))
-            .await?
-            .ok_or(ServiceError::UnknownAgent)?;
+        let (record, revision) = self
+            .commit_at(move |repository| repository.set_agent_enabled(&id, (true, at_ms)))
+            .await?;
+        let record = record.ok_or(ServiceError::UnknownAgent)?;
         self.coordination().restarts.remove(agent);
         self.ensure_instance(agent).await;
-        Ok(self.agent(agent).await?.unwrap_or(record))
+        Ok((record, revision))
     }
 
     /// Stops an Agent: its unfinished tasks fail and its instance is terminated.
-    pub(crate) async fn stop(&self, agent: &AgentId) -> Result<AgentRecord, ServiceError> {
+    ///
+    /// Answers the Agent as the stop committed it, with that commit's revision.
+    pub(crate) async fn stop(&self, agent: &AgentId) -> Result<(AgentRecord, u64), ServiceError> {
         let (id, at_ms) = (agent.clone(), self.now_ms());
-        let record = self
-            .commit(move |repository| repository.set_agent_enabled(&id, (false, at_ms)))
-            .await?
-            .ok_or(ServiceError::UnknownAgent)?;
+        let (record, revision) = self
+            .commit_at(move |repository| repository.set_agent_enabled(&id, (false, at_ms)))
+            .await?;
+        let record = record.ok_or(ServiceError::UnknownAgent)?;
         // The stop ended the instance; its Process still runs until terminated here.
         if let Some(process) = record.instance.and_then(|instance| instance.process_id) {
             let reason = (STOP_GRACE_MS, ProcessReason::Requested);
             let _ended = self.0.processes.terminate((None, process), reason).await;
         }
-        Ok(self.agent(agent).await?.unwrap_or(record))
+        Ok((record, revision))
     }
 
     /// Returns every Agent with its number of unfinished tasks, and the read's revision.

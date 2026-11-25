@@ -31,7 +31,7 @@ where
     match request {
         AgentRequest::Agents(after) => answer(writer, manager.discover(peer, after).await).await,
         AgentRequest::Submit(submit) => match manager.submit((peer, request_id), &submit).await {
-            Ok((record, existing)) => {
+            Ok(((record, existing), _)) => {
                 let accept = AgentAccept::Submitted(record.summary.id, existing);
                 respond(writer, accept, Ok(AgentReply::Summary(record.summary))).await
             }
@@ -39,7 +39,7 @@ where
         },
         AgentRequest::Send(agent, task, message) => {
             match manager.send(viewer(&agent), (task, message)).await {
-                Ok(super::Sent::Delivered(record)) => {
+                Ok(super::Sent::Delivered(record, _)) => {
                     answer(writer, Ok(AgentReply::Summary(record.summary))).await
                 }
                 // The send took effect, by ending the task, so it is admitted, not refused.

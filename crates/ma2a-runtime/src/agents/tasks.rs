@@ -26,8 +26,8 @@ pub(crate) type Viewer<'a> = (Option<EndpointId>, Option<&'a AgentId>);
 /// What a creator's message did to its live task.
 #[derive(Debug)]
 pub(crate) enum Sent {
-    /// The message reached the task; the task as it now is.
-    Delivered(Box<AgentTaskRecord>),
+    /// The message reached the task; the task as it now is, and the revision of that commit.
+    Delivered(Box<AgentTaskRecord>, u64),
     /// The task already held as many durable events as it may, so the message failed it
     /// instead, committed at this revision: the task ended because of this send.
     FailedTask(u64),
@@ -53,12 +53,13 @@ fn user_message(message: &AgentMessage) -> Result<(), ServiceError> {
 
 impl AgentManager {
     /// Creates one task under `request_id`, or answers the task that request already made;
-    /// `true` when it already existed.
+    /// `true` when it already existed. The revision is the one the task was read at in the
+    /// creating transaction.
     pub(crate) async fn submit(
         &self,
         binding: (EndpointId, RequestId),
         submit: &AgentSubmit,
-    ) -> Result<(AgentTaskRecord, bool), ServiceError> {
+    ) -> Result<((AgentTaskRecord, bool), u64), ServiceError> {
         user_message(submit.message())?;
         let task = NewAgentTask {
             id: AgentTaskId::random().map_err(|_| ServiceError::Internal)?,
@@ -69,16 +70,16 @@ impl AgentManager {
             input: submit.message().clone(),
             created_ms: self.now_ms(),
         };
-        let created = self
-            .commit(move |repository| repository.create_agent_task(&task))
+        let (created, revision) = self
+            .commit_at(move |repository| repository.create_agent_task(&task))
             .await?;
         match created {
             AgentTaskCreation::Created(record) => {
                 fault("after_task_created");
                 self.assign(submit.agent()).await;
-                Ok((*record, false))
+                Ok(((*record, false), revision))
             }
-            AgentTaskCreation::Existing(record) => Ok((*record, true)),
+            AgentTaskCreation::Existing(record) => Ok(((*record, true), revision)),
             AgentTaskCreation::Conflict => Err(ServiceError::Conflict),
             AgentTaskCreation::UnknownAgent => Err(ServiceError::UnknownAgent),
             AgentTaskCreation::Unavailable => Err(ServiceError::AgentUnavailable),
@@ -121,7 +122,7 @@ impl AgentManager {
             .commit_at(move |repository| repository.send_agent_message(task, (&message, at_ms)))
             .await?
         {
-            (AgentTaskChange::Changed(record), _) => Ok(Sent::Delivered(record)),
+            (AgentTaskChange::Changed(record), revision) => Ok(Sent::Delivered(record, revision)),
             (AgentTaskChange::Failed(_), revision) => {
                 self.task_ended(task);
                 Ok(Sent::FailedTask(revision))
@@ -140,7 +141,7 @@ impl AgentManager {
         viewer: Viewer<'_>,
         (task, reason, stop): (AgentTaskId, AgentTaskReason, &CancellationToken),
     ) -> Result<AgentTaskRecord, ServiceError> {
-        let record = self.request_cancel(viewer, (task, reason)).await?;
+        let (record, _) = self.request_cancel(viewer, (task, reason)).await?;
         if record.summary.state.is_terminal() {
             return Ok(record);
         }
@@ -157,17 +158,18 @@ impl AgentManager {
         }
     }
 
-    /// Requests a task's cancellation and answers the task as it then is: ended when it
-    /// was queued, otherwise still live until its Agent confirms or the grace period passes.
+    /// Requests a task's cancellation and answers the task as it then is, with the revision
+    /// of that commit: ended when it was queued, otherwise still live until its Agent confirms
+    /// or the grace period passes.
     pub(crate) async fn request_cancel(
         &self,
         viewer: Viewer<'_>,
         (task, reason): (AgentTaskId, AgentTaskReason),
-    ) -> Result<AgentTaskRecord, ServiceError> {
+    ) -> Result<(AgentTaskRecord, u64), ServiceError> {
         self.visible_task(viewer, task).await?;
         let at_ms = self.now_ms();
-        let changed = self
-            .commit(move |repository| repository.request_agent_cancel(task, (reason, at_ms)))
+        let (changed, revision) = self
+            .commit_at(move |repository| repository.request_agent_cancel(task, (reason, at_ms)))
             .await?;
         match changed {
             AgentTaskChange::Changed(record)
@@ -176,9 +178,9 @@ impl AgentManager {
                 if record.summary.state.is_terminal() {
                     self.task_ended(task);
                 }
-                Ok(*record)
+                Ok((*record, revision))
             }
-            AgentTaskChange::Refused => self.visible_task(viewer, task).await,
+            AgentTaskChange::Refused => Ok((self.visible_task(viewer, task).await?, revision)),
             AgentTaskChange::Missing => Err(ServiceError::UnknownTask),
         }
     }

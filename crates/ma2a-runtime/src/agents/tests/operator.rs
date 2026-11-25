@@ -92,7 +92,7 @@ impl Reserved {
         self.manager
             .submit(binding, &submit)
             .await
-            .map(|(_, existed)| existed)
+            .map(|((_, existed), _)| existed)
     }
 
     async fn finish(self) -> TestResult {

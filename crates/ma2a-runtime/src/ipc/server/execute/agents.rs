@@ -34,9 +34,9 @@ pub(super) async fn execute(
         )
         .without_effects()
     })?;
-    let result = match command {
+    // Every mutation is answered at the revision of its own commit, never a later one.
+    let (result, revision) = match command {
         AgentCommand::Define(_, spec) => {
-            // Answered at the revision of its own commit, never a later one.
             let ((record, created), revision) =
                 manager.define((**spec).clone()).await.map_err(active)?;
             return Ok(
@@ -48,14 +48,8 @@ pub(super) async fn execute(
             let revision = manager.undefine(agent).await.map_err(active)?;
             return Ok(CommandResult::agent_undefined(agent.as_str()).at_revision(revision));
         }
-        AgentCommand::Start(_, agent) => {
-            let record = manager.start(agent).await.map_err(refusal)?;
-            CommandResult::agent_started(&view(manager, record).await?)
-        }
-        AgentCommand::Stop(_, agent) => {
-            let record = manager.stop(agent).await.map_err(refusal)?;
-            CommandResult::agent_stopped(&view(manager, record).await?)
-        }
+        AgentCommand::Start(_, agent) => switch(manager, (agent, true)).await?,
+        AgentCommand::Stop(_, agent) => switch(manager, (agent, false)).await?,
         AgentCommand::List(after) => return list(manager, after.as_ref()).await,
         AgentCommand::Tasks(agent, after) => {
             let limit = u32::try_from(MAX_AGENT_TASK_PAGE + 1).unwrap_or(u32::MAX);
@@ -90,11 +84,14 @@ pub(super) async fn execute(
         }
         AgentCommand::Submit(request_id, agent, message) => {
             let submit = AgentSubmit::new(agent.clone(), message.clone(), None);
-            let (record, existing) = manager
+            let ((record, existing), revision) = manager
                 .submit((manager.local(), *request_id), &submit)
                 .await
                 .map_err(refusal)?;
-            CommandResult::agent_task_submitted(&record.summary, existing)
+            (
+                CommandResult::agent_task_submitted(&record.summary, existing),
+                revision,
+            )
         }
         AgentCommand::Send(_, task, message) => {
             match manager
@@ -102,8 +99,8 @@ pub(super) async fn execute(
                 .await
                 .map_err(refusal)?
             {
-                crate::agents::Sent::Delivered(record) => {
-                    CommandResult::agent_task_sent(&record.summary)
+                crate::agents::Sent::Delivered(record, revision) => {
+                    (CommandResult::agent_task_sent(&record.summary), revision)
                 }
                 // The send ended the task, so its request stays bound to that commit.
                 crate::agents::Sent::FailedTask(revision) => {
@@ -112,15 +109,38 @@ pub(super) async fn execute(
             }
         }
         AgentCommand::Cancel(_, task) => {
-            let record = manager
+            let (record, revision) = manager
                 .request_cancel(OPERATOR, (*task, AgentTaskReason::Requested))
                 .await
                 .map_err(refusal)?;
-            CommandResult::agent_task_cancelled(&record.summary)
+            (
+                CommandResult::agent_task_cancelled(&record.summary),
+                revision,
+            )
         }
     };
-    let revision = manager.revision().await.map_err(refusal)?;
     Ok(result.at_revision(revision))
+}
+
+/// Starts or stops an Agent, and answers its view at the revision of that commit.
+async fn switch(
+    manager: &AgentManager,
+    (agent, start): (&AgentId, bool),
+) -> Result<(CommandResult, u64), ApiError> {
+    let switched = if start {
+        manager.start(agent).await
+    } else {
+        manager.stop(agent).await
+    };
+    let (record, revision) = switched.map_err(refusal)?;
+    let view = view(manager, record).await;
+    let view = view.map_err(|error| error.after_commit(revision))?;
+    let result = if start {
+        CommandResult::agent_started(&view)
+    } else {
+        CommandResult::agent_stopped(&view)
+    };
+    Ok((result, revision))
 }
 
 /// One page of Agents in name order after `after`.
@@ -137,7 +157,7 @@ async fn list(manager: &AgentManager, after: Option<&AgentId>) -> Result<Command
     Ok(CommandResult::agents(views).at_revision(revision))
 }
 
-/// One Agent's view with its current number of unfinished tasks.
+/// One Agent's view with its current number of unfinished tasks, read after the change.
 async fn view(
     manager: &AgentManager,
     record: ma2a_store::AgentRecord,
