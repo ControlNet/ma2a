@@ -204,17 +204,11 @@ async fn assert_cross_space(context: &DenialContext<'_>) -> TestResult {
         )?)
         .await?;
     let mut bytes = ticket.encode_bytes();
-    let first = *context
-        .first_space
-        .as_bytes()
-        .first()
-        .ok_or("first Space id is empty")?;
-    let second = *context
-        .second_space
-        .as_bytes()
-        .first()
-        .ok_or("second Space id is empty")?;
-    *bytes.get_mut(17).ok_or("ticket Space byte missing")? ^= first ^ second;
+    // Name the first Space in the second Space's ticket: the signature no longer covers it.
+    bytes
+        .get_mut(17..49)
+        .ok_or("ticket Space id missing")?
+        .copy_from_slice(context.first_space.as_bytes());
     let ticket = SignedInviteTicket::decode_bytes(&bytes)?;
     let before = context.owner.handle().status().await?;
     let result = context
