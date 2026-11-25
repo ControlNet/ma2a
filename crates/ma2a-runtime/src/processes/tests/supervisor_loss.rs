@@ -280,3 +280,94 @@ async fn an_exit_that_could_not_be_recorded_is_no_completed_attachment() -> Test
     );
     Ok(())
 }
+
+/// Attaches with stdin to a Process whose stand-in supervisor sends 16 KiB of output, then the
+/// child's exit when `exits`, and closes its connection while the caller takes nothing; only then
+/// does the caller send input and read. Returns the output bytes the caller got and its outcome.
+async fn attach_while_closed(
+    exits: bool,
+    byte: u8,
+) -> TestResult<(usize, ma2a_core::service::ProcessReplyOutcome)> {
+    use ma2a_core::service::{Channel, ProcessReply};
+    let harness = Harness::new("attach-closed").await?;
+    let (manager, id, credentials, listener) =
+        taken_over(&harness, harness.store.clone(), byte).await?;
+    let (closed, gone) = tokio::sync::oneshot::channel();
+    let supervisor = async {
+        let (reader, mut writer) = proven(&listener, &credentials).await?;
+        writer
+            .frame(FrameKind::Accept, &encode_reading((0, 0, 0), false))
+            .await?;
+        for _ in 0..4 {
+            writer.data(Channel::Output, &[b'o'; 4_096]).await?;
+        }
+        if exits {
+            writer.frame(FrameKind::Outcome, &exited(0)).await?;
+        }
+        writer.flush().await?;
+        drop((reader, writer));
+        closed.send(()).map_err(|()| "the caller is gone")?;
+        TestResult::Ok(())
+    };
+    // The caller's stream holds less than the output, so the relay is still sending it.
+    let ((mut reader, mut writer), (mut host_reader, mut host_writer)) = pipe_with(1024);
+    let stop = CancellationToken::new();
+    let request = ProcessRequest::Attach(id, LogFrom::Now, true);
+    let scope = ((harness.creator, request_id(byte + 1)?), request, &stop);
+    let manager = &manager;
+    // The host's stream closes once it answered, as the Runtime's does.
+    let host = async move {
+        serve(manager, scope, (&mut host_reader, &mut host_writer)).await;
+    };
+    let caller = async {
+        gone.await?;
+        writer.data(Channel::Input, b"x").await?;
+        writer.flush().await?;
+        let mut received = 0;
+        loop {
+            let frame = reader.expect().await?;
+            match frame.kind() {
+                FrameKind::Accept => {}
+                FrameKind::Data => received += frame.data()?.1.len(),
+                FrameKind::Outcome => {
+                    return TestResult::Ok((
+                        received,
+                        ProcessReply::decode_outcome(frame.payload())?,
+                    ));
+                }
+                other => return Err(format!("unexpected {other:?}").into()),
+            }
+        }
+    };
+    let joined = async { tokio::join!(host, caller, supervisor) };
+    let (_report, answered, stood_in) =
+        tokio::time::timeout(std::time::Duration::from_secs(30), joined).await?;
+    stood_in?;
+    answered
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_supervisor_that_closed_still_delivers_what_it_sent_to_a_writing_caller() -> TestResult {
+    use ma2a_core::service::{EndReason, ProcessReply};
+    // Given: a supervisor that sent output and the child's exit, then closed.
+    // When: the caller's input finds the connection closed.
+    let (received, outcome) = attach_while_closed(true, 72).await?;
+
+    // Then: every byte and the exit still arrive.
+    assert_eq!(received, 16_384);
+    assert!(
+        matches!(
+            outcome,
+            Ok(ProcessReply::Detached(EndReason::Completed, _, 16_384))
+        ),
+        "{outcome:?}"
+    );
+
+    // Given: a supervisor that closed without reporting the exit.
+    let (received, outcome) = attach_while_closed(false, 74).await?;
+
+    // Then: its output arrives, and its loss is this Runtime's failure, not a detach.
+    assert_eq!(received, 16_384);
+    assert_eq!(outcome, Err(ServiceError::Unavailable));
+    Ok(())
+}

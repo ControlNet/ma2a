@@ -180,6 +180,16 @@ impl ProcessManager {
 /// What a relay reports: the supervisor's last status, the cursor reached, bytes in/out.
 type Relayed = (SupervisorStatus, u64, (u64, u64));
 
+/// How the caller's side of a relay ended.
+enum Upstream {
+    /// The supervisor took the detach.
+    Detached,
+    /// The supervisor's connection is closed; what it sent before still follows.
+    Closed,
+    /// The supervisor did not take input or the detach in time.
+    Stalled,
+}
+
 /// Relays one attachment until the supervisor's `outcome`.
 async fn relay<R, W>(
     (mut from_supervisor, mut to_supervisor): Channel,
@@ -227,7 +237,8 @@ where
         let upstream = async {
             // Returning detaches: the supervisor then reports where the Process is. Input the
             // Process does not take within the stall bound detaches too, so a caller's detach
-            // is never stuck behind it.
+            // is never stuck behind it. A supervisor that closed its connection, for example
+            // once the child ended, takes nothing more but still has its output delivered.
             while let Ok(Some(frame)) = reader.next().await {
                 let forwarded = match (frame.kind(), frame.data(), frame.end()) {
                     (FrameKind::Data, Ok((DataChannel::Input, bytes)), _) if stdin => {
@@ -241,12 +252,20 @@ where
                     }
                     _ => break,
                 };
-                if !matches!(forwarded, Ok(Ok(()))) {
-                    break;
+                match forwarded {
+                    Ok(Ok(())) => {}
+                    Ok(Err(ServiceError::Cancelled)) => return Upstream::Closed,
+                    // A write cut short by the stall bound left a torn frame: no detach follows.
+                    Err(_) => return Upstream::Stalled,
+                    Ok(Err(_)) => break,
                 }
             }
             let cancel = to_supervisor.frame(FrameKind::Cancel, &[]);
-            matches!(tokio::time::timeout(DETACH_GRACE, cancel).await, Ok(Ok(())))
+            match tokio::time::timeout(DETACH_GRACE, cancel).await {
+                Ok(Ok(())) => Upstream::Detached,
+                Ok(Err(_)) => Upstream::Closed,
+                Err(_) => Upstream::Stalled,
+            }
         };
         let grace = tokio::time::sleep(std::time::Duration::MAX);
         tokio::pin!(downstream, upstream, grace);
@@ -256,13 +275,17 @@ where
                 biased;
                 () = stop.cancelled() => break Err(ServiceError::Unavailable),
                 reported = &mut downstream => break reported,
-                delivered = &mut upstream, if !detached => {
-                    // A detach the supervisor did not take has used up the grace already.
-                    if !delivered {
-                        break Err(ServiceError::Cancelled);
-                    }
+                ended = &mut upstream, if !detached => {
                     detached = true;
-                    grace.as_mut().reset(tokio::time::Instant::now() + DETACH_GRACE);
+                    match ended {
+                        // A detach the supervisor did not take has used up the grace already.
+                        Upstream::Stalled => break Err(ServiceError::Cancelled),
+                        // Its output, then its outcome or the end of its stream, ends this.
+                        Upstream::Closed => {}
+                        Upstream::Detached => {
+                            grace.as_mut().reset(tokio::time::Instant::now() + DETACH_GRACE);
+                        }
+                    }
                 }
                 () = &mut grace, if detached => break Err(ServiceError::Cancelled),
             }
