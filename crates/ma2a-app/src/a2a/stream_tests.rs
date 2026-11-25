@@ -12,18 +12,11 @@ use crate::a2a::{backend::ended, view::settled};
 #[test]
 fn a_continued_stream_closes_on_a_terminal_first_frame() {
     // Given: a message sent at event 2 to a task that completed before the first frame.
-    let position = Position {
-        current: "completed".to_owned(),
-        finishes: settled,
-        shown: 5,
-    };
+    let position = Position::new("completed".to_owned(), settled, 5);
 
     // Then: nothing can follow the end.
     assert!(position.closes_at_once(Some(2)));
-    let waiting = Position {
-        current: "waiting".to_owned(),
-        ..position
-    };
+    let waiting = Position::new("waiting".to_owned(), settled, 5);
     assert!(!waiting.closes_at_once(Some(2)));
     assert!(waiting.closes_at_once(None));
 }
@@ -32,11 +25,7 @@ fn a_continued_stream_closes_on_a_terminal_first_frame() {
 fn events_the_first_frame_showed_are_not_sent_again() {
     // Given: a message sent at event 2; by the first frame, at event 4, the task took it
     // and waits again.
-    let mut position = Position {
-        current: "waiting".to_owned(),
-        finishes: settled,
-        shown: 4,
-    };
+    let mut position = Position::new("waiting".to_owned(), settled, 4);
     let state = |seq: u64, state: &str| json!({"seq": seq, "kind": "state", "state": state});
 
     // When: the follow replays from the message.
@@ -46,13 +35,27 @@ fn events_the_first_frame_showed_are_not_sent_again() {
     // Then: neither is sent, and the stream closes on the wait the frame showed.
     assert_eq!(running, (None, false));
     assert_eq!(waiting, (None, true));
-    let mut subscribed = Position {
-        current: "running".to_owned(),
-        finishes: ended,
-        shown: 4,
-    };
+    let mut subscribed = Position::new("running".to_owned(), ended, 4);
     let live = subscribed.forward(&state(5, "completed"), ("t", "b"));
     assert!(live.0.is_some() && live.1);
+}
+
+#[test]
+fn a_wait_the_first_frame_no_longer_showed_does_not_close_the_stream() {
+    // Given: a message sent at event 5; by the first frame, at event 10, the task waited at
+    // event 8, took another message, and runs again.
+    let mut position = Position::new("running".to_owned(), settled, 10);
+    let state = |seq: u64, state: &str| json!({"seq": seq, "kind": "state", "state": state});
+
+    // When: the follow replays from the message.
+    let superseded = position.forward(&state(8, "waiting"), ("t", "b"));
+    let running = position.forward(&state(10, "running"), ("t", "b"));
+    let waiting = position.forward(&state(11, "waiting"), ("t", "b"));
+
+    // Then: only the wait after the frame closes the stream.
+    assert_eq!(superseded, (None, false));
+    assert_eq!(running, (None, false));
+    assert!(waiting.0.is_some() && waiting.1);
 }
 
 #[tokio::test]

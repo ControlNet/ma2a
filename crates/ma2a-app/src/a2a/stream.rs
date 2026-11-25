@@ -106,9 +106,21 @@ struct Position {
     finishes: fn(&str) -> bool,
     /// The newest event the first frame already showed.
     shown: u64,
+    /// Whether the first frame showed a state the stream closes on.
+    shown_finished: bool,
 }
 
 impl Position {
+    /// Where a stream stands once its first frame showed `current` as of event `shown`.
+    fn new(current: String, finishes: fn(&str) -> bool, shown: u64) -> Self {
+        Self {
+            shown_finished: finishes(&current),
+            current,
+            finishes,
+            shown,
+        }
+    }
+
     /// Whether the stream closes with its first frame. An ended task never changes again;
     /// after a message to a waiting task, only a state reached since then counts.
     fn closes_at_once(&self, sent_at: Option<u32>) -> bool {
@@ -116,7 +128,9 @@ impl Position {
     }
 
     /// The update one followed event becomes, and whether the stream closes with it. An
-    /// event the first frame already showed still moves the state, but is not sent again.
+    /// event the first frame already showed still moves the state, but is not sent again,
+    /// and closes the stream only when the frame showed a state it closes on: a wait the task
+    /// left again before the frame must not end a stream whose frame shows it working.
     fn forward(&mut self, event: &Value, (task, base): (&str, &str)) -> (Option<Value>, bool) {
         let state = text(event, "/kind") == "state";
         if state {
@@ -128,7 +142,8 @@ impl Position {
         } else {
             None
         };
-        (update, state && (self.finishes)(&self.current))
+        let closes = (self.finishes)(&self.current) && (seq > self.shown || self.shown_finished);
+        (update, state && closes)
     }
 }
 
@@ -213,15 +228,13 @@ async fn produce(
         Err(refusal) => return send(frames, &refused(refusal)).await.then_some(()),
     };
     let shown = view::last_seq(&details);
-    let mut position = Position {
-        current: text(&details, "/task/state").to_owned(),
-        finishes: if lifecycle.until_waiting {
-            settled
-        } else {
-            ended
-        },
-        shown: u64::from(shown),
+    let finishes = if lifecycle.until_waiting {
+        settled
+    } else {
+        ended
     };
+    let current = text(&details, "/task/state").to_owned();
+    let mut position = Position::new(current, finishes, u64::from(shown));
     let settled_now = position.closes_at_once(lifecycle.sent_at);
     if !send(frames, &success(id, &json!({"task": first}))).await || settled_now {
         return Some(());
