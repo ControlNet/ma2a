@@ -44,7 +44,9 @@ pub(super) fn format(at_ms: u64) -> String {
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fraction]Z` into Unix milliseconds; `None` when malformed
 /// or before 1970. A finer fraction rounds up to the next millisecond, since the result is a
-/// lower bound on stored milliseconds: a task at `.123` is before `.1239`.
+/// lower bound on stored milliseconds: a task at `.123` is before `.1239`. Unix time has no
+/// leap seconds, so a leap second, which only ever ends a UTC day at `23:59:60`, counts as
+/// the start of the next day.
 pub(super) fn parse(text: &str) -> Option<u64> {
     let text = text.strip_suffix('Z')?;
     let (date, clock) = text.split_once('T')?;
@@ -72,11 +74,13 @@ pub(super) fn parse(text: &str) -> Option<u64> {
     );
     if date.next().is_some()
         || clock.next().is_some()
+        || year < 1970
         || !(1..=12).contains(&month)
         || !(1..=days_in_month(year, month)).contains(&day)
         || hours > 23
         || minutes > 59
         || seconds > 60
+        || (seconds == 60 && (hours, minutes) != (23, 59))
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
     {
         return None;
@@ -115,6 +119,10 @@ mod tests {
             parse("2026-01-01T00:00:00.0000001Z"),
             Some(1_767_225_600_001)
         );
+        // A day-end leap second counts as the first millisecond of the next day.
+        assert_eq!(parse("2016-12-31T23:59:60Z"), Some(1_483_228_800_000));
+        assert_eq!(parse("2016-12-31T23:59:60.5Z"), Some(1_483_228_800_500));
+        assert_eq!(parse("2026-12-31T23:59:59.9999Z"), Some(1_798_761_600_000));
         for malformed in [
             "2000-02-29",
             "2000-13-01T00:00:00Z",
@@ -123,6 +131,12 @@ mod tests {
             "1900-02-29T00:00:00Z",
             "2024-04-31T00:00:00Z",
             "2024-04-30T00:00:00.Z",
+            // Before 1970, however close: neither rounding nor a leap second carries it over.
+            "1969-12-31T23:59:59.9999Z",
+            "1969-12-31T23:59:60Z",
+            // A leap second only ends a UTC day.
+            "2026-01-15T12:00:60Z",
+            "2026-01-15T23:58:60Z",
         ] {
             assert_eq!(parse(malformed), None, "{malformed}");
         }
