@@ -55,6 +55,17 @@ async fn an_invitation_for_an_unknown_space_can_be_corrected_under_its_request_i
     served
         .refused(&invite("65".repeat(32)), ProtocolError::NOT_FOUND)
         .await?;
+    // Its staging is gone by the time the refusal is answered.
+    let staged = std::fs::read_dir(&served.state.0)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".ma2a-invite-stage-")
+        })
+        .count();
+    assert_eq!(staged, 0);
 
     // When: the same request is sent again for the right Space.
     let corrected = invite(api::encode_hex(space.as_bytes()));
