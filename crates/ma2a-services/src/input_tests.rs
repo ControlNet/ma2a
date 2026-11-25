@@ -58,23 +58,25 @@ async fn a_write_with_input_held_behind_it_is_stopped_after_the_stall_bound() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_with_only_the_end_of_input_behind_it_waits_for_the_run() {
-    let (caller, (mut reader, _writer)) = caller();
-    drop(caller);
-    let (done, mut finished) = oneshot::channel::<()>();
-    let finishing = async {
-        tokio::time::sleep(INPUT_STALL * 2).await;
-        let _sent = done.send(());
-    };
+async fn a_stream_closed_behind_a_waiting_write_stops_it_at_once() {
+    // A caller keeps its write side open until the terminal, so closing it is a cancel, also
+    // after the end of its input.
+    for ended in [false, true] {
+        let (mut caller, (mut reader, _writer)) = caller();
+        if ended {
+            caller.end(Channel::Input).await.expect("end");
+        }
+        drop(caller);
+        let (_done, mut finished) = oneshot::channel::<()>();
+        let started = tokio::time::Instant::now();
 
-    let mut input = Input::new(&mut reader);
-    let (wrote, ()) = tokio::join!(
-        input.write(std::future::pending::<()>(), &mut finished),
-        finishing
-    );
+        let wrote = Input::new(&mut reader)
+            .write(std::future::pending::<()>(), &mut finished)
+            .await;
 
-    assert_eq!(wrote, Wrote::Finished);
-    assert!(input.next().await.expect("held").is_none());
+        assert_eq!(wrote, Wrote::Stopped(ServiceError::Cancelled), "{ended}");
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+    }
 }
 
 #[tokio::test(start_paused = true)]

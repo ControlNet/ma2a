@@ -177,6 +177,28 @@ async fn lifetime_cancel_and_shutdown_end_the_session() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_caller_that_closes_its_stream_cancels_the_session() -> TestResult {
+    // Given
+    let ((mut reader, mut writer), server) = start(
+        session("sleep", &["30"], 60_000)?,
+        &CancellationToken::new(),
+    );
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+
+    // When: the caller closes its side before any terminal.
+    writer.shutdown().await?;
+
+    // Then
+    let frames = within(drain(&mut reader)).await??;
+    assert_eq!(outcome(&frames)?.reason, EndReason::Cancelled);
+    assert_eq!(
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::Cancelled)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_unstartable_program_is_rejected() -> TestResult {
     let ((mut reader, _writer), server) = start(
         session("/nonexistent/ma2a-shell", &[], 1_000)?,

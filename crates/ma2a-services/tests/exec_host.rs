@@ -203,6 +203,27 @@ async fn a_cancel_behind_input_the_child_never_reads_ends_the_run_at_once() -> T
 }
 
 #[tokio::test]
+async fn a_caller_that_closes_its_stream_before_its_end_of_input_cancels_the_run() -> TestResult {
+    // Given: a child that copies its stdin and ends when that input ends.
+    let request = ExecRequest::new(script("cat")?, true, 60_000)?;
+    let ((mut reader, mut writer), server) = start(request, &CancellationToken::new(), 1 << 20);
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    writer.data(Channel::Input, b"part").await?;
+
+    // When: the caller closes its side without ending its input.
+    writer.shutdown().await?;
+
+    // Then: the input is not taken as complete; the run is cancelled.
+    let frames = tokio::time::timeout(Duration::from_secs(2), drain(&mut reader)).await??;
+    assert_eq!(process_outcome(&frames)?.reason, EndReason::Cancelled);
+    assert_eq!(
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::Cancelled)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_background_child_does_not_outlive_its_exec() -> TestResult {
     let request = ExecRequest::new(script("sleep 30 >/dev/null 2>&1 & echo $!")?, false, 60_000)?;
     let ((mut reader, _writer), server) = start(request, &CancellationToken::new(), 1 << 20);

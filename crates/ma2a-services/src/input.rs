@@ -1,7 +1,8 @@
 //! Caller input written to a program that may stop taking it.
 //!
-//! While one write waits for the program, the caller's next frame is still read, so a `cancel`
-//! or a lost stream right behind input the program does not take is seen at once. The end of
+//! While one write waits for the program, the caller's next frame is still read, so a `cancel`,
+//! a closed or lost stream right behind input the program does not take is seen at once: a
+//! caller keeps its side open until the terminal, so closing it early cancels. The end of
 //! input is kept and reading goes on past it, since a caller that ended its input has only a
 //! `cancel` left to send. Any other frame is held until the write finishes, and the stream is
 //! not read past it; a write still waiting [`INPUT_STALL`] after that ends the operation as
@@ -22,13 +23,7 @@ pub(crate) const INPUT_STALL: Duration = Duration::from_secs(30);
 pub(crate) struct Input<'a, R> {
     reader: &'a mut FrameReader<R>,
     ended: Option<Frame>,
-    ahead: Option<Held>,
-}
-
-/// What was read ahead while a write waited.
-enum Held {
-    Frame(Frame),
-    End,
+    ahead: Option<Frame>,
 }
 
 /// How one write of caller input ended.
@@ -53,14 +48,10 @@ impl<'a, R: AsyncRead + Unpin> Input<'a, R> {
 
     /// The next caller frame: the one held, if any, or the next one read. Cancel-safe.
     pub(crate) async fn next(&mut self) -> Result<Option<Frame>, ServiceError> {
-        if let Some(frame) = self.ended.take() {
+        if let Some(frame) = self.ended.take().or_else(|| self.ahead.take()) {
             return Ok(Some(frame));
         }
-        match self.ahead.take() {
-            Some(Held::Frame(frame)) => Ok(Some(frame)),
-            Some(Held::End) => Ok(None),
-            None => self.reader.next().await,
-        }
+        self.reader.next().await
     }
 
     /// Runs one write of caller input until it finishes, the caller stops the run, or the run
@@ -91,10 +82,9 @@ impl<'a, R: AsyncRead + Unpin> Input<'a, R> {
                     }
                     Ok(Some(frame)) => {
                         stall.as_mut().reset(tokio::time::Instant::now() + INPUT_STALL);
-                        self.ahead = Some(Held::Frame(frame));
+                        self.ahead = Some(frame);
                     }
-                    // Nothing can follow the end of the stream, so it does not bound the write.
-                    Ok(None) => self.ahead = Some(Held::End),
+                    Ok(None) => return Wrote::Stopped(ServiceError::Cancelled),
                 },
                 () = &mut stall => return Wrote::Stopped(ServiceError::Cancelled),
             }

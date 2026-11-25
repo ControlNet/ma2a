@@ -106,8 +106,8 @@ pub(crate) const fn reason_end(end: OperationEnd, reason: EndReason) -> Operatio
 
 /// Forwards caller input to the child until the run finishes, returning the bytes forwarded.
 ///
-/// A protocol violation, `cancel`, or stream loss is reported once through `cancel`, also
-/// while a write waits for a child that does not read its stdin.
+/// A protocol violation, `cancel`, or a closed or lost stream is reported once through
+/// `cancel`, also while a write waits for a child that does not read its stdin.
 async fn inbound<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,
     mut stdin: Option<ChildStdin>,
@@ -124,11 +124,8 @@ async fn inbound<R: AsyncRead + Unpin>(
         };
         let frame = match frame {
             Ok(Some(frame)) => frame,
-            Ok(None) => {
-                drop(stdin.take());
-                let _finished = finished.await;
-                return input_bytes;
-            }
+            // A caller keeps its side open until the outcome; closing it earlier cancels.
+            Ok(None) => break ServiceError::Cancelled,
             Err(error) => break error,
         };
         match frame.kind() {

@@ -39,10 +39,8 @@ pub(super) async fn inbound<R: AsyncRead + Unpin>(
         };
         let frame = match frame {
             Ok(Some(frame)) => frame,
-            Ok(None) => {
-                let _finished = finished.await;
-                return input_bytes;
-            }
+            // A caller keeps its side open until the outcome; closing it earlier cancels.
+            Ok(None) => break ServiceError::Cancelled,
             Err(error) => break error,
         };
         match frame.kind() {
