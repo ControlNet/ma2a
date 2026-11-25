@@ -17,7 +17,7 @@ The initiator opens one bidirectional stream, writes one canonical Echo request,
 - exact target Endpoint ID `[32]`
 - payload of at most 4,096 bytes
 
-The complete canonical request remains within the shared wire bound. Unknown versions, noncanonical encodings, trailing bytes, target mismatch, and oversized payloads are invalid input.
+The complete canonical request remains within the shared wire bound. A version other than exactly 1.0 is a version mismatch. Noncanonical encodings, trailing bytes, target mismatch, and oversized payloads are invalid input.
 
 ## Response Frame
 

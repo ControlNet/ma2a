@@ -47,11 +47,14 @@ pub(crate) fn authorize(
 pub(crate) fn dispatch(input: &EchoDispatchInput) -> EchoDispatchOutcome {
     let started = Instant::now();
     input.metrics.record_decoded_request();
-    let Ok(request) = EchoRequest::decode(&input.request) else {
-        return EchoDispatchOutcome {
-            response: Err(EchoError::InvalidInput),
-            audit: None,
-        };
+    let request = match EchoRequest::decode(&input.request) {
+        Ok(request) => request,
+        Err(error) => {
+            return EchoDispatchOutcome {
+                response: Err(error),
+                audit: None,
+            };
+        }
     };
     if request.target_endpoint_id() != input.local_endpoint_id {
         let audit = EchoAuditRecord::new(
@@ -128,5 +131,33 @@ mod tests {
         assert_eq!(record.peer_endpoint_id(), peer);
         assert_eq!(record.result_class(), EchoResultClass::InvalidInput);
         assert_eq!(record.byte_count(), 12);
+    }
+
+    #[test]
+    fn an_unsupported_version_is_answered_as_a_version_mismatch() {
+        // Given a canonical request whose version reads 2.0.
+        let local = EndpointSecret::generate().endpoint_id();
+        let request_id = RequestId::try_from([0x62; 16].as_slice()).expect("valid request id");
+        let mut request = EchoRequest::new(request_id, local, b"hello")
+            .and_then(|request| request.encode())
+            .expect("valid request");
+        let offset = request
+            .windows(4)
+            .position(|window| window == [0x00, 0x82, 0x01, 0x00])
+            .expect("version field");
+        *request.get_mut(offset + 2).expect("major version") = 0x02;
+        let input = EchoDispatchInput {
+            local_endpoint_id: local,
+            peer_endpoint_id: EndpointSecret::generate().endpoint_id(),
+            request,
+            metrics: EchoMetrics::default(),
+        };
+
+        // When
+        let result = dispatch(&input);
+
+        // Then
+        assert!(matches!(result.response, Err(EchoError::VersionMismatch)));
+        assert!(result.audit.is_none());
     }
 }
