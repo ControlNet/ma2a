@@ -141,6 +141,12 @@ A unary operation may answer with an `outcome` without accepting first. A caller
 caller leaving, reaches the service as `cancel`; the service should end the call with
 `outcome(cancelled)` after undoing what it can.
 
+The hosting Runtime enforces these rules for both parties. Caller `data` or `end` on another
+channel than input reaches the service as `cancel` instead. A service frame out of order (`data`,
+`end`, or `control` before `accept`, or a second `accept`), or `data` or `end` on the input
+channel, ends the call there, and the caller learns `outcome_unknown`. The SDK refuses to send on
+the other party's channels in the first place.
+
 ## Hosting and lifecycle
 
 Registrations are durable (Store schema 10, table `hosted_services`); links and calls are not.

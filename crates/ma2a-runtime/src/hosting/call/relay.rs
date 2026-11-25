@@ -5,8 +5,8 @@ use std::{
     time::Duration,
 };
 
-use ma2a_core::service::FrameKind;
-use ma2a_services::{FrameReader, FrameWriter};
+use ma2a_core::service::{Channel, FrameKind};
+use ma2a_services::{Frame, FrameReader, FrameWriter};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
@@ -38,6 +38,10 @@ struct Ending {
 /// forever to forward the `cancel`. So the call itself also bounds how long it may take to end
 /// once it is being cancelled; that end is lost, so the caller learns `outcome_unknown`, and its
 /// byte counts are not known.
+///
+/// Both parties are held to the Services v1 order and direction rules: caller data or an `end`
+/// on another channel than input cancels the call, and a service frame out of order or on the
+/// caller's channel loses it.
 pub(super) async fn relay_call<R, W>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     stream: Box<dyn CallIo>,
@@ -48,7 +52,10 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     let (read, write) = tokio::io::split(stream);
-    let mut target = (FrameReader::new(read), FrameWriter::new(write));
+    let mut service = FrameReader::new(read);
+    let (checked_in, checked_out) = tokio::io::duplex(PUMP_BUFFER);
+    let mut target = (FrameReader::new(checked_out), FrameWriter::new(write));
+    let checking = checked(&mut service, FrameWriter::new(checked_in));
     let (pipe_in, pipe_out) = tokio::io::duplex(PUMP_BUFFER);
     let mut client = FrameReader::new(pipe_out);
     let ending = Ending::default();
@@ -71,13 +78,14 @@ where
         }
     };
     let grace = tokio::time::sleep(Duration::MAX);
-    tokio::pin!(pump, relaying, cancelled, grace);
-    let (mut pumping, mut cancelling) = (true, false);
+    tokio::pin!(pump, checking, relaying, cancelled, grace);
+    let (mut pumping, mut cancelling) = ((true, true), false);
     loop {
         tokio::select! {
             biased;
             relayed = &mut relaying => return relayed,
-            () = &mut pump, if pumping => pumping = false,
+            () = &mut pump, if pumping.0 => pumping.0 = false,
+            () = &mut checking, if pumping.1 => pumping.1 = false,
             () = &mut cancelled, if !cancelling => {
                 cancelling = true;
                 grace.as_mut().reset(tokio::time::Instant::now() + STUCK_GRACE);
@@ -128,11 +136,25 @@ async fn pump<R: AsyncRead + Unpin>(
             }
             return;
         };
-        if frame.kind() == FrameKind::Cancel {
+        // Caller data or an `end` on another channel than input cancels the call, as any
+        // other frame the caller may not send does.
+        let caller_input = match frame.kind() {
+            FrameKind::Data => frame
+                .data()
+                .is_ok_and(|(channel, _)| channel == Channel::Input),
+            FrameKind::End => frame.end() == Ok(Channel::Input),
+            _ => true,
+        };
+        let (kind, payload) = if caller_input {
+            (frame.kind(), frame.payload())
+        } else {
+            (FrameKind::Cancel, &[][..])
+        };
+        if kind == FrameKind::Cancel {
             ending.cancelling.cancel();
         }
         let forwarded = async {
-            pipe.frame(frame.kind(), frame.payload()).await?;
+            pipe.frame(kind, payload).await?;
             pipe.flush().await
         };
         let stalled = tokio::time::sleep(INPUT_STALL);
@@ -151,6 +173,44 @@ async fn pump<R: AsyncRead + Unpin>(
     }
 }
 
+/// Forwards the service's frames to the relay while they follow Services v1: one `accept`
+/// before any `data`, `end`, or `control`, and `data` and `end` only on the output and error
+/// channels. Ending the stream at the first other frame makes the relay report the call lost.
+async fn checked<R: AsyncRead + Unpin>(
+    reader: &mut FrameReader<R>,
+    mut pipe: FrameWriter<DuplexStream>,
+) {
+    let mut accepted = false;
+    let from_service = |channel| channel != Channel::Input;
+    while let Ok(Some(frame)) = reader.next().await {
+        let valid = match frame.kind() {
+            FrameKind::Accept => !std::mem::replace(&mut accepted, true),
+            FrameKind::Data => {
+                accepted && frame.data().is_ok_and(|(channel, _)| from_service(channel))
+            }
+            FrameKind::End => accepted && frame.end().is_ok_and(from_service),
+            FrameKind::Control => accepted,
+            // The relay itself checks every other frame.
+            _ => true,
+        };
+        if !valid || forward(&mut pipe, &frame).await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn forward(
+    pipe: &mut FrameWriter<DuplexStream>,
+    frame: &Frame,
+) -> Result<(), ma2a_core::service::ServiceError> {
+    pipe.frame(frame.kind(), frame.payload()).await?;
+    pipe.flush().await
+}
+
 #[cfg(test)]
 #[path = "relay_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "relay_rules_tests.rs"]
+mod rules_tests;
