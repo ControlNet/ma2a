@@ -58,17 +58,27 @@ export async function loginAndTouchSession(password: string): Promise<WebSession
   }
 }
 
-export async function logoutSession(session: WebSession): Promise<void> {
+/**
+ * Logs `session` out. `signedIn` tells whether the page is still signed in with it, read when
+ * the answer arrives.
+ */
+export async function logoutSession(
+  session: WebSession,
+  signedIn: () => boolean = () => true,
+): Promise<void> {
   try {
     await postLogout(session.csrfToken)
   } catch (error) {
     // Another tab may have signed in again since this page loaded, replacing the session cookie
     // with one whose CSRF token this page never saw. The browser's current session is still
     // valid then, so log it out with the token its cookie carries instead of reporting success.
+    // A page that has signed in again since sending the request owns that session now, and a
+    // late refusal never logs it out.
     const current = currentWebSession()
     if (
       error instanceof HTTPError &&
       error.response.status === 403 &&
+      signedIn() &&
       current !== undefined &&
       current.csrfToken !== session.csrfToken
     ) {

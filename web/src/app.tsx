@@ -143,7 +143,7 @@ export function App({
       ? undefined
       : async (): Promise<void> => {
           try {
-            await logoutSession(session)
+            await logoutSession(session, () => sessionRef.current === session)
           } catch (error) {
             if (!sessionIsGone(error)) throw error
           }

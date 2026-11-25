@@ -202,21 +202,26 @@ test.each([
 })
 
 // A request the last session sent can still be answered after the next sign-in; its answer
-// must not end the session that is signed in now.
+// must not end the session that is signed in now, nor log it out.
 test.each([
   ["a command answered 401", "/endpoint", 401],
   ["a log out answered 204", "/settings", 204],
+  ["a log out answered 403", "/settings", 403],
 ])("%s after signing in again keeps the new session", async (_, start, status) => {
-  Object.defineProperty(document, "cookie", {
-    configurable: true,
-    value: `ma2a_csrf=${"cd".repeat(32)}`,
-  })
+  const cookie = (token: string): void => {
+    Object.defineProperty(document, "cookie", { configurable: true, value: `ma2a_csrf=${token}` })
+  }
+  cookie("cd".repeat(32))
+  const logouts: (string | null)[] = []
   let answer: (response: Response) => void = () => undefined
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init): Promise<Response> => {
-    const path = new URL(new Request(input, init).url).pathname
+    const request = new Request(input, init)
+    const path = new URL(request.url).pathname
+    if (path === "/api/v1/web/auth/logout") logouts.push(request.headers.get("x-csrf-token"))
     if (path === "/api/v1/control-sync/trigger" || path === "/api/v1/web/auth/logout") {
       return new Promise<Response>((resolve) => (answer = resolve))
     }
+    if (path === "/api/v1/web/auth/login") cookie("ef".repeat(32))
     return Promise.resolve(
       path === "/api/v1/web/auth/login"
         ? Response.json({ csrf_token: "ef".repeat(32) })
@@ -246,4 +251,5 @@ test.each([
 
   expect(screen.getByRole("main", { name: "Runtime content" })).toBeVisible()
   expect(screen.queryByRole("heading", { name: "Sign in to this Runtime" })).not.toBeInTheDocument()
+  expect(logouts).not.toContain("ef".repeat(32))
 })
