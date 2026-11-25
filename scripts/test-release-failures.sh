@@ -42,8 +42,8 @@ if ./scripts/validate-release.sh "$tampered" "$target" >/dev/null 2>&1; then
 fi
 
 # The sidecar is one record for the archive, as `sha256sum --check` reads it. A second record
-# that disagrees fails that command, so it fails validation too; a lone record with Windows line
-# endings passes.
+# that disagrees fails that command, so it fails validation too, and so does a carriage return,
+# at the end of the line or inside the record. Windows sidecars are checked further below.
 resummed="$temporary/resummed/$(basename "$archive")"
 mkdir -p "$(dirname "$resummed")"
 cp "$archive" "$resummed"
@@ -54,8 +54,14 @@ if ./scripts/validate-release.sh "$resummed" "$target" >/dev/null 2>&1; then
   printf 'checksum sidecar with a second record unexpectedly passed validation\n' >&2
   exit 1
 fi
-printf '%s *%s\r\n' "$digest" "$(basename "$archive")" > "${resummed}.sha256"
-./scripts/validate-release.sh "$resummed" "$target" >/dev/null
+for record in "$digest *$(basename "$archive")"$'\r' \
+  "${digest:0:32}"$'\r'"${digest:32} *$(basename "$archive")"; do
+  printf '%s\n' "$record" > "${resummed}.sha256"
+  if ./scripts/validate-release.sh "$resummed" "$target" >/dev/null 2>&1; then
+    printf 'checksum sidecar with a carriage return unexpectedly passed validation\n' >&2
+    exit 1
+  fi
+done
 
 mkdir "$temporary/extracted"
 tar -xJf "$archive" -C "$temporary/extracted"
@@ -166,8 +172,15 @@ PY
   done
   ./scripts/validate-release.sh "$win_flat" x86_64-pc-windows-msvc >/dev/null
   ./scripts/validate-release.sh "$win_rooted" x86_64-pc-windows-msvc >/dev/null
+  # A Windows sidecar may end its lines with a carriage return, but has none inside its record:
+  # the flat zip passes with the first and joins the invalid ones with the second.
+  win_digest=$(hash_file "$win_flat")
+  printf '%s *%s\r\n\r\n' "$win_digest" "$(basename "$win_flat")" > "${win_flat}.sha256"
+  ./scripts/validate-release.sh "$win_flat" x86_64-pc-windows-msvc >/dev/null
+  printf '%s\r%s *%s\r\n' "${win_digest:0:32}" "${win_digest:32}" "$(basename "$win_flat")" \
+    > "${win_flat}.sha256"
   for bad in "$win_mixed" "$win_empty_dir" "$win_incomplete" "$win_rooted_dir" "$win_link" \
-    "$win_fifo" "$win_dir_binary"; do
+    "$win_fifo" "$win_dir_binary" "$win_flat"; do
     if ./scripts/validate-release.sh "$bad" x86_64-pc-windows-msvc >/dev/null 2>&1; then
       printf 'invalid Windows zip unexpectedly passed validation: %s\n' "$bad" >&2
       exit 1

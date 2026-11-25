@@ -103,9 +103,13 @@ if ! cmp -s "$expected" "$entries"; then
 fi
 
 # The sidecar holds exactly one record, for this archive, in the form `sha256sum --check` reads.
-# Blank lines, such as the one dist ends it with, are allowed, and so are Windows line endings,
-# as a Windows build may write them and Windows users compare the digest by hand.
-checksum_record=$(tr -d '\r' < "$checksum_file" | grep -v '^$' || true)
+# Blank lines, such as the one dist ends it with, are allowed. A Windows sidecar may also end its
+# lines with a carriage return, as a Windows build may write them and Windows users compare the
+# digest by hand; `sha256sum --check` and `shasum -c` refuse one, so a Unix sidecar has none.
+case "$target" in
+  *-pc-windows-msvc) checksum_record=$(awk '{ sub(/\r$/, "") } $0 != ""' "$checksum_file") ;;
+  *) checksum_record=$(grep -v '^$' "$checksum_file" || true) ;;
+esac
 expected_digest=${checksum_record%% *}
 [[ "$expected_digest" =~ ^[0-9a-f]{64}$ &&
   ( "$checksum_record" == "$expected_digest  $(basename "$archive")" ||
