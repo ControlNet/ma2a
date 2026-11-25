@@ -54,8 +54,9 @@ async fn member_of_offline_owner(label: &str, count: u8) -> TestResult<OfflineOw
         let handle = member.handle();
         joining.spawn(async move { handle.redeem_enrollment(attempt).await });
         spaces.push(space);
-        // Stay well inside the bound on pending redemptions.
-        if joining.len() == 16 {
+        // Stay inside the bounds on redemptions pending at the member and on enrollment
+        // connections one peer may hold at the owner.
+        if joining.len() == 4 {
             while let Some(joined) = joining.join_next().await {
                 joined??;
             }
