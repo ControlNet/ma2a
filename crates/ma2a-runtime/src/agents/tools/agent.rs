@@ -162,7 +162,7 @@ impl Call<'_> {
                 let (mut reader, _writer) = self
                     .open_read(&args.endpoint, OpenBody::Agent(request))
                     .await?;
-                client::agent::watch(&mut reader, |event| after = event.seq)
+                client::agent::watch(&mut reader, (task, after), |event| after = event.seq)
                     .await
                     .map_err(|error| failed(&error))
             })

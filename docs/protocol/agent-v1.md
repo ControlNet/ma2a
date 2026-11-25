@@ -346,8 +346,9 @@ retained event after it, with no duplicates. Gaps can appear only among `progres
 pruned in between, so the first event delivered may have a `seq` above `next`.
 
 A caller treats a `watch` as malformed (`invalid_input`) when it is accepted as anything other
-than Watching, when an event's `seq` is below `next` or not above the event before it, or when its
-outcome is anything other than the Summary of an ended task.
+than Watching with `next = after + 1` (saturating at the maximum `seq`), when an event's `seq` is
+not above `after` or not above the event before it, or when its outcome is anything other than the
+Summary of the watched task once ended.
 
 ## Artifacts
 

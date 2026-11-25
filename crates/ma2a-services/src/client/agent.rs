@@ -3,7 +3,9 @@
 //! `artifact` answers with Transfer v1 download frames, so its caller uses
 //! [`super::transfer::download_accepted`] and [`super::transfer::download_content`].
 
-use ma2a_core::service::{AgentAccept, AgentEvent, AgentReply, Channel, FrameKind, ServiceError};
+use ma2a_core::service::{
+    AgentAccept, AgentEvent, AgentReply, AgentTaskId, Channel, FrameKind, ServiceError,
+};
 use tokio::io::AsyncRead;
 
 use super::{ClientError, First, decoded, first, next, unexpected};
@@ -29,18 +31,19 @@ pub async fn call<R: AsyncRead + Unpin>(
     Ok((Some(accept), reply(&frame)?))
 }
 
-/// Follows one `watch`, handing every event to `on_event` in order, until the outcome:
-/// the task's summary once it ended.
+/// Follows one `watch` of `task` after the cursor `after`, handing every event to `on_event`
+/// in order, until the outcome: the task's summary once it ended.
 ///
-/// A target that accepts the watch as anything but `Watching`, sends an event at or before
-/// one it already sent (or before the `next` it announced), or ends the watch with anything
-/// but an ended task's summary is malformed: a caller would otherwise replay events or take
-/// a live task for an ended one.
+/// A target that accepts the watch as anything but `Watching` with `next = after + 1`
+/// (saturating), sends an event at or before `after` or one it already sent, or ends the
+/// watch with anything but the summary of `task` once ended is malformed: a caller would
+/// otherwise replay events, move its cursor backwards, or take a live task for an ended one.
 ///
 /// # Errors
 /// Returns the refusal, the failed outcome, or the stream or protocol failure.
 pub async fn watch<R, F>(
     reader: &mut FrameReader<R>,
+    (task, after): (AgentTaskId, u32),
     mut on_event: F,
 ) -> Result<(AgentAccept, AgentReply), ClientError>
 where
@@ -52,11 +55,13 @@ where
         return Err(malformed());
     };
     let accept = accepted(&frame)?;
-    let AgentAccept::Watching(_, next_seq) = accept else {
-        return Err(malformed());
-    };
-    // The lowest sequence number the next event may carry.
-    let mut floor = u64::from(next_seq);
+    // A target announces the event after the cursor sent; any other is a stale answer.
+    match accept {
+        AgentAccept::Watching(_, next) if next == after.saturating_add(1) => {}
+        _ => return Err(malformed()),
+    }
+    // The lowest sequence number the next event may carry, past `after` even at its maximum.
+    let mut floor = u64::from(after) + 1;
     loop {
         let frame = next(reader).await?;
         match frame.kind() {
@@ -74,7 +79,9 @@ where
             },
             FrameKind::Outcome => {
                 return match reply(&frame)? {
-                    AgentReply::Summary(summary) if summary.state.is_terminal() => {
+                    AgentReply::Summary(summary)
+                        if summary.state.is_terminal() && summary.id == task =>
+                    {
                         Ok((accept, AgentReply::Summary(summary)))
                     }
                     _ => Err(malformed()),
