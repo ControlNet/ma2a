@@ -158,6 +158,24 @@ async fn a_cancelled_download_stops_under_backpressure() -> TestResult {
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_download_stops_when_the_caller_closes_its_stream_early() -> TestResult {
+    let root = TempRoot::new("eof-download")?;
+    fs::write(root.path().join("big"), content(4 << 20))?;
+    let request = TransferRequest::Get(file("docs:/big")?, 0, None);
+    let ((mut reader, mut writer), server) =
+        start((root.path(), request), std::sync::Arc::default(), 128 << 10)?;
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Data);
+    let started = tokio::time::Instant::now();
+    writer.shutdown().await?;
+    let report = server.await?;
+    assert_eq!(report.end, OperationEnd::Failed(ServiceError::Cancelled));
+    assert!(report.bytes_out < 4 << 20);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_source_that_changes_during_download_fails_the_outcome() -> TestResult {
     let root = TempRoot::new("changed")?;

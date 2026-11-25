@@ -102,13 +102,13 @@ pub(crate) const fn lost(
     OperationReport::new(OperationEnd::Failed(error)).with_bytes(bytes_in, bytes_out)
 }
 
-/// Resolves once the client cancels, resets, or violates the protocol.
+/// Resolves once the client cancels, closes or resets its stream early, or violates the protocol.
 ///
-/// A clean client half-close is not a cancellation: the future then never resolves, so the
-/// operation continues until its own terminal.
+/// A caller keeps its write side open until it receives the terminal frame, so a clean end of
+/// stream before then cancels the operation.
 pub async fn client_cancelled<R: AsyncRead + Unpin>(reader: &mut FrameReader<R>) -> ServiceError {
     match reader.next().await {
-        Ok(None) => std::future::pending().await,
+        Ok(None) => ServiceError::Cancelled,
         Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => ServiceError::Cancelled,
         Ok(Some(_)) => ServiceError::InvalidInput,
         Err(error) => error,
@@ -183,5 +183,21 @@ mod tests {
 
         // Then
         assert_eq!(report.end, OperationEnd::Failed(ServiceError::TimedOut));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_clean_client_half_close_cancels_the_operation() {
+        let (peer, host) = tokio::io::duplex(64);
+        let (_peer_read, mut peer_write) = tokio::io::split(peer);
+        let (host_read, _host_write) = tokio::io::split(host);
+        let mut reader = crate::FrameReader::new(host_read);
+
+        tokio::io::AsyncWriteExt::shutdown(&mut peer_write)
+            .await
+            .expect("shutdown");
+
+        let cancelled =
+            tokio::time::timeout(super::FRAME_GRACE, super::client_cancelled(&mut reader)).await;
+        assert_eq!(cancelled, Ok(ServiceError::Cancelled));
     }
 }

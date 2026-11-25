@@ -182,7 +182,10 @@ impl Directory {
                         removed => removed?,
                     }
                 }
-                Some(_) => fs_error::map(directory.remove_entry(child))?,
+                Some(_) => {
+                    fs_error::map(directory.remove_entry(child))?;
+                    stop.step(child);
+                }
                 None => {}
             }
         }
