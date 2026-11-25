@@ -240,15 +240,17 @@ where
     TR: AsyncRead + Unpin,
     CW: AsyncWrite + Unpin,
 {
-    let mut accepted = false;
+    // Whether any frame other than a terminal was forwarded already.
+    let mut started = false;
     loop {
         let Ok(Some(frame)) = target_reader.next().await else {
             return Terminal::Lost;
         };
         let terminal = match frame.kind() {
             // A rejection promises that nothing happened, which no longer holds once the
-            // target accepted; such a stream is indeterminate and is never replayed as refused.
-            FrameKind::Reject if accepted => return Terminal::Lost,
+            // target accepted or sent anything else; such a stream is indeterminate and is
+            // never replayed as refused.
+            FrameKind::Reject if started => return Terminal::Lost,
             FrameKind::Reject => match frame.rejection() {
                 Ok(error) => Some(Terminal::Rejected(error)),
                 Err(_) => return Terminal::Lost,
@@ -264,7 +266,7 @@ where
                 _ => return Terminal::Lost,
             },
             kind if from_target(kind) => {
-                accepted |= kind == FrameKind::Accept;
+                started = true;
                 Shared::count(&shared.from_target, &frame);
                 None
             }

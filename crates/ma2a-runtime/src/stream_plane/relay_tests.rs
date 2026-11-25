@@ -141,6 +141,22 @@ async fn a_reject_after_accept_is_indeterminate_and_never_forwarded() {
 }
 
 #[tokio::test]
+async fn a_reject_after_output_without_accept_is_indeterminate() {
+    let ((mut client_reader, _client_writer), (_target_reader, mut target_writer), task) = start();
+    target_writer
+        .data(Channel::Output, b"x")
+        .await
+        .expect("output");
+    target_writer
+        .reject(ServiceError::Unavailable)
+        .await
+        .expect("reject");
+    assert_eq!(task.await.expect("relay").terminal, Terminal::Lost);
+    let forwarded = client_reader.expect().await.expect("output frame");
+    assert_eq!(forwarded.kind(), FrameKind::Data);
+}
+
+#[tokio::test]
 async fn a_target_lost_before_its_terminal_is_indeterminate() {
     let (_client, target, task) = start();
     drop(target);
