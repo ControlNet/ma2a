@@ -214,3 +214,34 @@ fn rejects_unpinned_or_malformed_web_dependency_sections() -> Result<(), Box<dyn
     }
     Ok(())
 }
+
+#[test]
+fn inspects_a_member_in_a_directory_the_manifest_walk_skips() -> Result<(), Box<dyn Error>> {
+    // Given a member under `vendor`, which the walk for manifests skips, whose dependency on
+    // another member names no version.
+    let fixture = Fixture::new("\"=0.1.0\"")?;
+    let tool = fixture.root().join("vendor/tool");
+    write_package(&tool, "tool")?;
+    fs::write(
+        tool.join("Cargo.toml"),
+        "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nmember = { path = \"../../member\" }\n",
+    )?;
+    let manifest = fixture.root().join("Cargo.toml");
+    let text = fs::read_to_string(&manifest)?.replace(
+        "members = [\"member\"]",
+        "members = [\"member\", \"vendor/tool\"]",
+    );
+    fs::write(&manifest, text)?;
+
+    // When
+    let violations = violations(&fixture);
+
+    // Then
+    assert!(
+        violations.iter().any(|violation| {
+            violation.starts_with("vendor/tool/Cargo.toml") && violation.contains("`member`")
+        }),
+        "a member the walk skips must still be checked: {violations:?}"
+    );
+    Ok(())
+}

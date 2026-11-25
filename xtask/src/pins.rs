@@ -23,8 +23,17 @@ pub(crate) fn check(root: &Path) -> Result<(), XtaskError> {
     if !lockfile.is_file() {
         violations.push("Cargo.lock is missing".to_owned());
     }
-    for manifest in collect_files(&root, Some("Cargo.toml"))? {
-        inspect_manifest(&policy, &manifest, &mut violations)?;
+    // Cargo's members are checked wherever they are, also in a directory the walk skips.
+    let manifests = collect_files(&root, Some("Cargo.toml"))?
+        .into_iter()
+        .chain(
+            workspace_members
+                .iter()
+                .map(|member| member.join("Cargo.toml")),
+        )
+        .collect::<BTreeSet<_>>();
+    for manifest in &manifests {
+        inspect_manifest(&policy, manifest, &mut violations)?;
     }
     inspect_web_manifest(&root, &mut violations)?;
     if violations.is_empty() {
