@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 
+import type { PendingSpaceCreation } from "../api/pending-space"
 import { ROUTE_PATHS, type RoutePath } from "../routes"
 import type { RuntimeActions } from "../runtime-actions"
 import type { RuntimeViewData } from "../view-model"
@@ -17,6 +18,7 @@ export type RouteViewOptions = {
   readonly runtime: RuntimeViewData | undefined
   readonly services: ServicesState
   readonly actions: RuntimeActions | undefined
+  readonly pendingSpaceCreation?: PendingSpaceCreation | undefined
   readonly selectedPeer: string | undefined
   readonly syncMessage: string | undefined
   readonly onSelectPeer: (id: string) => void
@@ -38,7 +40,13 @@ export function routeView(options: RouteViewOptions): RouteView {
     case ROUTE_PATHS.spaces:
       return {
         content: <SpacesScreen runtime={runtime} />,
-        inspector: <SpacesInspector actions={actions} runtime={runtime} />,
+        inspector: (
+          <SpacesInspector
+            actions={actions}
+            pendingSpaceCreation={options.pendingSpaceCreation}
+            runtime={runtime}
+          />
+        ),
       }
     case ROUTE_PATHS.endpoint:
       return {

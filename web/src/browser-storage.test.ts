@@ -3,8 +3,8 @@ import { join, relative, resolve } from "node:path"
 
 const ROOT = resolve(process.cwd(), "src")
 
-/** Only the theme preference may touch browser storage, and it is not a secret. */
-const STORAGE_ALLOWLIST = ["theme/use-theme.ts"]
+/** Only the theme preference and an unresolved Space creation ID touch browser storage; neither is a secret. */
+const STORAGE_ALLOWLIST = ["api/pending-space.ts", "theme/use-theme.ts"]
 
 /** The bearer is HttpOnly; only the deliberately script-readable CSRF cookie is read. */
 const COOKIE_ALLOWLIST = ["api/web-auth.ts"]
@@ -26,7 +26,7 @@ async function sources(): Promise<ReadonlyArray<readonly [string, string]>> {
   return found
 }
 
-test("only the theme preference reaches browser storage", async () => {
+test("only allowlisted non-secret state reaches browser storage", async () => {
   const offenders = (await sources())
     .filter(([, source]) => /\.(localStorage|sessionStorage|indexedDB)\b/.test(source))
     .map(([path]) => path)

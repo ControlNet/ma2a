@@ -211,10 +211,10 @@ test("reads the CSRF token for every mutation, so one replaced by another tab is
 })
 
 // A creation whose answer was lost may have committed, so a retry of the same name must replay
-// it under its request ID instead of creating a second Space. Only an answer from the Runtime for
-// that ID settles it: an HTTP refusal or timeout says nothing about the earlier attempt, and
-// `unavailable` is the Runtime still running it. A settled creation, or another name, gets a new
-// ID, since names are not unique.
+// it under its request ID instead of creating a second Space. On a retry, only an answer from the
+// Runtime for that ID settles it: an HTTP refusal or timeout says nothing about the earlier
+// attempt, and `unavailable` is the Runtime still running it. A fresh attempt refused before
+// dispatch (such as HTTP 403), a settled creation, or another name gets a new ID.
 test("a Space creation retried after a lost answer keeps its request ID", async () => {
   const ids: unknown[] = []
   const answers: (number | string)[] = []
@@ -249,7 +249,7 @@ test("a Space creation retried after a lost answer keeps its request ID", async 
     await (succeeds ? expect(created).resolves.toBeDefined() : expect(created).rejects.toThrow())
   }
 
-  expect(ids).toEqual([1, 2, 2, 2, 2, 2, 3, 3, 4].map((id) => id.toString(16).padStart(32, "0")))
+  expect(ids).toEqual([1, 2, 2, 2, 2, 2, 3, 4, 5].map((id) => id.toString(16).padStart(32, "0")))
 })
 
 // A timeout can answer after the command reached the Runtime; any other HTTP refusal comes first.

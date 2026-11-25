@@ -5,6 +5,7 @@ import type { RuntimeActions } from "../runtime-actions"
 export function runtimeActions(): RuntimeActions {
   return {
     createSpace: vi.fn(async () => undefined),
+    discardPendingSpaceCreation: vi.fn(),
     createInvitation: vi.fn(async () => undefined),
     revokeEndpoint: vi.fn(async () => undefined),
     triggerSync: vi.fn(async () => undefined),

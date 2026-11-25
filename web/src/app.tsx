@@ -1,5 +1,11 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRuntimeMutationClient, mutationFailureText } from "./api/mutations"
+import {
+  browserSessionStorage,
+  clearPendingSpaceCreation,
+  type PendingSpaceCreation,
+  readPendingSpaceCreation,
+} from "./api/pending-space"
 import type { ServicesData } from "./api/services"
 import {
   currentWebSession,
@@ -42,10 +48,26 @@ export function App({
   const [syncStatus, setSyncStatus] = useState<
     { readonly endpointId: string; readonly text: string } | undefined
   >()
+  const [pendingSpaceCreation, setPendingSpaceCreation] = useState<
+    PendingSpaceCreation | undefined
+  >()
   const controlled = initialPath !== undefined
   // The sign-in and setup screens show nothing of the Runtime, so nothing is loaded for them.
   const consoleShown = path !== ROUTE_PATHS.login && path !== ROUTE_PATHS.setup
   const displayedRuntime = controlled ? runtime : liveRuntime
+  const runtimeRef = useRef(displayedRuntime)
+  runtimeRef.current = displayedRuntime
+  const endpointId = displayedRuntime?.endpoint.id
+
+  useEffect(() => {
+    if (controlled) return
+    if (session === undefined) {
+      clearPendingSpaceCreation(browserSessionStorage())
+      setPendingSpaceCreation(undefined)
+      return
+    }
+    setPendingSpaceCreation(readPendingSpaceCreation(endpointId, browserSessionStorage()))
+  }, [controlled, endpointId, session])
 
   useEffect(() => {
     if (controlled) {
@@ -80,6 +102,8 @@ export function App({
   const signedOut = useCallback((): void => {
     sessionRef.current = undefined
     setSession(undefined)
+    clearPendingSpaceCreation(browserSessionStorage())
+    setPendingSpaceCreation(undefined)
     forgetSession()
     navigate(ROUTE_PATHS.login)
   }, [forgetSession, navigate])
@@ -106,7 +130,12 @@ export function App({
     if (session === undefined || controller === undefined) return undefined
     const csrfToken = (): string => currentWebSession()?.csrfToken ?? session.csrfToken
     return createRuntimeActions(
-      createRuntimeMutationClient({ csrfToken }),
+      createRuntimeMutationClient({
+        csrfToken,
+        endpointId: () => runtimeRef.current?.endpoint.id,
+        storage: browserSessionStorage(),
+        onPendingSpaceCreation: setPendingSpaceCreation,
+      }),
       () => controller.refresh(),
       () => endSession(session),
     )
@@ -133,6 +162,8 @@ export function App({
       // answer to a request the old one sent, such as its log out, never acts on the new one.
       sessionRef.current = undefined
       setSession(undefined)
+      clearPendingSpaceCreation(browserSessionStorage())
+      setPendingSpaceCreation(undefined)
       const authenticatedSession = await loginAndTouchSession(password)
       forgetSession()
       sessionRef.current = authenticatedSession
@@ -193,6 +224,7 @@ export function App({
     runtime: displayedRuntime,
     services: displayedServices,
     actions,
+    pendingSpaceCreation,
     selectedPeer,
     syncMessage: syncStatus?.endpointId === selectedPeer ? syncStatus?.text : undefined,
     onSelectPeer: setSelectedPeer,

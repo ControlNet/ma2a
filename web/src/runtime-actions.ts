@@ -9,6 +9,7 @@ import { sessionIsGone } from "./api/web-auth"
 
 export type RuntimeActions = {
   readonly createSpace: (name: string) => Promise<void>
+  readonly discardPendingSpaceCreation: () => void
   readonly createInvitation: (spaceId: string, ttlMs: number, outputPath: string) => Promise<void>
   readonly revokeEndpoint: (spaceId: string, endpointId: string) => Promise<void>
   readonly triggerSync: (endpointId: string) => Promise<void>
@@ -44,6 +45,7 @@ export function createRuntimeActions(
   }
   return {
     createSpace: async (name) => void (await mutate(() => client.createSpace(name))),
+    discardPendingSpaceCreation: () => client.discardPendingSpaceCreation(),
     createInvitation: async (spaceId, ttlMs, outputPath) =>
       void (await mutate(() => client.createInvitation(spaceId, ttlMs, outputPath))),
     revokeEndpoint: async (spaceId, endpointId) =>

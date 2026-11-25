@@ -17,6 +17,7 @@ import {
   RequestIdSchema,
   SpaceIdSchema,
 } from "./mutations-schema"
+import { createPendingSpaceTracker, type PendingSpaceCreation } from "./pending-space"
 
 export type {
   MutationControlSyncView,
@@ -77,6 +78,7 @@ export function mutationFailureText(error: unknown, unknown: string, rejected: s
 
 export type RuntimeMutationClient = {
   readonly createSpace: (name: string) => Promise<MutationSpaceView>
+  readonly discardPendingSpaceCreation: () => void
   readonly createInvitation: (
     spaceId: string,
     ttlMs: number,
@@ -96,6 +98,12 @@ type MutationClientOptions = {
   /** Read for every request, so a sign-in in another tab, which replaces it, is picked up. */
   readonly csrfToken: () => string
   readonly requestId?: () => string
+  /** Runtime identity for scoping an unresolved Space creation in tab storage. */
+  readonly endpointId?: () => string | undefined
+  /** Tab storage used to retain an unresolved Space creation across page reloads. */
+  readonly storage?: Storage | undefined
+  /** Called when the unresolved Space creation settles, fails unsettled, or is discarded. */
+  readonly onPendingSpaceCreation?: (pending: PendingSpaceCreation | undefined) => void
 }
 
 function browserRequestId(): string {
@@ -137,32 +145,42 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
   const endpoint = (value: string): EndpointId => EndpointIdSchema.parse(value) as EndpointId
   const space = (value: string): SpaceId => SpaceIdSchema.parse(value) as SpaceId
   // A creation without a definite answer may have committed. Retrying the same name reuses its
-  // request ID, so the Runtime replays that outcome instead of creating a second Space. Only the
-  // Runtime's answer for that ID settles it: an HTTP refusal of a retry says nothing about the
-  // earlier attempt, and `unavailable` means the Runtime is still running it. Reusing an ID the
-  // Runtime never saw is harmless. A creation of another name replaces it.
-  let unsettledCreation: { readonly name: string; readonly requestId: RequestId } | undefined
+  // request ID, so the Runtime replays that outcome instead of creating a second Space. When tab
+  // storage and Runtime identity are provided, the unresolved record also survives a page reload.
+  // Only the Runtime's answer for that ID settles it: an HTTP refusal of a retry says nothing
+  // about the earlier attempt, and `unavailable` means the Runtime is still running it.
+  const pendingSpace = createPendingSpaceTracker({
+    endpointId: options.endpointId,
+    storage: options.storage,
+    onChange: options.onPendingSpaceCreation,
+  })
 
   return {
     createSpace: async (name) => {
-      const requestId = unsettledCreation?.name === name ? unsettledCreation.requestId : id()
-      unsettledCreation = { name, requestId }
-      const settle = (): void => {
-        if (unsettledCreation?.requestId === requestId) unsettledCreation = undefined
-      }
+      const { requestId, reused } = pendingSpace.begin(name, id)
       const result = await mutate("/api/v1/spaces/create", {
         version: LOCAL_API_VERSION,
         operation: "space_create",
         request_id: requestId,
         name,
       }).catch((error: unknown) => {
-        if (error instanceof RuntimeMutationRejectedError && error.code !== "unavailable") settle()
+        const runtimeSettled =
+          error instanceof RuntimeMutationRejectedError && error.code !== "unavailable"
+        if (runtimeSettled || (!reused && !mutationOutcomeUnknown(error))) {
+          pendingSpace.settle(requestId)
+        } else {
+          pendingSpace.markUnsettled(requestId)
+        }
         throw error
       })
-      if (result.type !== "space_created") throw new RuntimeMutationPayloadError()
-      settle()
+      if (result.type !== "space_created") {
+        pendingSpace.markUnsettled(requestId)
+        throw new RuntimeMutationPayloadError()
+      }
+      pendingSpace.settle(requestId)
       return result.payload
     },
+    discardPendingSpaceCreation: () => pendingSpace.discard(),
     createInvitation: async (spaceId, ttlMs, outputPath) => {
       const result = await mutate("/api/v1/spaces/invite", {
         version: LOCAL_API_VERSION,
