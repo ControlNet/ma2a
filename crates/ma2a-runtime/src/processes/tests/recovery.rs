@@ -106,10 +106,11 @@ async fn delete_archives_ended_processes_and_keeps_their_binding() -> TestResult
         manager.delete(stranger, done.id).await,
         Err(ServiceError::UnknownProcess)
     );
-    assert_eq!(
-        manager.delete(Some(harness.creator), done.id).await,
-        Ok(ProcessReply::Deleted)
-    );
+    let deleted = manager.delete(Some(harness.creator), done.id).await?;
+    // The answer is the archive as committed, at the revision it committed.
+    assert_eq!(deleted.value().id, done.id);
+    assert!(deleted.value().is_archived());
+    assert_eq!(deleted.revision(), manager.revision().await?);
     assert!(!std::fs::exists(manager.directory(done.id))?);
     let binding = (harness.creator, request_id(15)?);
     let (retry, _) = manager.create(binding, &start("echo done")?).await?;

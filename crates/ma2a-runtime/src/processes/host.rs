@@ -11,7 +11,7 @@ use ma2a_services::{
     FrameReader, FrameWriter, OperationEnd, OperationReport,
     supervisor::{SupervisorRequest, protocol::ACKNOWLEDGED},
 };
-use ma2a_store::{ProcessArchive, ProcessRecord};
+use ma2a_store::{Committed, ProcessArchive, ProcessRecord};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 
@@ -60,7 +60,10 @@ where
             let ended = ended.map(|record| ProcessReply::Summary(record.summary()));
             answer_effect(writer, ended).await
         }
-        ProcessRequest::Delete(id) => answer_effect(writer, manager.delete(viewer, id).await).await,
+        ProcessRequest::Delete(id) => {
+            let deleted = manager.delete(viewer, id).await;
+            answer_effect(writer, deleted.map(|_| ProcessReply::Deleted)).await
+        }
     }
 }
 
@@ -236,23 +239,26 @@ impl ProcessManager {
     }
 
     /// Archives one terminal Process and removes its output; a tombstone keeps its binding.
+    ///
+    /// Returns the archived record at the revision its archive committed, which no later
+    /// Store write or tombstone pruning changes.
     pub(crate) async fn delete(
         &self,
         viewer: Option<EndpointId>,
         id: ProcessId,
-    ) -> Result<ProcessReply, ServiceError> {
+    ) -> Result<Committed<ProcessRecord>, ServiceError> {
         visible(self.record(id).await?, viewer)?;
         let at_ms = self.now_ms();
         let archived = self
             .store()
             .processes(move |repository| repository.archive_process(id, at_ms))
             .await?
-            .map_err(|_| ServiceError::Unavailable)?
-            .into_value();
-        match archived {
-            ProcessArchive::Archived(_) => {
+            .map_err(|_| ServiceError::Unavailable)?;
+        let revision = archived.revision();
+        match archived.into_value() {
+            ProcessArchive::Archived(record) => {
                 self.remove_directory(id).await;
-                Ok(ProcessReply::Deleted)
+                Ok(Committed::new(revision, *record))
             }
             ProcessArchive::Active => Err(ServiceError::ProcessActive),
             ProcessArchive::Missing => Err(ServiceError::UnknownProcess),
