@@ -26,6 +26,8 @@ mod list;
 mod mapping;
 mod methods;
 mod remote;
+#[cfg(all(test, unix))]
+mod remote_fixture;
 mod rpc;
 mod stream;
 mod time;

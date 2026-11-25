@@ -1,8 +1,8 @@
 //! Remote task paging, artifact references, and the deadline of one remote operation.
 
-use ma2a_core::service::{AgentTaskId, ServiceError};
+use ma2a_core::service::AgentTaskId;
 
-use super::{CALL_DEADLINE, Refusal, bounded, matches_reference, moves_past};
+use super::{matches_reference, moves_past};
 
 const fn id(byte: u8) -> AgentTaskId {
     AgentTaskId::from_bytes([byte; 16])
@@ -38,17 +38,31 @@ fn content_must_be_what_the_artifact_reference_names() {
     assert!(!matches_reference((6, ""), (6, &hash)));
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_target_that_never_answers_fails_as_timed_out() {
-    // Given: a target that never answers.
-    let call = bounded(CALL_DEADLINE, std::future::pending::<Result<(), Refusal>>());
+#[cfg(unix)]
+mod through_the_daemon {
+    use ma2a_core::service::ServiceError;
+    use tokio::time::Instant;
 
-    // When
-    let answered = tokio::time::timeout(CALL_DEADLINE * 2, call).await;
+    use super::{super::CALL_DEADLINE, id};
+    use crate::a2a::{
+        backend::Refusal,
+        remote_fixture::{Daemon, TestResult},
+    };
 
-    // Then
-    assert_eq!(
-        answered,
-        Ok(Err(Refusal::named(ServiceError::TimedOut.name())))
-    );
+    #[tokio::test(start_paused = true)]
+    async fn a_target_that_never_answers_fails_as_timed_out() -> TestResult {
+        // Given: a target whose stream opens and then stays silent.
+        let daemon = Daemon::start("silent", Vec::new())?;
+        let (task, started) = (id(1).to_string(), Instant::now());
+
+        // When
+        let got = super::super::details(&daemon.backend, &daemon.route, &task);
+        let answered = tokio::time::timeout(CALL_DEADLINE * 2, got).await;
+
+        // Then: the operation's own deadline ended it, not the transport's.
+        let timed_out = Refusal::named(ServiceError::TimedOut.name());
+        assert_eq!(answered.ok(), Some(Err(timed_out)));
+        assert_eq!(started.elapsed(), CALL_DEADLINE);
+        Ok(())
+    }
 }
