@@ -3,17 +3,14 @@
 use std::{fmt::Write as _, io::Write as _, path::Path, time::Duration};
 
 use ma2a_core::service::{
-    AgentAccept, AgentCard, AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit,
-    AgentTaskId, MessagePart, MessageRole, OpenBody, ServiceError,
+    AgentAccept, AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit, AgentTaskId,
+    MessagePart, MessageRole, OpenBody, ServiceError,
 };
-use ma2a_runtime::{
-    api::{agent_event_value, agent_task_details_value, agent_task_value},
-    ipc::IpcPaths,
-};
+use ma2a_runtime::{api::agent_event_value, ipc::IpcPaths};
 use ma2a_services::client::{self, ClientError};
 use serde_json::{Value, json};
 
-use super::{READ_DEADLINE, bounded, open, open_as};
+use super::{READ_DEADLINE, agent_view::view, bounded, open, open_as};
 use crate::{
     AppError,
     cli::agents::{AgentCommand, MessageArgs, SubmitArgs, TaskTarget},
@@ -60,30 +57,6 @@ fn named(target: &TaskTarget) -> Result<(AgentId, AgentTaskId), AppError> {
     Ok((agent_id(agent)?, task_id(&target.task)?))
 }
 
-fn card(card: &AgentCard) -> Value {
-    json!({
-        "agent": card.id.as_str(),
-        "description": card.description,
-        "available": card.available,
-        "max_tasks": card.max_tasks,
-    })
-}
-
-fn view(reply: &AgentReply) -> Value {
-    match reply {
-        AgentReply::Cards(cards, next) => json!({
-            "agents": cards.iter().map(card).collect::<Vec<_>>(),
-            "next": next.as_ref().map(AgentId::as_str),
-        }),
-        AgentReply::Summary(summary) => agent_task_value(summary),
-        AgentReply::Details(details) => agent_task_details_value(details),
-        AgentReply::Page(tasks, next) => json!({
-            "tasks": tasks.iter().map(agent_task_value).collect::<Vec<_>>(),
-            "next": next.map(|id| id.to_string()),
-        }),
-    }
-}
-
 pub(crate) async fn run(target: Target<'_>, command: AgentCommand) -> Result<(), AppError> {
     let request = match command {
         AgentCommand::Discover { after } => {
@@ -114,13 +87,15 @@ pub(crate) async fn run(target: Target<'_>, command: AgentCommand) -> Result<(),
             request_id,
         } => {
             let (agent, task) = named(&task)?;
-            let body = OpenBody::Agent(AgentRequest::Send(agent, task, message(&parts)?));
-            return print(&view(&call(target, body, request_id.as_deref()).await?.1));
+            let request = AgentRequest::Send(agent, task, message(&parts)?);
+            return print(&view(
+                &call(target, request, request_id.as_deref()).await?.1,
+            ));
         }
         AgentCommand::Cancel(task) => {
             let (agent, task) = named(&task)?;
-            let body = OpenBody::Agent(AgentRequest::Cancel(agent, task));
-            return print(&view(&call(target, body, None).await?.1));
+            let request = AgentRequest::Cancel(agent, task);
+            return print(&view(&call(target, request, None).await?.1));
         }
         AgentCommand::Artifact {
             target: task,
@@ -138,45 +113,55 @@ pub(crate) async fn run(target: Target<'_>, command: AgentCommand) -> Result<(),
             ));
         }
     };
-    print(&view(&read(target, OpenBody::Agent(request)).await?))
+    print(&view(&read(target, request).await?))
 }
 
 /// Runs one read-only operation, which gives up on a target that does not answer in time.
-async fn read(target: Target<'_>, body: OpenBody) -> Result<AgentReply, AppError> {
+async fn read(target: Target<'_>, request: AgentRequest) -> Result<AgentReply, AppError> {
     bounded(READ_DEADLINE, async {
-        Ok(call(target, body, None).await?.1)
+        Ok(call(target, request, None).await?.1)
     })
     .await
 }
 
+/// Runs one content-free operation; its answer must be the one `request` asked for, never
+/// another task's or another Agent's.
 async fn call(
     target: Target<'_>,
-    body: OpenBody,
+    request: AgentRequest,
     request_id: Option<&str>,
 ) -> Result<(Option<AgentAccept>, AgentReply), AppError> {
+    let body = OpenBody::Agent(request.clone());
     let (mut reader, writer) = open_as(target.0, (target.1, request_id), body).await?;
-    let answer = client::agent::call(&mut reader).await?;
+    let (accept, reply) = client::agent::call(&mut reader).await?;
     drop(writer);
-    Ok(answer)
+    if !client::answer::agent(&request, (accept, &reply)) {
+        return Err(AppError::Protocol(
+            "the target answered another task or operation".to_owned(),
+        ));
+    }
+    Ok((accept, reply))
 }
 
 async fn submit(target: Target<'_>, arguments: SubmitArgs) -> Result<(), AppError> {
     let agent = agent_id(&arguments.agent)?;
     let from = arguments.from_agent.as_deref().map(agent_id).transpose()?;
     let submit = AgentSubmit::new(agent.clone(), message(&arguments.message)?, from);
-    let body = OpenBody::Agent(AgentRequest::Submit(submit));
-    let (accept, reply) = call(target, body, arguments.request_id.as_deref()).await?;
-    let existing = matches!(accept, Some(AgentAccept::Submitted(_, true)));
-    print(&json!({"task": view(&reply), "existing": existing}))?;
-    let AgentReply::Summary(summary) = reply else {
+    let request = AgentRequest::Submit(submit);
+    let (accept, reply) = call(target, request, arguments.request_id.as_deref()).await?;
+    // The answer was checked to be the Summary of the task the submit was bound to.
+    let AgentReply::Summary(summary) = &reply else {
         return Err(AppError::Protocol(
             "the submit answer has no task".to_owned(),
         ));
     };
+    let existing = matches!(accept, Some(AgentAccept::Submitted(_, true)));
+    print(&json!({"task": view(&reply), "existing": existing}))?;
     if arguments.wait {
         follow(target, (agent.clone(), summary.id), None).await?;
-        let body = OpenBody::Agent(AgentRequest::Get(agent, summary.id));
-        print(&view(&read(target, body).await?))?;
+        print(&view(
+            &read(target, AgentRequest::Get(agent, summary.id)).await?,
+        ))?;
     }
     Ok(())
 }

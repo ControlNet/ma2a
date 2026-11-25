@@ -61,20 +61,24 @@ fn summary_view(summary: &AgentTaskSummary) -> TaskView {
 }
 
 impl Call<'_> {
+    /// Runs one content-free operation and answers its reply, which must be the one the
+    /// request asked for: never another task's or another Agent's.
     async fn agent_call(
         &self,
         (endpoint, request): (&str, AgentRequest),
     ) -> Result<AgentReply, ToolError> {
-        let mutation = request.is_mutation();
-        let body = OpenBody::Agent(request);
-        let (mut reader, _writer) = if mutation {
+        let body = OpenBody::Agent(request.clone());
+        let (mut reader, _writer) = if request.is_mutation() {
             self.open(endpoint, body).await?
         } else {
             self.open_read(endpoint, body).await?
         };
-        let (_, reply) = client::agent::call(&mut reader)
+        let (accept, reply) = client::agent::call(&mut reader)
             .await
             .map_err(|error| failed(&error))?;
+        if !client::answer::agent(&request, (accept, &reply)) {
+            return Err(invalid("Agent answer"));
+        }
         Ok(reply)
     }
 

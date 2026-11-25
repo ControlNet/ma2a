@@ -69,8 +69,17 @@ struct Fixture {
     daemon: tokio::task::JoinHandle<()>,
 }
 
+/// The frames a target sends on every stream once it is upgraded.
+type Script = Vec<(ma2a_core::service::FrameKind, Vec<u8>)>;
+
 impl Fixture {
     fn new(label: &str, upgrade: Option<Duration>) -> TestResult<Self> {
+        Self::answering(label, (upgrade, Vec::new()))
+    }
+
+    /// A daemon that upgrades every stream after `upgrade` and sends `script` on it as the
+    /// target, then falls silent.
+    fn answering(label: &str, (upgrade, script): (Option<Duration>, Script)) -> TestResult<Self> {
         let state = TempState::new(label)?;
         let (store, _requests) = mpsc::channel(1);
         let store = StoreClient::new(store);
@@ -93,7 +102,7 @@ impl Fixture {
         let opened = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&opened);
         let daemon = tokio::spawn(async move {
-            let _ended = silent_daemon(&listener, (&counted, upgrade)).await;
+            let _ended = silent_daemon(&listener, (&counted, upgrade), script).await;
         });
         Ok(Self {
             state,
@@ -121,11 +130,12 @@ impl Drop for Fixture {
     }
 }
 
-/// Answers the handshake and takes every `stream_open`, then never sends a frame on it: with
+/// Answers the handshake and takes every `stream_open`, then sends only `script` on it: with
 /// `upgrade`, after upgrading it once that delay passed; without, not even the upgrade reply.
 async fn silent_daemon(
     listener: &ipc::PlatformListener,
     (opened, upgrade): (&AtomicUsize, Option<Duration>),
+    script: Script,
 ) -> TestResult {
     loop {
         let mut stream = ipc::accept(listener).await?;
@@ -145,6 +155,11 @@ async fn silent_daemon(
             opened.fetch_add(1, Ordering::Relaxed);
             upgrade
         };
+        let script = if answer == "handshake" {
+            Vec::new()
+        } else {
+            script.clone()
+        };
         tokio::spawn(async move {
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
@@ -154,6 +169,11 @@ async fn silent_daemon(
                     maximum: api::MAX_LOCAL_RESPONSE_BYTES,
                 };
                 let _written = ipc::write_frame(&mut stream, reply).await;
+                let mut target = ma2a_services::FrameWriter::new(&mut stream);
+                for (kind, payload) in &script {
+                    let _written = target.frame(*kind, payload).await;
+                }
+                let _flushed = target.flush().await;
             }
             let _held = stream;
             std::future::pending::<()>().await;
@@ -450,5 +470,209 @@ async fn a_proxy_connection_still_opening_does_not_hold_the_next_one() -> TestRe
     .await;
     fixture.manager.task_ended(call.task);
     opened.map_err(|_| "the second connection waited for the first to open")?;
+    Ok(())
+}
+
+/// A target that accepts with `accept` and answers `reply`.
+fn agent_answer(
+    accept: ma2a_core::service::AgentAccept,
+    reply: &ma2a_core::service::AgentReply,
+) -> TestResult<Script> {
+    use ma2a_core::service::{AgentReply, FrameKind};
+    Ok(vec![
+        (FrameKind::Accept, accept.encode()?),
+        (
+            FrameKind::Outcome,
+            AgentReply::encode_outcome(&Ok(reply.clone()))?,
+        ),
+    ])
+}
+
+/// A completed task of `agent` on the target.
+fn ended(task: AgentTaskId, agent: &str) -> TestResult<ma2a_core::service::AgentTaskSummary> {
+    let mut summary = ma2a_core::service::AgentTaskSummary::new(
+        (task, AgentId::new(agent)?),
+        (
+            iroh::SecretKey::generate().public().into(),
+            RequestId::random()?,
+        ),
+        1_000,
+    );
+    summary.state = ma2a_core::service::AgentTaskState::Completed;
+    Ok(summary)
+}
+
+fn task_details(task: AgentTaskId, agent: &str) -> TestResult<ma2a_core::service::AgentReply> {
+    use ma2a_core::service::{
+        AgentMessage, AgentReply, AgentTaskDetails, MessagePart, MessageRole,
+    };
+    let input = AgentMessage::new(MessageRole::User, vec![MessagePart::Text("hi".to_owned())])?;
+    let details = AgentTaskDetails::new(ended(task, agent)?, input);
+    Ok(AgentReply::Details(Box::new(details)))
+}
+
+/// Runs one tool against a target answering `script`, and returns its error code, if any.
+async fn answered_code<F, R>(label: &str, script: Script, tool: F) -> TestResult<Option<String>>
+where
+    F: AsyncFnOnce(&Call<'_>) -> Result<R, ma2a_agent::protocol::ToolError>,
+{
+    let fixture = Fixture::answering(label, (Some(Duration::ZERO), script))?;
+    let call = fixture.call()?;
+    let answered = tokio::time::timeout(Duration::from_secs(60), tool(&call)).await?;
+    Ok(answered.err().map(|error| error.code))
+}
+
+#[tokio::test]
+async fn agent_tools_take_only_the_task_they_named() -> TestResult {
+    use ma2a_core::service::{AgentAccept, AgentReply};
+    let (a, b) = (
+        AgentTaskId::from_bytes([1; 16]),
+        AgentTaskId::from_bytes([2; 16]),
+    );
+    let endpoint = target();
+    let named = AgentTaskTarget {
+        endpoint: endpoint.clone(),
+        agent: "helper".to_owned(),
+        task: a.to_string(),
+    };
+    let wait = AgentWait {
+        endpoint: endpoint.clone(),
+        agent: "helper".to_owned(),
+        task: a.to_string(),
+        timeout_ms: Some(1_000),
+    };
+    let admitted = |reply: TestResult<AgentReply>| agent_answer(AgentAccept::Admitted, &reply?);
+
+    // The task named is taken.
+    let own = admitted(task_details(a, "helper"))?;
+    let get = answered_code("own-get", own.clone(), async |call| {
+        call.agent_get(named.clone()).await
+    });
+    assert_eq!(get.await?, None);
+    let waited = answered_code("own-wait", own, async |call| {
+        call.agent_wait(wait.clone()).await
+    });
+    assert_eq!(waited.await?, None);
+
+    // Another task, or the same task of another Agent, is not.
+    for (case, reply) in [
+        ("other-task", task_details(b, "helper")),
+        ("other-agent", task_details(a, "other")),
+    ] {
+        let script = admitted(reply)?;
+        let get = answered_code(case, script.clone(), async |call| {
+            call.agent_get(named.clone()).await
+        });
+        assert_eq!(get.await?.as_deref(), Some("invalid_tool"), "get: {case}");
+        let waited = answered_code(case, script, async |call| {
+            call.agent_wait(wait.clone()).await
+        });
+        assert_eq!(
+            waited.await?.as_deref(),
+            Some("invalid_tool"),
+            "wait: {case}"
+        );
+    }
+
+    // A submit takes only the task its accept bound it to, of the Agent it named.
+    let submit = ma2a_agent::tools::AgentSubmitArgs {
+        endpoint,
+        agent: "helper".to_owned(),
+        message: ma2a_agent::protocol::Message::user_text("hi"),
+    };
+    for (case, bound, agent, code) in [
+        ("submit-own", a, "helper", None),
+        ("submit-other-task", b, "helper", Some("invalid_tool")),
+        ("submit-other-agent", a, "other", Some("invalid_tool")),
+    ] {
+        let reply = AgentReply::Summary(ended(a, agent)?);
+        let script = agent_answer(AgentAccept::Submitted(bound, false), &reply)?;
+        let submitted = answered_code(case, script, async |call| {
+            call.agent_submit(submit.clone()).await
+        });
+        assert_eq!(submitted.await?.as_deref(), code, "{case}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn process_tools_take_only_the_process_they_named() -> TestResult {
+    use ma2a_agent::tools::{ProcessStartArgs, ProcessTerminate};
+    use ma2a_core::service::{
+        FrameKind, LogWindow, ProcessAccept, ProcessDetails, ProcessId, ProcessReply,
+        ProcessSummary,
+    };
+    let (a, b) = (
+        ProcessId::from_bytes([1; 16]),
+        ProcessId::from_bytes([2; 16]),
+    );
+    let process = |id| -> TestResult<ProcessSummary> {
+        Ok(ProcessSummary::new(id, RequestId::random()?, 1_000))
+    };
+    let answer = |accept: ProcessAccept, reply: ProcessReply| -> TestResult<Script> {
+        Ok(vec![
+            (FrameKind::Accept, accept.encode()?),
+            (
+                FrameKind::Outcome,
+                ProcessReply::encode_outcome(&Ok(reply))?,
+            ),
+        ])
+    };
+    let details = |id| -> TestResult<ProcessReply> {
+        let details = ProcessDetails::new(process(id)?, None, LogWindow::new(0, 0));
+        Ok(ProcessReply::Details(Box::new(details)))
+    };
+    let endpoint = target();
+    let inspect = ProcessTarget {
+        endpoint: endpoint.clone(),
+        id: a.to_string(),
+    };
+    let terminate = ProcessTerminate {
+        endpoint: endpoint.clone(),
+        id: a.to_string(),
+        grace_ms: None,
+    };
+    let start = ProcessStartArgs {
+        endpoint,
+        program: "true".to_owned(),
+        args: Vec::new(),
+        cwd: None,
+        env: std::collections::BTreeMap::new(),
+        name: None,
+    };
+
+    let own = answer(ProcessAccept::Admitted, details(a)?)?;
+    let inspected = answered_code("inspect-own", own, async |call| {
+        call.process_inspect(inspect.clone()).await
+    });
+    assert_eq!(inspected.await?, None);
+    for (case, reply) in [
+        ("inspect-other", details(b)?),
+        ("inspect-summary", ProcessReply::Summary(process(a)?)),
+    ] {
+        let script = answer(ProcessAccept::Admitted, reply)?;
+        let inspected = answered_code(case, script, async |call| {
+            call.process_inspect(inspect.clone()).await
+        });
+        assert_eq!(inspected.await?.as_deref(), Some("invalid_tool"), "{case}");
+    }
+    for (case, reply) in [
+        ("terminate-other", ProcessReply::Summary(process(b)?)),
+        ("terminate-details", details(a)?),
+    ] {
+        let script = answer(ProcessAccept::Admitted, reply)?;
+        let terminated = answered_code(case, script, async |call| {
+            call.process_terminate(terminate.clone()).await
+        });
+        assert_eq!(terminated.await?.as_deref(), Some("invalid_tool"), "{case}");
+    }
+    let script = answer(
+        ProcessAccept::Started(b, false),
+        ProcessReply::Summary(process(a)?),
+    )?;
+    let started = answered_code("start-other", script, async |call| {
+        call.process_start(start.clone()).await
+    });
+    assert_eq!(started.await?.as_deref(), Some("invalid_tool"));
     Ok(())
 }

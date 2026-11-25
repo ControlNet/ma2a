@@ -171,7 +171,7 @@ impl Call<'_> {
 
     async fn process(&self, (endpoint, request): (&str, ProcessRequest)) -> Outcome {
         let mutation = request.is_mutation();
-        let body = OpenBody::Process(request);
+        let body = OpenBody::Process(request.clone());
         let answered = async {
             let (mut reader, _writer) = if mutation {
                 self.open(endpoint, body).await?
@@ -187,7 +187,11 @@ impl Call<'_> {
         } else {
             bounded(answered).await
         };
+        // Only the answer this request asked for, never another Process's or operation's.
         match answered? {
+            (accept, reply) if !client::answer::process(&request, (accept, &reply)) => {
+                Err(invalid("Process answer"))
+            }
             (_, ProcessReply::Summary(summary)) => ok(&process_info(&summary)),
             (_, ProcessReply::Details(details)) => ok(&process_info(&details.summary)),
             _ => Err(invalid("Process answer")),

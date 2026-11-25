@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub(crate) mod agent;
+mod agent_view;
 #[cfg(all(test, unix))]
 mod deadline_tests;
 pub(crate) mod files;
@@ -25,6 +26,8 @@ mod hosted_stream;
 mod hosted_view;
 pub(crate) mod process;
 pub(crate) mod proxy;
+#[cfg(all(test, unix))]
+mod reply_tests;
 pub(crate) mod service;
 mod transfer;
 

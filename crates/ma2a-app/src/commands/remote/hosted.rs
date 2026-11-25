@@ -3,11 +3,11 @@
 use std::{io::Write as _, path::Path};
 
 use ma2a_core::service::{
-    DEFAULT_LOG_LIMIT, LogFrom, MAX_TERMINATE_GRACE_MS, OpenBody, ProcessId, ProcessRequest,
-    ProcessSignal, ProcessSpec, ProcessStart,
+    DEFAULT_LOG_LIMIT, LogFrom, MAX_TERMINATE_GRACE_MS, OpenBody, ProcessAccept, ProcessId,
+    ProcessReply, ProcessRequest, ProcessSignal, ProcessSpec, ProcessStart,
 };
 use ma2a_runtime::ipc::IpcPaths;
-use ma2a_services::client::hosted;
+use ma2a_services::client::{answer, hosted};
 use serde_json::{Value, json};
 
 use super::{READ_DEADLINE, bounded, duration_ms, hosted_stream, hosted_view, open, open_as};
@@ -60,8 +60,9 @@ pub(crate) async fn run(
         request,
         ProcessRequest::List(_) | ProcessRequest::Inspect(_)
     );
+    let body = OpenBody::Process(request.clone());
     let answered = async {
-        let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
+        let (mut reader, writer) = open(target.0, target.1, body).await?;
         let answer = hosted::call(&mut reader).await?;
         drop(writer);
         Ok(answer)
@@ -71,17 +72,31 @@ pub(crate) async fn run(
     } else {
         answered.await?
     };
-    print(&hosted_view::reply(accept, &reply))
+    print(&checked(&request, (accept, &reply))?)
+}
+
+/// The view of an answer, which must be the one `request` asked for: never another
+/// Process's or another operation's.
+fn checked(
+    request: &ProcessRequest,
+    (accept, reply): (Option<ProcessAccept>, &ProcessReply),
+) -> Result<Value, AppError> {
+    if !answer::process(request, (accept, reply)) {
+        return Err(AppError::Protocol(
+            "the target answered another Process or operation".to_owned(),
+        ));
+    }
+    Ok(hosted_view::reply(accept, reply))
 }
 
 async fn run_start(target: Target<'_>, arguments: StartArgs) -> Result<(), AppError> {
-    let start = process_start(&arguments)?;
-    let body = OpenBody::Process(ProcessRequest::Start(start));
+    let request = ProcessRequest::Start(process_start(&arguments)?);
+    let body = OpenBody::Process(request.clone());
     let request_id = arguments.request_id.as_deref();
     let (mut reader, writer) = open_as(target.0, (target.1, request_id), body).await?;
     let (accept, reply) = hosted::call(&mut reader).await?;
     drop(writer);
-    print(&hosted_view::reply(accept, &reply))
+    print(&checked(&request, (accept, &reply))?)
 }
 
 /// This Runtime's own Processes through the local API.
