@@ -1,8 +1,8 @@
 //! Caller side of Files v1: one bounded request per stream.
 
 use ma2a_core::service::{
-    Channel, FilesRequest, FilesResult, FrameKind, MAX_DATA_CHUNK_LEN, MAX_SMALL_FILE_LEN,
-    ServiceError,
+    Channel, DirEntry, FilesRequest, FilesResult, FrameKind, MAX_DATA_CHUNK_LEN,
+    MAX_SMALL_FILE_LEN, ServiceError,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -101,8 +101,10 @@ fn answers(request: &FilesRequest, result: &FilesResult, read: usize) -> Result<
         (FilesRequest::Write(_, _, length), FilesResult::Written(size)) => {
             read == 0 && u64::from(*length) == *size
         }
+        (FilesRequest::List(_, after), FilesResult::Listing(entries, next)) => {
+            return continues(after.as_deref(), entries, next.as_deref());
+        }
         (FilesRequest::Stat(_), FilesResult::Metadata(_))
-        | (FilesRequest::List(..), FilesResult::Listing(..))
         | (
             FilesRequest::Mkdir(..) | FilesRequest::Rename(..) | FilesRequest::Remove(..),
             FilesResult::Done,
@@ -116,9 +118,41 @@ fn answers(request: &FilesRequest, result: &FilesResult, read: usize) -> Result<
     }
 }
 
+/// Checks that a listing page continues strictly past the cursor sent: its names in strict byte
+/// order after `after`, and the cursor it names next past `after` and not behind its last name.
+/// A cursor past every name, even on an empty page, names entries the host left out. Any other
+/// page would repeat an entry, or the whole request, on the next page.
+fn continues(
+    after: Option<&str>,
+    entries: &[DirEntry],
+    next: Option<&str>,
+) -> Result<(), ServiceError> {
+    let mut reached = after;
+    for entry in entries {
+        if reached.is_some_and(|reached| entry.name.as_str() <= reached) {
+            return Err(ServiceError::InvalidInput);
+        }
+        reached = Some(&entry.name);
+    }
+    let behind = next.is_some_and(|next| {
+        entries.last().map_or_else(
+            || after.is_some_and(|after| next <= after),
+            |last| next < last.name.as_str(),
+        )
+    });
+    if behind {
+        Err(ServiceError::InvalidInput)
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use ma2a_core::service::{FilesRequest, FilesResult, RemotePath, ServiceError, WriteMode};
+    use ma2a_core::service::{
+        DirEntry, FileKind, FileMetadata, FilesRequest, FilesResult, RemotePath, ServiceError,
+        WriteMode,
+    };
 
     use super::answers;
 
@@ -148,5 +182,42 @@ mod tests {
             Err(ServiceError::InvalidInput)
         );
         Ok(())
+    }
+
+    /// Whether a page listing `listed` and naming `next` answers a list after `after`.
+    fn page(after: Option<&str>, listed: &[&str], next: Option<&str>) -> Result<(), ServiceError> {
+        let path = RemotePath::parse("docs:/").map_err(|_| ServiceError::Internal)?;
+        let request = FilesRequest::List(path, after.map(str::to_owned));
+        let entries = listed
+            .iter()
+            .map(|name| DirEntry::new((*name).to_owned(), FileMetadata::new(FileKind::File, 0)))
+            .collect();
+        answers(
+            &request,
+            &FilesResult::Listing(entries, next.map(str::to_owned)),
+            0,
+        )
+    }
+
+    #[test]
+    fn a_listing_page_must_continue_strictly_past_the_cursor_sent() {
+        assert_eq!(page(None, &["b", "c"], Some("c")), Ok(()));
+        assert_eq!(page(Some("b"), &["c", "d"], Some("d")), Ok(()));
+        assert_eq!(page(Some("b"), &["c"], None), Ok(()));
+        // The cursor may name an entry the host left out, also on an otherwise empty page.
+        assert_eq!(page(Some("b"), &["c"], Some("e")), Ok(()));
+        assert_eq!(page(Some("b"), &[], Some("c")), Ok(()));
+        assert_eq!(page(None, &[], Some("c")), Ok(()));
+        let malformed = Err(ServiceError::InvalidInput);
+        // Entries out of order or repeated, even on a first page.
+        assert_eq!(page(None, &["c", "b"], None), malformed);
+        assert_eq!(page(Some("a"), &["c", "c"], None), malformed);
+        // An entry or a cursor not past the cursor sent, such as the same cursor again.
+        assert_eq!(page(Some("b"), &["b"], None), malformed);
+        assert_eq!(page(Some("b"), &[], Some("b")), malformed);
+        assert_eq!(page(Some("b"), &[], Some("a")), malformed);
+        // A cursor behind the last entry listed would list that entry again on the next page.
+        assert_eq!(page(Some("a"), &["c"], Some("b")), malformed);
+        assert_eq!(page(None, &["c", "d"], Some("c")), malformed);
     }
 }
