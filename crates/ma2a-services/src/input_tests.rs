@@ -76,3 +76,41 @@ async fn a_write_with_only_the_end_of_input_behind_it_waits_for_the_run() {
     assert_eq!(wrote, Wrote::Finished);
     assert!(input.next().await.expect("held").is_none());
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_end_of_input_behind_a_write_lets_a_slow_program_take_it() {
+    let (mut caller, (mut reader, _writer)) = caller();
+    caller.end(Channel::Input).await.expect("end");
+    caller.flush().await.expect("flush");
+    let (done, mut finished) = oneshot::channel::<()>();
+    let taken = async {
+        tokio::time::sleep(INPUT_STALL * 2).await;
+        let _sent = done.send(());
+    };
+
+    let mut input = Input::new(&mut reader);
+    let (wrote, ()) = tokio::join!(
+        input.write(std::future::pending::<()>(), &mut finished),
+        taken
+    );
+
+    assert_eq!(wrote, Wrote::Finished);
+    let held = input.next().await.expect("held").expect("frame");
+    assert_eq!(held.end(), Ok(Channel::Input));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_after_the_end_of_input_stops_a_waiting_write_at_once() {
+    let (mut caller, (mut reader, _writer)) = caller();
+    caller.end(Channel::Input).await.expect("end");
+    caller.frame(FrameKind::Cancel, &[]).await.expect("cancel");
+    let (_done, mut finished) = oneshot::channel::<()>();
+    let started = tokio::time::Instant::now();
+
+    let wrote = Input::new(&mut reader)
+        .write(std::future::pending::<()>(), &mut finished)
+        .await;
+
+    assert_eq!(wrote, Wrote::Stopped(ServiceError::Cancelled));
+    assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+}

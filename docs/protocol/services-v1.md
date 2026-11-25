@@ -203,9 +203,11 @@ A program that cannot start is rejected with `spawn_failed` before any effect. O
 
 `reason` is `completed`, `timed_out`, `cancelled` (caller cancel or stream loss), or `shutdown`.
 While input waits for a child that does not read its stdin, the server still reads the caller's
-next frame, so a `cancel` or stream loss right behind it ends the run at once. Any other frame
-is held until that input is taken, and input still waiting 30 seconds after such a frame
-arrived ends the run as `cancelled`, so a `cancel` further back waits no longer than that.
+next frame, so a `cancel` or stream loss right behind it ends the run at once. The end of input
+is noted and reading goes on past it, so a slow child can still take the input and a later
+`cancel` is seen at once. Any other frame is held until that input is taken, and input still
+waiting 30 seconds after such a frame arrived ends the run as `cancelled`, so a `cancel`
+further back waits no longer than that.
 On Unix the child runs in its own process group, and the whole group is killed at the end of every
 run: after exit (with a 250 ms output drain), on timeout, cancellation, loss, and Runtime shutdown.
 The drain also bounds a caller that is not reading: output it has not taken 250 ms after the exit

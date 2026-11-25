@@ -1,14 +1,15 @@
 //! Caller input written to a program that may stop taking it.
 //!
 //! While one write waits for the program, the caller's next frame is still read, so a `cancel`
-//! or a lost stream right behind input the program does not take is seen at once. Any other
-//! frame is held until the write finishes, and the stream is not read past it; a write still
-//! waiting [`INPUT_STALL`] after that ends the operation as cancelled, so a `cancel` further
-//! back is never stuck behind it for longer.
+//! or a lost stream right behind input the program does not take is seen at once. The end of
+//! input is kept and reading goes on past it, since a caller that ended its input has only a
+//! `cancel` left to send. Any other frame is held until the write finishes, and the stream is
+//! not read past it; a write still waiting [`INPUT_STALL`] after that ends the operation as
+//! cancelled, so a `cancel` further back is never stuck behind it for longer.
 
 use std::time::Duration;
 
-use ma2a_core::service::{FrameKind, ServiceError};
+use ma2a_core::service::{Channel, FrameKind, ServiceError};
 use tokio::{io::AsyncRead, sync::oneshot};
 
 use crate::{Frame, FrameReader};
@@ -16,9 +17,11 @@ use crate::{Frame, FrameReader};
 /// How long a write may still wait once a caller frame is held behind it.
 pub(crate) const INPUT_STALL: Duration = Duration::from_secs(30);
 
-/// The caller's frames, with at most one read ahead while a write was waiting.
+/// The caller's frames, with at most the end of input and one more read ahead while a write
+/// was waiting.
 pub(crate) struct Input<'a, R> {
     reader: &'a mut FrameReader<R>,
+    ended: Option<Frame>,
     ahead: Option<Held>,
 }
 
@@ -43,12 +46,16 @@ impl<'a, R: AsyncRead + Unpin> Input<'a, R> {
     pub(crate) const fn new(reader: &'a mut FrameReader<R>) -> Self {
         Self {
             reader,
+            ended: None,
             ahead: None,
         }
     }
 
     /// The next caller frame: the one held, if any, or the next one read. Cancel-safe.
     pub(crate) async fn next(&mut self) -> Result<Option<Frame>, ServiceError> {
+        if let Some(frame) = self.ended.take() {
+            return Ok(Some(frame));
+        }
         match self.ahead.take() {
             Some(Held::Frame(frame)) => Ok(Some(frame)),
             Some(Held::End) => Ok(None),
@@ -76,6 +83,12 @@ impl<'a, R: AsyncRead + Unpin> Input<'a, R> {
                         return Wrote::Stopped(ServiceError::Cancelled);
                     }
                     Err(error) => return Wrote::Stopped(error),
+                    // Only a `cancel` may follow the end of input, so it does not bound the write.
+                    Ok(Some(frame))
+                        if self.ended.is_none() && frame.end() == Ok(Channel::Input) =>
+                    {
+                        self.ended = Some(frame);
+                    }
                     Ok(Some(frame)) => {
                         stall.as_mut().reset(tokio::time::Instant::now() + INPUT_STALL);
                         self.ahead = Some(Held::Frame(frame));
