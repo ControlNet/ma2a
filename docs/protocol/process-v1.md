@@ -446,7 +446,7 @@ Other codes used by Process:
 | `unauthorized` | authorization of the `open` |
 | `concurrency_exceeded` | stream limits, `start` limits, and the ninth reader |
 | `conflict` | a RequestId reused with a different `start` body |
-| `unavailable` | a Runtime without hosting, the Store, a supervisor that is slow to answer, and a running `attach` or `stdin` stopped by shutdown or withdrawn authorization |
+| `unavailable` | a Runtime without hosting, the Store, a supervisor that is slow to answer or whose connection is lost, and a running `attach` or `stdin` stopped by shutdown or withdrawn authorization |
 | `io` | a log read failure, in `inspect` and `logs`; a Process with no log has an empty window instead |
 | `cancelled` | a detached `stdin` operation |
 | `outcome_unknown` | caller side only |

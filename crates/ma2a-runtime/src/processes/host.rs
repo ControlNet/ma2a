@@ -192,7 +192,9 @@ impl ProcessManager {
             reader.expect().await
         })
         .await;
-        let frame = answered.map_err(|_| ServiceError::Unavailable)??;
+        let frame = answered
+            .map_err(|_| ServiceError::Unavailable)?
+            .map_err(super::attach::lost)?;
         match frame.kind() {
             FrameKind::Outcome if frame.payload() == ACKNOWLEDGED => {
                 Ok(ProcessReply::Summary(record.summary()))

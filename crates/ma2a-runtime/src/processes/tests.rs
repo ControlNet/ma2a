@@ -4,6 +4,7 @@
 mod driver;
 mod logs;
 mod recovery;
+mod supervisor_loss;
 mod watch;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};

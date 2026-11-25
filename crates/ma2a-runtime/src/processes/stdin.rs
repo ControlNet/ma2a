@@ -19,7 +19,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
     ProcessManager,
-    attach::{CALLER_STALL, Caller, Scope},
+    attach::{CALLER_STALL, Caller, Scope, lost},
     host::{finish, refuse, write_accept},
 };
 
@@ -58,7 +58,7 @@ impl ProcessManager {
             let early = loop {
                 let frame = tokio::select! {
                     frame = reader.next() => frame?.ok_or(ServiceError::Cancelled)?,
-                    answer = &mut answer => break Some(answer?),
+                    answer = &mut answer => break Some(answer.map_err(lost)?),
                 };
                 match frame.kind() {
                     FrameKind::Data => {
@@ -68,9 +68,9 @@ impl ProcessManager {
                         let write = to_supervisor.data(DataChannel::Input, bytes);
                         tokio::select! {
                             biased;
-                            answer = &mut answer => break Some(answer?),
+                            answer = &mut answer => break Some(answer.map_err(lost)?),
                             written = tokio::time::timeout(CALLER_STALL, write) => {
-                                written.map_err(|_| ServiceError::TimedOut)??;
+                                written.map_err(|_| ServiceError::TimedOut)?.map_err(lost)?;
                             }
                         }
                     }
@@ -86,7 +86,7 @@ impl ProcessManager {
                 // supervisor's answer behind it share one stall bound.
                 let ended = async {
                     let end = async {
-                        to_supervisor.end(DataChannel::Input).await?;
+                        to_supervisor.end(DataChannel::Input).await.map_err(lost)?;
                         std::future::pending().await
                     };
                     match tokio::time::timeout(CALLER_STALL, end).await {
@@ -96,7 +96,7 @@ impl ProcessManager {
                 };
                 tokio::select! {
                     biased;
-                    answer = &mut answer => answer?,
+                    answer = &mut answer => answer.map_err(lost)?,
                     error = ended => return Err(error),
                     error = client_cancelled(reader) => return Err(error),
                 }

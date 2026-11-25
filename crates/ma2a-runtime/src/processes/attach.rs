@@ -36,6 +36,12 @@ pub(super) const CALLER_STALL: std::time::Duration = std::time::Duration::from_s
 /// Longest wait for the supervisor's report once the caller detached.
 const DETACH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Maps a failed supervisor connection, lost or answering malformed frames, to `unavailable`:
+/// it is this Runtime's failure, and never a cancel by the caller.
+pub(super) const fn lost(_: ServiceError) -> ServiceError {
+    ServiceError::Unavailable
+}
+
 /// Who asks (`None` is the local operator) and what ends the operation early.
 pub(super) type Scope<'a> = (Option<EndpointId>, &'a CancellationToken);
 
@@ -85,8 +91,11 @@ impl ProcessManager {
                 .connect(&credentials)
                 .await
                 .map_err(|_| ServiceError::Unavailable)?;
-            writer.frame(FrameKind::Open, &request.to_bytes()).await?;
-            let frame = reader.expect().await?;
+            writer
+                .frame(FrameKind::Open, &request.to_bytes())
+                .await
+                .map_err(lost)?;
+            let frame = reader.expect().await.map_err(lost)?;
             Ok::<_, ServiceError>((reader, writer, frame))
         })
         .await
@@ -182,10 +191,10 @@ where
     let reported = {
         let downstream = async {
             loop {
-                let frame = from_supervisor.expect().await?;
+                let frame = from_supervisor.expect().await.map_err(lost)?;
                 match frame.kind() {
                     FrameKind::Data => {
-                        let (channel, bytes) = frame.data()?;
+                        let (channel, bytes) = frame.data().map_err(lost)?;
                         tokio::time::timeout(CALLER_STALL, writer.data(channel, bytes))
                             .await
                             .map_err(|_| ServiceError::TimedOut)??;
