@@ -368,8 +368,9 @@ daemon:
 | missing source | `not_found` |
 | name already used by the task, or a 17th artifact | `conflict` |
 | task already terminal | `task_ended` |
-| invalid name or media type | `invalid_input` |
+| invalid name or media type, checked before anything is copied | `invalid_input` |
 | source that is not a regular file, or a workspace path that escapes | `invalid_tool` |
+| any other failure to read the source or write the blob directory | `internal` |
 
 The media type defaults to `application/octet-stream`.
 
@@ -402,7 +403,8 @@ existing `FILE` is never overwritten and a concurrent download to the same `FILE
 hashing it. A blob of that hash that is already stored as a regular file, and still holds that
 size and hash, is kept untouched and the copy is discarded, so the blob's content identity never
 changes and a resumed download always continues. Otherwise, including when the stored blob was
-damaged or is a link, which a download never follows, the copy is renamed to the blob.
+damaged, cannot be read, or is a link, which a download never follows, the copy is renamed to the
+blob.
 
 **Collection.** Every 60 s, after expired tasks are removed, every file in the blob directory that
 no retained task references and that is at least 10 minutes old is deleted. Collection and the

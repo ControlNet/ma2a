@@ -1,4 +1,10 @@
-use super::{hex, open_regular, place_blob, stage_blob};
+use std::sync::Arc;
+
+use ma2a_core::service::{AgentTaskId, ServiceError};
+use tokio_util::sync::CancellationToken;
+
+use super::{AgentManager, hex, open_regular, place_blob, stage_blob};
+use crate::{clock::SystemClock, processes::ProcessManager, store::StoreClient};
 
 #[test]
 fn publishing_stored_content_again_keeps_the_blob_untouched()
@@ -95,5 +101,86 @@ fn an_unreadable_blob_is_replaced_by_the_published_copy() -> Result<(), Box<dyn 
     placed?;
     assert_eq!(content?, b"the same content");
     assert_eq!(left, 1, "the staging file is gone");
+    Ok(())
+}
+
+/// An Agent manager over a state directory whose Store never answers.
+fn storeless(dir: &std::path::Path) -> AgentManager {
+    let (store, _requests) = tokio::sync::mpsc::channel(1);
+    let store = StoreClient::new(store);
+    let local = iroh::SecretKey::generate().public().into();
+    let shutdown = CancellationToken::new();
+    let processes = ProcessManager::new(
+        (local, store.clone(), Arc::new(SystemClock)),
+        (dir, None),
+        shutdown.clone(),
+    );
+    AgentManager::new(
+        (local, store, Arc::new(SystemClock)),
+        (dir, processes),
+        shutdown,
+    )
+}
+
+#[tokio::test]
+async fn a_publication_with_an_invalid_name_copies_nothing()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Given
+    let mut nonce = [0_u8; 8];
+    getrandom::fill(&mut nonce)?;
+    let dir = std::env::temp_dir().join(format!("ma2a-publish-name-{}", hex(&nonce)));
+    std::fs::create_dir_all(&dir)?;
+    let source = dir.join("report.txt");
+    std::fs::write(&source, b"some content")?;
+    let manager = storeless(&dir);
+
+    // When
+    let file = open_regular(&source)?;
+    let published = manager
+        .publish(
+            (AgentTaskId::random()?, "c1"),
+            (".hidden", file, "text/plain"),
+        )
+        .await;
+
+    // Then: refused before a byte was copied into the blob store.
+    let created = manager.blobs().exists();
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(published.err(), Some(ServiceError::InvalidInput));
+    assert!(!created, "the blob store was touched");
+    Ok(())
+}
+
+/// A blob store this Runtime cannot write is its own failure, not the Agent's input.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_blob_store_that_cannot_be_written_is_no_invalid_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    // Given
+    let mut nonce = [0_u8; 8];
+    getrandom::fill(&mut nonce)?;
+    let dir = std::env::temp_dir().join(format!("ma2a-publish-io-{}", hex(&nonce)));
+    std::fs::create_dir_all(&dir)?;
+    let source = dir.join("report.txt");
+    std::fs::write(&source, b"some content")?;
+    let manager = storeless(&dir);
+    let blobs = manager.blobs();
+    std::fs::create_dir_all(&blobs)?;
+    std::fs::set_permissions(&blobs, std::fs::Permissions::from_mode(0o500))?;
+
+    // When
+    let file = open_regular(&source)?;
+    let published = manager
+        .publish(
+            (AgentTaskId::random()?, "c1"),
+            ("report.txt", file, "text/plain"),
+        )
+        .await;
+
+    // Then
+    std::fs::set_permissions(&blobs, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(published.err(), Some(ServiceError::Internal));
     Ok(())
 }

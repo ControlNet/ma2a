@@ -133,6 +133,9 @@ impl AgentManager {
         (task, call): (AgentTaskId, &str),
         (name, source, media_type): (&str, std::fs::File, &str),
     ) -> Result<ArtifactRef, ServiceError> {
+        // The name and media type are checked before a byte is copied.
+        ArtifactRef::new((name, media_type), (0, [0; 32]))
+            .map_err(|_| ServiceError::InvalidInput)?;
         let blobs = self.blobs();
         let staged = tokio::task::spawn_blocking(move || stage_blob(source, &blobs))
             .await
@@ -140,13 +143,10 @@ impl AgentManager {
         let (size, hash, staging) = staged.map_err(|error| match error.kind() {
             io::ErrorKind::FileTooLarge => ServiceError::TooLarge,
             io::ErrorKind::NotFound => ServiceError::NotFound,
-            _ => ServiceError::InvalidInput,
+            _ => ServiceError::Internal,
         })?;
-        let artifact = ArtifactRef::new((name, media_type), (size, hash));
-        let Ok(artifact) = artifact else {
-            let _removed = tokio::fs::remove_file(&staging).await;
-            return Err(ServiceError::InvalidInput);
-        };
+        let artifact = ArtifactRef::new((name, media_type), (size, hash))
+            .map_err(|_| ServiceError::Internal)?;
         // Collection waits until the blob is placed and referenced, so a blob kept as
         // already stored cannot be collected before this task references it.
         let _placing = self.0.blob_lock.lock().await;
