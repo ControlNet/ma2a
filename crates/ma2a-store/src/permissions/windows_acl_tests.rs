@@ -30,13 +30,16 @@ fn only_full_control_for_the_user_and_system_counts_as_private()
     assert!(validate_private_file(&path, "test").is_err());
     apply_windows_acl(&path, PathKind::File)?;
     assert!(validate_private_file(&path, "test").is_ok());
-    // Partial rights for the user, and a missing SYSTEM rule, are refused.
-    set_rules(&path, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, true)?;
-    assert!(validate_private_file(&path, "test").is_err());
+    // A missing SYSTEM rule, and partial rights for the user, are refused. Partial rights come
+    // last: they take away the right to change the owner again, and without the backup and
+    // restore privileges nothing can rewrite the rules after them. The temporary directory
+    // still lets the user delete the file.
     set_rules(&path, FILE_ALL_ACCESS, false)?;
     assert!(validate_private_file(&path, "test").is_err());
     set_rules(&path, FILE_ALL_ACCESS, true)?;
     assert!(validate_private_file(&path, "test").is_ok());
+    set_rules(&path, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, true)?;
+    assert!(validate_private_file(&path, "test").is_err());
     std::fs::remove_file(&path)?;
     Ok(())
 }
