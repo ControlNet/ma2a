@@ -1,10 +1,10 @@
-//! Iroh-observed relay state: bounds on new observations, and replays that change nothing.
+//! Relay state: bounds on new URLs, and observation replays that change nothing.
 
 #[path = "common/support.rs"]
 mod support;
 
 use ma2a_core::MAX_RELAY_URL_LEN;
-use ma2a_store::{RelayObservation, Repository, StoreConfig};
+use ma2a_store::{RelayConfiguration, RelayObservation, Repository, StoreConfig};
 use rusqlite::Connection;
 use support::{TempState, TestResult};
 
@@ -88,5 +88,34 @@ fn replaying_the_same_observations_in_any_order_keeps_the_revision() -> TestResu
     assert_eq!(same, revision);
     assert_eq!(swapped, revision);
     assert_eq!(changed, revision + 1);
+    Ok(())
+}
+
+#[test]
+fn a_relay_configuration_with_an_overlong_url_is_refused() -> TestResult {
+    // Given
+    let state = TempState::new("relay-configuration-refused")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let revision = repository.revision()?;
+    let public = RelayConfiguration {
+        public_fallback_enabled: true,
+        public_relay_urls: vec![overlong_url()],
+        ..repository.relay_configuration()?
+    };
+    let private = RelayConfiguration {
+        private_relay_url: Some(overlong_url()),
+        ..repository.relay_configuration()?
+    };
+
+    // When
+    let public = repository.set_relay_configuration(&public);
+    let private = repository.set_relay_configuration(&private);
+
+    // Then
+    assert!(public.is_err());
+    assert!(private.is_err());
+    assert_eq!(repository.revision()?, revision);
+    assert!(!repository.relay_configuration()?.public_fallback_enabled);
     Ok(())
 }

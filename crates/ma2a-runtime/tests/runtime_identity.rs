@@ -209,6 +209,36 @@ async fn stored_public_private_identity_mismatch_is_rejected() -> TestResult {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stored_relay_url_the_runtime_now_refuses_does_not_stop_startup() -> TestResult {
+    // Given: an enabled public relay fallback whose URL is longer than the bound, written
+    // before the bound existed.
+    let state = TempState::new("overlong-relay")?;
+    let config = StoreConfig::new(state.path());
+    drop(Repository::open(&config)?);
+    let overlong = format!("https://relay.invalid/{}", "a".repeat(512));
+    let connection = Connection::open(config.database_path())?;
+    connection.execute(
+        "UPDATE relay_configuration SET public_fallback_enabled = 1, public_relay_url = ?1",
+        [&overlong],
+    )?;
+    connection.execute(
+        "INSERT INTO relay_public_fallback_urls(position, relay_url) VALUES (0, ?1)",
+        [&overlong],
+    )?;
+    drop(connection);
+
+    // When: the Runtime starts, twice.
+    Runtime::start(config.clone()).await?.shutdown().await?;
+    Runtime::start(config.clone()).await?.shutdown().await?;
+
+    // Then: the fallback the Runtime cannot use is switched off rather than kept.
+    let configuration = Repository::open(&config)?.relay_configuration()?;
+    assert!(!configuration.public_fallback_enabled);
+    assert!(configuration.public_relay_urls.is_empty());
+    Ok(())
+}
+
 async fn start_error(config: StoreConfig) -> TestResultValue<RuntimeErrorCode> {
     match Runtime::start(config).await {
         Ok(runtime) => {

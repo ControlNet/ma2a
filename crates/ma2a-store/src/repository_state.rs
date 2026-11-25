@@ -176,11 +176,17 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when relay configuration cannot be committed.
+    /// Returns [`StoreError`] when a relay URL is over the bound or relay configuration cannot be
+    /// committed.
     pub fn set_relay_configuration(
         &mut self,
         configuration: &RelayConfiguration,
     ) -> Result<u64, StoreError> {
+        configuration
+            .public_relay_urls
+            .iter()
+            .chain(&configuration.private_relay_url)
+            .try_for_each(|url| crate::relay_state::bounded(url))?;
         let mut normalized = configuration.clone();
         normalized.served_spaces.sort_unstable();
         let configuration = &normalized;

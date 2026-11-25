@@ -73,4 +73,62 @@ impl StoreBackend {
             .replace_relay_observations(observations)
             .map_err(Into::into)
     }
+
+    /// Switches off each part of the stored relay configuration this Runtime cannot use, such
+    /// as one whose URL a later version refuses, so that it cannot stop the Runtime from
+    /// starting. The operator configures that relay again.
+    pub(super) fn drop_unusable_relay_configuration(&mut self) -> Result<(), RuntimeError> {
+        let stored = self.repository.relay_configuration()?;
+        let usable = usable_relay_configuration(&stored);
+        if usable.public_fallback_enabled != stored.public_fallback_enabled {
+            eprintln!("stored public relay fallback cannot be used; it is switched off");
+        }
+        if usable.private_provider_enabled != stored.private_provider_enabled {
+            eprintln!("stored private relay provider cannot be used; it is switched off");
+        }
+        if usable != stored {
+            self.repository.set_relay_configuration(&usable)?;
+        }
+        Ok(())
+    }
 }
+
+/// `stored` with each of its two independent parts, the public fallback and the private
+/// provider, kept only if the Runtime can use it.
+fn usable_relay_configuration(
+    stored: &ma2a_store::RelayConfiguration,
+) -> ma2a_store::RelayConfiguration {
+    let usable = |configuration: &ma2a_store::RelayConfiguration| {
+        ma2a_net::RuntimeRelayConfiguration::try_from(configuration.clone()).is_ok()
+    };
+    let mut kept = stored.clone();
+    let public_only = ma2a_store::RelayConfiguration {
+        private_provider_enabled: false,
+        listener_address: None,
+        private_relay_url: None,
+        served_spaces: Vec::new(),
+        transport: None,
+        ..stored.clone()
+    };
+    if !usable(&public_only) {
+        kept.public_fallback_enabled = false;
+        kept.public_relay_urls.clear();
+    }
+    let private_only = ma2a_store::RelayConfiguration {
+        public_fallback_enabled: false,
+        public_relay_urls: Vec::new(),
+        ..stored.clone()
+    };
+    if !usable(&private_only) {
+        kept.private_provider_enabled = false;
+        kept.listener_address = None;
+        kept.private_relay_url = None;
+        kept.served_spaces.clear();
+        kept.transport = None;
+    }
+    kept
+}
+
+#[cfg(test)]
+#[path = "relay_state_tests.rs"]
+mod tests;

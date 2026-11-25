@@ -16,7 +16,10 @@ Parsing ends a bare origin with `/`, so `https://relay.example` counts one byte 
 written. Any relay an Endpoint uses can become its home relay, and its signed address record
 carries that URL with the same bound. A private relay URL is also signed into the advertisement
 every member of a served Space receives, so credentials in it would reach all of them. The local
-API refuses such a URL as `invalid_input` before the request runs.
+API refuses such a URL as `invalid_input` before the request runs. If the stored configuration
+holds a public fallback or private provider the Runtime can no longer use, for example one saved
+by an earlier build with a longer URL, the Runtime switches that part off when it starts, says so
+on standard error, and starts without it; configure it again to restore it.
 
 Admission uses the Endpoint ID authenticated by the Iroh relay handshake. Effective served Spaces
 are the configured Spaces whose policy allows private relay providers and in which the hosting
