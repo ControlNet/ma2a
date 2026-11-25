@@ -130,9 +130,12 @@ if command -v python3 >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
   win_incomplete="$temporary/incomplete-x86_64-pc-windows-msvc.zip"
   win_rooted="$temporary/rooted-x86_64-pc-windows-msvc.zip"
   win_rooted_dir="$temporary/rooted-dir-x86_64-pc-windows-msvc.zip"
+  win_link="$temporary/link-x86_64-pc-windows-msvc.zip"
+  win_fifo="$temporary/fifo-x86_64-pc-windows-msvc.zip"
+  win_dir_binary="$temporary/dir-binary-x86_64-pc-windows-msvc.zip"
   python3 - "$win_flat" "$win_mixed" "$win_empty_dir" "$win_incomplete" "$win_rooted" \
-    "$win_rooted_dir" <<'PY'
-import sys, zipfile
+    "$win_rooted_dir" "$win_link" "$win_fifo" "$win_dir_binary" <<'PY'
+import stat, sys, zipfile
 files = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "README.md", "ma2a.exe", "quickstart.md")
 with zipfile.ZipFile(sys.argv[1], "w") as zf:
     for name in files:
@@ -155,14 +158,24 @@ for path, stray in ((sys.argv[5], False), (sys.argv[6], True)):
             zf.writestr("ma2a/" + name, "x")
         if stray:
             zf.writestr("ma2a/stray/", "")
+# The binary's entry is a link, a pipe, or a directory whose name has no trailing slash.
+for path, kind in ((sys.argv[7], stat.S_IFLNK), (sys.argv[8], stat.S_IFIFO), (sys.argv[9], stat.S_IFDIR)):
+    with zipfile.ZipFile(path, "w") as zf:
+        for name in files:
+            info = zipfile.ZipInfo("ma2a/" + name)
+            if name == "ma2a.exe":
+                info.create_system = 3
+                info.external_attr = (kind | 0o755) << 16
+            zf.writestr(info, "x")
 PY
   for z in "$win_flat" "$win_mixed" "$win_empty_dir" "$win_incomplete" "$win_rooted" \
-    "$win_rooted_dir"; do
+    "$win_rooted_dir" "$win_link" "$win_fifo" "$win_dir_binary"; do
     printf '%s *%s\n' "$(hash_file "$z")" "$(basename "$z")" > "${z}.sha256"
   done
   ./scripts/validate-release.sh "$win_flat" x86_64-pc-windows-msvc >/dev/null
   ./scripts/validate-release.sh "$win_rooted" x86_64-pc-windows-msvc >/dev/null
-  for bad in "$win_mixed" "$win_empty_dir" "$win_incomplete" "$win_rooted_dir"; do
+  for bad in "$win_mixed" "$win_empty_dir" "$win_incomplete" "$win_rooted_dir" "$win_link" \
+    "$win_fifo" "$win_dir_binary"; do
     if ./scripts/validate-release.sh "$bad" x86_64-pc-windows-msvc >/dev/null 2>&1; then
       printf 'invalid Windows zip unexpectedly passed validation: %s\n' "$bad" >&2
       exit 1
@@ -190,6 +203,23 @@ if ./scripts/validate-release.sh "$temporary/rooted-dir-x86_64-unknown-linux-gnu
   printf 'archive with an extra directory under its top-level directory unexpectedly passed\n' >&2
   exit 1
 fi
+
+# A link in a .tar.xz could stand in for the binary, whether symbolic or hard.
+for link in symbolic hard; do
+  linked="$temporary/$link-link/ma2a-0.1.0"
+  mkdir -p "$linked"
+  for name in LICENSE-APACHE LICENSE-MIT NOTICE README.md quickstart.md; do
+    printf 'x' > "$linked/$name"
+  done
+  if [[ "$link" == symbolic ]]; then ln -s README.md "$linked/ma2a"; else ln "$linked/README.md" "$linked/ma2a"; fi
+  archived="$temporary/$link-link-x86_64-unknown-linux-gnu.tar.xz"
+  tar -cJf "$archived" -C "$temporary/$link-link" ma2a-0.1.0
+  printf '%s *%s\n' "$(hash_file "$archived")" "$(basename "$archived")" > "${archived}.sha256"
+  if ./scripts/validate-release.sh "$archived" x86_64-unknown-linux-gnu >/dev/null 2>&1; then
+    printf 'archive with a %s link unexpectedly passed validation\n' "$link" >&2
+    exit 1
+  fi
+done
 
 # Prefix matching must be literal, never a regex where '.' matches arbitrary characters.
 mkdir -p "$temporary/dot-prefix/ma2a-0.1.0" "$temporary/dot-prefix/ma2a-0X1X0"

@@ -13,6 +13,7 @@ temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 all_entries="$temporary/all-entries"
 entries="$temporary/entries"
+types="$temporary/types"
 expected="$temporary/expected"
 
 [[ -f "$archive" ]] || { printf 'archive not found: %s\n' "$archive" >&2; exit 1; }
@@ -23,27 +24,35 @@ case "$target" in
     [[ "$archive" == *.zip ]] || { printf 'Windows target requires .zip archive\n' >&2; exit 1; }
     binary=ma2a.exe
     unzip -Z1 "$archive" | tr -d '\r' > "$all_entries"
-    # Every entry is a plain file or directory: a link could stand in for the binary.
-    if unzip -Z "$archive" | grep -q '^l'; then
-      printf 'archive contains a symbolic link\n' >&2
-      exit 1
-    fi
+    # The long listing has two header lines and one totals line around one line per entry.
+    unzip -Z "$archive" | sed '1,2d;$d' | cut -c1 > "$types"
     ;;
   *-apple-darwin|*-unknown-linux-gnu)
     [[ "$archive" == *.tar.xz ]] || { printf 'Unix target requires .tar.xz archive\n' >&2; exit 1; }
     binary=ma2a
     tar -tJf "$archive" | tr -d '\r' > "$all_entries"
-    # Every entry is a plain file or directory: a link could stand in for the binary.
-    if tar -tvJf "$archive" | cut -c1 | grep -qv '^[-d]$'; then
-      printf 'archive contains an entry that is neither a file nor a directory\n' >&2
-      exit 1
-    fi
+    tar -tvJf "$archive" | cut -c1 > "$types"
     ;;
   *)
     printf 'unknown release target: %s\n' "$target" >&2
     exit 2
     ;;
 esac
+
+# Every entry is a plain file, or a directory whose name ends in '/': a link, a pipe, a device,
+# or a directory named like a file could stand in for the binary. A zip entry made on Unix with
+# no file type bits lists as '?' and unpacks as a plain file. The listings are read from files to
+# the end, so a command that fails is never hidden by a reader that stopped early.
+if [[ $(wc -l < "$types") -ne $(wc -l < "$all_entries") ]] ||
+  ! paste "$types" "$all_entries" | awk -F '\t' '
+    { name = substr($0, 3) }
+    name == "" || !((($1 == "-" || $1 == "?") && name !~ /\/$/) || ($1 == "d" && name ~ /\/$/)) {
+      bad = 1
+    }
+    END { exit bad }'; then
+  printf 'archive contains an entry that is neither a file nor a directory\n' >&2
+  exit 1
+fi
 
 strip_single_prefix() {
   local prefix
