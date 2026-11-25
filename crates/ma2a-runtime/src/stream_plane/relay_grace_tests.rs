@@ -97,3 +97,18 @@ async fn an_accept_the_client_does_not_take_is_given_up_after_the_final_write_gr
     );
     assert_eq!(started.elapsed(), super::FINAL_WRITE_GRACE);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_the_target_never_takes_ends_the_relay_without_a_second_grace() {
+    // Given: a target that reads nothing, through a pipe with no room.
+    let (client, (_target_reader, _target_writer), task) = start_with(1);
+
+    // When: the client disappears, so the relay tries to cancel the target.
+    let started = tokio::time::Instant::now();
+    drop(client);
+    let relayed = task.await.expect("relay");
+
+    // Then: the grace spent on the undelivered cancel is the whole wait.
+    assert_eq!(started.elapsed(), super::CANCEL_GRACE);
+    assert_eq!(relayed.terminal, Terminal::Lost);
+}

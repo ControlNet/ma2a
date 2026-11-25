@@ -175,7 +175,11 @@ where
         tokio::select! {
             biased;
             terminal = &mut downstream => break terminal,
-            () = &mut upstream, if !cancelling => {
+            wait = &mut upstream, if !cancelling => {
+                // A target that took no write within its bound has used up the grace already.
+                if !wait {
+                    break writing.terminal();
+                }
                 cancelling = true;
                 grace.as_mut().reset(tokio::time::Instant::now() + CANCEL_GRACE);
             }
@@ -191,11 +195,13 @@ where
 }
 
 /// Client → target until the client cancels, breaks the contract, or disappears; each of
-/// those leaves the target cancelled. Returning starts the cancel grace.
+/// those leaves the target cancelled. Returning starts the cancel grace, unless it returns
+/// `false`: a write toward the target ran out of its bound, which already was the wait.
 async fn upstream<CR, TW>(
     (client_reader, target_writer): (&mut FrameReader<CR>, &mut FrameWriter<TW>),
     shared: &Shared,
-) where
+) -> bool
+where
     CR: AsyncRead + Unpin,
     TW: AsyncWrite + Unpin,
 {
@@ -208,10 +214,12 @@ async fn upstream<CR, TW>(
         match frame {
             Some(Ok(Some(frame))) if from_client(frame.kind()) => {
                 Shared::count(&shared.to_target, &frame);
-                if forward(target_writer, &frame, FORWARD_STALL).await.is_err()
-                    || frame.kind() == FrameKind::Cancel
-                {
-                    return;
+                match forward(target_writer, &frame, FORWARD_STALL).await {
+                    Err(ServiceError::TimedOut) => return false,
+                    // A target that stopped reading may have ended; its terminal can follow.
+                    Err(_) => return true,
+                    Ok(()) if frame.kind() == FrameKind::Cancel => return true,
+                    Ok(()) => {}
                 }
             }
             other => {
@@ -224,8 +232,7 @@ async fn upstream<CR, TW>(
                     target_writer.frame(FrameKind::Cancel, &[]).await?;
                     target_writer.flush().await
                 };
-                let _cancelled = tokio::time::timeout(CANCEL_GRACE, cancel).await;
-                return;
+                return tokio::time::timeout(CANCEL_GRACE, cancel).await.is_ok();
             }
         }
     }
