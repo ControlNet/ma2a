@@ -32,6 +32,8 @@ mod pending_replay;
 mod process_delete;
 #[path = "server_tests/services.rs"]
 mod services;
+#[path = "server_tests/space_leave.rs"]
+mod space_leave;
 #[path = "server_tests/stream_plane.rs"]
 mod stream_plane;
 #[path = "server_tests/support.rs"]

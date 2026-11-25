@@ -101,7 +101,7 @@ impl Actor {
                 .map_err(|_| SpaceDepartureError::internal())?,
         );
         if !self.departing.insert(space_id) {
-            return Err(SpaceDepartureError::rejected());
+            return Err(SpaceDepartureError::in_flight());
         }
         Ok(owner_addr)
     }

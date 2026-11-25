@@ -133,7 +133,7 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
     let command = api::decode_command(input)?;
     // Only durable mutations (commands carrying a RequestId) serialize on the replay lock;
     // read-only queries, handshake, and UI lifecycle never queue behind slow mutations.
-    let _replay = if command.request_id().is_some() {
+    let mut replay = if command.request_id().is_some() {
         Some(context.replay.lock().await)
     } else {
         None
@@ -142,40 +142,16 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
         Some(request_id) => Some((request_id, api::command_fingerprint(&command)?)),
         None => None,
     };
-    if let Some((request_id, fingerprint)) = fingerprint {
-        if let Some(entry) = context.handle.mutation_replay(request_id).await? {
-            match entry {
-                ma2a_store::MutationReplayState::Pending(found) if found == fingerprint => {
-                    return Ok((
-                        api::encode_error(api::ApiError::new(ProtocolError::UNAVAILABLE))?,
-                        false,
-                    ));
-                }
-                ma2a_store::MutationReplayState::Completed(entry)
-                    if entry.fingerprint() == fingerprint =>
-                {
-                    let response = entry.response().to_vec();
-                    return Ok((response, false));
-                }
-                ma2a_store::MutationReplayState::Pending(_)
-                | ma2a_store::MutationReplayState::Completed(_) => {
-                    return Ok((
-                        api::encode_error(api::ApiError::new(ProtocolError::CONFLICT))?,
-                        false,
-                    ));
-                }
-                _ => {
-                    return Ok((
-                        api::encode_error(api::ApiError::new(ProtocolError::UNAVAILABLE))?,
-                        false,
-                    ));
-                }
-            }
+    if let Some(request) = fingerprint {
+        if let Some(answer) = replayed_or_reserved(context, request).await? {
+            return Ok((answer, false));
         }
-        context
-            .handle
-            .reserve_mutation_replay(request_id, fingerprint)
-            .await?;
+        // Leaving a Space and redeeming an invitation wait on another Endpoint for up to thirty
+        // seconds. They keep their reservation, which already refuses the same request as
+        // pending, but give up the lock, so every other mutation is still answered meanwhile.
+        if matches!(command.operation(), "space_leave" | "space_redeem") {
+            drop(replay.take());
+        }
     }
     let status = context.handle.status().await?;
     let (result, response_revision) = match fingerprint {
@@ -244,4 +220,31 @@ fn encode_stamped_snapshot_response(
     );
     let encoded = serde_json::to_vec(&value).map_err(|_| IpcError::InvalidFrame)?;
     Ok(encoded)
+}
+
+/// Answers a request ID that was already admitted, or durably reserves a new one and returns
+/// `None` so that it executes.
+async fn replayed_or_reserved(
+    context: &ConnectionContext,
+    (request_id, fingerprint): (ma2a_core::RequestId, [u8; 32]),
+) -> Result<Option<Vec<u8>>, IpcError> {
+    let Some(entry) = context.handle.mutation_replay(request_id).await? else {
+        context
+            .handle
+            .reserve_mutation_replay(request_id, fingerprint)
+            .await?;
+        return Ok(None);
+    };
+    let refusal = match entry {
+        ma2a_store::MutationReplayState::Completed(entry) if entry.fingerprint() == fingerprint => {
+            return Ok(Some(entry.response().to_vec()));
+        }
+        ma2a_store::MutationReplayState::Pending(found) if found == fingerprint => {
+            ProtocolError::UNAVAILABLE
+        }
+        ma2a_store::MutationReplayState::Pending(_)
+        | ma2a_store::MutationReplayState::Completed(_) => ProtocolError::CONFLICT,
+        _ => ProtocolError::UNAVAILABLE,
+    };
+    Ok(Some(api::encode_error(api::ApiError::new(refusal))?))
 }

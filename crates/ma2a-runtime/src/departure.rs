@@ -28,6 +28,7 @@ enum DepartureErrorKind {
     OwnerCannotLeave,
     Unreachable,
     Rejected,
+    InFlight,
     Internal,
 }
 
@@ -42,9 +43,10 @@ impl SpaceDepartureErrorCode {
     pub const OWNER_CANNOT_LEAVE: Self = Self(DepartureErrorKind::OwnerCannotLeave);
     /// The exchange failed; the remote authority outcome may be unknown.
     pub const UNREACHABLE: Self = Self(DepartureErrorKind::Unreachable);
-    /// The authority refused the request or returned an unusable chain, or a
-    /// departure of the same Space is still waiting on the authority.
+    /// The authority refused the request or returned an unusable chain.
     pub const REJECTED: Self = Self(DepartureErrorKind::Rejected);
+    /// A departure of the same Space is still waiting on the authority; nothing was sent.
+    pub const IN_FLIGHT: Self = Self(DepartureErrorKind::InFlight);
     /// The local Runtime failed before or after the exchange.
     pub const INTERNAL: Self = Self(DepartureErrorKind::Internal);
 }
@@ -80,6 +82,9 @@ impl SpaceDepartureError {
     pub(crate) const fn rejected() -> Self {
         Self(DepartureErrorKind::Rejected, None)
     }
+    pub(crate) const fn in_flight() -> Self {
+        Self(DepartureErrorKind::InFlight, None)
+    }
     pub(crate) const fn internal() -> Self {
         Self(DepartureErrorKind::Internal, None)
     }
@@ -100,6 +105,7 @@ impl fmt::Display for SpaceDepartureError {
                 "departure exchange did not complete; authority outcome is unknown"
             }
             DepartureErrorKind::Rejected => "the Space authority rejected the departure request",
+            DepartureErrorKind::InFlight => "a departure of this Space is already in progress",
             DepartureErrorKind::Internal => "Space departure failed",
         })
     }

@@ -67,7 +67,11 @@ async fn a_pending_departure_leaves_the_runtime_responsive() -> TestResult {
     .await?
     .err()
     .ok_or("a second departure of the same Space must be refused")?;
-    assert_eq!(second.code(), SpaceDepartureErrorCode::REJECTED, "{second}");
+    assert_eq!(
+        second.code(),
+        SpaceDepartureErrorCode::IN_FLIGHT,
+        "{second}"
+    );
 
     // Stopping the Runtime ends the exchange with it instead of waiting it out.
     timeout(PROMPT, member.shutdown()).await??;

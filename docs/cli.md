@@ -93,6 +93,9 @@ appear in JSON responses.
 ma2a --state-dir "$STATE_A" space invite lab | ma2a --state-dir "$STATE_B" space accept
 ```
 
+While the Runtime waits on the Space owner, for at most thirty seconds, it keeps answering every
+other command.
+
 ### Leaving and removing members
 
 `ma2a space leave SPACE_REF` is a membership operation, not a local deletion. The leaving Endpoint

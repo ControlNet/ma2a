@@ -164,6 +164,8 @@ fn departure_api_error(code: SpaceDepartureErrorCode) -> ApiError {
             ProtocolError::UNAVAILABLE,
             "departure exchange did not complete; authority outcome is unknown",
         )
+    } else if code == SpaceDepartureErrorCode::IN_FLIGHT {
+        ApiError::new(ProtocolError::CONFLICT).without_effects()
     } else if code == SpaceDepartureErrorCode::REJECTED {
         ApiError::new(ProtocolError::CONFLICT)
     } else {
