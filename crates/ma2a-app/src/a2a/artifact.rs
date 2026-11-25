@@ -39,13 +39,29 @@ const PIPE: usize = 65_536;
 
 type Chunks = mpsc::Sender<Result<Bytes, io::Error>>;
 
+/// Refusals of a Runtime or target that cannot answer now.
+const TRANSIENT: [&str; 6] = [
+    "unavailable",
+    "concurrency_exceeded",
+    "unreachable",
+    "timed_out",
+    "outcome_unknown",
+    "cancelled",
+];
+
 /// Serves one artifact of a task of the route's Agent.
 pub(super) async fn serve(
     backend: Backend,
     (route, task, name): (Route, String, String),
 ) -> Response {
-    let Ok(details) = backend.details(&route, &task).await else {
-        return status(StatusCode::NOT_FOUND);
+    let details = match backend.details(&route, &task).await {
+        Ok(details) => details,
+        // A Runtime or target that cannot answer now may answer later; any other refusal,
+        // one hiding a task this caller may not see included, names no artifact.
+        Err(Refusal(name)) if TRANSIENT.contains(&name.as_str()) => {
+            return status(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        Err(_) => return status(StatusCode::NOT_FOUND),
     };
     let Some(artifact) = details
         .get("artifacts")
@@ -231,6 +247,34 @@ mod tests {
         let other = blake3::hash(b"forged").to_hex();
         assert!(!matches_reference((6, &other), (6, &hash)));
         assert!(!matches_reference((6, ""), (6, &hash)));
+    }
+
+    /// The status of an artifact request through a target answering every stream with `script`.
+    #[cfg(unix)]
+    async fn served(script: crate::test_daemon::Script) -> crate::test_daemon::TestResult<u16> {
+        let daemon = crate::test_daemon::Daemon::start("artifact", script)?;
+        let (backend, route) = super::Backend::standing_in(&daemon)?;
+        let task = "01".repeat(16);
+        let response = super::serve(backend, (route, task, "result".to_owned())).await;
+        Ok(response.status().as_u16())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_a_missing_task_or_artifact_answers_not_found() -> crate::test_daemon::TestResult {
+        use ma2a_core::service::{FrameKind, ServiceError};
+        let refused = |error: ServiceError| vec![(FrameKind::Reject, vec![error.code()])];
+        // A task the target does not have, or one this Endpoint may not see.
+        assert_eq!(served(refused(ServiceError::UnknownTask)).await?, 404);
+        assert_eq!(served(refused(ServiceError::Unauthorized)).await?, 404);
+        // A target that cannot answer now may answer later.
+        assert_eq!(served(refused(ServiceError::Unavailable)).await?, 503);
+        assert_eq!(served(refused(ServiceError::Unreachable)).await?, 503);
+        assert_eq!(
+            served(refused(ServiceError::ConcurrencyExceeded)).await?,
+            503
+        );
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]

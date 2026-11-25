@@ -159,7 +159,8 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - It is read through Agent v1 `artifact` (Transfer v1 download frames).
   - The body ends with an error unless the download verified, and unless its size and BLAKE3 are the ones the task's artifact reference names. A download of another size is refused before any byte is sent.
   - A client that disconnects ends the download at once, even while the target sends nothing.
-- An unknown task or artifact answers `404`.
+- An unknown task or artifact answers `404`, as does a task this caller may not see.
+- A Runtime or remote target that cannot answer now, because it is unavailable, unreachable, busy, timed out, or its answer was lost, answers `503`, so a client can retry.
 
 ### ListTasks
 
