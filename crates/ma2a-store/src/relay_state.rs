@@ -1,4 +1,4 @@
-use ma2a_core::MAX_RELAY_URL_LEN;
+use ma2a_core::{MAX_RELAY_URL_LEN, ProtocolError};
 
 use crate::repository::increment_revision;
 use crate::{RelayObservation, Repository, StoreError};
@@ -7,16 +7,24 @@ impl Repository {
     /// Atomically replaces current Iroh-observed relay state without changing desired config.
     ///
     /// # Errors
-    /// Returns [`StoreError`] when observation persistence fails.
+    /// Returns [`StoreError`] when an observation's relay URL is over the bound or observation
+    /// persistence fails.
     pub fn replace_relay_observations(
         &mut self,
         observations: &[RelayObservation],
     ) -> Result<u64, StoreError> {
-        // A replay after a lost reply must not advance revision. Observation
-        // time is bookkeeping; relay identity and reachability are the state.
-        let current = self.relay_observations()?;
-        if current.len() == observations.len()
-            && current.iter().zip(observations).all(|(old, new)| {
+        observations
+            .iter()
+            .try_for_each(|observation| bounded(&observation.relay_url))?;
+        // A replay after a lost reply must not advance revision, whatever order it lists the
+        // relays in. Observation time is bookkeeping; relay identity and reachability are the
+        // state. Stored rows are compared as they are, so one written before the URL bound
+        // existed reads as a change and is replaced instead of failing the replacement.
+        let mut requested = observations.iter().collect::<Vec<_>>();
+        requested.sort_unstable_by(|left, right| left.relay_url.cmp(&right.relay_url));
+        let current = self.stored_relay_observations()?;
+        if current.len() == requested.len()
+            && current.iter().zip(requested).all(|(old, new)| {
                 old.relay_url == new.relay_url
                     && old.reachable == new.reachable
                     && old.latency_ms == new.latency_ms
@@ -51,6 +59,19 @@ impl Repository {
     /// # Errors
     /// Returns [`StoreError`] when persisted observations are malformed or unreadable.
     pub fn relay_observations(&self) -> Result<Vec<RelayObservation>, StoreError> {
+        let observations = self.stored_relay_observations()?;
+        if observations
+            .iter()
+            .any(|observation| observation.relay_url.len() > MAX_RELAY_URL_LEN)
+        {
+            return Err(StoreError::SchemaMismatch {
+                detail: "persisted relay observation URL exceeds protocol bounds",
+            });
+        }
+        Ok(observations)
+    }
+
+    fn stored_relay_observations(&self) -> Result<Vec<RelayObservation>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT relay_url, observed_at_ms, expires_at_ms, reachable, latency_ms,
              observed_state FROM relay_observations ORDER BY relay_url",
@@ -66,15 +87,15 @@ impl Repository {
                     observed_state: row.get(5)?,
                 })
             })?
-            .map(|row| {
-                let observation = row?;
-                if observation.relay_url.len() > MAX_RELAY_URL_LEN {
-                    return Err(StoreError::SchemaMismatch {
-                        detail: "persisted relay observation URL exceeds protocol bounds",
-                    });
-                }
-                Ok(observation)
-            })
-            .collect()
+            .collect::<Result<_, _>>()
+            .map_err(Into::into)
     }
+}
+
+/// Refuses a relay URL longer than an address record can carry before anything is written.
+pub(crate) fn bounded(relay_url: &str) -> Result<(), StoreError> {
+    if relay_url.len() > MAX_RELAY_URL_LEN {
+        return Err(ProtocolError::INVALID_INPUT.into());
+    }
+    Ok(())
 }

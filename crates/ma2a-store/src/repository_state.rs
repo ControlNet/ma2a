@@ -246,11 +246,13 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when relay observation state cannot be committed.
+    /// Returns [`StoreError`] when the relay URL is over the bound or relay observation state
+    /// cannot be committed.
     pub fn record_relay_observation(
         &mut self,
         observation: &RelayObservation,
     ) -> Result<u64, StoreError> {
+        crate::relay_state::bounded(&observation.relay_url)?;
         let transaction = self.immediate()?;
         transaction.execute(
             "INSERT INTO relay_observations(relay_url, observed_at_ms, expires_at_ms,
