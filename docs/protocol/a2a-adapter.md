@@ -76,7 +76,7 @@ A card is served for a defined local Agent, found through `agent_list`, even whi
 
 | Method | Behaviour |
 | --- | --- |
-| `SendMessage` | Creates a task, or continues the task the message names. By default it waits until the task ended or waits for input, then answers `{task}`. `configuration.returnImmediately: true` answers at once. `configuration.historyLength` limits the history returned. Every parameter is checked before the message is delivered. |
+| `SendMessage` | Creates a task, or continues the task the message names. By default it waits until the task ended or waits for input, then answers `{task}`. `configuration.returnImmediately: true` answers at once. `configuration.historyLength` limits the history returned. Every parameter is checked before the message is delivered: a `configuration` that is not an object, a `returnImmediately` that is not a boolean, or a negative `historyLength` answers `-32602` and delivers nothing. |
 | `SendStreamingMessage` | Same delivery and parameter checks as `SendMessage`, answered as Server-Sent Events: first `{task}`, with at most `configuration.historyLength` history messages, then one `statusUpdate` or `artifactUpdate` per new event. The stream closes once the task ended or waits for input. A message that continues a waiting task is followed from the moment it was sent, so the stream closes only once the task waits again or ends. Events the first `{task}` already shows are not sent again, and a first `{task}` that has ended closes the stream. |
 | `GetTask` | `{id, historyLength?}`: the task with its artifacts and history. |
 | `ListTasks` | The route's tasks visible to the caller. See [ListTasks](#listtasks). |

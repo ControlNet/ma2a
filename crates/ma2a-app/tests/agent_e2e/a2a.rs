@@ -242,20 +242,27 @@ fn send_replay_and_continue(adapter: &Adapter, lead: &str) -> TestResult {
     Ok(())
 }
 
-/// Both sends check `configuration.historyLength` before delivering anything, and both
-/// answer the task with at most that many history messages.
+/// Both sends check their whole `configuration` before delivering anything, and both
+/// answer the task with at most `historyLength` history messages.
 fn history_limits(adapter: &Adapter, lead: &str) -> TestResult {
+    let malformed = [
+        json!({"historyLength": -1}),
+        json!([]),
+        json!({"returnImmediately": "true"}),
+    ];
     for method in ["SendMessage", "SendStreamingMessage"] {
-        let id = format!("m-negative-{method}");
-        let malformed = json!({
-            "message": {"messageId": id, "role": "ROLE_USER", "parts": [{"text": "echo bad"}]},
-            "configuration": {"historyLength": -1},
-        });
-        let malformed = adapter.call((lead, method), &malformed)?;
-        assert_eq!(error_code(&malformed)?, -32_602, "{method}");
-        // Nothing was delivered, so the message ID is still free for other content.
-        let fresh = adapter.result((lead, "SendMessage"), &message(&id, "echo other"))?;
-        assert_eq!(text(&fresh, "/task/status/message/parts/0/text"), "other");
+        for (case, configuration) in malformed.iter().enumerate() {
+            let id = format!("m-malformed-{case}-{method}");
+            let refused = json!({
+                "message": {"messageId": id, "role": "ROLE_USER", "parts": [{"text": "echo bad"}]},
+                "configuration": configuration,
+            });
+            let refused = adapter.call((lead, method), &refused)?;
+            assert_eq!(error_code(&refused)?, -32_602, "{method}: {configuration}");
+            // Nothing was delivered, so the message ID is still free for other content.
+            let fresh = adapter.result((lead, "SendMessage"), &message(&id, "echo other"))?;
+            assert_eq!(text(&fresh, "/task/status/message/parts/0/text"), "other");
+        }
         for limit in [0, 1] {
             let limited = json!({
                 "message": {

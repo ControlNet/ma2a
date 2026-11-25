@@ -120,12 +120,25 @@ pub(super) fn detail(params: &Value, artifacts: bool) -> Result<Detail, RpcError
     })
 }
 
-/// The `configuration` of `SendMessage` or `SendStreamingMessage` and the detail it asks
-/// for. Both check it before delivering anything, so a refusal never follows a task it
-/// already created.
-pub(super) fn configuration(params: &Value) -> Result<(&Value, Detail), RpcError> {
-    let configuration = params.get("configuration").unwrap_or(&Value::Null);
-    Ok((configuration, detail(configuration, true)?))
+/// The `configuration` of `SendMessage` or `SendStreamingMessage`: whether to answer at once,
+/// and the detail it asks for. Both read all of it before delivering anything, so a refusal
+/// never follows a task it already created or a message it already sent.
+pub(super) fn configuration(params: &Value) -> Result<(bool, Detail), RpcError> {
+    let configuration = match params.get("configuration") {
+        None | Some(Value::Null) => &Value::Null,
+        Some(object @ Value::Object(_)) => object,
+        Some(_) => return Err(RpcError::invalid_params("`configuration` is an object")),
+    };
+    let immediately = match configuration.get("returnImmediately") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(immediately)) => *immediately,
+        Some(_) => {
+            return Err(RpcError::invalid_params(
+                "`configuration.returnImmediately` is a boolean",
+            ));
+        }
+    };
+    Ok((immediately, detail(configuration, true)?))
 }
 
 /// Answers one method that is not a stream.
@@ -136,13 +149,9 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
     match method {
         "SendMessage" => {
             let inbound = inbound(params)?;
-            let (configuration, detail) = configuration(params)?;
+            let (immediately, detail) = configuration(params)?;
             let summary = deliver(served, &inbound).await.map_err(refused)?;
-            if configuration
-                .get("returnImmediately")
-                .and_then(Value::as_bool)
-                != Some(true)
-            {
+            if !immediately {
                 // A message to a waiting task counts only once the Agent took it.
                 let fresh = inbound.task.is_some();
                 view::wait(served, (&summary, fresh), settled)
@@ -194,7 +203,7 @@ pub(super) async fn call(served: Served<'_>, request: &rpc::Request) -> Result<V
 mod tests {
     use serde_json::{Value, json};
 
-    use super::inbound;
+    use super::{configuration as configuration_of, inbound};
 
     fn params(field: &str, value: &Value) -> Value {
         let mut message =
@@ -213,6 +222,32 @@ mod tests {
         assert_eq!(task("contextId", json!("t-1")), Ok(Some("t-1".to_owned())));
         assert_eq!(task("taskId", json!("")), Ok(None));
         assert_eq!(task("taskId", Value::Null), Ok(None));
+    }
+
+    #[test]
+    fn a_send_configuration_is_read_whole_before_anything_is_delivered() {
+        let read = |configuration: Value| {
+            configuration_of(&json!({"configuration": configuration}))
+                .map(|(immediately, detail)| (immediately, detail.history))
+        };
+        assert_eq!(read(Value::Null), Ok((false, None)));
+        assert_eq!(read(json!({})), Ok((false, None)));
+        assert_eq!(read(json!({"returnImmediately": false})), Ok((false, None)));
+        let both = json!({"returnImmediately": true, "historyLength": 2});
+        assert_eq!(read(both), Ok((true, Some(2))));
+        for malformed in [
+            json!([]),
+            json!("{}"),
+            json!({"returnImmediately": "true"}),
+            json!({"returnImmediately": 1}),
+            json!({"historyLength": -1}),
+        ] {
+            let read = read(malformed.clone());
+            assert!(
+                read.is_err_and(|error| error.code == -32_602),
+                "{malformed}"
+            );
+        }
     }
 
     #[test]
