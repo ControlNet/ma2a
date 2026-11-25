@@ -151,3 +151,74 @@ async fn a_cancel_or_close_behind_a_blocked_destination_write_ends_the_relay_at_
     }
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_caller_exhausts_frame_grace_while_a_slow_caller_gets_a_whole_frame()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tokio::io::AsyncWriteExt as _;
+
+    // Slow caller: shutdown fires while `downstream` is blocked mid-frame on a 1-byte pipe;
+    // draining 1 s later finishes that single frame intact with matching byte counts.
+    let (client, server) = tokio::io::duplex(1);
+    let ((client_read, _client_write), (server_read, server_write)) =
+        (tokio::io::split(client), tokio::io::split(server));
+    let mut client_reader = FrameReader::new(client_read);
+    let (mut reader, mut writer) = (
+        FrameReader::new(server_read),
+        FrameWriter::new(server_write),
+    );
+    let (target, mut destination) = tokio::io::duplex(64);
+    let (target_read, target_write) = tokio::io::split(target);
+    let shutdown = CancellationToken::new();
+    let stop = shutdown.clone();
+    let relayed = tokio::spawn(async move {
+        let result = relay_streams(
+            (target_read, target_write),
+            (&mut reader, &mut writer),
+            (Duration::from_secs(60), &stop),
+        )
+        .await;
+        (result, writer.is_torn())
+    });
+    destination.write_all(b"hello").await?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    shutdown.cancel();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let frame = client_reader.expect().await?;
+    assert_eq!(frame.data()?, (Channel::Input, b"hello".as_slice()));
+    let (result, torn) = relayed.await?;
+    assert!(!torn);
+    assert_eq!(result.result, Ok(EndReason::Shutdown));
+    assert_eq!(result.from_target, 5);
+
+    // Stalled caller: never reads at all; relay gives up after FRAME_GRACE and leaves writer torn.
+    let (_client, server) = tokio::io::duplex(1);
+    let (server_read, server_write) = tokio::io::split(server);
+    let (mut reader, mut writer) = (
+        FrameReader::new(server_read),
+        FrameWriter::new(server_write),
+    );
+    let (target, mut destination) = tokio::io::duplex(64);
+    let (target_read, target_write) = tokio::io::split(target);
+    let shutdown = CancellationToken::new();
+    let stop = shutdown.clone();
+    let relayed = tokio::spawn(async move {
+        let result = relay_streams(
+            (target_read, target_write),
+            (&mut reader, &mut writer),
+            (Duration::from_secs(60), &stop),
+        )
+        .await;
+        (result, writer.is_torn())
+    });
+    destination.write_all(b"hello").await?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let stopped_at = tokio::time::Instant::now();
+    shutdown.cancel();
+    let (result, torn) = relayed.await?;
+    assert!(torn);
+    assert_eq!(result.result, Ok(EndReason::Shutdown));
+    assert_eq!(result.from_target, 0);
+    assert_eq!(stopped_at.elapsed(), crate::reply::FRAME_GRACE);
+    Ok(())
+}

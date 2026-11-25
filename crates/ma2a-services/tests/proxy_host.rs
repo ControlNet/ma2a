@@ -324,3 +324,112 @@ async fn a_caller_that_never_reads_the_accept_does_not_hold_the_proxy() -> TestR
     assert_eq!(report.end, OperationEnd::Failed(ServiceError::Unavailable));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_stop_during_backpressured_downstream_finishes_the_frame_and_sends_outcome() -> TestResult
+{
+    // Cover Stop::Idle (blocked upstream write), caller Cancel, and Runtime Shutdown while a
+    // non-reading flooding destination keeps the 64 KiB stream backpressured against a slow reader.
+    for (idle_ms, expected_reason, expected_end) in [
+        (
+            300,
+            EndReason::TimedOut,
+            OperationEnd::Failed(ServiceError::TimedOut),
+        ),
+        (
+            60_000,
+            EndReason::Cancelled,
+            OperationEnd::Failed(ServiceError::Cancelled),
+        ),
+        (
+            60_000,
+            EndReason::Shutdown,
+            OperationEnd::Failed(ServiceError::Unavailable),
+        ),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let flooder = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let chunk = vec![b'd'; MAX_DATA_CHUNK_LEN];
+            while socket.write_all(&chunk).await.is_ok() {}
+            Ok::<_, std::io::Error>(())
+        });
+
+        let shutdown = CancellationToken::new();
+        let request = loopback(port, idle_ms)?;
+        let ((mut reader, mut writer), (mut server_reader, mut server_writer)) =
+            pipe_with(64 << 10);
+        let stop = shutdown.clone();
+        let server = tokio::spawn(async move {
+            let report =
+                serve_proxy(request, &stop, (&mut server_reader, &mut server_writer)).await;
+            (
+                report,
+                server_writer.is_torn(),
+                server_writer.terminal_sent(),
+            )
+        });
+
+        assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+        let (upstream_flood, mut writer) = if expected_reason == EndReason::TimedOut {
+            let task = tokio::spawn(async move {
+                let chunk = vec![b'u'; MAX_DATA_CHUNK_LEN];
+                for _ in 0..1024 {
+                    if writer.data(Channel::Input, &chunk).await.is_err() {
+                        break;
+                    }
+                }
+                writer
+            });
+            (Some(task), None)
+        } else {
+            (None, Some(writer))
+        };
+        let mut received = 0_u64;
+        let mut data_frames = 0_usize;
+        let mut triggered = false;
+        let result = loop {
+            let frame = tokio::time::timeout(Duration::from_secs(10), reader.expect()).await??;
+            match frame.kind() {
+                FrameKind::Data => {
+                    let (channel, bytes) = frame.data()?;
+                    assert_eq!(channel, Channel::Input);
+                    received += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                    data_frames += 1;
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    if !triggered && data_frames == 4 {
+                        triggered = true;
+                        match expected_reason {
+                            EndReason::Cancelled => {
+                                if let Some(writer) = writer.as_mut() {
+                                    writer.frame(FrameKind::Cancel, &[]).await?;
+                                }
+                            }
+                            EndReason::Shutdown => shutdown.cancel(),
+                            EndReason::TimedOut | EndReason::Completed => {}
+                        }
+                    }
+                }
+                FrameKind::Outcome => {
+                    break ProxyResult::decode_outcome(frame.payload())?
+                        .map_err(|error| format!("{error:?}"))?;
+                }
+                other => return Err(format!("unexpected frame {other:?}").into()),
+            }
+        };
+        assert_eq!(result.reason, expected_reason, "{expected_reason:?}");
+        assert_eq!(result.bytes_from_target, received, "{expected_reason:?}");
+        let (report, torn, terminal_sent) =
+            tokio::time::timeout(Duration::from_secs(5), server).await??;
+        assert!(!torn, "{expected_reason:?}: writer was torn");
+        assert!(terminal_sent, "{expected_reason:?}: terminal not sent");
+        assert_eq!(report.end, expected_end, "{expected_reason:?}");
+        assert_eq!(report.bytes_out, received, "{expected_reason:?}");
+        if let Some(task) = upstream_flood {
+            task.abort();
+        }
+        flooder.abort();
+    }
+    Ok(())
+}

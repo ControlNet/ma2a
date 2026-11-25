@@ -18,7 +18,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{FrameReader, FrameWriter, exec::reason_end, reply, report::OperationReport};
+use crate::{FrameReader, FrameWriter, exec::reason_error, reply, report::OperationReport};
 
 /// Serves one Shell session until its program is gone.
 pub async fn serve_shell<R, W>(
@@ -75,7 +75,5 @@ where
     let result = ProcessResult::new(ended.termination, reason, duration_ms)
         .with_bytes(ended.output_bytes, 0);
     let encoded = ProcessResult::encode_outcome(&Ok(result));
-    let mut report = reply::outcome(writer, (encoded, None), bytes).await;
-    report.end = reason_end(report.end, reason);
-    report
+    reply::outcome(writer, (encoded, reason_error(reason)), bytes).await
 }

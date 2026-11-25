@@ -71,6 +71,15 @@ pub async fn close<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>) {
     }
 }
 
+/// Finishes one frame already being written within [`FRAME_GRACE`], returning whether it
+/// completed intact so its bytes can be counted and a terminal `outcome` can follow.
+pub(crate) async fn finish_frame<F>(write: F) -> bool
+where
+    F: Future<Output = Result<(), ServiceError>>,
+{
+    matches!(tokio::time::timeout(FRAME_GRACE, write).await, Ok(Ok(())))
+}
+
 /// Sends one encoded terminal `outcome`, half-closes, and reports its class.
 pub async fn outcome<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,

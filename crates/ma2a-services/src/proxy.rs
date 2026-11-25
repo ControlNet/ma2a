@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{FrameReader, FrameWriter, exec::reason_end, reply, report::OperationReport};
+use crate::{FrameReader, FrameWriter, exec::reason_error, reply, report::OperationReport};
 
 /// Budget for name resolution plus every connection attempt.
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
@@ -55,14 +55,12 @@ where
     let outcome = relayed
         .result
         .map(|reason| ProxyResult::new(reason, bytes, duration_ms));
-    let failure = outcome.as_ref().err().copied();
-    let reason = outcome.as_ref().map(|result| result.reason).ok();
+    let failure = match &outcome {
+        Ok(result) => reason_error(result.reason),
+        Err(error) => Some(*error),
+    };
     let encoded = ProxyResult::encode_outcome(&outcome);
-    let mut report = reply::outcome(writer, (encoded, failure), bytes).await;
-    if let Some(reason) = reason {
-        report.end = reason_end(report.end, reason);
-    }
-    report
+    reply::outcome(writer, (encoded, failure), bytes).await
 }
 
 /// Resolves the requested name and connects to the first reachable address.

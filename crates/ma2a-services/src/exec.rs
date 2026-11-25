@@ -19,7 +19,7 @@ use crate::{
     FrameReader, FrameWriter,
     input::{Input, Wrote},
     process, reply,
-    report::{OperationEnd, OperationReport, len64},
+    report::{OperationReport, len64},
 };
 
 /// Serves one Exec request until the child and every process in its group are gone.
@@ -83,24 +83,16 @@ where
     let result = ProcessResult::new(run.termination, run.reason, duration_ms)
         .with_bytes(run.output_bytes, run.error_bytes);
     let encoded = ProcessResult::encode_outcome(&Ok(result));
-    let mut report = reply::outcome(writer, (encoded, None), bytes).await;
-    report.end = reason_end(report.end, run.reason);
-    report
+    reply::outcome(writer, (encoded, reason_error(run.reason)), bytes).await
 }
 
-/// Classifies a delivered outcome for audit by why the process ended.
-pub(crate) const fn reason_end(end: OperationEnd, reason: EndReason) -> OperationEnd {
-    match (end, reason) {
-        (OperationEnd::Completed, EndReason::TimedOut) => {
-            OperationEnd::Failed(ServiceError::TimedOut)
-        }
-        (OperationEnd::Completed, EndReason::Cancelled) => {
-            OperationEnd::Failed(ServiceError::Cancelled)
-        }
-        (OperationEnd::Completed, EndReason::Shutdown) => {
-            OperationEnd::Failed(ServiceError::Unavailable)
-        }
-        (end, _) => end,
+/// Maps why a run ended to the audit failure it keeps even if its outcome could not be written.
+pub(crate) const fn reason_error(reason: EndReason) -> Option<ServiceError> {
+    match reason {
+        EndReason::Completed => None,
+        EndReason::TimedOut => Some(ServiceError::TimedOut),
+        EndReason::Cancelled => Some(ServiceError::Cancelled),
+        EndReason::Shutdown => Some(ServiceError::Unavailable),
     }
 }
 

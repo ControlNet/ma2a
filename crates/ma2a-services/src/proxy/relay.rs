@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{FrameReader, FrameWriter, input::Input, report::len64};
+use crate::{FrameReader, FrameWriter, input::Input, reply, report::len64};
 
 /// How one relay ended.
 #[derive(Debug)]
@@ -28,6 +28,7 @@ pub(super) struct Relayed {
 }
 
 /// A direction stopped for a reason that ends the whole relay.
+#[derive(Clone, Copy)]
 enum Stop {
     /// The caller cancelled or its stream was lost.
     Caller(ServiceError),
@@ -54,30 +55,24 @@ impl Counters {
     }
 }
 
-pub(super) async fn run<R, W>(
+pub(super) async fn run<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     stream: TcpStream,
     caller: (&mut FrameReader<R>, &mut FrameWriter<W>),
     limits: (Duration, &CancellationToken),
-) -> Relayed
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let (target_read, target_write) = stream.into_split();
-    relay_streams((target_read, target_write), caller, limits).await
+) -> Relayed {
+    relay_streams(stream.into_split(), caller, limits).await
 }
 
-pub(super) async fn relay_streams<TR, TW, R, W>(
-    (target_read, target_write): (TR, TW),
-    (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
-    (idle, shutdown): (Duration, &CancellationToken),
-) -> Relayed
-where
+pub(super) async fn relay_streams<
     TR: AsyncRead + Unpin,
     TW: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-{
+>(
+    (target_read, target_write): (TR, TW),
+    (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
+    (idle, shutdown): (Duration, &CancellationToken),
+) -> Relayed {
     let counters = Counters {
         to_target: AtomicU64::new(0),
         from_target: AtomicU64::new(0),
@@ -86,31 +81,58 @@ where
         idle,
         delivered: Notify::new(),
     };
-    let lifetime = counters.started + Duration::from_millis(MAX_OPERATION_LIFETIME_MS);
-    let both = async {
-        tokio::try_join!(
-            upstream(reader, target_write, &counters),
-            downstream(target_read, writer, &counters),
-        )
+    let stop = CancellationToken::new();
+    let lifetime = tokio::time::sleep_until(
+        counters.started + Duration::from_millis(MAX_OPERATION_LIFETIME_MS),
+    );
+    let idle = idle_expired(&counters);
+    let upstream = upstream(reader, target_write, &counters);
+    let downstream = downstream(target_read, writer, (&counters, &stop));
+    tokio::pin!(lifetime, idle, upstream, downstream);
+    let (mut up_done, mut down_done) = (false, false);
+    let (result, stream_error) = loop {
+        if shutdown.is_cancelled() {
+            break (Ok(EndReason::Shutdown), None);
+        }
+        if up_done && down_done {
+            break (Ok(EndReason::Completed), None);
+        }
+        tokio::select! {
+            () = shutdown.cancelled() => break (Ok(EndReason::Shutdown), None),
+            () = &mut lifetime => break (Ok(EndReason::TimedOut), None),
+            () = &mut idle => break (Ok(EndReason::TimedOut), None),
+            res = &mut upstream, if !up_done => {
+                up_done = true;
+                if let Err(stopped) = res {
+                    break stop_outcome(stopped);
+                }
+            }
+            res = &mut downstream, if !down_done => {
+                down_done = true;
+                if let Err(stopped) = res {
+                    break stop_outcome(stopped);
+                }
+            }
+        }
     };
-    let (result, stream_error) = tokio::select! {
-        biased;
-        () = shutdown.cancelled() => (Ok(EndReason::Shutdown), None),
-        () = tokio::time::sleep_until(lifetime) => (Ok(EndReason::TimedOut), None),
-        () = idle_expired(&counters) => (Ok(EndReason::TimedOut), None),
-        joined = both => match joined {
-            Ok(((), ())) => (Ok(EndReason::Completed), None),
-            Err(Stop::Caller(ServiceError::Cancelled)) => (Ok(EndReason::Cancelled), None),
-            Err(Stop::Caller(error)) => (Ok(EndReason::Cancelled), Some(error)),
-            Err(Stop::Target) => (Err(ServiceError::Unreachable), None),
-            Err(Stop::Idle) => (Ok(EndReason::TimedOut), None),
-        },
-    };
+    if !down_done && stream_error.is_none() {
+        stop.cancel();
+        let _finished = downstream.await;
+    }
     Relayed {
         result,
         to_target: counters.to_target.load(Ordering::Relaxed),
         from_target: counters.from_target.load(Ordering::Relaxed),
         stream_error,
+    }
+}
+
+const fn stop_outcome(stopped: Stop) -> (Result<EndReason, ServiceError>, Option<ServiceError>) {
+    match stopped {
+        Stop::Caller(ServiceError::Cancelled) => (Ok(EndReason::Cancelled), None),
+        Stop::Caller(error) => (Ok(EndReason::Cancelled), Some(error)),
+        Stop::Target => (Err(ServiceError::Unreachable), None),
+        Stop::Idle => (Ok(EndReason::TimedOut), None),
     }
 }
 
@@ -161,11 +183,10 @@ async fn upstream<R: AsyncRead + Unpin, TW: AsyncWrite + Unpin>(
         frame = input.next() => frame,
     };
     match frame {
-        Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => {
-            Err(Stop::Caller(ServiceError::Cancelled))
+        Ok(Some(frame)) if frame.kind() != FrameKind::Cancel => {
+            Err(Stop::Caller(ServiceError::InvalidInput))
         }
-        Ok(Some(_)) => Err(Stop::Caller(ServiceError::InvalidInput)),
-        Ok(None) => Err(Stop::Caller(ServiceError::Cancelled)),
+        Ok(_) => Err(Stop::Caller(ServiceError::Cancelled)),
         Err(error) => Err(Stop::Caller(error)),
     }
 }
@@ -198,28 +219,58 @@ async fn write<R: AsyncRead + Unpin, TW: AsyncWrite + Unpin>(
     Ok(())
 }
 
+enum Sent {
+    Done,
+    Stopped(bool),
+}
+
+async fn write_or_stop<F: Future<Output = Result<(), ServiceError>>>(
+    write: F,
+    stop: &CancellationToken,
+) -> Result<Sent, Stop> {
+    tokio::pin!(write);
+    tokio::select! {
+        biased;
+        () = stop.cancelled() => Ok(Sent::Stopped(reply::finish_frame(&mut write).await)),
+        written = &mut write => written.map(|()| Sent::Done).map_err(Stop::Caller),
+    }
+}
+
 /// Destination → caller; destination EOF becomes `end`.
 async fn downstream<TR: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     mut target: TR,
     writer: &mut FrameWriter<W>,
-    counters: &Counters,
+    (counters, stop): (&Counters, &CancellationToken),
 ) -> Result<(), Stop> {
     let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
     loop {
-        let read = target.read(&mut buffer).await.map_err(|_| Stop::Target)?;
+        let read = tokio::select! {
+            biased;
+            () = stop.cancelled() => return Ok(()),
+            read = target.read(&mut buffer) => read.map_err(|_| Stop::Target)?,
+        };
+        if stop.is_cancelled() {
+            return Ok(());
+        }
         if read == 0 {
-            writer.end(Channel::Input).await.map_err(Stop::Caller)?;
-            counters.delivered.notify_one();
+            if matches!(
+                write_or_stop(writer.end(Channel::Input), stop).await?,
+                Sent::Done
+            ) {
+                counters.delivered.notify_one();
+            }
             return Ok(());
         }
         let bytes = buffer.get(..read).unwrap_or_default();
-        writer
-            .data(Channel::Input, bytes)
-            .await
-            .map_err(Stop::Caller)?;
-        counters
-            .from_target
-            .fetch_add(len64(read), Ordering::Relaxed);
+        let sent = write_or_stop(writer.data(Channel::Input, bytes), stop).await?;
+        if matches!(sent, Sent::Done | Sent::Stopped(true)) {
+            counters
+                .from_target
+                .fetch_add(len64(read), Ordering::Relaxed);
+        }
+        if matches!(sent, Sent::Stopped(_)) {
+            return Ok(());
+        }
         counters.touch();
     }
 }

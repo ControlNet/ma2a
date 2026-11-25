@@ -310,3 +310,71 @@ async fn input_a_raw_mode_program_left_unread_does_not_keep_its_terminal() -> Te
     drop(within(sending).await?);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_stop_during_backpressured_output_finishes_the_frame_and_sends_outcome() -> TestResult {
+    // Cover lifetime timeout and caller cancel while a flooding PTY program keeps the 64 KiB
+    // stream backpressured against a slow reader.
+    for (lifetime_ms, expected_reason, expected_end) in [
+        (
+            250,
+            EndReason::TimedOut,
+            OperationEnd::Failed(ServiceError::TimedOut),
+        ),
+        (
+            60_000,
+            EndReason::Cancelled,
+            OperationEnd::Failed(ServiceError::Cancelled),
+        ),
+    ] {
+        let shutdown = CancellationToken::new();
+        let request = session("yes", &[], lifetime_ms)?;
+        let ((mut reader, mut writer), (mut server_reader, mut server_writer)) =
+            pipe_with(64 << 10);
+        let stop = shutdown.clone();
+        let server = tokio::spawn(async move {
+            let report =
+                serve_shell(request, &stop, (&mut server_reader, &mut server_writer)).await;
+            (
+                report,
+                server_writer.is_torn(),
+                server_writer.terminal_sent(),
+            )
+        });
+
+        assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+        let mut received = 0_u64;
+        let mut data_frames = 0_usize;
+        let mut triggered = false;
+        let result = loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), reader.expect()).await??;
+            match frame.kind() {
+                FrameKind::Data => {
+                    let (channel, bytes) = frame.data()?;
+                    assert_eq!(channel, Channel::Output);
+                    received += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                    data_frames += 1;
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    if !triggered && data_frames == 4 && expected_reason == EndReason::Cancelled {
+                        triggered = true;
+                        writer.frame(FrameKind::Cancel, &[]).await?;
+                    }
+                }
+                FrameKind::Outcome => {
+                    break ProcessResult::decode_outcome(frame.payload())?
+                        .map_err(|error| format!("{error:?}"))?;
+                }
+                other => return Err(format!("unexpected frame {other:?}").into()),
+            }
+        };
+        assert_eq!(result.reason, expected_reason, "{expected_reason:?}");
+        assert_eq!(result.output_bytes, received, "{expected_reason:?}");
+        let (report, torn, terminal_sent) =
+            tokio::time::timeout(Duration::from_secs(10), server).await??;
+        assert!(!torn, "{expected_reason:?}: writer was torn");
+        assert!(terminal_sent, "{expected_reason:?}: terminal not sent");
+        assert_eq!(report.end, expected_end, "{expected_reason:?}");
+        assert_eq!(report.bytes_out, received, "{expected_reason:?}");
+    }
+    Ok(())
+}

@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     FrameWriter,
     process::{self, Spawned},
+    reply,
     report::len64,
 };
 
@@ -52,6 +53,13 @@ fn ended(status: Option<&std::io::Result<ExitStatus>>) -> Termination {
     match status {
         Some(Ok(status)) => process::termination(*status),
         Some(Err(_)) | None => Termination::Unknown,
+    }
+}
+
+fn count_output(run: &mut Run, channel: Channel, read: usize) {
+    match channel {
+        Channel::Output => run.output_bytes += len64(read),
+        Channel::Error | Channel::Input => run.error_bytes += len64(read),
     }
 }
 
@@ -102,8 +110,7 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
         let (channel, read) = tokio::select! {
             biased;
             (reason, error) = &mut stop => {
-                run.reason = reason;
-                run.stream_error = error;
+                (run.reason, run.stream_error) = (reason, error);
                 break;
             }
             status = spawned.child.wait(), if exit.is_none() => {
@@ -117,8 +124,7 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
         };
         // Output that could not be read is lost, so the run cannot report complete output.
         let Ok(read) = read else {
-            run.reason = EndReason::Cancelled;
-            run.stream_error = Some(ServiceError::Internal);
+            (run.reason, run.stream_error) = (EndReason::Cancelled, Some(ServiceError::Internal));
             break;
         };
         if read == 0 {
@@ -133,6 +139,14 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             Channel::Error | Channel::Input => buffers.1.get(..read),
         }
         .unwrap_or_default();
+        tokio::select! {
+            biased;
+            (reason, error) = &mut stop => {
+                (run.reason, run.stream_error) = (reason, error);
+                break;
+            }
+            () = std::future::ready(()) => {}
+        }
         let write = writer.data(channel, bytes);
         tokio::pin!(write);
         // A caller that stops reading cannot hold the run open past the drain after exit.
@@ -140,8 +154,13 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             tokio::select! {
                 biased;
                 (reason, error) = &mut stop => {
-                    run.reason = reason;
-                    run.stream_error = error;
+                    (run.reason, run.stream_error) = (reason, error);
+                    if error.is_none() {
+                        spawned.kill_all();
+                        if reply::finish_frame(&mut write).await {
+                            count_output(&mut run, channel, read);
+                        }
+                    }
                     break 'run;
                 }
                 status = spawned.child.wait(), if exit.is_none() => {
@@ -153,14 +172,10 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             }
         };
         if let Err(error) = written {
-            run.reason = EndReason::Cancelled;
-            run.stream_error = Some(error);
+            (run.reason, run.stream_error) = (EndReason::Cancelled, Some(error));
             break;
         }
-        match channel {
-            Channel::Output => run.output_bytes += len64(read),
-            Channel::Error | Channel::Input => run.error_bytes += len64(read),
-        }
+        count_output(&mut run, channel, read);
     }
     // Process-group IDs are not reused while any member lives, and PIDs are allocated
     // sequentially, so killing the group right after the leader exits cannot reach an

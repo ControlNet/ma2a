@@ -15,6 +15,7 @@ use super::pty::pty_size;
 use crate::{
     FrameReader, FrameWriter,
     input::{Input, Wrote},
+    reply,
     report::len64,
 };
 
@@ -171,6 +172,14 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             output_closed = true;
             continue;
         };
+        tokio::select! {
+            biased;
+            (reason, error) = &mut stop => {
+                (ended.reason, ended.stream_error) = (reason, error);
+                break;
+            }
+            () = std::future::ready(()) => {}
+        }
         let write = writer.data(Channel::Output, &chunk);
         tokio::pin!(write);
         // A caller that stops reading cannot hold the session open past the drain after exit.
@@ -179,6 +188,9 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
                 biased;
                 (reason, error) = &mut stop => {
                     (ended.reason, ended.stream_error) = (reason, error);
+                    if error.is_none() && reply::finish_frame(&mut write).await {
+                        ended.output_bytes += len64(chunk.len());
+                    }
                     break 'session;
                 }
                 termination = &mut *exited, if exit.is_none() => {
