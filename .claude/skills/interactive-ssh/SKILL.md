@@ -60,7 +60,8 @@ bash .claude/skills/interactive-ssh/scripts/open-session.sh \
 ## End the session
 
 - As soon as you are done: `ssh -F <config> <os> "bash -lc 'touch <workspace>/continue'"`, or
-  `gh run cancel <run> -R ControlNet/ma2a`. Never leave a runner idle until its timeout.
+  `gh run cancel <run> -R ControlNet/ma2a`. Never leave a runner idle until its timeout. The
+  workflow then stops the session, closing every shell, before its post steps run.
 
 ## Privacy and safety
 

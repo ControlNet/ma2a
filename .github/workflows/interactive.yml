@@ -74,7 +74,23 @@ jobs:
             export XDG_RUNTIME_DIR="$dir/run"
             echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
           fi
-          curl -fsSL "https://github.com/owenthereal/upterm/releases/download/$UPTERM_VERSION/upterm_${platform}_${arch}.tar.gz" | tar -xz -C "$dir"
+          # The release's checksums.txt for UPTERM_VERSION; a re-tagged or altered asset stops here.
+          case "${platform}_${arch}" in
+            linux_amd64) digest=3007d4ce09e9f70a390e1b52e5a0b591fc9fa473196ca76d8f72b5f1cd723b31 ;;
+            linux_arm64) digest=25353fd52538acb9b2a5c95f2d9d3caa6df14f50413c2a56f33cded83b9bc1e9 ;;
+            darwin_amd64) digest=fc4b80d3f57b42b4addf5c4b182ea16334d6e1196e988b9ea0ff69a123709b17 ;;
+            darwin_arm64) digest=47076b7012ec914d403e6c8d91de80732ac8d6dba5e8d62439f1bfcce5f15c86 ;;
+            windows_amd64) digest=7d50afedb81aa91cedadf774ec2a9cad949d1081f3a8383c2bb47be4ab11afc6 ;;
+            windows_arm64) digest=a9991e47dc90309e7d76894a9f1ee35f2f727fbafdc603b4ee7042b6dbb55a24 ;;
+          esac
+          archive="$dir/upterm.tar.gz"
+          curl -fsSL -o "$archive" "https://github.com/owenthereal/upterm/releases/download/$UPTERM_VERSION/upterm_${platform}_${arch}.tar.gz"
+          if command -v sha256sum > /dev/null; then sum=$(sha256sum "$archive"); else sum=$(shasum -a 256 "$archive"); fi
+          if [ "${sum%% *}" != "$digest" ]; then
+            echo "::error::upterm_${platform}_${arch}.tar.gz does not match the pinned SHA-256."
+            exit 1
+          fi
+          tar -xzf "$archive" -C "$dir"
           native "$dir" >> "$GITHUB_PATH"
           { curl -fsSL "https://github.com/$ACTOR.keys"; printf '%s\n' "$EXTRA_KEYS"; } | grep -E '^(ssh-|ecdsa-|sk-)' > "$dir/authorized_keys" || true
           if [ ! -s "$dir/authorized_keys" ]; then
@@ -107,7 +123,7 @@ jobs:
           retention-days: 1
 
       # The session lasts until a file named continue appears in the workspace, the session ends,
-      # or the job times out.
+      # or the job times out. It is stopped before the post steps run, so no shell outlives it.
       - name: Keep the session open
         shell: bash
         run: |
@@ -115,3 +131,7 @@ jobs:
           while [ ! -e "$GITHUB_WORKSPACE/continue" ] && upterm session info "${{ steps.upterm.outputs.name }}" -o json > /dev/null 2>&1; do
             sleep 10
           done
+          # A session that ended by itself has no shell left, and stop would not know its name.
+          if [ -e "$GITHUB_WORKSPACE/continue" ]; then
+            upterm session stop "${{ steps.upterm.outputs.name }}"
+          fi
