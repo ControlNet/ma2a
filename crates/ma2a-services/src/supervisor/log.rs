@@ -164,7 +164,8 @@ impl LogWriter {
         if let Err(error) = file.write_all(&record) {
             // A partly written record would shift every later one, so the segment is cut back
             // to its last whole record. If that fails, the next append starts a new segment
-            // and the torn record stays last in this one, where reads ignore it.
+            // and the torn record stays last in this one, where reads ignore it; a segment
+            // with no whole record is started again instead.
             let whole = self.segments.back().map_or(0, |last| last.file_bytes);
             let cut = file
                 .set_len(whole)
@@ -194,18 +195,24 @@ impl LogWriter {
 
     fn rotate(&mut self) -> io::Result<()> {
         self.sync()?;
+        // A segment still without a whole record lost its first one and could not be cut back:
+        // it is this writer's own, at this cursor, and is started again empty.
+        let again = self.segments.back().is_some_and(|last| last.content == 0);
         // Written in place rather than appended: on Windows an append-only handle cannot be
         // truncated back after a failed write.
         let file = OpenOptions::new()
-            .create_new(true)
+            .create_new(!again)
             .write(true)
+            .truncate(again)
             .open(self.directory.join(name(self.end)))?;
         self.current = Some(file);
-        self.segments.push_back(Segment {
-            first: self.end,
-            content: 0,
-            file_bytes: 0,
-        });
+        if !again {
+            self.segments.push_back(Segment {
+                first: self.end,
+                content: 0,
+                file_bytes: 0,
+            });
+        }
         Ok(())
     }
 
@@ -228,3 +235,6 @@ impl LogWriter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
