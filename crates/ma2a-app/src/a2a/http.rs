@@ -95,11 +95,21 @@ pub(super) fn local(agent: &str) -> Option<Route> {
     AgentId::new(agent).ok().map(Route::Local)
 }
 
+/// The route of `agent` on `endpoint`, which must be an Endpoint ID in lowercase hex: a
+/// string of that shape that is no Ed25519 key names no Endpoint any Runtime could reach.
 pub(super) fn remote(endpoint: &str, agent: &str) -> Option<Route> {
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    };
+    let bytes: Option<Vec<u8>> = endpoint
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| Some((digit(*pair.first()?)? << 4) | digit(*pair.get(1)?)?))
+        .collect();
     let endpoint_ok = endpoint.len() == 64
-        && endpoint
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        && bytes.is_some_and(|bytes| ma2a_core::EndpointId::try_from(bytes.as_slice()).is_ok());
     endpoint_ok
         .then(|| AgentId::new(agent).ok())
         .flatten()

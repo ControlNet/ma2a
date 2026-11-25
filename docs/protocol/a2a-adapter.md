@@ -35,11 +35,11 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 | Route | Method | Purpose |
 | --- | --- | --- |
 | `/agents/{agent}` | `POST` | JSON-RPC for this Runtime's Agent `agent` |
-| `/endpoints/{endpoint}/agents/{agent}` | `POST` | JSON-RPC for Agent `agent` on Endpoint `endpoint` (64 lowercase hex characters) |
+| `/endpoints/{endpoint}/agents/{agent}` | `POST` | JSON-RPC for Agent `agent` on Endpoint `endpoint` (its Endpoint ID, 64 lowercase hex characters) |
 | `…/.well-known/agent-card.json` | `GET` | The Agent Card of the route |
 | `…/tasks/{task}/artifacts/{name}` | `GET` | The content of one artifact; `name` is percent-encoded |
 
-- A malformed `agent` or `endpoint` segment answers `404`.
+- A malformed `agent` or `endpoint` segment answers `404`, and so does 64 hex characters that are no Ed25519 public key.
 - The JSON-RPC routes answer a call to an Agent the caller cannot use with an error, described below.
 - Request bodies are limited to 64 KiB.
 

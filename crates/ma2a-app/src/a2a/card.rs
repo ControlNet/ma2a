@@ -86,6 +86,19 @@ async fn card(shared: &Shared, route: &Route) -> Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_endpoint_segment_that_is_no_endpoint_id_names_no_route() {
+        // 64 lowercase hex characters, but not an Ed25519 public key: no Runtime could be
+        // asked for it, so the route does not exist rather than being unavailable.
+        let not_a_key = format!("02{}", "00".repeat(31));
+        let mut bytes = [0_u8; 32];
+        bytes[0] = 2;
+        assert!(ma2a_core::EndpointId::try_from(bytes.as_slice()).is_err());
+        assert!(super::super::http::remote(&not_a_key, "worker").is_none());
+        let key = "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29";
+        assert!(super::super::http::remote(key, "worker").is_some());
+    }
+
     /// The status of a remote card request through a target answering every stream with `script`.
     #[cfg(unix)]
     async fn served(script: crate::test_daemon::Script) -> crate::test_daemon::TestResult<u16> {
