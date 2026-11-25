@@ -131,7 +131,8 @@ impl Directory {
     }
 
     /// Removes a non-directory entry; a directory symbolic link or junction is removed as a
-    /// directory. Any other refusal, such as a read-only file's, is reported as it is.
+    /// directory. Any other refusal, such as one from an ACL that denies deletion, is reported
+    /// as it is.
     pub(crate) fn remove_entry(&self, name: &str) -> io::Result<()> {
         match fs::remove_file(self.at(name)) {
             Err(error)
