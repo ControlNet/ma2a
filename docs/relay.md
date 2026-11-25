@@ -11,8 +11,9 @@ with the externally reachable HTTPS relay URL. The provider signs advertisements
 Endpoint secret used by the Runtime.
 
 Admission uses the Endpoint ID authenticated by the Iroh relay handshake. Effective served Spaces
-are the configured Spaces in which the hosting Endpoint is currently an unrevoked member with the
-private-relay-provider capability. `PrivateRelayAccess` atomically replaces the union of members in
+are the configured Spaces whose policy allows private relay providers and in which the hosting
+Endpoint is currently an unrevoked member. The per-member private-relay-provider bit is recorded and
+shown, but it does not decide relay service. `PrivateRelayAccess` atomically replaces the union of members in
 those effective Spaces and indexes admitted `(EndpointId, ConnectionId)` pairs. A membership update
 disconnects an existing session only when the Endpoint loses eligibility through every effective
 served Space; losing one of several authorizing Spaces preserves the session. Relay admission does
@@ -53,8 +54,8 @@ provider Endpoint ID, HTTPS relay URL, monotonic sequence, issue time, and expir
 provider's other Spaces.
 
 Consumers accept an advertisement only when canonical encoding, provider signature, exact-Space
-membership, private-relay-provider capability, validity window, and persistent sequence high-water
-checks all pass. Lower sequences are rollbacks; different bytes at the same sequence are forks.
+membership, a Space policy that allows private relay providers, validity window, and persistent
+sequence high-water checks all pass. Lower sequences are rollbacks; different bytes at the same sequence are forks.
 Advertisements remain provider metadata and are never converted into target `EndpointData` or added
 to `SpaceAddressLookup`.
 

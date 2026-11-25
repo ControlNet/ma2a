@@ -93,7 +93,7 @@ wizard, cloud escrow, or automatic key replication.
 - Enrollment fails: confirm the ticket is unexpired, unused, intact, and issued for the Space you are joining.
 - Echo fails after revocation: this is expected when no complete shared Space still authorizes it.
 - Private Relay is offline: verify TLS mode, certificate validity, key permissions, served-Space
-  membership, provider capability, and public HTTPS reachability.
+  membership, a Space policy that allows private relay providers, and public HTTPS reachability.
 - Relay state is degraded: inspect compatible candidates and Iroh observations separately; do not
   infer a selected home from desired configuration.
 

@@ -47,9 +47,13 @@ automatic certificate issuance, or recovery from lost private keys.
 By default the UI binds an OS-selected port on `127.0.0.1`. An operator may instead choose any
 local address, including a wildcard, and a fixed port with `ma2a ui start --host --port`; that
 listener accepts remote peers over plain HTTP, so the password, session cookie, and every page
-cross the network unencrypted. Use a non-loopback binding only behind transport the operator
-protects, such as a TLS-terminating proxy that sets `Secure` on the cookie, or a private tunnel
-([web-security.md](web-security.md)). Authentication uses an Argon2id password
+cross the network unencrypted. Use a non-loopback binding only on a network the operator protects,
+such as a VPN or a private tunnel ([web-security.md](web-security.md)). The UI cannot sit behind an
+HTTPS proxy: it requires `Origin` to be exactly `http://<Host>` and `Host` to name the listener's own
+port, so a browser request that arrives through an HTTPS proxy is refused with 403. A tunnel works
+when the browser uses the same address and port as the listener, for example
+`ssh -L 8765:127.0.0.1:8765` for a UI started with `--port 8765`, then `http://127.0.0.1:8765`
+in the browser. Authentication uses an Argon2id password
 verifier, host-only strict cookies, independent CSRF state, exact same-origin checks, bounded login
 attempts, and no permissive CORS. Static assets are compiled into the binary; the release smoke test
 fetches the HTML and referenced JS/CSS from the extracted executable with no source asset directory.

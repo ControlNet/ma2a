@@ -53,8 +53,9 @@ MA2A path score. Iroh path events update observations when a relay path changes 
 `ConnectionManager::reconfigure` compares the desired filtered relay URL set with the set currently
 supplied to Iroh, then calls Iroh's asynchronous `insert_relay` and `remove_relay` APIs. Iroh 1.1 does
 not require Endpoint reconstruction for this operation. The manager verifies that the Endpoint is
-still open and retains the same identity. Runtime then forces publication of the next actual
-`SpaceAddressRecord` when the effective relay configuration changes.
+still open and retains the same identity. Runtime then republishes its `SpaceAddressRecord`, but
+signs a new sequence only when the Endpoint data in the record has changed or the record is due for
+renewal; a relay change that leaves that data the same signs nothing new.
 
 ## Learned Routes And Cold Start
 

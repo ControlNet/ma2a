@@ -30,4 +30,6 @@ replaced as the running Endpoint reports current state.
 - `IrohHomeConnected` only after Iroh reports a connected home from the supplied map.
 
 When the candidate map or Iroh-observed `EndpointAddr` changes, Runtime preserves the Endpoint
-identity and forces a newly sequenced `SpaceAddressRecord` using the live observed Endpoint data.
+identity and republishes its `SpaceAddressRecord` from the live observed Endpoint data. A new
+sequence is signed only when that data differs from the current record or the record is due for
+renewal.
