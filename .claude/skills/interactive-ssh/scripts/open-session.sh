@@ -24,16 +24,17 @@ case "$os" in
   *) runners=("$os") ;;
 esac
 
-# The new run is the first one after those that already exist, whatever the local clock says.
-before=$(gh run list -R "$repo" --workflow interactive.yml --event workflow_dispatch --limit 20 \
-  --json databaseId --jq '[.[].databaseId] | max // 0')
-gh workflow run interactive.yml -R "$repo" -f os="$os" -f ref="$ref" -f timeout_minutes="$timeout"
+# The workflow puts this dispatch's random request token in its run name, so the script finds its
+# own run even when someone else dispatches one at the same time.
+request=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+gh workflow run interactive.yml -R "$repo" -f os="$os" -f ref="$ref" -f timeout_minutes="$timeout" \
+  -f request="$request"
 
 run=''
 for _ in $(seq 60); do
   sleep 5
-  run=$(gh run list -R "$repo" --workflow interactive.yml --event workflow_dispatch --limit 20 \
-    --json databaseId --jq "[.[].databaseId | select(. > $before)] | min // empty")
+  run=$(gh run list -R "$repo" --workflow interactive.yml --event workflow_dispatch --limit 50 \
+    --json databaseId,displayTitle --jq ".[] | select(.displayTitle | endswith(\" $request\")) | .databaseId")
   [ -z "$run" ] || break
 done
 [ -n "$run" ] || { echo "the dispatched run did not appear within 5 minutes" >&2; exit 1; }
@@ -41,29 +42,24 @@ echo "run: https://github.com/$repo/actions/runs/$run"
 
 [ -n "$out" ] || out=$(mktemp -d "${TMPDIR:-/tmp}/interactive-ssh-$run.XXXXXX")
 mkdir -p "$out"
+# The umask covers new files only, so an existing directory is made private and its files replaced.
+chmod 700 "$out"
+rm -f "$out/known_hosts" "$out/ssh_config"
 printf '%s\n' \
   '@cert-authority uptermd.upterm.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4' \
   '@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4' \
   > "$out/known_hosts"
 : > "$out/ssh_config"
 
-failed=0
-for runner in "${runners[@]}"; do
-  # A runner whose job ends before it hands off is reported; the others are still handed off.
-  until gh run download "$run" -R "$repo" -n "ssh-$runner" -D "$out/$runner" > /dev/null 2>&1; do
-    status=$(gh run view "$run" -R "$repo" --json status,jobs --jq "if .status == \"completed\"
-      then .status else .jobs[] | select(.name == \"session ($runner)\") | .status end")
-    if [ "$status" = completed ]; then
-      echo "$runner: its job ended before it handed off a session" >&2
-      failed=1
-      continue 2
-    fi
-    sleep 10
-  done
-  target=$(awk 'NR == 1 { print $2 }' "$out/$runner/ssh-command.txt")
+# Adds the ssh config entry for a runner whose handoff artifact was downloaded.
+hand_off() {
+  local runner=$1 target=''
+  if [ -r "$out/$runner/ssh-command.txt" ] && [ -r "$out/$runner/workspace.txt" ]; then
+    target=$(awk 'NR == 1 { print $2 }' "$out/$runner/ssh-command.txt")
+  fi
   [[ "$target" =~ ^[^[:space:]@\"]+@[^[:space:]@\"]+$ ]] || {
     echo "$runner: unexpected connection command" >&2
-    exit 1
+    return 1
   }
   cat >> "$out/ssh_config" <<EOF
 Host $runner
@@ -79,5 +75,30 @@ Host $runner
 
 EOF
   echo "$runner: ssh -F '$out/ssh_config' $runner   (workspace: $(cat "$out/$runner/workspace.txt"))"
+}
+
+# Every pending runner is checked on each round, so a session is handed off as soon as it is
+# ready, whatever the other runners do. A runner whose job ends before it hands off, or whose
+# handoff is malformed, is reported and fails the script; the others are still handed off.
+failed=0
+pending=("${runners[@]}")
+while [ "${#pending[@]}" -gt 0 ]; do
+  waiting=()
+  for runner in "${pending[@]}"; do
+    # The status is read before the download, so a job that uploads and then ends in between is
+    # not mistaken for one that never handed off.
+    status=$(gh run view "$run" -R "$repo" --json status,jobs --jq "if .status == \"completed\"
+      then .status else .jobs[] | select(.name == \"session ($runner)\") | .status end")
+    if gh run download "$run" -R "$repo" -n "ssh-$runner" -D "$out/$runner" > /dev/null 2>&1; then
+      hand_off "$runner" || failed=1
+    elif [ "$status" = completed ]; then
+      echo "$runner: its job ended before it handed off a session" >&2
+      failed=1
+    else
+      waiting+=("$runner")
+    fi
+  done
+  pending=(${waiting[@]+"${waiting[@]}"})
+  [ "${#pending[@]}" -eq 0 ] || sleep 10
 done
 exit "$failed"

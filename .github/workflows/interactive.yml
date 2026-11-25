@@ -1,4 +1,6 @@
 name: interactive
+# The request token lets open-session.sh find the run it dispatched among concurrent ones.
+run-name: interactive ${{ inputs.os }} ${{ inputs.request }}
 
 # Manual only: opens an SSH session on a hosted runner to build and debug on that platform
 # (for example, Windows-only code that cannot run locally). Kept out of ci.yml so pushes and pull
@@ -19,6 +21,10 @@ on:
         description: Job time limit in minutes (at most 360), setup and session included
         type: number
         default: 60
+      request:
+        description: Random token naming this dispatch in the run name (set by open-session.sh)
+        required: false
+        default: ''
 
 permissions:
   contents: read
