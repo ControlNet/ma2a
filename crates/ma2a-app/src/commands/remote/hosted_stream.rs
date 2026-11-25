@@ -3,28 +3,44 @@
 use std::io::Write as _;
 
 use ma2a_core::service::{
-    EndReason, LogFrom, MAX_LOGS_READ, OpenBody, ProcessAccept, ProcessId, ProcessRequest,
-    ServiceError, Termination,
+    EndReason, LogFrom, MAX_LOGS_READ, OpenBody, ProcessAccept, ProcessId, ProcessReply,
+    ProcessRequest, ServiceError, Termination,
 };
 use ma2a_services::client::{
-    ClientError,
+    ClientError, answer,
     hosted::{self, Attached, Gaps},
     process::ProcessIo,
 };
 
-use super::{READ_DEADLINE, bounded, hosted::Target, hosted_view, open, process::interrupted};
+use super::{
+    READ_DEADLINE, bounded, hosted::Target, hosted_view, open, open_bound, process::interrupted,
+};
 use crate::AppError;
 
 /// Prints retained output from `from`; with `follow`, then attaches until the Process ends.
 pub(super) async fn logs(
     target: Target<'_>,
-    (id, from): (ProcessId, LogFrom),
+    read: (ProcessId, LogFrom),
     follow: bool,
 ) -> Result<(), AppError> {
+    let code = logs_code(target, read, follow).await?;
+    exit(code, false)
+}
+
+/// Prints as [`logs`] does, and returns the exit status for how it ended.
+pub(super) async fn logs_code(
+    target: Target<'_>,
+    (id, from): (ProcessId, LogFrom),
+    follow: bool,
+) -> Result<i32, AppError> {
     let (next, ended) = read_retained(target, (id, from)).await?;
     if !follow || ended {
         note(&format!("next cursor {next}"));
-        return Ok(());
+        return if ended && follow {
+            ended_code(target, id).await
+        } else {
+            Ok(0)
+        };
     }
     let (mut reader, mut writer) = open_attach(target, (id, LogFrom::Cursor(next), false)).await?;
     let local = ProcessIo::<tokio::io::Stdin, _, _> {
@@ -34,14 +50,40 @@ pub(super) async fn logs(
     };
     let attach = (id, LogFrom::Cursor(next));
     match hosted::attach((&mut reader, &mut writer), (attach, local), interrupted()).await {
-        Ok(attached) => finish(&attached, false),
+        Ok(attached) => Ok(report(&attached)),
         // The Process ended between the read and the attach: print what it wrote last.
         Err(ClientError::Rejected(ServiceError::NotRunning)) => {
-            let (next, _) = read_retained(target, (id, LogFrom::Cursor(next))).await?;
+            let (next, ended) = read_retained(target, (id, LogFrom::Cursor(next))).await?;
             note(&format!("next cursor {next}"));
-            Ok(())
+            if !ended {
+                return Err(ClientError::Rejected(ServiceError::NotRunning).into());
+            }
+            ended_code(target, id).await
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// The exit status of a Process that ended before an attachment saw it, as if it had.
+async fn ended_code(target: Target<'_>, id: ProcessId) -> Result<i32, AppError> {
+    let request = ProcessRequest::Inspect(id);
+    let body = OpenBody::Process(request.clone());
+    let (opened, (accept, reply)) = bounded(READ_DEADLINE, async {
+        let (opened, (mut reader, writer)) = open_bound(target.0, (target.1, None), body).await?;
+        let answer = hosted::call(&mut reader).await?;
+        drop(writer);
+        Ok((opened, answer))
+    })
+    .await?;
+    match &reply {
+        ProcessReply::Details(details)
+            if answer::process((&request, &opened), (accept, &reply)) =>
+        {
+            Ok(exit_code(EndReason::Completed, details.summary.termination))
+        }
+        _ => Err(AppError::Protocol(
+            "the target answered another Process or operation".to_owned(),
+        )),
     }
 }
 
@@ -176,10 +218,12 @@ async fn open_attach(
 
 /// Reports how the attachment ended and exits: with the Process's own status once it ended,
 /// and successfully after a detach.
-///
-/// The process exits directly because a pending read of stdin cannot be cancelled and
-/// would otherwise hold the runtime open.
 fn finish(attached: &Attached, reading_stdin: bool) -> Result<(), AppError> {
+    exit(report(attached), reading_stdin)
+}
+
+/// Reports how the attachment ended, and returns the exit status for it.
+fn report(attached: &Attached) -> i32 {
     gaps(attached.gaps);
     let process = hosted_view::summary(&attached.summary);
     let state = process.get("state").cloned().unwrap_or_default();
@@ -192,7 +236,14 @@ fn finish(attached: &Attached, reading_stdin: bool) -> Result<(), AppError> {
         },
         attached.cursor
     ));
-    let code = exit_code(attached.reason, attached.summary.termination);
+    exit_code(attached.reason, attached.summary.termination)
+}
+
+/// Exits with `code` once output is flushed; returns only on success while stdin is not read.
+///
+/// The process exits directly because a pending read of stdin cannot be cancelled and
+/// would otherwise hold the runtime open.
+fn exit(code: i32, reading_stdin: bool) -> Result<(), AppError> {
     std::io::stdout().lock().flush()?;
     std::io::stderr().lock().flush()?;
     if reading_stdin || code != 0 {
@@ -232,59 +283,5 @@ fn note(message: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    use ma2a_core::service::{EndReason, Termination};
-
-    use super::{MAX_RETAINED_READS, another, exit_code};
-
-    #[test]
-    fn an_attachment_exits_with_the_status_of_the_process_it_saw_end() {
-        assert_eq!(
-            exit_code(EndReason::Completed, Some(Termination::Exited(3))),
-            3
-        );
-        assert_eq!(
-            exit_code(EndReason::Completed, Some(Termination::Signaled(9))),
-            137
-        );
-        // Ended without an exit status: it never started, was lost, or its end is unknown.
-        assert_eq!(exit_code(EndReason::Completed, None), 255);
-        assert_eq!(
-            exit_code(EndReason::Completed, Some(Termination::Unknown)),
-            255
-        );
-        // Detached: the Process may still run.
-        assert_eq!(exit_code(EndReason::Cancelled, None), 0);
-        assert_eq!(
-            exit_code(EndReason::Cancelled, Some(Termination::Exited(3))),
-            0
-        );
-    }
-
-    #[test]
-    fn a_log_cursor_that_goes_back_is_refused() {
-        assert!(another((1, None), (0, false)).is_ok_and(|another| another));
-        assert!(another((2, Some(10)), (20, false)).is_ok_and(|another| another));
-        assert!(another((2, Some(10)), (10, false)).is_ok_and(|another| !another));
-        assert!(another((2, Some(10)), (9, false)).is_err());
-    }
-
-    #[test]
-    fn a_final_reply_whose_cursor_goes_back_is_refused() {
-        // A read from cursor 100 that ends the Process may not resume anyone at 90.
-        assert!(another((1, Some(100)), (90, true)).is_err());
-        assert!(another((1, Some(100)), (100, true)).is_ok_and(|another| !another));
-        assert!(another((1, None), (0, true)).is_ok_and(|another| !another));
-    }
-
-    #[test]
-    fn a_log_cursor_still_creeping_after_the_last_read_is_refused() {
-        let last = MAX_RETAINED_READS;
-        assert!(another((last - 1, Some(10)), (11, false)).is_ok_and(|another| another));
-        // A last read that ends where the one before it did is answered as it is, and so is
-        // one that needs no further read.
-        assert!(another((last, Some(10)), (10, false)).is_ok_and(|another| !another));
-        assert!(another((last, Some(10)), (11, true)).is_ok_and(|another| !another));
-        assert!(another((last, Some(10)), (11, false)).is_err());
-    }
-}
+#[path = "hosted_stream_tests.rs"]
+mod tests;

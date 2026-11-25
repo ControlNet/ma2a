@@ -29,6 +29,8 @@ mod follow_tests;
 pub(crate) mod hosted;
 mod hosted_stream;
 mod hosted_view;
+#[cfg(all(test, unix))]
+mod logs_tests;
 pub(crate) mod process;
 pub(crate) mod proxy;
 #[cfg(all(test, unix))]
