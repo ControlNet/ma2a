@@ -200,19 +200,21 @@ async fn follow(
     after: Option<u32>,
 ) -> Result<AgentReply, AppError> {
     let (print_events, mut seen) = (after.is_some(), after.unwrap_or(0));
+    let caller = own_endpoint(target.0).await?;
     let mut reconnecting = false;
     loop {
         let request = AgentRequest::Watch(agent.clone(), task, seen);
         let watched = match open(target.0, target.1, OpenBody::Agent(request)).await {
             Ok((mut reader, _writer)) => {
                 let mut printed = Ok(());
-                let outcome = client::agent::watch(&mut reader, (&agent, task, seen), |event| {
-                    seen = event.seq;
-                    if print_events && printed.is_ok() {
-                        printed = print(&agent_event_value(&event));
-                    }
-                })
-                .await;
+                let outcome =
+                    client::agent::watch(&mut reader, ((&caller, &agent, task), seen), |event| {
+                        seen = event.seq;
+                        if print_events && printed.is_ok() {
+                            printed = print(&agent_event_value(&event));
+                        }
+                    })
+                    .await;
                 printed?;
                 outcome
             }

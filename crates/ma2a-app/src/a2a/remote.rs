@@ -264,15 +264,17 @@ pub(super) async fn follow(
 ) -> Result<(), Refusal> {
     let (endpoint, agent) = parts(route)?;
     let task = task_id(task)?;
+    let caller = own_endpoint(&backend.paths).await?;
     let mut reconnecting = false;
     loop {
         let request = OpenBody::Agent(AgentRequest::Watch(agent.clone(), task, after));
         let refused = match open_as(&backend.paths, (endpoint, None), request).await {
             Ok((mut reader, _writer)) => {
-                let watching = client::agent::watch(&mut reader, (agent, task, after), |event| {
-                    after = event.seq;
-                    let _sent = events.send(agent_event_value(&event));
-                });
+                let watching =
+                    client::agent::watch(&mut reader, ((&caller, agent, task), after), |event| {
+                        after = event.seq;
+                        let _sent = events.send(agent_event_value(&event));
+                    });
                 let watched = tokio::select! {
                     watched = watching => watched,
                     () = events.closed() => return Ok(()),

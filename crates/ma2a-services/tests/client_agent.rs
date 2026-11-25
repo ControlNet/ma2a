@@ -24,16 +24,18 @@ fn summary(state: AgentTaskState) -> TestResult<AgentTaskSummary> {
     summary_of(TASK, state)
 }
 
+/// The Endpoint every watch here is sent by, which created every task: the identity point, a
+/// valid Ed25519 key.
+fn caller() -> TestResult<EndpointId> {
+    let mut caller = [0_u8; 32];
+    caller[0] = 1;
+    Ok(EndpointId::try_from(caller.as_slice())?)
+}
+
 fn summary_of(task: AgentTaskId, state: AgentTaskState) -> TestResult<AgentTaskSummary> {
-    // The identity point is a valid Ed25519 key.
-    let mut creator = [0_u8; 32];
-    creator[0] = 1;
     let mut summary = AgentTaskSummary::new(
         (task, AgentId::new("worker")?),
-        (
-            EndpointId::try_from(creator.as_slice())?,
-            RequestId::try_from([9; 16].as_slice())?,
-        ),
+        (caller()?, RequestId::try_from([9; 16].as_slice())?),
         1_000,
     );
     summary.state = state;
@@ -86,8 +88,8 @@ async fn watched_events(
     target.frame(FrameKind::Outcome, &outcome).await?;
     target.flush().await?;
     let mut seen = Vec::new();
-    let worker = AgentId::new("worker")?;
-    let watching = agent::watch(&mut reader, (&worker, TASK, after), |event| {
+    let (caller, worker) = (caller()?, AgentId::new("worker")?);
+    let watching = agent::watch(&mut reader, ((&caller, &worker, TASK), after), |event| {
         seen.push(event.seq);
     });
     let result = tokio::time::timeout(Duration::from_secs(30), watching).await?;
@@ -226,6 +228,23 @@ async fn a_watch_ends_with_the_task_of_the_agent_it_named() -> TestResult {
     other.last_seq = 1;
     let watching = (0, AgentAccept::Watching(AgentTaskState::Running, 1));
     let (result, _) = watched(watching, &[1], &AgentReply::Summary(other)).await?;
+    assert!(malformed(&result), "{result:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_ends_with_a_task_its_caller_created() -> TestResult {
+    // Given: an otherwise matching end of a task another Endpoint created.
+    let mut key = [0x66_u8; 32];
+    key[0] = 0x58;
+    let mut other = summary(AgentTaskState::Completed)?;
+    (other.creator, other.last_seq) = (EndpointId::try_from(key.as_slice())?, 1);
+    let watching = (0, AgentAccept::Watching(AgentTaskState::Running, 1));
+
+    // When
+    let (result, _) = watched(watching, &[1], &AgentReply::Summary(other)).await?;
+
+    // Then: it is not the end of the caller's own task.
     assert!(malformed(&result), "{result:?}");
     Ok(())
 }

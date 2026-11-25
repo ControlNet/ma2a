@@ -1,11 +1,16 @@
 //! `agent watch` reconnecting after its watch was interrupted.
 
-use ma2a_core::service::AgentTaskId;
+use ma2a_core::service::{
+    AgentAccept, AgentEvent, AgentEventBody, AgentReply, AgentTaskId, AgentTaskState, FrameKind,
+};
 
 use crate::{
     AppError,
     cli::agents::{AgentCommand, TaskTarget},
-    test_daemon::{Daemon, Script, TestResult, refusing, watch_completing, watch_lost},
+    test_daemon::{
+        Daemon, Script, TestResult, another_endpoint, refusing, summary, watch_completing,
+        watch_lost,
+    },
 };
 
 const TASK: AgentTaskId = AgentTaskId::from_bytes([1; 16]);
@@ -56,5 +61,35 @@ async fn a_watch_reconnects_while_reopening_it_fails_for_now() -> TestResult {
         matches!(&ended, Err(AppError::Rejected(name, _)) if name == "unavailable"),
         "{ended:?}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_takes_no_end_of_a_task_another_endpoint_created() -> TestResult {
+    // Given: a watch after event 1 that ends with event 2, and the Summary of that end names
+    // another creator.
+    let mut ended = summary(TASK, "worker")?;
+    (ended.state, ended.last_seq) = (AgentTaskState::Completed, 2);
+    ended.creator = another_endpoint()?;
+    let mut event = vec![1];
+    let completed = AgentEventBody::State(AgentTaskState::Completed, None);
+    event.extend(AgentEvent::new(2, 2_000, completed).to_bytes()?);
+    let watch = vec![
+        (
+            FrameKind::Accept,
+            AgentAccept::Watching(AgentTaskState::Running, 2).encode()?,
+        ),
+        (FrameKind::Data, event),
+        (
+            FrameKind::Outcome,
+            AgentReply::encode_outcome(&Ok(AgentReply::Summary(ended)))?,
+        ),
+    ];
+
+    // When
+    let ended = watched(vec![watch]).await?;
+
+    // Then
+    assert!(ended.is_err(), "{ended:?}");
     Ok(())
 }
