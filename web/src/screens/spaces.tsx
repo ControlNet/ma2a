@@ -1,6 +1,6 @@
 import { type ReactNode, useRef, useState } from "react"
 
-import { RuntimeMutationRejectedError } from "../api/mutations"
+import { mutationOutcomeUnknown, RuntimeMutationRejectedError } from "../api/mutations"
 import { EmptyState, PendingSnapshot } from "../components/feedback"
 import { Field, Form, text } from "../components/form"
 import { Inspector } from "../components/inspector"
@@ -83,10 +83,12 @@ export function SpacesInspector({
     readonly invite?: string
     readonly revoke?: string
   }>({})
+  // `unknown` is shown when no answer came back, so the request may have taken effect.
   const run = (
     slot: "create" | "invite" | "revoke",
     operation: () => Promise<void>,
     success: string,
+    unknown: string,
   ): void => {
     if (busyRef.current) return
     busyRef.current = true
@@ -98,10 +100,11 @@ export function SpacesInspector({
         (error: unknown) =>
           setStatus((current) => ({
             ...current,
-            [slot]:
-              error instanceof RuntimeMutationRejectedError &&
-              typeof error.remediation === "string" &&
-              error.remediation.length > 0
+            [slot]: mutationOutcomeUnknown(error)
+              ? unknown
+              : error instanceof RuntimeMutationRejectedError &&
+                  typeof error.remediation === "string" &&
+                  error.remediation.length > 0
                 ? error.remediation
                 : "The Runtime rejected the request.",
           })),
@@ -125,6 +128,7 @@ export function SpacesInspector({
               "create",
               () => actions.createSpace(text(data, "name")),
               "Space created by the Runtime.",
+              "No answer came back, so the Space may already exist. Create it again with the same name to finish this request without a second Space.",
             )
           }}
           submitLabel="Create"
@@ -154,6 +158,7 @@ export function SpacesInspector({
                   text(data, "output-path"),
                 ),
               "Ticket written by the Runtime. Its secret never reaches this browser.",
+              "No answer came back, so the ticket may already be written. Check the ticket file before trying again.",
             )
           }}
           submitLabel="Create invite"
@@ -203,6 +208,7 @@ export function SpacesInspector({
               "revoke",
               () => actions.revokeEndpoint(text(data, "space-id"), text(data, "endpoint-id")),
               "Member removed. The revocation applies to this Space only.",
+              "No answer came back, so the member may already be removed. Check the members before trying again.",
             )
           }}
           submitLabel="Remove"

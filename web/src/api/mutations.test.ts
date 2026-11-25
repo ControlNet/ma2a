@@ -209,3 +209,42 @@ test("reads the CSRF token for every mutation, so one replaced by another tab is
     "ef".repeat(32),
   ])
 })
+
+// A creation whose answer was lost may have committed, so a retry of the same name must replay
+// it under its request ID instead of creating a second Space. Names are not unique, so a
+// creation that was answered or refused, or another name, gets a new ID.
+test("a Space creation retried after a lost answer keeps its request ID", async () => {
+  const ids: unknown[] = []
+  let answer: "lose" | "refuse" | "create" = "lose"
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+    const command = (await new Request(input, init).json()) as { request_id: unknown }
+    ids.push(command.request_id)
+    if (answer === "lose") throw new TypeError("Failed to fetch")
+    if (answer === "refuse") return new Response(null, { status: 403 })
+    return Response.json({
+      version: 1,
+      request_id: command.request_id,
+      revision: 12,
+      result: {
+        type: "space_created",
+        payload: { space_id: "ab".repeat(32), name: "Operations", member_count: 1 },
+      },
+    })
+  })
+  let next = 0
+  const client = createRuntimeMutationClient({
+    csrfToken: () => "cd".repeat(32),
+    requestId: () => (++next).toString(16).padStart(32, "0"),
+  })
+
+  await expect(client.createSpace("Operations")).rejects.toThrow()
+  await expect(client.createSpace("Renamed")).rejects.toThrow()
+  answer = "create"
+  await client.createSpace("Renamed")
+  answer = "refuse"
+  await expect(client.createSpace("Renamed")).rejects.toThrow()
+  answer = "create"
+  await client.createSpace("Renamed")
+
+  expect(ids).toEqual([1, 2, 2, 3, 4].map((id) => id.toString(16).padStart(32, "0")))
+})

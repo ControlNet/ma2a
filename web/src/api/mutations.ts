@@ -1,4 +1,4 @@
-import ky from "ky"
+import ky, { HTTPError } from "ky"
 
 import { type EndpointId, LOCAL_API_VERSION, type RequestId, type SpaceId } from "./generated"
 import {
@@ -40,6 +40,17 @@ export class RuntimeMutationRejectedError extends Error {
   ) {
     super(remediation ? `${code}: ${remediation}` : code)
   }
+}
+
+/**
+ * Whether a failed mutation may still have taken effect: no answer came back, or none that says
+ * it was refused. A rejection, or an HTTP refusal before the command ran, is definite.
+ */
+export function mutationOutcomeUnknown(error: unknown): boolean {
+  return !(
+    error instanceof RuntimeMutationRejectedError ||
+    (error instanceof HTTPError && error.response.status < 500)
+  )
 }
 
 export type RuntimeMutationClient = {
@@ -103,16 +114,29 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
   const id = (): RequestId => RequestIdSchema.parse(requestId()) as RequestId
   const endpoint = (value: string): EndpointId => EndpointIdSchema.parse(value) as EndpointId
   const space = (value: string): SpaceId => SpaceIdSchema.parse(value) as SpaceId
+  // A creation without a definite answer may have committed. Retrying the same name reuses its
+  // request ID, so the Runtime replays that outcome instead of creating a second Space; a
+  // definite answer settles it, and a creation of another name replaces it.
+  let unsettledCreation: { readonly name: string; readonly requestId: RequestId } | undefined
 
   return {
     createSpace: async (name) => {
+      const requestId = unsettledCreation?.name === name ? unsettledCreation.requestId : id()
+      unsettledCreation = { name, requestId }
+      const settle = (): void => {
+        if (unsettledCreation?.requestId === requestId) unsettledCreation = undefined
+      }
       const result = await mutate("/api/v1/spaces/create", {
         version: LOCAL_API_VERSION,
         operation: "space_create",
-        request_id: id(),
+        request_id: requestId,
         name,
+      }).catch((error: unknown) => {
+        if (!mutationOutcomeUnknown(error)) settle()
+        throw error
       })
       if (result.type !== "space_created") throw new RuntimeMutationPayloadError()
+      settle()
       return result.payload
     },
     createInvitation: async (spaceId, ttlMs, outputPath) => {

@@ -4,6 +4,7 @@ import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, test } from "vitest"
 
+import { RuntimeMutationRejectedError } from "../api/mutations"
 import { ONE_RUNTIME_FIXTURE } from "../test/fixtures"
 import { runtimeActions } from "./actions.fixture"
 import { RelaysInspector } from "./relay-config"
@@ -71,4 +72,20 @@ test("external termination hides the TLS path fields instead of ignoring them si
 
   expect(screen.queryByLabelText("TLS private key path")).not.toBeInTheDocument()
   expect(screen.getByText(/plaintext backend on loopback only/)).toBeInTheDocument()
+})
+
+// A lost answer is not a rejection: the Space may exist, and the same name retries safely.
+test.each([
+  [new TypeError("Failed to fetch"), /may already exist.*same name/],
+  [new RuntimeMutationRejectedError("conflict"), /^The Runtime rejected the request\.$/],
+])("a failed Space creation says whether the Runtime answered: %s", async (error, status) => {
+  const user = userEvent.setup()
+  const actions = { ...runtimeActions(), createSpace: async () => Promise.reject(error) }
+  render(<SpacesInspector actions={actions} runtime={ONE_RUNTIME_FIXTURE} />)
+  const form = within(screen.getByRole("form", { name: "Create a Space" }))
+
+  await user.type(form.getByLabelText("Name"), "Operations")
+  await user.click(form.getByRole("button", { name: "Create" }))
+
+  expect(await form.findByText(status)).toBeInTheDocument()
 })
