@@ -45,45 +45,87 @@ fn staging_name() -> Result<String, ProtocolError> {
 /// it into place without replacing anything. Until the link, the destination name is never
 /// touched, so a failed or interrupted write leaves it unpublished and cleanup removes only the
 /// staging file, never a file someone else put at the destination.
+///
+/// The directory is opened once and every step runs relative to that handle, so all of them
+/// happen in the same directory: one renamed meanwhile receives the ticket under its new name,
+/// and no staging file is left behind in it.
 #[cfg(unix)]
 pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
-    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _, path::Path};
     check_destination(path)?;
-    let destination = Path::new(path);
-    let staged = destination.with_file_name(staging_name()?);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&staged)
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let published = file
-        .write_all(contents)
-        .and_then(|()| file.write_all(b"\n"))
-        .and_then(|()| file.sync_all())
-        .map_err(|_| ProtocolError::INTERNAL)
-        .and_then(|()| publish(&staged, destination).map_err(|_| ProtocolError::INVALID_INPUT));
-    drop(file);
-    let _removed = std::fs::remove_file(&staged);
-    published
+    let (directory, name) = destination_directory(path)?;
+    let staged = stage(&directory, contents)?;
+    publish_staged(&directory, &staged, name)
 }
 
-/// Gives `staged` the name `destination` only if nothing has it. A hard link claims the name
-/// atomically; a file system without hard links falls back to a no-clobber rename.
+/// Opens the directory `path` names its file in, and returns it with that file name.
 #[cfg(unix)]
-fn publish(staged: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
-    match std::fs::hard_link(staged, destination) {
-        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
-            rename_no_clobber(staged, destination).map_err(|_| error)
+fn destination_directory(
+    path: &str,
+) -> Result<(std::os::fd::OwnedFd, &std::ffi::OsStr), ProtocolError> {
+    use rustix::fs::{Mode, OFlags};
+    let destination = std::path::Path::new(path);
+    let name = destination
+        .file_name()
+        .ok_or(ProtocolError::INVALID_INPUT)?;
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let directory =
+        rustix::fs::open(parent, flags, Mode::empty()).map_err(|_| ProtocolError::INVALID_INPUT)?;
+    Ok((directory, name))
+}
+
+/// Writes the ticket to a new owner-only staging file in `directory` and returns its name.
+#[cfg(unix)]
+fn stage(directory: &std::os::fd::OwnedFd, contents: &[u8]) -> Result<String, ProtocolError> {
+    use std::io::Write as _;
+
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    let name = staging_name()?;
+    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = rustix::fs::openat(directory, name.as_str(), flags, Mode::RUSR | Mode::WUSR)
+        .map_err(|_| ProtocolError::INVALID_INPUT)?;
+    let mut file = std::fs::File::from(file);
+    let written = file
+        .write_all(contents)
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all());
+    if written.is_err() {
+        let _removed = rustix::fs::unlinkat(directory, name.as_str(), AtFlags::empty());
+        return Err(ProtocolError::INTERNAL);
+    }
+    Ok(name)
+}
+
+/// Gives the staged file the name `name` only if nothing has it, then removes the staging
+/// name. A hard link claims the name atomically; a file system without hard links falls back
+/// to a no-clobber rename.
+#[cfg(unix)]
+fn publish_staged(
+    directory: &std::os::fd::OwnedFd,
+    staged: &str,
+    name: &std::ffi::OsStr,
+) -> Result<(), ProtocolError> {
+    use rustix::{fs::AtFlags, io::Errno};
+    let published = match rustix::fs::linkat(directory, staged, directory, name, AtFlags::empty()) {
+        Err(error) if error != Errno::EXIST => {
+            rename_no_clobber(directory, (staged, name)).map_err(|_| error)
         }
         linked => linked,
-    }
+    };
+    let _removed = rustix::fs::unlinkat(directory, staged, AtFlags::empty());
+    published.map_err(|_| ProtocolError::INVALID_INPUT)
 }
 
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
-fn rename_no_clobber(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-    renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE).map_err(std::io::Error::from)
+fn rename_no_clobber(
+    directory: &std::os::fd::OwnedFd,
+    (from, to): (&str, &std::ffi::OsStr),
+) -> rustix::io::Result<()> {
+    use rustix::fs::{RenameFlags, renameat_with};
+    renameat_with(directory, from, directory, to, RenameFlags::NOREPLACE)
 }
 
 /// Other Unix hosts have no no-clobber rename, and a plain one could replace a file.
@@ -91,8 +133,11 @@ fn rename_no_clobber(from: &std::path::Path, to: &std::path::Path) -> std::io::R
     unix,
     not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
 ))]
-fn rename_no_clobber(_from: &std::path::Path, _to: &std::path::Path) -> std::io::Result<()> {
-    Err(std::io::ErrorKind::Unsupported.into())
+fn rename_no_clobber(
+    _directory: &std::os::fd::OwnedFd,
+    _names: (&str, &std::ffi::OsStr),
+) -> rustix::io::Result<()> {
+    Err(rustix::io::Errno::NOSYS)
 }
 
 /// Writes the ticket into a protected staging directory and moves it into place without
@@ -187,6 +232,41 @@ mod tests {
             .collect::<std::io::Result<Vec<_>>>()?;
         assert_eq!(names, ["ticket"]);
         std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ticket_stays_in_its_directory_when_the_directory_is_renamed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Given: the ticket is staged in its output directory.
+        let base = std::env::temp_dir().join(format!("ma2a-invite-moved-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&base);
+        let (output, retired) = (base.join("output"), base.join("retired"));
+        std::fs::create_dir_all(&output)?;
+        let path = output.join("ticket");
+        let path = path.to_str().ok_or("path")?;
+        let (directory, name) = super::destination_directory(path)?;
+        let staged = super::stage(&directory, b"secret")?;
+
+        // When: the directory is rotated away and an empty one takes its name before publication.
+        std::fs::rename(&output, &retired)?;
+        std::fs::create_dir(&output)?;
+        let published = super::publish_staged(&directory, &staged, name);
+
+        // Then: the ticket is published in the directory it was staged in, with no staging left.
+        let names = |directory: &std::path::Path| {
+            std::fs::read_dir(directory)?
+                .map(|entry| Ok(entry?.file_name()))
+                .collect::<std::io::Result<Vec<_>>>()
+        };
+        let (moved, replacement) = (names(&retired)?, names(&output)?);
+        let ticket = std::fs::read(retired.join("ticket"));
+        std::fs::remove_dir_all(&base)?;
+        assert!(published.is_ok(), "{published:?}");
+        assert_eq!(moved, ["ticket"]);
+        assert!(replacement.is_empty(), "{replacement:?}");
+        assert_eq!(ticket?, b"secret\n");
         Ok(())
     }
 }
