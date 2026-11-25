@@ -322,7 +322,9 @@ accepted and never answered from replay; an `accept` of any other Files operatio
 and `write`, which answer alone, and content answering any but a `read`; `data` or `end` on a channel the target does not send on;
 and `data` on a channel the target already ended, or a second `end` of it. An Exec, Shell, or Proxy outcome must
 count exactly the bytes received from the target on each channel, and Proxy's `bytes_to_target`
-can be no more than the caller sent; any other count is `integrity_mismatch`.
+can be no more than the caller sent; any other count is `integrity_mismatch`. A Proxy relay that
+ended `completed` must also have seen both sides end, or it is `invalid_input`, and must have taken
+every byte the caller sent to the destination.
 
 The `ma2a` CLI drives every family this way:
 

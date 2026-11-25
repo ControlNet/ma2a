@@ -202,15 +202,36 @@ fn relayed(to: u64, from: u64) -> TestResult<Sent> {
     ))
 }
 
-/// Runs a Proxy caller sending `local` against a target sending `sent`.
+/// Runs a Proxy caller sending `local` against a target sending `sent`; a relay completes
+/// only once both sides ended, so the target holds its outcome until the caller's `end`.
 async fn proxied(
     sent: &[Sent],
     local: &'static [u8],
 ) -> TestResult<Result<ProxyResult, ClientError>> {
-    let replies = replies(sent).await?;
-    let mut reader = FrameReader::new(replies.as_slice());
-    let mut writer = FrameWriter::new(tokio::io::sink());
-    within(proxy::run((&mut reader, &mut writer), (local, Vec::new()))).await
+    proxied_with(sent, local, true).await
+}
+
+/// Runs a Proxy caller reading `local` against a target sending `sent`, holding its outcome
+/// until the caller's `end` when `after_end`.
+async fn proxied_with<L: tokio::io::AsyncRead + Unpin>(
+    sent: &[Sent],
+    local: L,
+    after_end: bool,
+) -> TestResult<Result<ProxyResult, ClientError>> {
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let sent = sent.to_vec();
+    let target = tokio::spawn(async move {
+        for frame in &sent {
+            if after_end && matches!(frame, Sent::Frame(FrameKind::Outcome, _)) {
+                while target_reader.expect().await?.kind() != FrameKind::End {}
+            }
+            send(&mut target_writer, std::slice::from_ref(frame)).await?;
+        }
+        TestResult::Ok(())
+    });
+    let relayed = within(proxy::run((&mut reader, &mut writer), (local, Vec::new()))).await;
+    target.abort();
+    relayed
 }
 
 #[tokio::test]
@@ -552,5 +573,70 @@ async fn only_a_files_read_or_write_is_accepted_and_only_a_read_sends_content() 
         malformed(&written),
         "content answering a write: {written:?}"
     );
+    Ok(())
+}
+
+/// The outcome of a relay that ended for `reason`, having taken `to` bytes to its destination
+/// and `from` back.
+fn relay_ended(reason: EndReason, (to, from): (u64, u64)) -> TestResult<Sent> {
+    let result = ProxyResult::new(reason, (to, from), 1);
+    Ok(Sent::Frame(
+        FrameKind::Outcome,
+        ProxyResult::encode_outcome(&Ok(result))?,
+    ))
+}
+
+#[tokio::test]
+async fn a_relay_completes_only_once_both_sides_ended_and_every_byte_was_taken() -> TestResult {
+    let accepted = accept(&EMPTY_ACCEPT);
+    let (from, ended) = (
+        Sent::Data(Channel::Input, b"abc"),
+        Sent::End(Channel::Input),
+    );
+    // Local input that never ends while the relay runs.
+    let open = || tokio::io::duplex(64);
+
+    // A relay completed at once, with the caller's input still open.
+    let (input, _held) = open();
+    let sent = [accepted.clone(), relay_ended(EndReason::Completed, (0, 0))?];
+    let ran = proxied_with(&sent, input, false).await?;
+    assert!(malformed(&ran), "premature: {ran:?}");
+    // Only the destination ended.
+    let (input, _held) = open();
+    let sent = [
+        accepted.clone(),
+        ended.clone(),
+        relay_ended(EndReason::Completed, (0, 0))?,
+    ];
+    let ran = proxied_with(&sent, input, false).await?;
+    assert!(malformed(&ran), "destination ended: {ran:?}");
+    // Only the caller ended.
+    let sent = [accepted.clone(), relay_ended(EndReason::Completed, (0, 0))?];
+    let ran = proxied(&sent, b"").await?;
+    assert!(malformed(&ran), "caller ended: {ran:?}");
+    // Both ended, but not every byte the caller sent reached the destination.
+    let sent = [
+        accepted.clone(),
+        from.clone(),
+        ended.clone(),
+        relay_ended(EndReason::Completed, (1, 3))?,
+    ];
+    let ran = proxied(&sent, b"hi").await?;
+    assert!(miscounted(&ran), "short: {ran:?}");
+
+    // Both ended with every byte relayed.
+    let sent = [
+        accepted.clone(),
+        from.clone(),
+        ended,
+        relay_ended(EndReason::Completed, (2, 3))?,
+    ];
+    let ran = proxied(&sent, b"hi").await?;
+    assert!(ran.is_ok(), "completed: {ran:?}");
+    // A cancelled relay may have moved part of the traffic.
+    let (input, _held) = open();
+    let sent = [accepted, from, relay_ended(EndReason::Cancelled, (0, 3))?];
+    let ran = proxied_with(&sent, input, false).await?;
+    assert!(ran.is_ok(), "cancelled: {ran:?}");
     Ok(())
 }

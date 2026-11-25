@@ -1,14 +1,18 @@
 //! Caller side of Proxy v1: one local byte stream bound to one remote TCP destination.
 
-use ma2a_core::service::{Channel, FrameKind, MAX_DATA_CHUNK_LEN, ProxyResult, ServiceError};
-use std::sync::atomic::{AtomicU64, Ordering};
+use ma2a_core::service::{
+    Channel, EndReason, FrameKind, MAX_DATA_CHUNK_LEN, ProxyResult, ServiceError,
+};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     sync::Notify,
 };
 
-use super::{ClientError, First, decoded, empty_accept, first, next, unexpected};
+use super::{
+    ClientError, First, decoded, empty_accept, first, next, sinks::write_flushed, unexpected,
+};
 use crate::{FrameReader, FrameWriter};
 
 /// Relays bytes between a local stream and the target's destination until the outcome.
@@ -34,7 +38,7 @@ where
         First::Finished(frame) => return decoded(ProxyResult::decode_outcome(frame.payload())),
         First::Accepted(frame) => empty_accept(&frame)?,
     }
-    let (lost, sent) = (Notify::new(), AtomicU64::new(0));
+    let (lost, sent) = (Notify::new(), (AtomicU64::new(0), AtomicBool::new(false)));
     let downstream = downstream(reader, local_write, (&lost, &sent));
     let upstream = upstream(writer, local_read, (&lost, &sent));
     tokio::pin!(downstream, upstream);
@@ -45,12 +49,15 @@ where
     }
 }
 
+/// The bytes the caller sent toward the destination, and whether it sent its `end`.
+type Sent = (AtomicU64, AtomicBool);
+
 /// Local → destination, then `end` at local EOF, and a `cancel` once the local side is lost or
-/// fails; counts the bytes it sent in `sent`.
+/// fails; records what it sent in `sent`.
 async fn upstream<W, LR>(
     writer: &mut FrameWriter<W>,
     mut local_read: LR,
-    (lost, sent): (&Notify, &AtomicU64),
+    (lost, (sent, input_ended)): (&Notify, &Sent),
 ) where
     W: AsyncWrite + Unpin,
     LR: AsyncRead + Unpin,
@@ -73,6 +80,7 @@ async fn upstream<W, LR>(
         if read == 0 {
             let ended = async {
                 writer.end(Channel::Input).await?;
+                input_ended.store(true, Ordering::Relaxed);
                 writer.flush().await
             }
             .await;
@@ -99,10 +107,12 @@ async fn upstream<W, LR>(
 ///
 /// The destination's bytes end once, and the outcome counts exactly the bytes received from it
 /// and at most the `sent` ones as taken to it: an answer with other counts is not this relay.
+/// A relay completes only once both sides ended, with every byte sent taken to the
+/// destination; any other end may have moved part of the traffic.
 async fn downstream<R, LW>(
     reader: &mut FrameReader<R>,
     mut local_write: LW,
-    (lost, sent): (&Notify, &AtomicU64),
+    (lost, (sent, input_ended)): (&Notify, &Sent),
 ) -> Result<ProxyResult, ClientError>
 where
     R: AsyncRead + Unpin,
@@ -115,8 +125,19 @@ where
         let delivered = match frame.kind() {
             FrameKind::Outcome => {
                 let result = decoded(ProxyResult::decode_outcome(frame.payload()))?;
-                let counted = result.bytes_from_target == received
-                    && result.bytes_to_target <= sent.load(Ordering::Relaxed);
+                let (sent, completed) = (
+                    sent.load(Ordering::Relaxed),
+                    result.reason == EndReason::Completed,
+                );
+                if completed && !(ended && input_ended.load(Ordering::Relaxed)) {
+                    return Err(invalid());
+                }
+                let taken = if completed {
+                    result.bytes_to_target == sent
+                } else {
+                    result.bytes_to_target <= sent
+                };
+                let counted = result.bytes_from_target == received && taken;
                 if !counted {
                     return Err(ClientError::Stream(ServiceError::IntegrityMismatch));
                 }
@@ -142,11 +163,6 @@ where
             lost.notify_one();
         }
     }
-}
-
-async fn write_flushed<LW: AsyncWrite + Unpin>(sink: &mut LW, bytes: &[u8]) -> std::io::Result<()> {
-    sink.write_all(bytes).await?;
-    sink.flush().await
 }
 
 async fn cancel<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>) -> Result<(), ServiceError> {

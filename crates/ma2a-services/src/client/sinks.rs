@@ -108,7 +108,10 @@ pub(super) fn settled<T>(
     }
 }
 
-async fn write_flushed<T: AsyncWrite + Unpin>(sink: &mut T, bytes: &[u8]) -> io::Result<()> {
+pub(super) async fn write_flushed<T: AsyncWrite + Unpin>(
+    sink: &mut T,
+    bytes: &[u8],
+) -> io::Result<()> {
     sink.write_all(bytes).await?;
     sink.flush().await
 }
