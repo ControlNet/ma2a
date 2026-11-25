@@ -72,6 +72,10 @@ impl StoreBackend {
         let Some(slot) = members.get_mut(position) else {
             return Ok(Err(GrantRefusal::NotFound));
         };
+        // Checked before the unchanged case too, so only the owner is ever answered with a grant.
+        if !self.repository.holds_space_authority(request.space_id)? {
+            return Ok(Err(GrantRefusal::NotOwner));
+        }
         let capabilities = granted(slot.capabilities(), request.services);
         if capabilities == slot.capabilities() {
             let member = slot.clone();
@@ -126,6 +130,10 @@ pub(crate) fn granted(current: MemberCapabilities, services: [bool; 8]) -> Membe
         },
     )
 }
+
+#[cfg(test)]
+#[path = "grant_tests.rs"]
+mod owner_tests;
 
 #[cfg(test)]
 mod tests {

@@ -127,6 +127,24 @@ impl CreatedSpace {
 }
 
 impl Repository {
+    /// Whether this repository holds the authority key that signs `space_id`, which only its
+    /// owner does.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the Space row cannot be read.
+    pub fn holds_space_authority(&self, space_id: SpaceId) -> Result<bool, StoreError> {
+        use rusqlite::OptionalExtension as _;
+        let held = self
+            .connection
+            .query_row(
+                "SELECT authority_key_ref IS NOT NULL FROM spaces WHERE space_id = ?1",
+                [space_id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(held.unwrap_or(false))
+    }
+
     /// Generates, protects, signs, and atomically commits one new Space.
     ///
     /// # Errors
