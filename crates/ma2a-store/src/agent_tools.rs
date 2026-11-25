@@ -124,35 +124,47 @@ pub(crate) fn record_tool_call(
 
 /// Fails a task at one of its limits.
 ///
-/// No result is delivered once a task ended, so every call of it still open is answered with
-/// [`TASK_ENDED_ANSWER`] here, oldest first, and that answer is delivered to the instance
-/// holding the task: it would otherwise wait for those calls forever. A result that arrives
-/// later for one of them finds it answered and is dropped. The instance is then sent the
-/// task's cancellation, so a handler waiting for a message that will never come stops too.
+/// Its open calls are answered (see [`answer_open_calls`]), and the instance holding it is
+/// then sent the task's cancellation, so a handler waiting for a message that will never come
+/// stops too.
 pub(crate) fn fail_at_limit(
     transaction: &Transaction<'_>,
     (task, at_ms): (AgentTaskId, u64),
 ) -> Result<(), StoreError> {
     if let Some(record) = load_task(transaction, task)? {
-        let mut statement = transaction.prepare(
-            "SELECT call_id FROM agent_tool_calls WHERE task_id = ?1 AND result IS NULL
-             ORDER BY created_at_ms, call_id",
-        )?;
-        let open = statement
-            .query_map([task.as_bytes().as_slice()], |row| row.get(0))?
-            .collect::<Result<Vec<String>, _>>()?;
-        transaction.execute(
-            "UPDATE agent_tool_calls SET result = ?2, completed_at_ms = max(?3, created_at_ms)
-             WHERE task_id = ?1 AND result IS NULL",
-            params![task.as_bytes().as_slice(), TASK_ENDED_ANSWER, at_ms],
-        )?;
-        for call in open {
-            deliver_to_holder(transaction, &record, &AgentDelivery::ToolResult(task, call))?;
-        }
+        answer_open_calls(transaction, (&record, at_ms))?;
         deliver_to_holder(transaction, &record, &AgentDelivery::Cancel(task))?;
     }
     let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
     set_state(transaction, (task, at_ms), limit)
+}
+
+/// Answers every open call of a task the Runtime is ending with [`TASK_ENDED_ANSWER`], oldest
+/// first, and delivers each answer to the instance holding the task.
+///
+/// No result is delivered once a task ended, so that instance would otherwise wait for those
+/// calls forever. A result that arrives later for one of them finds it answered and is dropped.
+pub(crate) fn answer_open_calls(
+    transaction: &Transaction<'_>,
+    (record, at_ms): (&AgentTaskRecord, u64),
+) -> Result<(), StoreError> {
+    let task = record.summary.id;
+    let mut statement = transaction.prepare(
+        "SELECT call_id FROM agent_tool_calls WHERE task_id = ?1 AND result IS NULL
+         ORDER BY created_at_ms, call_id",
+    )?;
+    let open = statement
+        .query_map([task.as_bytes().as_slice()], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+    transaction.execute(
+        "UPDATE agent_tool_calls SET result = ?2, completed_at_ms = max(?3, created_at_ms)
+         WHERE task_id = ?1 AND result IS NULL",
+        params![task.as_bytes().as_slice(), TASK_ENDED_ANSWER, at_ms],
+    )?;
+    for call in open {
+        deliver_to_holder(transaction, record, &AgentDelivery::ToolResult(task, call))?;
+    }
+    Ok(())
 }
 
 impl Repository {

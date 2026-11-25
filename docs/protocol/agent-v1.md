@@ -274,7 +274,8 @@ right after a `submit` and after an Agent line that readies the instance or ends
   only for a task whose cancellation was requested, and the task then ends with the requested
   reason.
 - Otherwise the task ends `cancelled` with the requested reason once the 10 s grace period has
-  passed. The grace period is checked every second.
+  passed. The grace period is checked every second. Tool calls of the task still open then are
+  answered `task_ended` in the same transaction, so the Agent is never left waiting for them.
 - A task whose cancellation was requested and whose instance ends, or whose Agent is stopped, ends
   `cancelled` with the requested reason, not `failed`.
 

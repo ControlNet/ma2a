@@ -338,6 +338,25 @@ fn told_to_stop(repository: &Repository, (generation, task): (u64, AgentTaskId))
 }
 
 #[test]
+fn a_cancellation_its_instance_never_confirms_answers_the_calls_still_open() -> TestResult {
+    // Given: a running task with a call still open, whose cancellation was requested.
+    let (_state, mut repository, generation, task) = running("agent-cancel-grace")?;
+    apply(&mut repository, (generation, 10), tool(task, "open"))?;
+    repository.request_agent_cancel(task, (AgentTaskReason::Requested, 20))?;
+
+    // When: the instance never confirms it within the grace period.
+    let ended = repository
+        .expire_agent_cancels((20 + 1_000, 1_000))?
+        .into_value();
+
+    // Then: the task ended as cancelled, and its open call is answered instead of left waiting.
+    assert_eq!(ended, [task]);
+    let record = repository.agent_task(task)?.ok_or("missing")?;
+    assert_eq!(record.summary.state, AgentTaskState::Cancelled);
+    answered_as_ended(&repository, (generation, task, "open"))
+}
+
+#[test]
 fn output_breaking_a_durable_bound_only_moves_the_cursor() -> TestResult {
     let (_state, mut repository, generation, task) = running("agent-unbound")?;
     let oversized = AgentOutputEffect::ToolCall {

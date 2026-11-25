@@ -164,6 +164,11 @@ impl Repository {
         for (id, reason) in due {
             let task = AgentTaskId::try_from(id.as_slice())?;
             let reason = AgentTaskReason::from_code(reason.into())?;
+            // The instance already has the cancellation; only the calls it still waits for
+            // need answers.
+            if let Some(record) = load_task(&transaction, task)? {
+                crate::agent_tools::answer_open_calls(&transaction, (&record, now_ms))?;
+            }
             let cancelled = (AgentTaskState::Cancelled, Some(reason));
             set_state(&transaction, (task, now_ms), cancelled)?;
             ended.push(task);
