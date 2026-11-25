@@ -44,7 +44,7 @@ bash .claude/skills/interactive-ssh/scripts/open-session.sh \
   does not; with them, Windows skips file access checks. Run ACL and permission tests through
   `scripts/drop-privileges.ps1`: copy it with
   `scp -F <config> .claude/skills/interactive-ssh/scripts/drop-privileges.ps1 windows-latest:D:/a/`, then
-  `ssh -F <config> windows-latest 'cd <workspace>; D:\a\drop-privileges.ps1 -Command "cargo test ..."'`),
+  `ssh -F <config> windows-latest 'cd <workspace>; D:\a\drop-privileges.ps1 -Command "cargo test ..."'`,
   or a test can pass in the session and fail in CI.
 - Build and test as CI does, for example
   `cargo test --locked -p ma2a-store --lib windows_acl` or the Windows steps in
