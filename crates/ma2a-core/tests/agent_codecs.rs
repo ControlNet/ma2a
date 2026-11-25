@@ -121,6 +121,17 @@ fn every_operation_roundtrips_and_names_its_exact_agent() -> TestResult {
 }
 
 #[test]
+fn a_resumed_artifact_download_must_name_its_identity() -> TestResult {
+    let resumed = AgentRequest::Artifact(agent()?, task(), "out.bin".to_owned(), 1, None);
+    let header = OpenHeader::new(request_id()?, endpoint(0x71), OpenBody::Agent(resumed));
+    assert_eq!(
+        OpenHeader::decode(&header.encode()?),
+        Err(ma2a_core::ProtocolError::INVALID_INPUT)
+    );
+    Ok(())
+}
+
+#[test]
 fn messages_are_bounded_and_keep_newlines() -> TestResult {
     let full = "x".repeat(MAX_MESSAGE_BYTES);
     let maximal = AgentMessage::text(MessageRole::Agent, &full)?;

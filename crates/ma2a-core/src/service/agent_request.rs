@@ -221,6 +221,10 @@ impl AgentRequest {
                 } else {
                     Some(ContentIdentity::decode(decoder)?)
                 };
+                // As in Transfer v1, a resumed download names the identity it continues.
+                if offset > 0 && identity.is_none() {
+                    return Err(ProtocolError::INVALID_INPUT);
+                }
                 Self::Artifact(agent, task, name, offset, identity)
             }
             _ => return Err(ProtocolError::INVALID_INPUT),
