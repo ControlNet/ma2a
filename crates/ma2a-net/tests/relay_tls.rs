@@ -136,6 +136,36 @@ fn symlinked_tls_material_fails_closed() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn a_named_pipe_as_tls_material_fails_without_waiting_for_a_writer() -> TestResult {
+    // Given a FIFO that no process ever opens for writing.
+    let state = TempState::new("relay-tls-fifo")?;
+    let (cert_path, key_path) = write_certificate_fixture(&state, "source")?;
+    let fifo = state.path().join("pipe.pem");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status()?;
+    assert!(made.success(), "mkfifo failed");
+
+    // When each file is a FIFO in turn, loaded off this thread so a blocking open cannot hang
+    // the test.
+    let (sender, results) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let certificate = NativeRelayTlsConfig::new(fifo.clone(), key_path).load_server_config();
+        let key = NativeRelayTlsConfig::new(cert_path, fifo).load_server_config();
+        let _unsent = sender.send((certificate, key));
+    });
+    let (certificate_result, key_result) =
+        results.recv_timeout(std::time::Duration::from_secs(5))?;
+
+    // Then both are refused at once.
+    assert!(matches!(
+        certificate_result,
+        Err(RelayTlsError::CertificateFile)
+    ));
+    assert!(matches!(key_result, Err(RelayTlsError::PrivateKeyFile)));
+    Ok(())
+}
+
 #[test]
 fn oversized_tls_material_fails_before_parsing() -> TestResult {
     // Given

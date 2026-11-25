@@ -184,9 +184,11 @@ fn open_without_following_links(
 ) -> Result<File, RelayTlsError> {
     use rustix::fs::{Mode, OFlags};
 
+    // Without NONBLOCK, opening a FIFO waits for a writer; with it the open returns and the
+    // caller refuses what is not a regular file. Reads of a regular file ignore the flag.
     rustix::fs::open(
         path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     )
     .map(File::from)
