@@ -348,6 +348,79 @@ impl tokio::io::AsyncWrite for Broken {
     }
 }
 
+/// Attaches with stdout going to a pipe that fails, against a target that sends `abc`, takes
+/// the caller's next frame, sends `after`, and then reports a detach at `cursor`; returns the
+/// answer and the kind of the caller's frame.
+async fn attach_failing_output(
+    after: Vec<Sent>,
+    cursor: u64,
+) -> TestResult<(Result<hosted::Attached, ClientError>, FrameKind)> {
+    let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();
+    let target = async {
+        for (kind, payload) in [reading(0, (0, 3))?, data(b"abc")] {
+            service_writer.frame(kind, &payload).await?;
+        }
+        service_writer.flush().await?;
+        let seen = service_reader.expect().await?.kind();
+        for (kind, payload) in after {
+            service_writer.frame(kind, &payload).await?;
+        }
+        let (kind, outcome) = detached(EndReason::Cancelled, process(1), cursor)?;
+        service_writer.frame(kind, &outcome).await?;
+        service_writer.flush().await?;
+        TestResult::Ok(seen)
+    };
+    let local = ProcessIo {
+        input: None::<&[u8]>,
+        output: Broken,
+        error: None::<Vec<u8>>,
+    };
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        ((process(1), LogFrom::Start), local),
+        std::future::pending(),
+    );
+    let (attached, seen) = within(async { tokio::join!(caller, target) }).await?;
+    Ok((attached, seen?))
+}
+
+#[tokio::test]
+async fn a_failed_local_output_write_detaches_and_is_reported() -> TestResult {
+    // Given: a local output that fails.
+    // When: the attachment detaches at the cursor its bytes reached.
+    let (attached, seen) = attach_failing_output(Vec::new(), 3).await?;
+
+    // Then: the target is told to detach, and the failed write is the answer.
+    assert_eq!(seen, FrameKind::Cancel);
+    assert!(
+        matches!(attached, Err(ClientError::Local(_))),
+        "{attached:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn input_sent_back_by_the_target_is_refused_after_a_failed_output_write() -> TestResult {
+    // Given: a local output that fails, and a target that then sends channel 0 to the caller.
+    let input = (
+        FrameKind::Data,
+        [&[Channel::Input as u8][..], b"zz"].concat(),
+    );
+
+    // When
+    let (attached, _) = attach_failing_output(vec![input], 5).await?;
+
+    // Then
+    assert!(
+        matches!(
+            attached,
+            Err(ClientError::Stream(ServiceError::InvalidInput))
+        ),
+        "{attached:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_stdin_write_that_could_not_be_sent_still_reports_why_the_target_ended() -> TestResult {
     // Given: a target that admits the write and, a moment after the caller's stream broke,

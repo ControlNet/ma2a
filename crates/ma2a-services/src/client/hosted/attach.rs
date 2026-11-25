@@ -41,7 +41,7 @@ pub struct Attached {
 /// With `input`, local input is forwarded as stdin and its EOF closes the Process stdin;
 /// the `open` must then have asked for the stdin writer. A failed local read detaches
 /// instead, leaving the Process stdin open for a later writer. A failed local output write
-/// detaches, because nothing can observe the Process any more.
+/// detaches too, because nothing can observe the Process any more.
 ///
 /// Every byte's cursor is known, as for `logs`: the attachment starts where `from` resolves in
 /// the window the accept reports, and the outcome must name this Process and the cursor its
@@ -50,7 +50,7 @@ pub struct Attached {
 ///
 /// # Errors
 /// Returns the refusal (`writer_busy` when another attachment holds stdin), the failed
-/// outcome, the stream failure, or, once detached, the failed local read.
+/// outcome, the stream failure, or, once detached, the failed local write or read.
 pub async fn attach<R, W, I, O, E, D>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     ((id, from), local): ((ProcessId, LogFrom), ProcessIo<I, O, E>),
@@ -82,7 +82,7 @@ where
     let lost = Notify::new();
     let outbound = outbound(reader, (output, error), (&lost, start));
     // Once detached, nothing more is sent; the outcome still follows.
-    let ((frame, gaps, reached), failed) = if detached {
+    let ((frame, gaps, reached, unwritten), unread) = if detached {
         (outbound.await?, None)
     } else {
         let inbound = inbound(writer, (input, detach), &lost);
@@ -94,7 +94,9 @@ where
         }
     };
     let attached = attached((Some(accept), &frame), (id, Some(reached)), gaps)?;
-    failed.map_or(Ok(attached), |failure| Err(ClientError::Local(failure)))
+    unwritten
+        .or(unread)
+        .map_or(Ok(attached), |failure| Err(ClientError::Local(failure)))
 }
 
 /// Caller → target: stdin until EOF, then at most one `cancel` on detach, lost output, or a
@@ -148,13 +150,17 @@ where
     failed
 }
 
-/// Target → caller until the outcome, from cursor `start`; returns the outcome, the gaps, and
-/// the cursor reached. A failed local write asks the inbound side to detach.
+/// What the target sent until its outcome: the outcome, the gaps, the cursor reached, and the
+/// first local write that failed.
+type Received = (crate::Frame, Gaps, u64, Option<std::io::Error>);
+
+/// Target → caller until the outcome, from cursor `start`. A failed local write asks the
+/// inbound side to detach.
 async fn outbound<R, O, E>(
     reader: &mut FrameReader<R>,
     (mut output, mut error): (O, Option<E>),
     (lost, start): (&Notify, u64),
-) -> Result<(crate::Frame, Gaps, u64), ClientError>
+) -> Result<Received, ClientError>
 where
     R: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
@@ -162,16 +168,21 @@ where
 {
     let mut gaps = Gaps::default();
     let mut reached = start;
-    let mut delivering = true;
+    let mut unwritten = None;
     loop {
         let frame = next(reader).await?;
         match frame.kind() {
-            FrameKind::Outcome => return Ok((frame, gaps, reached)),
+            FrameKind::Outcome => return Ok((frame, gaps, reached, unwritten)),
             FrameKind::Control => reached = skipped(&mut gaps, &frame, reached)?,
             FrameKind::Data => {
-                let (_, bytes) = frame.data().map_err(ClientError::Stream)?;
+                let bytes = match frame.data().map_err(ClientError::Stream)? {
+                    (Channel::Input, _) => {
+                        return Err(ClientError::Stream(ServiceError::InvalidInput));
+                    }
+                    (_, bytes) => bytes,
+                };
                 reached = advanced(reached, bytes.len())?;
-                if !delivering {
+                if unwritten.is_some() {
                     continue;
                 }
                 let delivered = async {
@@ -184,8 +195,8 @@ where
                 };
                 match delivered.await {
                     Ok(()) => {}
-                    Err(ClientError::Local(_)) => {
-                        delivering = false;
+                    Err(ClientError::Local(failure)) => {
+                        unwritten = Some(failure);
                         lost.notify_one();
                     }
                     Err(failure) => return Err(failure),

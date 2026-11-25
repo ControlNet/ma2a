@@ -230,16 +230,18 @@ Process and its supervisor have ended.
 4. The Detached summary is the Process as it now is, and `cursor` is the position reached.
 5. The caller refuses, before writing any output, an `accept` that is not Reading or whose `start`
    and `truncated` are not where `from` resolves in the window it reports. It also refuses a
-   Skipped cursor that goes back, a Detached outcome for another Process or at a cursor other
-   than where its bytes and skips ended, and a Detached `completed` whose Process has not ended
-   or whose cursor is before the `end` of the window the accept reported. Only an attachment with `stdin` reserves its RequestId,
-   so only that one may be answered from replay.
+   Skipped cursor that goes back, `data` on channel 0, a Detached outcome for another Process or
+   at a cursor other than where its bytes and skips ended, and a Detached `completed` whose
+   Process has not ended or whose cursor is before the `end` of the window the accept reported.
+   Only an attachment with `stdin` reserves its RequestId, so only that one may be answered from
+   replay.
 
 With `stdin = true`, the attachment also takes the single stdin writer lease. `data` on channel 0
 is written to the Process stdin. `end` on channel 0 closes the Process stdin permanently, and the
 attachment keeps reading. Without the lease, any `data` or `end` detaches the attachment. A caller
 sends `end` only at the end of its input. When reading its input fails, it detaches with `cancel`
-instead and reports the failure, so a later attachment can still write to the Process.
+instead and reports the failure, so a later attachment can still write to the Process. A caller
+that cannot write the output it receives detaches the same way and reports that failure.
 
 At most 8 readers are attached to one Process at a time. The ninth is
 `reject(concurrency_exceeded)`.
