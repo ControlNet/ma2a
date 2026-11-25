@@ -22,7 +22,10 @@ impl Repository {
         // existed reads as a change and is replaced instead of failing the replacement.
         let mut requested = observations.iter().collect::<Vec<_>>();
         requested.sort_unstable_by(|left, right| left.relay_url.cmp(&right.relay_url));
-        let current = self.stored_relay_observations()?;
+        // The comparison runs inside the write transaction, so two writers making the same
+        // change at once commit it once.
+        let transaction = self.immediate()?;
+        let current = stored_relay_observations(&transaction)?;
         if current.len() == requested.len()
             && current.iter().zip(requested).all(|(old, new)| {
                 old.relay_url == new.relay_url
@@ -31,9 +34,12 @@ impl Repository {
                     && old.observed_state == new.observed_state
             })
         {
-            return self.revision();
+            return Ok(transaction.query_row(
+                "SELECT revision FROM runtime_metadata WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )?);
         }
-        let transaction = self.immediate()?;
         transaction.execute("DELETE FROM relay_observations", [])?;
         for observation in observations {
             transaction.execute(
@@ -59,7 +65,7 @@ impl Repository {
     /// # Errors
     /// Returns [`StoreError`] when persisted observations are malformed or unreadable.
     pub fn relay_observations(&self) -> Result<Vec<RelayObservation>, StoreError> {
-        let observations = self.stored_relay_observations()?;
+        let observations = stored_relay_observations(&self.connection)?;
         if observations
             .iter()
             .any(|observation| observation.relay_url.len() > MAX_RELAY_URL_LEN)
@@ -70,26 +76,28 @@ impl Repository {
         }
         Ok(observations)
     }
+}
 
-    fn stored_relay_observations(&self) -> Result<Vec<RelayObservation>, StoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT relay_url, observed_at_ms, expires_at_ms, reachable, latency_ms,
+fn stored_relay_observations(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<RelayObservation>, StoreError> {
+    let mut statement = connection.prepare(
+        "SELECT relay_url, observed_at_ms, expires_at_ms, reachable, latency_ms,
              observed_state FROM relay_observations ORDER BY relay_url",
-        )?;
-        statement
-            .query_map([], |row| {
-                Ok(RelayObservation {
-                    relay_url: row.get(0)?,
-                    observed_at_ms: row.get(1)?,
-                    expires_at_ms: row.get(2)?,
-                    reachable: row.get(3)?,
-                    latency_ms: row.get(4)?,
-                    observed_state: row.get(5)?,
-                })
-            })?
-            .collect::<Result<_, _>>()
-            .map_err(Into::into)
-    }
+    )?;
+    statement
+        .query_map([], |row| {
+            Ok(RelayObservation {
+                relay_url: row.get(0)?,
+                observed_at_ms: row.get(1)?,
+                expires_at_ms: row.get(2)?,
+                reachable: row.get(3)?,
+                latency_ms: row.get(4)?,
+                observed_state: row.get(5)?,
+            })
+        })?
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
 }
 
 /// Refuses a relay URL longer than an address record can carry before anything is written.

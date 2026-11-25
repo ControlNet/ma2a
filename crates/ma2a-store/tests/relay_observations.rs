@@ -119,3 +119,32 @@ fn a_relay_configuration_with_an_overlong_url_is_refused() -> TestResult {
     assert!(!repository.relay_configuration()?.public_fallback_enabled);
     Ok(())
 }
+
+#[test]
+fn concurrent_identical_replacements_advance_the_revision_once() -> TestResult {
+    // Given two connections to one Store, and a third holding the write lock.
+    let state = TempState::new("relay-observation-concurrent")?;
+    let config = StoreConfig::new(state.path());
+    let repositories = [Repository::open(&config)?, Repository::open(&config)?];
+    let before = repositories[0].revision()?;
+    let holder = Connection::open(config.database_path())?;
+    holder.execute_batch("BEGIN IMMEDIATE")?;
+
+    // When both replace the empty set with the same row while the lock is held.
+    let writers = repositories.map(|mut repository| {
+        std::thread::spawn(move || {
+            repository
+                .replace_relay_observations(&[observation("https://relay.invalid/".to_owned(), 4)])
+        })
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    holder.execute_batch("COMMIT")?;
+    let mut revisions = Vec::new();
+    for writer in writers {
+        revisions.push(writer.join().map_err(|_| "writer panicked")??);
+    }
+
+    // Then the change is committed once, and both callers see that one revision.
+    assert_eq!(revisions, vec![before + 1, before + 1]);
+    Ok(())
+}
