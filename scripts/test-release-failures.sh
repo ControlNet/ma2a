@@ -72,6 +72,27 @@ if ./scripts/smoke-release.sh "$external" "$target" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Browsers read a backslash as a slash, so these network references leave the origin too.
+for spelling in '/\bad.test/xxxxxxxxxxxx' '\\bad.test/xxxxxxxxxxxx'; do
+  mkdir "$temporary/backslash-extracted"
+  tar -xJf "$archive" -C "$temporary/backslash-extracted"
+  backslash_prefix=$(find "$temporary/backslash-extracted" -mindepth 1 -maxdepth 1 -type d -print -quit)
+  backslash_binary="$backslash_prefix/ma2a"
+  # The same length keeps the binary's layout; only the console's copy of the path is replaced.
+  SPELLING=$spelling perl -0777 -pi -e \
+    's{URL\(`/api/v1/web/auth/logout`}{URL(`$ENV{SPELLING}`}g or die "no logout reference\n"' \
+    "$backslash_binary"
+  backslash="$temporary/backslash-reference.tar.xz"
+  tar -cJf "$backslash" -C "$temporary/backslash-extracted" "$(basename "$backslash_prefix")"
+  printf '%s *%s\n' "$(hash_file "$backslash")" "$(basename "$backslash")" > "${backslash}.sha256"
+  ./scripts/validate-release.sh "$backslash" "$target" >/dev/null
+  if ./scripts/smoke-release.sh "$backslash" "$target" >/dev/null 2>&1; then
+    printf 'archive with a network reference %s unexpectedly passed smoke\n' "$spelling" >&2
+    exit 1
+  fi
+  rm -rf "$temporary/backslash-extracted" "$backslash" "${backslash}.sha256"
+done
+
 incomplete="$temporary/incomplete.spdx.json"
 jq '.packages |= map(select(.name != "react"))' "$sbom" > "$incomplete"
 if ./scripts/validate-release-metadata.sh "$archive" "$incomplete" "$report" >/dev/null 2>&1; then

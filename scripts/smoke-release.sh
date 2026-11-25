@@ -96,7 +96,7 @@ touch "$seen_assets"
 while [[ ${#asset_queue[@]} -gt 0 ]]; do
   current=${asset_queue[0]}
   asset_queue=("${asset_queue[@]:1}")
-  grep -Fqx "$current" "$seen_assets" && continue
+  grep -Fqx -- "$current" "$seen_assets" && continue
   printf '%s\n' "$current" >> "$seen_assets"
   local_asset="$asset_root/$current"
   if [[ "$current" != index.html ]]; then
@@ -133,8 +133,9 @@ while [[ ${#asset_queue[@]} -gt 0 ]]; do
     reference=${reference%%#*}
     reference=${reference%%\?*}
     [[ -n "$reference" ]] || continue
+    # Browsers read a backslash in a URL as a slash, so '/\host' and '\\host' name another host.
     case "$reference" in
-      http://*|https://*|//*|ws://*|wss://*)
+      http://*|https://*|//*|ws://*|wss://*|*\\*)
         printf 'external runtime %s reference rejected in %s: %s\n' "$reference_kind" "$current" "$reference" >&2
         exit 1
         ;;
@@ -160,7 +161,7 @@ while [[ ${#asset_queue[@]} -gt 0 ]]; do
       *) referenced_asset="$(dirname "$current")/$reference" ;;
     esac
     referenced_asset=${referenced_asset#./}
-    [[ "$referenced_asset" != *../* && "$referenced_asset" != ../* ]] || {
+    [[ "$referenced_asset" != *../* && "$referenced_asset" != .. && "$referenced_asset" != */.. ]] || {
       printf 'parent-relative runtime asset reference rejected in %s: %s\n' "$current" "$reference" >&2
       exit 1
     }
