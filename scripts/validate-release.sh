@@ -111,4 +111,15 @@ else
 fi
 [[ "$observed_digest" == "$expected_digest" ]] || { printf 'SHA-256 mismatch\n' >&2; exit 1; }
 
+# A Unix program has to be executable as an ordinary extraction leaves it.
+case "$target" in
+  *-pc-windows-msvc) ;;
+  *)
+    mkdir "$temporary/extracted"
+    tar -xJf "$archive" -C "$temporary/extracted"
+    extracted=$(find "$temporary/extracted" -type f -name "$binary" -print)
+    [[ -x "$extracted" ]] || { printf 'archive binary %s is not executable\n' "$binary" >&2; exit 1; }
+    ;;
+esac
+
 printf 'validated %s for %s\n' "$archive" "$target"

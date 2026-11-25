@@ -53,6 +53,8 @@ if ./scripts/validate-release.sh "$missing" "$target" >/dev/null 2>&1; then
   exit 1
 fi
 
+./scripts/test-release-executable.sh "$archive" "$target"
+
 mkdir "$temporary/external-extracted"
 tar -xJf "$archive" -C "$temporary/external-extracted"
 external_prefix=$(find "$temporary/external-extracted" -mindepth 1 -maxdepth 1 -type d -print -quit)

@@ -60,7 +60,11 @@ binary_count=$(wc -l < "$binaries")
   exit 1
 }
 binary=$(sed -n '1p' "$binaries")
-chmod 700 "$binary"
+# The program runs with the mode extraction gave it, as a user would run it.
+[[ "$target" == *-pc-windows-msvc || -x "$binary" ]] || {
+  printf 'extracted binary is not executable\n' >&2
+  exit 1
+}
 
 version=$("$binary" --version)
 version=${version%$'\r'}
