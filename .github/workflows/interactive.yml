@@ -123,7 +123,7 @@ jobs:
           retention-days: 1
 
       # The session lasts until a file named continue appears in the workspace, the session ends,
-      # or the job times out. It is stopped before the post steps run, so no shell outlives it.
+      # or the job times out or is cancelled.
       - name: Keep the session open
         shell: bash
         run: |
@@ -131,7 +131,14 @@ jobs:
           while [ ! -e "$GITHUB_WORKSPACE/continue" ] && upterm session info "${{ steps.upterm.outputs.name }}" -o json > /dev/null 2>&1; do
             sleep 10
           done
-          # A session that ended by itself has no shell left, and stop would not know its name.
-          if [ -e "$GITHUB_WORKSPACE/continue" ]; then
-            upterm session stop "${{ steps.upterm.outputs.name }}"
+
+      # Runs however the job ends, before the post steps, so no shell outlives the session. A
+      # session that already ended, by itself or just now, is not an error.
+      - name: Stop the session
+        if: always() && steps.upterm.outputs.name != ''
+        shell: bash
+        run: |
+          name="${{ steps.upterm.outputs.name }}"
+          if upterm session info "$name" -o json > /dev/null 2>&1; then
+            upterm session stop "$name" || ! upterm session info "$name" -o json > /dev/null 2>&1
           fi
