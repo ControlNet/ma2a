@@ -108,6 +108,8 @@ jobs:
             '@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4' \
             > "$dir/known_hosts"
           name="gha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$RUNNER_OS"
+          # Named before it starts, so the stop step also ends a session whose later checks fail.
+          echo "name=$name" >> "$GITHUB_OUTPUT"
           "$dir/upterm" host --detach --accept --output json --name "$name" \
             --known-hosts "$(native "$dir/known_hosts")" --server ssh://uptermd.upterm.dev:22 \
             --authorized-keys "$(native "$dir/authorized_keys")" --full-access -- bash -l > "$dir/session.json"
@@ -116,7 +118,6 @@ jobs:
           jq -r '.sshCommand' "$dir/session.json" | tr -d '\r' > "$dir/handoff/ssh-command.txt"
           posix "$GITHUB_WORKSPACE" > "$dir/handoff/workspace.txt"
           echo >> "$dir/handoff/workspace.txt"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "handoff=$(native "$dir/handoff")" >> "$GITHUB_OUTPUT"
 
       # Job logs stay unreadable through the API until the job ends, but artifacts can be downloaded
@@ -139,7 +140,7 @@ jobs:
           done
 
       # Runs however the job ends, before the post steps, so no shell outlives the session. A
-      # session that already ended, by itself or just now, is not an error.
+      # session that already ended, by itself or just now, or never started, is not an error.
       - name: Stop the session
         if: always() && steps.upterm.outputs.name != ''
         shell: bash
