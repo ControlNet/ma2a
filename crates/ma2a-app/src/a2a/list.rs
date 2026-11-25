@@ -8,7 +8,7 @@ use super::{
     backend::Refusal,
     mapping::{self, Detail},
     methods::{detail, task_id},
-    rpc::{RpcError, count, optional},
+    rpc::{RpcError, count, flag, optional},
     time,
     view::{self, Served},
 };
@@ -88,7 +88,7 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
             "`pageToken` is not from this listing",
         ));
     }
-    let artifacts = params.get("includeArtifacts").and_then(Value::as_bool) == Some(true);
+    let artifacts = flag(params, "includeArtifacts")?;
     // A listing includes history only when `historyLength` asks for it.
     let detail = Detail {
         history: Some(detail(params, artifacts)?.history.unwrap_or(0)),
@@ -182,6 +182,16 @@ mod tests {
             code(json!({"contextId": null, "pageToken": ""})).await?,
             -32_603
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn include_artifacts_is_a_boolean() -> Result<(), Box<dyn std::error::Error>> {
+        for flag in [json!("true"), json!(1)] {
+            assert_eq!(code(json!({"includeArtifacts": flag})).await?, -32_602);
+        }
+        assert_eq!(code(json!({"includeArtifacts": true})).await?, -32_603);
+        assert_eq!(code(json!({"includeArtifacts": null})).await?, -32_603);
         Ok(())
     }
 

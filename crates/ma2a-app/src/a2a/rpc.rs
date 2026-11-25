@@ -146,11 +146,18 @@ pub(super) fn parse(body: &[u8]) -> Result<Request, (Value, RpcError)> {
         document.get("jsonrpc").and_then(Value::as_str),
         document.get("method").and_then(Value::as_str),
     ) {
-        (Some("2.0"), Some(method)) if valid_id => Ok(Request {
+        // Parameters are named, so they are an object, or absent.
+        (Some("2.0"), Some(method)) if valid_id => match document.get("params") {
+            None | Some(Value::Null) => Ok(json!({})),
+            Some(params @ Value::Object(_)) => Ok(params.clone()),
+            Some(_) => Err(RpcError::invalid_request()),
+        }
+        .map(|params| Request {
             method: method.to_owned(),
-            params: document.get("params").cloned().unwrap_or_else(|| json!({})),
-            id,
-        }),
+            params,
+            id: id.clone(),
+        })
+        .map_err(|error| (id, error)),
         _ => Err((id, RpcError::invalid_request())),
     }
 }
@@ -213,6 +220,16 @@ pub(super) fn optional<'a>(params: &'a Value, name: &str) -> Result<Option<&'a s
     }
 }
 
+/// The optional boolean parameter `name`. Absent or null is false, and any other value than
+/// a boolean is refused rather than read as false.
+pub(super) fn flag(params: &Value, name: &str) -> Result<bool, RpcError> {
+    match params.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        Some(_) => Err(RpcError::invalid_params(&format!("`{name}` is a boolean"))),
+    }
+}
+
 /// The optional non-negative integer parameter `name`.
 pub(super) fn count(params: &Value, name: &str) -> Result<Option<usize>, RpcError> {
     match params.get(name) {
@@ -243,6 +260,20 @@ mod tests {
             no_id.err(),
             Some((json!(null), RpcError::invalid_request()))
         );
+        // Parameters are named, so they are an object, or absent.
+        let named = |params: &str| {
+            let body = format!(r#"{{"jsonrpc":"2.0","id":7,"method":"ListTasks"{params}}}"#);
+            parse(body.as_bytes()).map(|request| request.params)
+        };
+        assert_eq!(named(""), Ok(json!({})));
+        assert_eq!(named(r#","params":null"#), Ok(json!({})));
+        for params in [r#","params":[1,2]"#, r#","params":"x""#, r#","params":7"#] {
+            assert_eq!(
+                named(params).err(),
+                Some((json!(7), RpcError::invalid_request())),
+                "{params}"
+            );
+        }
     }
 
     #[test]

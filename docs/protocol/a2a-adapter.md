@@ -67,7 +67,7 @@ A card is served for a defined local Agent, found through `agent_list`, even whi
 
 - A request is `{"jsonrpc": "2.0", "id": STRING|NUMBER, "method": M, "params": {…}}`.
   - Unparseable JSON answers `-32700`.
-  - A wrong envelope, or a missing or non-scalar `id`, answers `-32600`.
+  - A wrong envelope, a missing or non-scalar `id`, or `params` that is neither an object nor absent answers `-32600`.
   - An unknown method answers `-32601`.
 - Every answer, error or not, is HTTP `200` with `application/json`, except for the streaming methods.
 - Each error carries one `google.rpc.ErrorInfo` in `data`, with the A2A `reason` and domain `a2a-protocol.org`.
@@ -174,7 +174,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - `pageSize` is 1–100, default 50.
   - `pageToken` is the last task ID of the previous page. Tasks are listed in task ID order, so the next page starts after that ID even if that task no longer matches. A token that is not a task ID in its listed lowercase form answers `-32602`.
   - `totalSize` counts every match.
-- **Detail.** Artifacts are included only with `includeArtifacts: true`. History is included only when `historyLength` is greater than 0. Without either, no task's details are read. With artifacts but no history, a local task's events are read only while it waits for input, because its status message is the newest Agent message among them.
+- **Detail.** Artifacts are included only with `includeArtifacts: true`; an `includeArtifacts` that is not a boolean answers `-32602`. History is included only when `historyLength` is greater than 0. Without either, no task's details are read. With artifacts but no history, a local task's events are read only while it waits for input, because its status message is the newest Agent message among them.
 
 ## Errors
 

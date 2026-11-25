@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use super::{
     backend::{Refusal, ended},
     mapping::Detail,
-    rpc::{self, RpcError, count, optional, required},
+    rpc::{self, RpcError, count, flag, optional, required},
     view::{self, Served, settled},
 };
 
@@ -30,7 +30,8 @@ fn part(part: &Value) -> Result<MessagePart, RpcError> {
     if let Some(data) = part.get("data") {
         return Ok(MessagePart::Data(data.to_string()));
     }
-    if part.get("raw").is_some() || part.get("url").is_some() {
+    let file = |name: &str| part.get(name).is_some_and(|value| !value.is_null());
+    if file("raw") || file("url") {
         return Err(RpcError::content_type(
             "file parts are not accepted; send text or data",
         ));
@@ -129,16 +130,10 @@ pub(super) fn configuration(params: &Value) -> Result<(bool, Detail), RpcError> 
         Some(object @ Value::Object(_)) => object,
         Some(_) => return Err(RpcError::invalid_params("`configuration` is an object")),
     };
-    let immediately = match configuration.get("returnImmediately") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(immediately)) => *immediately,
-        Some(_) => {
-            return Err(RpcError::invalid_params(
-                "`configuration.returnImmediately` is a boolean",
-            ));
-        }
-    };
-    Ok((immediately, detail(configuration, true)?))
+    Ok((
+        flag(configuration, "returnImmediately")?,
+        detail(configuration, true)?,
+    ))
 }
 
 /// Answers one method that is not a stream.
@@ -248,6 +243,23 @@ mod tests {
                 "{malformed}"
             );
         }
+    }
+
+    #[test]
+    fn a_part_without_content_is_an_invalid_parameter() {
+        let code = |part: Value| {
+            let params = json!({"message": {
+                "messageId": "m-1", "role": "ROLE_USER", "parts": [part],
+            }});
+            inbound(&params).err().map(|error| error.code)
+        };
+        assert_eq!(code(json!({"raw": "aGk="})), Some(-32_005));
+        assert_eq!(
+            code(json!({"url": "https://example.invalid/a"})),
+            Some(-32_005)
+        );
+        assert_eq!(code(json!({"raw": null})), Some(-32_602));
+        assert_eq!(code(json!({"url": null})), Some(-32_602));
     }
 
     #[test]
