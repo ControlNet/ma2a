@@ -21,7 +21,6 @@ ma2a-store.workspace = true
 iroh-tickets.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 subtle.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
@@ -44,6 +43,7 @@ windows-sys = { workspace = true, features = [
 iroh.workspace = true
 iroh-base.workspace = true
 rusqlite.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "=0.5.3", features = ["util"] }
 
