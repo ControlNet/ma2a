@@ -2116,6 +2116,7 @@ dependencies = [
  "ma2a-store",
  "n0-future",
  "rcgen",
+ "rusqlite",
  "rustix",
  "rustls",
  "rustls-pki-types",

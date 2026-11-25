@@ -116,14 +116,17 @@ impl AddressPublisher {
         let current = repository
             .address_record(space_id, endpoint_id)
             .map_err(AddressPublisherError::Store)?;
+        // The stored issue time is checked even when the record itself no longer decodes.
+        if current.as_ref().is_some_and(|current| {
+            u64::try_from(current.issued_at_ms()).is_ok_and(|issued| request.now_ms < issued)
+        }) {
+            return Err(AddressPublisherError::ClockRollback);
+        }
         // A stored record an earlier version accepted, such as one carrying a relay URL that
         // names a user, no longer decodes; it is replaced, as a changed one is.
         if let Some(signed) = current.as_ref().and_then(|current| {
             SignedSpaceAddressRecordV1::parse_canonical_bytes(current.signed_record()).ok()
         }) {
-            if request.now_ms < signed.record().issued_at_ms() {
-                return Err(AddressPublisherError::ClockRollback);
-            }
             let refresh_due =
                 request.now_ms - signed.record().issued_at_ms() >= ADDRESS_REFRESH_INTERVAL_MS;
             if signed.record().endpoint_data() == &endpoint_data

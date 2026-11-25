@@ -38,6 +38,7 @@ http.workspace = true
 iroh = { workspace = true, features = ["test-utils"] }
 iroh-dns.workspace = true
 rcgen.workspace = true
+rusqlite.workspace = true
 tokio-rustls.workspace = true
 
 [lints]

@@ -154,6 +154,44 @@ fn publisher_refreshes_unchanged_data_after_five_minutes() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn publisher_refuses_a_clock_behind_a_stored_record_that_no_longer_decodes() -> TestResult {
+    // Given: a published record whose stored bytes no longer decode, as can happen to one an
+    // earlier version accepted.
+    let signer = SecretKey::from_bytes(&[0x57; 32]);
+    let fixture = space_fixture(&signer, 0x69)?;
+    let state = TempState::new("publisher-undecodable-rollback")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = repository(&state, &fixture)?;
+    let publisher = AddressPublisher::new(
+        signer.clone(),
+        EndpointAddr::from_parts(
+            signer.public(),
+            [TransportAddr::Ip("127.0.0.1:4111".parse()?)],
+        ),
+    )?;
+    publisher
+        .publish(
+            &mut repository,
+            AddressPublishRequest::new(&fixture.authorization, NOW_MS),
+        )?
+        .ok_or("initial publication was skipped")?;
+    drop(repository);
+    rusqlite::Connection::open(config.database_path())?
+        .execute("UPDATE address_state SET signed_record = x'00'", [])?;
+    let mut repository = Repository::open(&config)?;
+
+    // When: the clock now reads earlier than that record's issue time.
+    let result = publisher.publish(
+        &mut repository,
+        AddressPublishRequest::new(&fixture.authorization, NOW_MS - 5_000),
+    );
+
+    // Then
+    assert!(matches!(result, Err(AddressPublisherError::ClockRollback)));
+    Ok(())
+}
+
 fn repository(
     state: &TempState,
     fixture: &support::SpaceFixture,
