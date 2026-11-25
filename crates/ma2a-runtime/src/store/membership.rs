@@ -38,6 +38,9 @@ impl StoreBackend {
             .repository
             .load_space_chain(request.space_id)?
             .ok_or(ma2a_store::StoreError::SpaceNotFound)?;
+        if !self.repository.holds_space_authority(request.space_id)? {
+            return Err(ma2a_store::StoreError::SpaceAuthorityUnavailable.into());
+        }
         if request.endpoint_id == chain.genesis().genesis().initial_member().endpoint_id() {
             return Err(ma2a_store::StoreError::SpaceOwnerCannotBeRemoved.into());
         }
