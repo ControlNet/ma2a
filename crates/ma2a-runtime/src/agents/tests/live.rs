@@ -567,3 +567,28 @@ async fn a_tool_answer_the_store_refused_once_is_recorded_when_it_recovers() -> 
     assert!(String::from_utf8(recorded)?.contains("invalid_tool"));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ready_instance_is_not_overdue_while_the_store_fails_for_a_moment() -> TestResult {
+    // Given: a ready instance, and a Store whose reads of instances fail for a moment.
+    let live = Live::new().await?;
+    let sql = rusqlite::Connection::open(live.config.database_path())?;
+    sql.execute_batch("ALTER TABLE agent_instances RENAME TO agent_instances_away;")?;
+    let restoring = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sql.execute_batch("ALTER TABLE agent_instances_away RENAME TO agent_instances;")
+    });
+
+    // When: its ready deadline asks whether it is ready.
+    let overdue = tokio::time::timeout(
+        Duration::from_secs(10),
+        live.manager.overdue(&live.agent, live.generation),
+    )
+    .await;
+
+    // Then: a failed read is no reason to end it.
+    restoring.await??;
+    live.finish().await?;
+    assert_eq!(overdue.ok(), Some(false));
+    Ok(())
+}

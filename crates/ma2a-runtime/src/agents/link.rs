@@ -245,18 +245,26 @@ impl AgentManager {
         let deadline = instance.started_ms.saturating_add(READY_DEADLINE_MS);
         let wait = deadline.saturating_sub(self.now_ms());
         tokio::time::sleep(Duration::from_millis(wait)).await;
-        let ready = self
-            .agent(agent)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|record| record.instance)
-            .is_some_and(|current| current.ready || current.generation != instance.generation);
-        if !ready {
+        if self.overdue(agent, instance.generation).await {
             let reason = (1_000, ProcessReason::Requested);
             let _ended = self.0.processes.terminate((None, process), reason).await;
         }
         std::future::pending::<()>().await;
+    }
+
+    /// Whether instance `generation` of `agent` has still not announced `ready`; a failed
+    /// read is tried again, as it says nothing about the instance.
+    pub(super) async fn overdue(&self, agent: &AgentId, generation: u64) -> bool {
+        loop {
+            match self.agent(agent).await {
+                Ok(record) => {
+                    return !record
+                        .and_then(|record| record.instance)
+                        .is_some_and(|current| current.ready || current.generation != generation);
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+            }
+        }
     }
 }
 
