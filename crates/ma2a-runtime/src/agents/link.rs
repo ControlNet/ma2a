@@ -61,15 +61,7 @@ impl AgentManager {
     async fn follow_instance(&self, agent: &AgentId, generation: u64) {
         let mut backoff = Duration::from_millis(250);
         loop {
-            let instance = self
-                .agent(agent)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|record| record.instance);
-            let Some(instance) =
-                instance.filter(|instance| instance.generation == generation && instance.is_live())
-            else {
+            let Some(instance) = self.live_instance(agent, generation).await else {
                 return;
             };
             let linked = match instance.process_id {
@@ -252,16 +244,31 @@ impl AgentManager {
         std::future::pending::<()>().await;
     }
 
-    /// Whether instance `generation` of `agent` has still not announced `ready`; a failed
-    /// read is tried again, as it says nothing about the instance.
+    /// Whether instance `generation` of `agent` has still not announced `ready`.
     pub(super) async fn overdue(&self, agent: &AgentId, generation: u64) -> bool {
+        !self
+            .instance(agent)
+            .await
+            .is_some_and(|current| current.ready || current.generation != generation)
+    }
+
+    /// Instance `generation` of `agent` while it is still live.
+    pub(super) async fn live_instance(
+        &self,
+        agent: &AgentId,
+        generation: u64,
+    ) -> Option<AgentInstanceRecord> {
+        self.instance(agent)
+            .await
+            .filter(|instance| instance.generation == generation && instance.is_live())
+    }
+
+    /// The current instance of `agent`; a failed read is tried again, as it says nothing
+    /// about the instance.
+    async fn instance(&self, agent: &AgentId) -> Option<AgentInstanceRecord> {
         loop {
             match self.agent(agent).await {
-                Ok(record) => {
-                    return !record
-                        .and_then(|record| record.instance)
-                        .is_some_and(|current| current.ready || current.generation != generation);
-                }
+                Ok(record) => return record.and_then(|record| record.instance),
                 Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
             }
         }

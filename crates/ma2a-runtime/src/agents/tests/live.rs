@@ -592,3 +592,32 @@ async fn a_ready_instance_is_not_overdue_while_the_store_fails_for_a_moment() ->
     assert_eq!(overdue.ok(), Some(false));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_instance_is_still_followed_while_the_store_fails_for_a_moment() -> TestResult {
+    // Given: a live instance, and a Store whose reads of instances fail for a moment.
+    let live = Live::new().await?;
+    let sql = rusqlite::Connection::open(live.config.database_path())?;
+    sql.execute_batch("ALTER TABLE agent_instances RENAME TO agent_instances_away;")?;
+    let restoring = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sql.execute_batch("ALTER TABLE agent_instances_away RENAME TO agent_instances;")
+    });
+
+    // When: its link looks the instance up before reaching its supervisor.
+    let found = tokio::time::timeout(
+        Duration::from_secs(10),
+        live.manager.live_instance(&live.agent, live.generation),
+    )
+    .await;
+
+    // Then: a failed read is no reason to stop following it.
+    restoring.await??;
+    let generation = live.generation;
+    live.finish().await?;
+    assert_eq!(
+        found.ok().flatten().map(|instance| instance.generation),
+        Some(generation)
+    );
+    Ok(())
+}
