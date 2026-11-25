@@ -289,6 +289,29 @@ fn history_limits(adapter: &Adapter, lead: &str) -> TestResult {
     Ok(())
 }
 
+/// A task ID that is no task ID names no task, on every method that takes one.
+fn malformed_task_ids(adapter: &Adapter, lead: &str) -> TestResult {
+    for id in ["not-a-hex-id", &"AB".repeat(16)] {
+        for method in ["GetTask", "CancelTask", "SubscribeToTask"] {
+            let answer = adapter.call((lead, method), &json!({"id": id}))?;
+            assert_eq!(
+                error_code(&answer)?,
+                -32_001,
+                "{method} {id}: {:?}",
+                answer.json()
+            );
+        }
+        let sent = adapter.call((lead, "SendMessage"), &continuing("m-bad-id", "hi", id))?;
+        assert_eq!(
+            error_code(&sent)?,
+            -32_001,
+            "SendMessage {id}: {:?}",
+            sent.json()
+        );
+    }
+    Ok(())
+}
+
 /// A stopped Agent, local or remote, is unavailable to a new message, while a message ID
 /// already used for other content still conflicts.
 fn stopped_agent(adapter: &Adapter, lab: &AgentLab, (lead, worker): (&str, &str)) -> TestResult {
@@ -454,6 +477,7 @@ fn a2a_clients_use_local_and_remote_agents() -> TestResult {
     stream_get_and_list(&adapter, &lab, routes)?;
     local_artifact(&adapter, &lab, routes.0)?;
     subscribe_and_cancel(&adapter, routes)?;
+    malformed_task_ids(&adapter, routes.0)?;
     stopped_agent(&adapter, &lab, routes)?;
     adapter.stop()?;
     lab.shutdown()

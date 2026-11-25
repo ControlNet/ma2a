@@ -5,7 +5,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use ma2a_core::service::{AgentId, AgentMessage, MessagePart};
+use ma2a_core::service::{AgentId, AgentMessage, AgentTaskId, MessagePart};
 use ma2a_runtime::{
     api::{AGENT_UNAVAILABLE_REMEDIATION, TASK_ENDED_REMEDIATION},
     ipc::IpcPaths,
@@ -148,6 +148,10 @@ impl Backend {
         let Route::Local(agent) = route else {
             return super::remote::details(self, route, task).await;
         };
+        // A task ID the local API cannot read names no task, as it does on a remote route.
+        if AgentTaskId::parse(task).is_err() {
+            return Err(Refusal::named("not_found"));
+        }
         let details = self
             .local("agent_task_inspect", fields([("task_id", json!(task))]))
             .await?;
@@ -282,29 +286,5 @@ pub(super) fn fields<const N: usize>(entries: [(&str, Value); N]) -> Map<String,
 }
 
 #[cfg(test)]
-mod tests {
-    use ma2a_runtime::api::{AGENT_UNAVAILABLE_REMEDIATION, TASK_ENDED_REMEDIATION};
-    use serde_json::json;
-
-    use super::{Refusal, refused};
-
-    #[test]
-    fn a_message_to_an_ended_task_is_told_apart_from_a_reused_request() {
-        let error =
-            |remediation| json!({"version": 1, "error": "conflict", "remediation": remediation});
-        assert_eq!(
-            refused(&error(json!(TASK_ENDED_REMEDIATION))),
-            Some(Refusal::named("task_ended"))
-        );
-        assert_eq!(
-            refused(&error(json!(null))),
-            Some(Refusal::named("conflict"))
-        );
-        // A stopped Agent answers `conflict` too, told apart the same way.
-        assert_eq!(
-            refused(&error(json!(AGENT_UNAVAILABLE_REMEDIATION))),
-            Some(Refusal::named("agent_unavailable"))
-        );
-        assert_eq!(refused(&json!({"version": 1, "result": {}})), None);
-    }
-}
+#[path = "backend_tests.rs"]
+mod tests;
