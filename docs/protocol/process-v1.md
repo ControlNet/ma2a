@@ -253,6 +253,9 @@ At most 8 readers are attached to one Process at a time. The ninth is
   the Process is still taking earlier input. Bytes already delivered stay delivered.
 - Input the Process does not take within 30 seconds ends the operation with `timed_out`, also
   input it is still taking 30 seconds after the caller's `end`.
+- The caller refuses an `accept` other than Admitted, and a Written that counts more bytes than
+  it sent or reports stdin open before its `end`. When its stream to the target breaks, it still
+  reads the target's outcome, which says why.
 
 **`signal`.** This needs a `running` Process, and is otherwise `reject(not_running)`.
 

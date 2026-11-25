@@ -1,4 +1,4 @@
-//! The caller side of a Process attachment against a scripted target.
+//! The caller side of Process attachments and stdin writes against a scripted target.
 //!
 //! The target here is a test script writing exact Services v1 frames, not a Process host.
 
@@ -15,7 +15,7 @@ use ma2a_core::{
     RequestId,
     service::{
         Channel, EndReason, FrameKind, LogFrom, LogWindow, ProcessAccept, ProcessId, ProcessReply,
-        ProcessState, ProcessSummary, encode_skipped,
+        ProcessState, ProcessSummary, ServiceError, encode_skipped,
     },
 };
 use ma2a_services::client::{ClientError, hosted, process::ProcessIo};
@@ -251,5 +251,128 @@ async fn the_end_of_local_input_closes_the_process_stdin() -> TestResult {
     let (attached, kinds) = attach_writing(&b"ab"[..], EndReason::Completed).await?;
     assert_eq!(kinds, [FrameKind::Data, FrameKind::End]);
     assert_eq!(attached?.reason, EndReason::Completed);
+    Ok(())
+}
+
+/// A pipe that fails on every write.
+struct Broken;
+
+impl tokio::io::AsyncWrite for Broken {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        _buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_stdin_write_that_could_not_be_sent_still_reports_why_the_target_ended() -> TestResult {
+    // Given: a target that admits the write and, a moment after the caller's stream broke,
+    // reports that the Process stdin was closed.
+    let ((mut reader, _writer), (_service_reader, mut service_writer)) = pipe();
+    let target = async {
+        let admitted = ProcessAccept::Admitted.encode()?;
+        service_writer.frame(FrameKind::Accept, &admitted).await?;
+        service_writer.flush().await?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let closed = ProcessReply::encode_outcome(&Err(ServiceError::StdinClosed))?;
+        service_writer.frame(FrameKind::Outcome, &closed).await?;
+        service_writer.flush().await?;
+        TestResult::Ok(())
+    };
+
+    // When
+    let mut broken = ma2a_services::FrameWriter::new(Broken);
+    let caller = hosted::stdin((&mut reader, &mut broken), &b"abc"[..]);
+    let (written, sent) = within(async { tokio::join!(caller, target) }).await?;
+    sent?;
+
+    // Then
+    assert!(
+        matches!(written, Err(ClientError::Failed(ServiceError::StdinClosed))),
+        "{written:?}"
+    );
+    Ok(())
+}
+
+/// Writes `abcde` as stdin against a target that answers `accept`, takes the input when it
+/// admitted it, and then reports `reply`.
+async fn stdin_answered(
+    accept: Vec<u8>,
+    reply: ProcessReply,
+) -> TestResult<Result<(u64, bool), ClientError>> {
+    let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();
+    let target = async {
+        service_writer.frame(FrameKind::Accept, &accept).await?;
+        service_writer.flush().await?;
+        if accept == ProcessAccept::Admitted.encode()? {
+            let input = service_reader.expect().await?;
+            assert_eq!(input.data()?, (Channel::Input, &b"abcde"[..]));
+            assert_eq!(service_reader.expect().await?.end()?, Channel::Input);
+        }
+        let outcome = ProcessReply::encode_outcome(&Ok(reply))?;
+        service_writer.frame(FrameKind::Outcome, &outcome).await?;
+        service_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = hosted::stdin((&mut reader, &mut writer), &b"abcde"[..]);
+    let (written, taken) = within(async { tokio::join!(caller, target) }).await?;
+    taken?;
+    Ok(written)
+}
+
+#[tokio::test]
+async fn a_stdin_answer_must_admit_the_write_and_count_no_more_than_was_sent() -> TestResult {
+    let admitted = ProcessAccept::Admitted.encode()?;
+    let written = stdin_answered(admitted.clone(), ProcessReply::Written(5, false)).await?;
+    assert_eq!(written?, (5, false));
+
+    let (_, reading) = reading(0, (0, 0))?;
+    for (accept, reply) in [
+        (reading, ProcessReply::Written(5, false)),
+        (admitted, ProcessReply::Written(100, false)),
+    ] {
+        let written = stdin_answered(accept, reply.clone()).await?;
+        assert!(
+            matches!(
+                written,
+                Err(ClientError::Stream(ServiceError::InvalidInput))
+            ),
+            "{reply:?}: {written:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_local_read_ends_a_stdin_write_at_once() -> TestResult {
+    // Given: a target that admits the write and then waits for more input.
+    let ((mut reader, mut writer), (_service_reader, mut service_writer)) = pipe();
+    let admitted = ProcessAccept::Admitted.encode()?;
+    service_writer.frame(FrameKind::Accept, &admitted).await?;
+    service_writer.flush().await?;
+
+    // When: local input fails after one chunk.
+    let written = tokio::time::timeout(
+        Duration::from_secs(5),
+        hosted::stdin((&mut reader, &mut writer), FailsAfter(Some(b"ab"))),
+    )
+    .await?;
+
+    // Then: the read failure is the answer; nothing waits for the target.
+    assert!(matches!(written, Err(ClientError::Local(_))), "{written:?}");
     Ok(())
 }
