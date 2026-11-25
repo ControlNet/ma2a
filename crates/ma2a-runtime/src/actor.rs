@@ -19,6 +19,8 @@ mod command;
 mod construction;
 #[cfg(test)]
 mod control_completion_test;
+#[cfg(test)]
+mod departure_test;
 mod echo;
 #[cfg(test)]
 mod effective_data_test;
@@ -63,6 +65,9 @@ pub(crate) struct Actor {
     pub(crate) control_tasks: JoinSet<crate::control_actor::inbound::InboundControlCompletion>,
     echo_calls: mpsc::Receiver<EchoCall>,
     echo_tasks: JoinSet<echo::EchoTaskCompletion>,
+    pub(crate) departure_tasks: JoinSet<crate::departure_actor::DepartureCompletion>,
+    /// Spaces whose departure exchange is still in flight.
+    pub(crate) departing: BTreeSet<ma2a_core::SpaceId>,
     pub(crate) echo_audit: crate::echo_audit::EchoAuditLog,
     pub(crate) echo_metrics: EchoMetrics,
     pub(crate) connections: crate::RuntimeConnections,

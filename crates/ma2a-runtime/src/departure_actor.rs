@@ -1,21 +1,30 @@
-//! Actor-side Space departure: the leaving member's request and the Space
-//! authority's signed removal.
+//! Member-side Space departure: the leaving member asks the Space authority to
+//! sign the next generation without it.
+//!
+//! The exchange with the authority runs as a task beside the actor, so a slow or
+//! unreachable authority holds up only this request and never the rest of the
+//! Runtime. Its answer comes back through the actor loop, which validates and
+//! persists it.
 
-use ma2a_core::{
-    EndpointId, EnrollmentPage, RequestId, SpaceChain, SpaceId, validate_enrollment_pages,
-};
-use ma2a_net::EnrollmentCall;
+use ma2a_core::{EnrollmentPage, RequestId, SpaceChain, SpaceId, validate_enrollment_pages};
+use ma2a_net::{EndpointAddr, NetError};
 use tokio::sync::oneshot;
 
 use crate::{
     SpaceDepartureError,
     actor::{Actor, Command, RuntimeHandle},
-    departure::{
-        DEPARTURE_STATUS_INTERNAL, DEPARTURE_STATUS_OK, DEPARTURE_STATUS_REJECTED,
-        accepts_departure, decode_departure, encode_departure,
-    },
+    departure::{DEPARTURE_STATUS_OK, accepts_departure, encode_departure},
     state::RuntimeEvent,
 };
+
+type DepartureReply = oneshot::Sender<Result<u64, SpaceDepartureError>>;
+
+/// One finished exchange with a Space authority, handed back to the actor loop.
+pub(crate) struct DepartureCompletion {
+    space_id: SpaceId,
+    exchanged: Result<(u8, Vec<Vec<u8>>), NetError>,
+    reply: DepartureReply,
+}
 
 impl RuntimeHandle {
     /// Asks the Space authority to sign the next generation without this Endpoint.
@@ -43,12 +52,62 @@ impl RuntimeHandle {
 }
 
 impl Actor {
+    /// Checks the departure locally, then starts the authority exchange as a task.
     pub(crate) async fn leave_space(
         &mut self,
+        (space_id, request_id): (SpaceId, RequestId),
+        reply: DepartureReply,
+    ) {
+        match self.departure_target(space_id).await {
+            Ok(owner_addr) => {
+                let exchange = self
+                    .endpoint
+                    .exchange_enrollment(owner_addr, encode_departure(space_id, request_id));
+                self.departure_tasks.spawn(async move {
+                    DepartureCompletion {
+                        space_id,
+                        exchanged: exchange.await,
+                        reply,
+                    }
+                });
+            }
+            Err(error) => {
+                let _unsent = reply.send(Err(error));
+            }
+        }
+    }
+
+    /// Returns the authority to ask, and claims the Space for this one departure.
+    ///
+    /// A second departure of a Space whose exchange is still in flight is refused
+    /// rather than sent alongside it.
+    async fn departure_target(
+        &mut self,
         space_id: SpaceId,
-        request_id: RequestId,
-    ) -> Result<u64, SpaceDepartureError> {
-        let local = self.state.endpoint_id;
+    ) -> Result<EndpointAddr, SpaceDepartureError> {
+        let chain = self.member_chain(space_id).await?;
+        let authority_owner = chain.genesis().genesis().initial_member().endpoint_id();
+        if authority_owner == self.state.endpoint_id {
+            return Err(SpaceDepartureError::owner_cannot_leave());
+        }
+        // The address carries the authority's identity and nothing else on purpose.
+        // Iroh then resolves it through this Runtime's installed private
+        // `SpaceAddressLookup`, which serves only signed Space address records the
+        // Endpoint already holds. Public discovery is disabled, so departure uses
+        // the same authenticated target resolution as every other MA2A operation.
+        let owner_addr = EndpointAddr::from(
+            authority_owner
+                .to_public_key()
+                .map_err(|_| SpaceDepartureError::internal())?,
+        );
+        if !self.departing.insert(space_id) {
+            return Err(SpaceDepartureError::rejected());
+        }
+        Ok(owner_addr)
+    }
+
+    /// Loads the Space's chain while the local Endpoint is still one of its members.
+    async fn member_chain(&self, space_id: SpaceId) -> Result<SpaceChain, SpaceDepartureError> {
         let chain = self
             .store
             .load_space_chain(space_id)
@@ -58,29 +117,32 @@ impl Actor {
         if !chain
             .members()
             .iter()
-            .any(|member| member.endpoint_id() == local)
+            .any(|member| member.endpoint_id() == self.state.endpoint_id)
         {
             return Err(SpaceDepartureError::not_a_member());
         }
-        let authority_owner = chain.genesis().genesis().initial_member().endpoint_id();
-        if authority_owner == local {
-            return Err(SpaceDepartureError::owner_cannot_leave());
-        }
-        // The address carries the authority's identity and nothing else on purpose.
-        // Iroh then resolves it through this Runtime's installed private
-        // `SpaceAddressLookup`, which serves only signed Space address records the
-        // Endpoint already holds. Public discovery is disabled, so departure uses
-        // the same authenticated target resolution as every other MA2A operation.
-        let owner_addr = ma2a_net::EndpointAddr::from(
-            authority_owner
-                .to_public_key()
-                .map_err(|_| SpaceDepartureError::internal())?,
-        );
-        let (status, pages) = self
-            .endpoint
-            .exchange_enrollment(owner_addr, &encode_departure(space_id, request_id))
-            .await
-            .map_err(|_| SpaceDepartureError::unreachable())?;
+        Ok(chain)
+    }
+
+    /// Settles a finished exchange and answers the caller that asked to leave.
+    pub(crate) async fn finish_departure(&mut self, completion: DepartureCompletion) {
+        let DepartureCompletion {
+            space_id,
+            exchanged,
+            reply,
+        } = completion;
+        self.departing.remove(&space_id);
+        let result = self.complete_departure(space_id, exchanged).await;
+        let _unsent = reply.send(result);
+    }
+
+    async fn complete_departure(
+        &mut self,
+        space_id: SpaceId,
+        exchanged: Result<(u8, Vec<Vec<u8>>), NetError>,
+    ) -> Result<u64, SpaceDepartureError> {
+        let local = self.state.endpoint_id;
+        let (status, pages) = exchanged.map_err(|_| SpaceDepartureError::unreachable())?;
         if status != DEPARTURE_STATUS_OK {
             return Err(SpaceDepartureError::rejected());
         }
@@ -94,6 +156,9 @@ impl Actor {
             .map_err(|_| SpaceDepartureError::rejected())?;
         let advanced =
             validate_enrollment_pages(&advanced).map_err(|_| SpaceDepartureError::rejected())?;
+        // Membership may have changed while the exchange was in flight, so the
+        // answer is checked against the chain held now, not the one asked from.
+        let chain = self.member_chain(space_id).await?;
         if !accepts_departure(&chain, &advanced, local) {
             return Err(SpaceDepartureError::rejected());
         }
@@ -121,97 +186,5 @@ impl Actor {
             .await
             .map_err(|_| SpaceDepartureError::internal().after_commit(revision))?;
         Ok(revision)
-    }
-
-    /// Handles a departure request that arrived on the shared bootstrap ALPN.
-    ///
-    /// The transport authenticates the remote Endpoint, so a request can only
-    /// ever remove its own sender.
-    pub(crate) async fn handle_departure_call(
-        &mut self,
-        call: EnrollmentCall,
-    ) -> Result<(), crate::RuntimeError> {
-        let departing = call.remote_endpoint_id();
-        let Some((space_id, request_id)) = decode_departure(call.request()) else {
-            call.respond(DEPARTURE_STATUS_REJECTED, Vec::new());
-            return Ok(());
-        };
-        match self
-            .remove_departing_member(space_id, (departing, request_id))
-            .await
-        {
-            Ok(Some(chain)) => match departure_pages(&chain) {
-                Ok(pages) => call.respond(DEPARTURE_STATUS_OK, pages),
-                Err(()) => call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new()),
-            },
-            Ok(None) => call.respond(DEPARTURE_STATUS_REJECTED, Vec::new()),
-            Err(error) => {
-                call.respond(DEPARTURE_STATUS_INTERNAL, Vec::new());
-                Self::absorb_background("owner departure completion", Err(error))?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Splits the advanced chain into the bounded pages the transport accepts.
-///
-/// Departure reuses enrollment's pagination rather than shipping one whole-chain
-/// frame, because a long-lived Space's history does not fit a single frame.
-fn departure_pages(chain: &SpaceChain) -> Result<Vec<Vec<u8>>, ()> {
-    EnrollmentPage::paginate(chain)
-        .map_err(|_| ())?
-        .iter()
-        .map(|page| page.encode().map_err(|_| ()))
-        .collect()
-}
-
-impl Actor {
-    /// Returns the advanced chain, `Ok(None)` when the request is not authorized,
-    /// and a typed local failure kept separate from remote denial.
-    async fn remove_departing_member(
-        &mut self,
-        space_id: SpaceId,
-        (departing, request_id): (EndpointId, RequestId),
-    ) -> Result<Option<SpaceChain>, crate::RuntimeError> {
-        let Some(chain) = self.store.load_space_chain(space_id).await? else {
-            return Ok(None);
-        };
-        // A member holding a copy of the chain is not the one that signs; it refuses without
-        // touching anything rather than failing on the authority key it does not hold.
-        if !crate::departure::answers_departure(&chain, self.state.endpoint_id, departing) {
-            return Ok(None);
-        }
-        let issued_at_ms = u64::try_from(self.clock.now_ms()?)
-            .map_err(|_| crate::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;
-        let removed = self
-            .store
-            .revoke_owned_space_member(crate::store::OwnedMemberRevocation {
-                space_id,
-                endpoint_id: departing,
-                issued_at_ms,
-                local_endpoint_id: self.state.endpoint_id,
-                request_id: Some(request_id),
-            })
-            .await;
-        let removed = match removed {
-            Ok(removed) => removed,
-            // Neither a member now nor removed by any earlier answer: nothing to say.
-            Err(error) if error.is_space_not_found() => return Ok(None),
-            Err(error) => return Err(self.retain_membership_error(error)),
-        };
-        if removed.replayed {
-            return Ok(Some(removed.chain));
-        }
-        self.state.revision = removed.projection_revision;
-        self.state.memberships = removed.memberships;
-        self.synchronized_control_peers.clear();
-        let _receiver_count = self
-            .events
-            .send(RuntimeEvent::memberships_changed(removed.revision));
-        self.refresh_after_membership_change()
-            .await
-            .map_err(|error| error.after_commit(removed.revision))?;
-        Ok(Some(removed.chain))
     }
 }

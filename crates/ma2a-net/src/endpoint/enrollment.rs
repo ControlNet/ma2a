@@ -4,15 +4,20 @@ use iroh::EndpointAddr;
 impl RuntimeEndpoint {
     /// Exchanges one bounded enrollment request over the reserved ALPN.
     ///
+    /// The returned future owns its own Endpoint handle, so the caller can run it
+    /// as a separate task instead of waiting on the network itself.
+    ///
     /// # Errors
     ///
-    /// Returns [`NetError`] when connection, stream, framing, or response validation fails.
-    pub async fn exchange_enrollment(
+    /// The future returns [`NetError`] when connection, stream, framing, or
+    /// response validation fails.
+    pub fn exchange_enrollment(
         &self,
         owner: EndpointAddr,
-        request: &[u8],
-    ) -> Result<(u8, Vec<Vec<u8>>), NetError> {
-        crate::enrollment::exchange(self.router.endpoint(), owner, request).await
+        request: Vec<u8>,
+    ) -> impl Future<Output = Result<(u8, Vec<Vec<u8>>), NetError>> + Send + 'static {
+        let endpoint = self.router.endpoint().clone();
+        async move { crate::enrollment::exchange(&endpoint, owner, &request).await }
     }
 
     /// Exchanges an exact, owner-idempotent invitation redemption.

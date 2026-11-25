@@ -16,6 +16,9 @@ impl Actor {
         self.control_rounds.shutdown().await;
         self.control_tasks.shutdown().await;
         self.echo_tasks.shutdown().await;
+        // An exchange cut short here drops its reply, so the caller learns the
+        // departure did not complete instead of waiting out the exchange bound.
+        self.departure_tasks.shutdown().await;
         let relay_stopped = match self.private_relay_server.take() {
             Some(server) => server.shutdown().await.map_err(|_| {
                 crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Shutdown)

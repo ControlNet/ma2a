@@ -42,7 +42,8 @@ impl SpaceDepartureErrorCode {
     pub const OWNER_CANNOT_LEAVE: Self = Self(DepartureErrorKind::OwnerCannotLeave);
     /// The exchange failed; the remote authority outcome may be unknown.
     pub const UNREACHABLE: Self = Self(DepartureErrorKind::Unreachable);
-    /// The authority refused the request or returned an unusable chain.
+    /// The authority refused the request or returned an unusable chain, or a
+    /// departure of the same Space is still waiting on the authority.
     pub const REJECTED: Self = Self(DepartureErrorKind::Rejected);
     /// The local Runtime failed before or after the exchange.
     pub const INTERNAL: Self = Self(DepartureErrorKind::Internal);

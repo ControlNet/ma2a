@@ -68,7 +68,7 @@ impl Actor {
                         let _unsent = reply.send(self.grant_owned_space_member(member, services).await);
                     }
                     Some(Command::LeaveSpace { space_id, request_id, reply }) => {
-                        let _unsent = reply.send(self.leave_space(space_id, request_id).await);
+                        self.leave_space((space_id, request_id), reply).await;
                     }
                     Some(Command::CreateEnrollmentInvite { creation, reply }) => {
                         let _unsent = reply.send(self.create_enrollment_invite(creation).await);
@@ -146,6 +146,11 @@ impl Actor {
                 joined = self.echo_tasks.join_next(), if !self.echo_tasks.is_empty() => {
                     if let Some(completion) = joined {
                         self.finish_echo(completion.map_err(RuntimeError::from)?).await;
+                    }
+                },
+                joined = self.departure_tasks.join_next(), if !self.departure_tasks.is_empty() => {
+                    if let Some(completion) = joined {
+                        self.finish_departure(completion.map_err(RuntimeError::from)?).await;
                     }
                 },
                 observation = self.relay_observations.recv() => if let Some(observation) = observation {

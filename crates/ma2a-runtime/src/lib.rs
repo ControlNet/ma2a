@@ -21,6 +21,7 @@ mod control_actor;
 mod control_sync;
 mod departure;
 mod departure_actor;
+mod departure_authority;
 mod echo_audit;
 mod enrollment;
 mod enrollment_actor;
