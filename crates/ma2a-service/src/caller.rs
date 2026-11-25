@@ -11,7 +11,7 @@ use ma2a_core::{
     },
 };
 use ma2a_runtime::ipc::{IpcPaths, LocalApiClient, LocalStream, StreamUpgrade};
-use ma2a_services::{FrameReader, FrameWriter};
+use ma2a_services::{Frame, FrameReader, FrameWriter};
 use serde_json::{Map, json};
 use tokio::io::{AsyncWrite, ReadHalf, WriteHalf};
 
@@ -40,6 +40,8 @@ pub enum Received {
 pub struct CallStream {
     reader: FrameReader<ReadHalf<LocalStream>>,
     writer: FrameWriter<WriteHalf<LocalStream>>,
+    /// Whether the service accepted the call.
+    accepted: bool,
 }
 
 impl CallStream {
@@ -51,23 +53,7 @@ impl CallStream {
     /// connection ends without a terminal.
     pub async fn next(&mut self) -> Result<Received, Error> {
         let frame = self.reader.expect().await?;
-        let malformed = Error::Protocol("the service sent a malformed frame");
-        Ok(match frame.kind() {
-            FrameKind::Accept => {
-                Received::Accepted(decode_call_accept(frame.payload()).map_err(|_| malformed)?)
-            }
-            FrameKind::Data => {
-                let (channel, bytes) = frame.data()?;
-                Received::Data(channel, bytes.to_vec())
-            }
-            FrameKind::End => Received::End(frame.end()?),
-            FrameKind::Control => Received::Control(frame.into_payload()),
-            FrameKind::Reject => Received::Rejected(frame.rejection()?),
-            FrameKind::Outcome => {
-                Received::Outcome(decode_call_outcome(frame.payload()).map_err(|_| malformed)?)
-            }
-            _ => return Err(malformed),
-        })
+        received(frame, &mut self.accepted)
     }
 
     /// Sends 1–64 KiB on one channel; input is channel 0.
@@ -105,6 +91,47 @@ impl CallStream {
         self.writer.frame(FrameKind::Cancel, &[]).await?;
         Ok(self.writer.flush().await?)
     }
+}
+
+/// What one service frame means to a call the service `accepted` so far, which it updates.
+///
+/// Services v1 allows `reject` only before `accept`, `data`, `end`, and `control` only after
+/// it, and `data` and `end` from the service only on its output and error channels; `accept`
+/// comes at most once. A frame out of that order is malformed rather than taken: a `reject`
+/// after `accept` would say an accepted call had no effect.
+fn received(frame: Frame, accepted: &mut bool) -> Result<Received, Error> {
+    let malformed = Error::Protocol("the service sent a malformed frame");
+    let out_of_order = Error::Protocol("the service sent a frame out of order");
+    let from_service = |channel| channel != Channel::Input;
+    let in_order = match frame.kind() {
+        FrameKind::Accept | FrameKind::Reject => !*accepted,
+        FrameKind::Data | FrameKind::End | FrameKind::Control => *accepted,
+        _ => true,
+    };
+    if !in_order {
+        return Err(out_of_order);
+    }
+    Ok(match frame.kind() {
+        FrameKind::Accept => {
+            let header = decode_call_accept(frame.payload()).map_err(|_| malformed)?;
+            *accepted = true;
+            Received::Accepted(header)
+        }
+        FrameKind::Data => match frame.data()? {
+            (channel, bytes) if from_service(channel) => Received::Data(channel, bytes.to_vec()),
+            _ => return Err(out_of_order),
+        },
+        FrameKind::End => match frame.end()? {
+            channel if from_service(channel) => Received::End(channel),
+            _ => return Err(out_of_order),
+        },
+        FrameKind::Control => Received::Control(frame.into_payload()),
+        FrameKind::Reject => Received::Rejected(frame.rejection()?),
+        FrameKind::Outcome => {
+            Received::Outcome(decode_call_outcome(frame.payload()).map_err(|_| malformed)?)
+        }
+        _ => return Err(malformed),
+    })
 }
 
 /// Writes one `control` frame; its bounds are the frame header's.
@@ -216,6 +243,7 @@ impl Caller {
         let mut opened = CallStream {
             reader: FrameReader::new(read),
             writer: FrameWriter::new(write),
+            accepted: false,
         };
         let header = OpenHeader::new(request_id, target, OpenBody::Service(request))
             .encode()
