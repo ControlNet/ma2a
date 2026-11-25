@@ -10,6 +10,7 @@ use rusqlite::{OptionalExtension as _, Transaction, params};
 use crate::{
     AgentDefinition, AgentRecord, Committed, Repository, StoreError,
     agent_log::set_state,
+    agent_reads::live_task_count,
     agent_rows::{AGENT_COLUMNS, read_agent},
     repository::increment_revision,
     service_exposures::current_revision,
@@ -166,7 +167,7 @@ impl Repository {
     }
 
     /// Starts or stops an Agent; stopping fails every task it has not finished and ends its
-    /// live instance.
+    /// live instance. Answers the Agent with its number of unfinished tasks as committed.
     ///
     /// # Errors
     /// Returns [`StoreError`] when the change cannot be committed.
@@ -174,7 +175,7 @@ impl Repository {
         &mut self,
         agent: &AgentId,
         (enabled, at_ms): (bool, u64),
-    ) -> Result<Committed<Option<AgentRecord>>, StoreError> {
+    ) -> Result<Committed<Option<(AgentRecord, usize)>>, StoreError> {
         let transaction = self.immediate()?;
         let changed = transaction.execute(
             "UPDATE agents SET enabled = ?2, updated_at_ms = ?3 WHERE agent_id = ?1 AND enabled != ?2",
@@ -203,7 +204,8 @@ impl Repository {
         } else {
             current_revision(&transaction)?
         };
-        let record = load_agent(&transaction, agent)?;
+        let live = live_task_count(&transaction, agent)?;
+        let record = load_agent(&transaction, agent)?.map(|record| (record, live));
         transaction.commit()?;
         Ok(Committed::new(revision, record))
     }

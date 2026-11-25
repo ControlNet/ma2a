@@ -395,6 +395,17 @@ fn tasks_are_listed_per_creator_and_agent() -> TestResult {
         .into_value();
     assert!(none.is_empty());
     assert_eq!(repository.live_agent_tasks()?.len(), 3);
+    // Each Agent is listed with its unfinished tasks, and a start that changes nothing
+    // counts them as well.
+    let listed = repository.agents()?.into_value();
+    assert_eq!(
+        listed.iter().map(|(_, live)| *live).collect::<Vec<_>>(),
+        [3]
+    );
+    let started = repository
+        .set_agent_enabled(&agent()?, (true, 9))?
+        .into_value();
+    assert_eq!(started.map(|(_, live)| live), Some(3));
     Ok(())
 }
 
@@ -484,10 +495,11 @@ fn finished_tasks_beyond_the_retention_bound_make_room_oldest_first() -> TestRes
 fn stopping_an_agent_ends_its_instance_so_a_restart_begins_a_new_one() -> TestResult {
     let (_state, mut repository) = open("agent-stop-instance")?;
     let generation = ready_agent(&mut repository, 1)?;
-    let stopped = repository
+    let (stopped, live) = repository
         .set_agent_enabled(&agent()?, (false, 30))?
         .into_value()
         .ok_or("missing Agent")?;
+    assert_eq!(live, 0);
     let instance = stopped.instance.ok_or("no instance")?;
     assert_eq!(instance.ended_ms, Some(30));
     // The stopped instance's Process is still named, so the caller can terminate it.

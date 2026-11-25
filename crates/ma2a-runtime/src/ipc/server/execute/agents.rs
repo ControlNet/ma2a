@@ -132,9 +132,8 @@ async fn switch(
     } else {
         manager.stop(agent).await
     };
-    let (record, revision) = switched.map_err(refusal)?;
-    let view = view(manager, record).await;
-    let view = view.map_err(|error| error.after_commit(revision))?;
+    let ((record, live), revision) = switched.map_err(refusal)?;
+    let view = AgentView::new(record, live);
     let result = if start {
         CommandResult::agent_started(&view)
     } else {
@@ -155,19 +154,6 @@ async fn list(manager: &AgentManager, after: Option<&AgentId>) -> Result<Command
         .collect();
     views.truncate(MAX_AGENT_LIST_PAGE + 1);
     Ok(CommandResult::agents(views).at_revision(revision))
-}
-
-/// One Agent's view with its current number of unfinished tasks, read after the change.
-async fn view(
-    manager: &AgentManager,
-    record: ma2a_store::AgentRecord,
-) -> Result<AgentView, ApiError> {
-    let (_, agents) = manager.list().await.map_err(refusal)?;
-    let live = agents
-        .into_iter()
-        .find(|(listed, _)| listed.definition.id == record.definition.id)
-        .map_or(0, |(_, live)| live);
-    Ok(AgentView::new(record, live))
 }
 
 /// Maps a definition change's refusal: a conflict there means the Agent is started.

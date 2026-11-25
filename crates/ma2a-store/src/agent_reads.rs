@@ -17,6 +17,18 @@ use crate::{
     service_exposures::current_revision,
 };
 
+/// The number of unfinished tasks of `agent`.
+pub(crate) fn live_task_count(
+    connection: &rusqlite::Connection,
+    agent: &AgentId,
+) -> Result<usize, StoreError> {
+    Ok(connection.query_row(
+        "SELECT COUNT(*) FROM agent_tasks WHERE agent_id = ?1 AND state BETWEEN 0 AND 2",
+        [agent.as_str()],
+        |row| row.get(0),
+    )?)
+}
+
 /// How long a finished task is retained, in milliseconds: seven days.
 pub const AGENT_TASK_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
@@ -66,11 +78,12 @@ impl Repository {
         Ok(record)
     }
 
-    /// Returns every Agent in name order with the revision of the same read.
+    /// Returns every Agent in name order with its number of unfinished tasks, and the revision
+    /// of the same read.
     ///
     /// # Errors
     /// Returns [`StoreError`] when a row is malformed.
-    pub fn agents(&self) -> Result<Committed<Vec<AgentRecord>>, StoreError> {
+    pub fn agents(&self) -> Result<Committed<Vec<(AgentRecord, usize)>>, StoreError> {
         let transaction = self.connection.unchecked_transaction()?;
         let revision = current_revision(&transaction)?;
         let records = {
@@ -79,7 +92,12 @@ impl Repository {
                  LEFT JOIN agent_instances i ON i.agent_id = a.agent_id ORDER BY a.agent_id"
             ))?;
             let rows = statement.query_map([], read_agent)?;
-            rows.map(|row| row?).collect::<Result<Vec<_>, _>>()?
+            rows.map(|row| {
+                let record = row??;
+                let live = live_task_count(&transaction, &record.definition.id)?;
+                Ok((record, live))
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?
         };
         transaction.commit()?;
         Ok(Committed::new(revision, records))

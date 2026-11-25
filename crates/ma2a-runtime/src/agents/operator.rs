@@ -113,8 +113,12 @@ impl AgentManager {
     /// Starts an Agent: its first instance starts at once. A reserved name, which only a
     /// definition stored before such names were refused can carry, is never started.
     ///
-    /// Answers the Agent as the start committed it, with that commit's revision.
-    pub(crate) async fn start(&self, agent: &AgentId) -> Result<(AgentRecord, u64), ServiceError> {
+    /// Answers the Agent and its number of unfinished tasks as the start committed them, with
+    /// that commit's revision.
+    pub(crate) async fn start(
+        &self,
+        agent: &AgentId,
+    ) -> Result<((AgentRecord, usize), u64), ServiceError> {
         if reserved_name(agent.as_str()) {
             return Err(ServiceError::InvalidInput);
         }
@@ -130,15 +134,19 @@ impl AgentManager {
 
     /// Stops an Agent: its unfinished tasks fail and its instance is terminated.
     ///
-    /// Answers the Agent as the stop committed it, with that commit's revision.
-    pub(crate) async fn stop(&self, agent: &AgentId) -> Result<(AgentRecord, u64), ServiceError> {
+    /// Answers the Agent and its number of unfinished tasks as the stop committed them, with
+    /// that commit's revision.
+    pub(crate) async fn stop(
+        &self,
+        agent: &AgentId,
+    ) -> Result<((AgentRecord, usize), u64), ServiceError> {
         let (id, at_ms) = (agent.clone(), self.now_ms());
         let (record, revision) = self
             .commit_at(move |repository| repository.set_agent_enabled(&id, (false, at_ms)))
             .await?;
         let record = record.ok_or(ServiceError::UnknownAgent)?;
         // The stop ended the instance; its Process still runs until terminated here.
-        if let Some(process) = record.instance.and_then(|instance| instance.process_id) {
+        if let Some(process) = record.0.instance.and_then(|instance| instance.process_id) {
             let reason = (STOP_GRACE_MS, ProcessReason::Requested);
             let _ended = self.0.processes.terminate((None, process), reason).await;
         }
@@ -147,23 +155,8 @@ impl AgentManager {
 
     /// Returns every Agent with its number of unfinished tasks, and the read's revision.
     pub(crate) async fn list(&self) -> Result<(u64, Vec<(AgentRecord, usize)>), ServiceError> {
-        let (agents, live) = self
-            .store(|repository| {
-                let agents = repository.agents()?;
-                Ok((agents, repository.live_agent_tasks()?))
-            })
-            .await?;
-        let revision = agents.revision();
-        let listed = agents
-            .into_value()
-            .into_iter()
-            .map(|record| {
-                let id = &record.definition.id;
-                let count = live.iter().filter(|task| task.summary.agent == *id).count();
-                (record, count)
-            })
-            .collect();
-        Ok((revision, listed))
+        let agents = self.store(|repository| repository.agents()).await?;
+        Ok((agents.revision(), agents.into_value()))
     }
 }
 
