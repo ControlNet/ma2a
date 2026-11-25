@@ -51,11 +51,13 @@ printf '%s\n' \
   > "$out/known_hosts"
 : > "$out/ssh_config"
 
-# Adds the ssh config entry for a runner whose handoff artifact was downloaded into a new
-# directory, and only then puts that directory in place of the runner's, so a file left from an
-# earlier run in a reused --out never stands in for one the artifact lacks.
+# Installs a runner's handoff, downloaded into a new directory, in the runner's directory under
+# --out and adds its ssh config entry. A download that lacks a file is refused before anything is
+# touched, so a file left from an earlier run never stands in for one the artifact lacks; only the
+# handoff's own files are replaced, so anything else in that directory, such as notes, is kept.
+# The function runs on the left of ||, where errexit does not apply, so every step is checked.
 hand_off() {
-  local runner=$1 download=$2 target=''
+  local runner=$1 download=$2 target='' workspace=''
   if [ -r "$download/ssh-command.txt" ] && [ -r "$download/workspace.txt" ]; then
     target=$(awk 'NR == 1 { print $2 }' "$download/ssh-command.txt")
   fi
@@ -64,9 +66,15 @@ hand_off() {
     rm -rf "$download"
     return 1
   }
-  rm -rf "${out:?}/$runner"
-  mv "$download" "$out/$runner"
-  cat >> "$out/ssh_config" <<EOF
+  mkdir -p "$out/$runner" &&
+    mv -f "$download/ssh-command.txt" "$download/workspace.txt" "$out/$runner/" &&
+    workspace=$(cat "$out/$runner/workspace.txt") || {
+      echo "$runner: could not install its handoff in $out/$runner" >&2
+      rm -rf "$download"
+      return 1
+    }
+  rm -rf "$download"
+  cat >> "$out/ssh_config" <<EOF || { echo "$runner: could not write its ssh config" >&2; return 1; }
 Host $runner
   HostName ${target#*@}
   User ${target%@*}
@@ -79,7 +87,7 @@ Host $runner
   ServerAliveInterval 30
 
 EOF
-  echo "$runner: ssh -F '$out/ssh_config' $runner   (workspace: $(cat "$out/$runner/workspace.txt"))"
+  echo "$runner: ssh -F '$out/ssh_config' $runner   (workspace: $workspace)"
 }
 
 # Every pending runner is checked on each round, so a session is handed off as soon as it is
