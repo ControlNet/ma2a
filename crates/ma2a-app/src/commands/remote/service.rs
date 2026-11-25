@@ -2,12 +2,15 @@
 
 use std::{io::Write as _, time::Duration};
 
-use ma2a_core::service::{
-    DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceName,
-    ServiceOrigin, ServiceRequest, ServiceVersion,
+use ma2a_core::{
+    ServiceKind,
+    service::{
+        DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceError,
+        ServiceName, ServiceOrigin, ServiceRequest, ServiceVersion, sorts_after,
+    },
 };
 use ma2a_runtime::ipc::IpcPaths;
-use ma2a_services::client::{process::ProcessIo, service};
+use ma2a_services::client::{ClientError, process::ProcessIo, service};
 use serde_json::{Value, json};
 
 use super::{bounded, open, open_as, process::interrupted};
@@ -71,6 +74,22 @@ pub(crate) async fn discover(
 /// services a Runtime registers fit in 5, so a target paging further is not believed.
 const MAX_PAGES: usize = 8;
 
+/// Whether a page lists only services after the cursor sent, and names a next cursor after it
+/// too; a target answering otherwise would keep the search from moving on.
+fn moves_on(after: Option<&str>, page: &DescribePage) -> bool {
+    let past = |origin: &ServiceOrigin| sorts_after(origin, after);
+    let named = |name: &str| {
+        ServiceKind::from_name(name)
+            .map(ServiceOrigin::Builtin)
+            .or_else(|| ServiceName::new(name).ok().map(ServiceOrigin::Hosted))
+    };
+    page.descriptors.iter().all(|found| past(found.origin()))
+        && page
+            .next
+            .as_deref()
+            .is_none_or(|next| named(next).is_some_and(|origin| past(&origin)))
+}
+
 /// The highest version of `service` that lists `operation`, from discovery.
 async fn newest(
     target: (&IpcPaths, &str),
@@ -79,7 +98,10 @@ async fn newest(
     let origin = ServiceOrigin::Hosted(service.clone());
     let mut after = None;
     for _ in 0..MAX_PAGES {
-        let page = page(target, after).await?;
+        let page = page(target, after.clone()).await?;
+        if !moves_on(after.as_deref(), &page) {
+            return Err(ClientError::Stream(ServiceError::InvalidInput).into());
+        }
         if let Some(descriptor) = page
             .descriptors
             .iter()
@@ -148,7 +170,36 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
 
 #[cfg(test)]
 mod tests {
-    use super::{AppError, PAGE_DEADLINE, bounded};
+    use ma2a_core::{
+        ServiceKind,
+        service::{DescribePage, builtin_descriptor},
+    };
+
+    use super::{AppError, PAGE_DEADLINE, bounded, moves_on};
+
+    #[test]
+    fn a_discovery_page_must_move_past_its_cursor() -> Result<(), Box<dyn std::error::Error>> {
+        let files = || builtin_descriptor(ServiceKind::Files);
+        let page = |descriptors, next: Option<&str>| {
+            DescribePage::new(descriptors, next.map(str::to_owned))
+        };
+        // Built-ins come in catalog order, then hosted services by name.
+        assert!(moves_on(None, &page(vec![files()?], Some("files"))));
+        assert!(moves_on(Some("echo"), &page(vec![files()?], Some("alpha"))));
+        assert!(moves_on(Some("alpha"), &page(Vec::new(), Some("beta"))));
+        assert!(moves_on(Some("alpha"), &page(Vec::new(), None)));
+        // A cursor repeated or going back, a listed service before the cursor, and a cursor
+        // that names nothing would keep the search from moving on.
+        assert!(!moves_on(Some("alpha"), &page(Vec::new(), Some("alpha"))));
+        assert!(!moves_on(Some("beta"), &page(Vec::new(), Some("alpha"))));
+        assert!(!moves_on(Some("beta"), &page(Vec::new(), Some("files"))));
+        assert!(!moves_on(Some("transfer"), &page(vec![files()?], None)));
+        assert!(!moves_on(
+            Some("alpha"),
+            &page(Vec::new(), Some("Not A Name"))
+        ));
+        Ok(())
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_page_that_never_comes_fails_as_timed_out() {

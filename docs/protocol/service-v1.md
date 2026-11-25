@@ -110,7 +110,9 @@ never mistakes a service it may use for one that is not there.
   does not list is `reject(invalid_input)`. The Runtime never negotiates.
 - Selection is the caller's and deterministic: the highest version that both the caller supports
   and the descriptor lists (`ma2a_service::select_version`). `ma2a service call` without
-  `--version` picks the highest version listing the operation. The chosen version is visible to
+  `--version` picks the highest version listing the operation, paging discovery at most 8 times
+  and refusing a page whose services or `next` do not come after its `after` cursor as
+  `invalid_input`. The chosen version is visible to
   the caller, to the service on every call, and in the per-version call counters of
   `service_hosted_list`.
 
