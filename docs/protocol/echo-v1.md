@@ -27,7 +27,7 @@ The responder writes one fixed header followed by an optional canonical response
 
 Status zero carries a canonical successful response containing the original request ID and exact accepted payload. Nonzero statuses carry an empty body. Stable status codes are version mismatch `1`, invalid input `2`, unauthorized `3`, timeout `4`, concurrency exceeded `5`, cancelled `6`, unavailable `7`, and internal `8`.
 
-The client rejects a responder identity different from the requested target and rejects a response request ID different from the initiating request.
+The client rejects a responder identity different from the requested target, a response request ID different from the initiating request, and a payload different from the one it sent.
 
 ## Bounds And Lifetime
 

@@ -191,10 +191,7 @@ async fn run_outbound(
             .client
             .exchange(input.target, &request.encode()?)
             .await?;
-        if response.request_id() != input.request_id {
-            return Err(EchoError::InvalidInput);
-        }
-        Ok(response)
+        echoed(input.request_id, &input.payload, response)
     }
     .await;
     let duration_ms = result.as_ref().map_or_else(
@@ -216,37 +213,24 @@ async fn run_outbound(
     }
 }
 
+/// `response` if it answers exactly the request this Endpoint sent: the same request ID and the
+/// same payload, so a caller that sent UTF-8 text always gets that text back.
+fn echoed(
+    request_id: RequestId,
+    payload: &[u8],
+    response: EchoResponse<'static>,
+) -> Result<EchoResponse<'static>, EchoError> {
+    if response.request_id() != request_id || response.payload() != payload {
+        return Err(EchoError::InvalidInput);
+    }
+    Ok(response)
+}
+
 fn bounded_duration(duration_ms: u128) -> u16 {
     u16::try_from(duration_ms.min(u128::from(ma2a_core::MAX_ECHO_DURATION_MS)))
         .map_or(ma2a_core::MAX_ECHO_DURATION_MS, |bounded| bounded)
 }
 
 #[cfg(test)]
-mod tests {
-    use ma2a_core::{EchoError, EchoResultClass, RequestId};
-    use ma2a_net::EndpointSecret;
-
-    use super::{OutboundAudit, bounded_duration};
-
-    #[test]
-    fn outbound_unavailable_result_is_audited_without_payload() {
-        // Given
-        let request_id = RequestId::try_from([0x64; 16].as_slice()).expect("valid request id");
-        let target = EndpointSecret::generate().endpoint_id();
-        let error = EchoError::Unavailable;
-
-        // When
-        let record = OutboundAudit {
-            request_id,
-            target,
-            byte_count: 7,
-            result: &Err(error),
-        }
-        .record(bounded_duration(4))
-        .expect("bounded record");
-        assert_eq!(record.request_id(), request_id);
-        assert_eq!(record.peer_endpoint_id(), target);
-        assert_eq!(record.result_class(), EchoResultClass::Unavailable);
-        assert_eq!(record.byte_count(), 7);
-    }
-}
+#[path = "echo_test.rs"]
+mod tests;
