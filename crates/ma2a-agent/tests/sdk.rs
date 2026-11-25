@@ -280,6 +280,33 @@ async fn a_cancellation_ends_a_question_still_waiting_for_its_answer() -> TestRe
     Ok(())
 }
 
+/// A question asked once the task was cancelled waits for nothing: the handler gets `None`,
+/// even with the creator's message already queued, and the task never reports `waiting`.
+#[tokio::test]
+async fn a_question_asked_after_the_cancellation_returns_at_once() -> TestResult {
+    let mut runtime = Runtime::start();
+    runtime.next().await?;
+    let mut lines = encode_line(&task(1, "a", "ask"))?;
+    lines.extend(encode_line(&RuntimeToAgent::Message {
+        seq: 2,
+        task: "a".to_owned(),
+        message: Message::user_text("blue"),
+    })?);
+    lines.extend(encode_line(&RuntimeToAgent::Cancel {
+        seq: 3,
+        task: "a".to_owned(),
+    })?);
+    runtime.raw(&lines).await?;
+    let before = runtime.until(ended("a", ReportedState::Cancelled)).await?;
+    assert!(
+        before
+            .iter()
+            .all(|line| !matches!(line, AgentToRuntime::State { .. })),
+        "{before:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_tool_call_over_the_argument_bound_fails_at_once() -> TestResult {
     let mut runtime = Runtime::start();

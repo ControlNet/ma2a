@@ -119,10 +119,14 @@ impl Task {
 
     /// Asks the creator for input: the task waits until their next message arrives.
     ///
-    /// Returns `None` when the task was cancelled instead. A question not in the Agent's
-    /// role or outside [`Message::is_within_bounds`] fails the task and also returns `None`;
-    /// the task has then ended, and later reports for it send nothing.
+    /// Returns `None` when the task was cancelled instead, without asking when that was
+    /// already so; a cancellation wins over a message that arrived with it. A question not in
+    /// the Agent's role or outside [`Message::is_within_bounds`] fails the task and also
+    /// returns `None`; the task has then ended, and later reports for it send nothing.
     pub async fn ask(&mut self, question: Message) -> Option<Message> {
+        if self.is_cancelled() {
+            return None;
+        }
         if !usable(&question) {
             self.report(ReportedState::Failed, (None, Some(UNUSABLE.to_owned())));
             return None;
@@ -138,9 +142,11 @@ impl Task {
             return None;
         }
         let mut cancelled = self.cancelled.clone();
+        // A cancellation wins over a message that arrived with it.
         let answer = tokio::select! {
-            answer = self.messages.recv() => answer,
+            biased;
             _cancelled = cancelled.wait_for(|cancelled| *cancelled) => None,
+            answer = self.messages.recv() => answer,
         };
         if answer.is_some() {
             self.report(ReportedState::Running, (None, None));
@@ -171,18 +177,22 @@ impl Task {
             Some(slot) => slot.calls.insert(call.clone(), answer),
             None => return Err(ToolError::new("task_ended", "the task is no longer held")),
         };
+        let stopping = || ToolError::new("outcome_unknown", "the Agent is stopping");
         let sent = self.shared.emit(&AgentToRuntime::Tool {
             task: self.id.clone(),
-            call,
+            call: call.clone(),
             name: tool.name().to_owned(),
             args,
         });
+        // Arguments within their bound always fit a line, so only a closed output, whose
+        // writer already ended, refuses the call.
         if !sent {
-            return Err(ToolError::new("too_large", "the tool call exceeds a line"));
+            if let Some(slot) = self.shared.tasks().get_mut(&self.id) {
+                slot.calls.remove(&call);
+            }
+            return Err(stopping());
         }
-        answered
-            .await
-            .unwrap_or_else(|_| Err(ToolError::new("outcome_unknown", "the Agent is stopping")))
+        answered.await.unwrap_or_else(|_| Err(stopping()))
     }
 
     /// Calls one tool with typed arguments and result.
@@ -263,3 +273,7 @@ impl Drop for Task {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/task.rs"]
+mod tests;
