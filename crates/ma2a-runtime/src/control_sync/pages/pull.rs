@@ -93,14 +93,15 @@ pub(in crate::control_sync) fn pull_page(
     // whole page for it, which would hold back the very revocation that removed it.
     let authorization = state.authorization();
     for record in state.address_records() {
+        // Decoding comes last: a peer already current skips every record before it.
         if authorization.contains_member(record.endpoint_id())
-            && super::is_exportable_record(record)
             && is_unseen(
                 cursor.address_cursors(),
                 (record.endpoint_id(), record.sequence()),
             )
             && u64::try_from(record.issued_at_ms()).is_ok_and(|issued| issued <= request.now_ms)
             && u64::try_from(record.expires_at_ms()).is_ok_and(|expires| expires > request.now_ms)
+            && super::is_exportable_record(record)
         {
             omitted |=
                 !page.add_control(ControlArtifactKind::ADDRESS_RECORD, record.signed_record())?;
@@ -108,7 +109,6 @@ pub(in crate::control_sync) fn pull_page(
     }
     for advertisement in state.active_relay_advertisements() {
         if authorization.allows_private_relay_provider(advertisement.provider_endpoint_id())
-            && super::is_exportable(advertisement)
             && is_unseen(
                 cursor.relay_cursors(),
                 (
@@ -120,6 +120,7 @@ pub(in crate::control_sync) fn pull_page(
                 .is_ok_and(|issued| issued <= request.now_ms)
             && u64::try_from(advertisement.expires_at_ms())
                 .is_ok_and(|expires| expires > request.now_ms)
+            && super::is_exportable(advertisement)
         {
             omitted |= !page.add_control(
                 ControlArtifactKind::RELAY_ADVERTISEMENT,

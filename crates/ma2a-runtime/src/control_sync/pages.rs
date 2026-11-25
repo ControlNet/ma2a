@@ -88,16 +88,15 @@ pub(super) fn push_page(
     }
     for record in state.address_records() {
         if record.endpoint_id() == request.local_endpoint_id
-            && is_exportable_record(record)
             && u64::try_from(record.issued_at_ms()).is_ok_and(|issued| issued <= request.now_ms)
             && u64::try_from(record.expires_at_ms()).is_ok_and(|expires| expires > request.now_ms)
+            && is_exportable_record(record)
         {
             omitted |= !page.add(ControlArtifactKind::ADDRESS_RECORD, record.signed_record())?;
         }
     }
     for advertisement in state.active_relay_advertisements() {
         if advertisement.provider_endpoint_id() == request.local_endpoint_id
-            && is_exportable(advertisement)
             && state
                 .authorization()
                 .allows_private_relay_provider(request.local_endpoint_id)
@@ -105,6 +104,7 @@ pub(super) fn push_page(
                 .is_ok_and(|issued| issued <= request.now_ms)
             && u64::try_from(advertisement.expires_at_ms())
                 .is_ok_and(|expires| expires > request.now_ms)
+            && is_exportable(advertisement)
         {
             omitted |= !page.add(
                 ControlArtifactKind::RELAY_ADVERTISEMENT,
