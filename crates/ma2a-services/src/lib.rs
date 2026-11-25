@@ -12,6 +12,7 @@ pub mod exec;
 pub mod files;
 pub mod frame_io;
 mod fs_error;
+mod input;
 mod process;
 pub mod proxy;
 pub mod reply;

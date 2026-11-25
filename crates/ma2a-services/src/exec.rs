@@ -16,7 +16,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    FrameReader, FrameWriter, process, reply,
+    FrameReader, FrameWriter,
+    input::{Input, Wrote},
+    process, reply,
     report::{OperationEnd, OperationReport, len64},
 };
 
@@ -104,12 +106,14 @@ pub(crate) const fn reason_end(end: OperationEnd, reason: EndReason) -> Operatio
 
 /// Forwards caller input to the child until the run finishes, returning the bytes forwarded.
 ///
-/// A protocol violation, `cancel`, or stream loss is reported once through `cancel`.
+/// A protocol violation, `cancel`, or stream loss is reported once through `cancel`, also
+/// while a write waits for a child that does not read its stdin.
 async fn inbound<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,
     mut stdin: Option<ChildStdin>,
     (cancel, mut finished): (oneshot::Sender<ServiceError>, oneshot::Receiver<()>),
 ) -> u64 {
+    let mut reader = Input::new(reader);
     let mut input_bytes = 0_u64;
     // Set once the child stops taking input; the caller may not know yet and keeps sending.
     let mut closed_by_child = false;
@@ -139,9 +143,10 @@ async fn inbound<R: AsyncRead + Unpin>(
                     break ServiceError::InvalidInput;
                 };
                 input_bytes += len64(bytes.len());
-                let written = tokio::select! {
-                    _ = &mut finished => return input_bytes,
-                    written = pipe.write_all(bytes) => written,
+                let written = match reader.write(pipe.write_all(bytes), &mut finished).await {
+                    Wrote::Done(written) => written,
+                    Wrote::Stopped(error) => break error,
+                    Wrote::Finished => return input_bytes,
                 };
                 if written.is_err() {
                     stdin = None;

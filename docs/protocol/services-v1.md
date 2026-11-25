@@ -202,6 +202,10 @@ A program that cannot start is rejected with `spawn_failed` before any effect. O
    stdout_bytes, stderr_bytes}`.
 
 `reason` is `completed`, `timed_out`, `cancelled` (caller cancel or stream loss), or `shutdown`.
+While input waits for a child that does not read its stdin, the server still reads the caller's
+next frame, so a `cancel` or stream loss right behind it ends the run at once. Any other frame
+is held until that input is taken, and input still waiting 30 seconds after such a frame
+arrived ends the run as `cancelled`, so a `cancel` further back waits no longer than that.
 On Unix the child runs in its own process group, and the whole group is killed at the end of every
 run: after exit (with a 250 ms output drain), on timeout, cancellation, loss, and Runtime shutdown.
 The drain also bounds a caller that is not reading: output it has not taken 250 ms after the exit
@@ -215,7 +219,8 @@ limitation.
 (Unix) or ConPTY (Windows) using `portable-pty`. The default program is `$SHELL`, falling back to
 `/bin/sh`, or `%COMSPEC%` on Windows. `TERM` is set from `term`.
 
-- Input is `data` (input); `end` stops input while the session continues.
+- Input is `data` (input); `end` stops input while the session continues. Input the program
+  does not take is bounded the same way as Exec stdin.
 - Resize is `control` with `[0, [cols, rows]]`.
 - Terminal output is `data` (output).
 

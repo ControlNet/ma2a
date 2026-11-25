@@ -12,7 +12,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::pty::pty_size;
-use crate::{FrameReader, FrameWriter, report::len64};
+use crate::{
+    FrameReader, FrameWriter,
+    input::{Input, Wrote},
+    report::len64,
+};
 
 /// How long output is still drained after the program exits.
 const EXIT_DRAIN_GRACE: Duration = Duration::from_millis(250);
@@ -23,6 +27,7 @@ pub(super) async fn inbound<R: AsyncRead + Unpin>(
     (input, master): (mpsc::Sender<Vec<u8>>, &Mutex<Box<dyn MasterPty + Send>>),
     (cancel, mut finished): (oneshot::Sender<ServiceError>, oneshot::Receiver<()>),
 ) -> u64 {
+    let mut reader = Input::new(reader);
     let mut input = Some(input);
     let mut input_bytes = 0_u64;
     let failure = loop {
@@ -46,9 +51,10 @@ pub(super) async fn inbound<R: AsyncRead + Unpin>(
                 };
                 input_bytes += len64(bytes.len());
                 let chunk = bytes.to_vec();
-                let sent = tokio::select! {
-                    _ = &mut finished => return input_bytes,
-                    sent = sender.send(chunk) => sent,
+                let sent = match reader.write(sender.send(chunk), &mut finished).await {
+                    Wrote::Done(sent) => sent,
+                    Wrote::Stopped(error) => break error,
+                    Wrote::Finished => return input_bytes,
                 };
                 if sent.is_err() {
                     input = None;

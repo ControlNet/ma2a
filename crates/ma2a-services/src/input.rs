@@ -1,0 +1,94 @@
+//! Caller input written to a program that may stop taking it.
+//!
+//! While one write waits for the program, the caller's next frame is still read, so a `cancel`
+//! or a lost stream right behind input the program does not take is seen at once. Any other
+//! frame is held until the write finishes, and the stream is not read past it; a write still
+//! waiting [`INPUT_STALL`] after that ends the operation as cancelled, so a `cancel` further
+//! back is never stuck behind it for longer.
+
+use std::time::Duration;
+
+use ma2a_core::service::{FrameKind, ServiceError};
+use tokio::{io::AsyncRead, sync::oneshot};
+
+use crate::{Frame, FrameReader};
+
+/// How long a write may still wait once a caller frame is held behind it.
+pub(crate) const INPUT_STALL: Duration = Duration::from_secs(30);
+
+/// The caller's frames, with at most one read ahead while a write was waiting.
+pub(crate) struct Input<'a, R> {
+    reader: &'a mut FrameReader<R>,
+    ahead: Option<Held>,
+}
+
+/// What was read ahead while a write waited.
+enum Held {
+    Frame(Frame),
+    End,
+}
+
+/// How one write of caller input ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Wrote<T> {
+    /// The write finished with this result.
+    Done(T),
+    /// The caller cancelled, its stream failed, or the write stalled; the run must stop.
+    Stopped(ServiceError),
+    /// The run finished meanwhile.
+    Finished,
+}
+
+impl<'a, R: AsyncRead + Unpin> Input<'a, R> {
+    pub(crate) const fn new(reader: &'a mut FrameReader<R>) -> Self {
+        Self {
+            reader,
+            ahead: None,
+        }
+    }
+
+    /// The next caller frame: the one held, if any, or the next one read. Cancel-safe.
+    pub(crate) async fn next(&mut self) -> Result<Option<Frame>, ServiceError> {
+        match self.ahead.take() {
+            Some(Held::Frame(frame)) => Ok(Some(frame)),
+            Some(Held::End) => Ok(None),
+            None => self.reader.next().await,
+        }
+    }
+
+    /// Runs one write of caller input until it finishes, the caller stops the run, or the run
+    /// finishes.
+    pub(crate) async fn write<F: Future>(
+        &mut self,
+        write: F,
+        finished: &mut oneshot::Receiver<()>,
+    ) -> Wrote<F::Output> {
+        tokio::pin!(write);
+        let stall = tokio::time::sleep(Duration::MAX);
+        tokio::pin!(stall);
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut *finished => return Wrote::Finished,
+                written = &mut write => return Wrote::Done(written),
+                frame = self.reader.next(), if self.ahead.is_none() => match frame {
+                    Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => {
+                        return Wrote::Stopped(ServiceError::Cancelled);
+                    }
+                    Err(error) => return Wrote::Stopped(error),
+                    Ok(Some(frame)) => {
+                        stall.as_mut().reset(tokio::time::Instant::now() + INPUT_STALL);
+                        self.ahead = Some(Held::Frame(frame));
+                    }
+                    // Nothing can follow the end of the stream, so it does not bound the write.
+                    Ok(None) => self.ahead = Some(Held::End),
+                },
+                () = &mut stall => return Wrote::Stopped(ServiceError::Cancelled),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "input_tests.rs"]
+mod tests;

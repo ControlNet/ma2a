@@ -179,6 +179,30 @@ async fn cancellation_kills_the_whole_process_group() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_cancel_behind_input_the_child_never_reads_ends_the_run_at_once() -> TestResult {
+    // Given: a child that keeps its stdin open and never reads it.
+    let request = ExecRequest::new(script("sleep 30")?, true, 60_000)?;
+    let ((mut reader, mut writer), server) = start(request, &CancellationToken::new(), 1 << 20);
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+
+    // When: input fills the 64 KiB pipe and leaves one write waiting, and the caller cancels.
+    let chunk = vec![b'x'; 32_768];
+    for _ in 0..3 {
+        writer.data(Channel::Input, &chunk).await?;
+    }
+    writer.frame(FrameKind::Cancel, &[]).await?;
+
+    // Then: the run ends as cancelled without waiting for the child.
+    let frames = tokio::time::timeout(Duration::from_secs(2), drain(&mut reader)).await??;
+    assert_eq!(process_outcome(&frames)?.reason, EndReason::Cancelled);
+    assert_eq!(
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::Cancelled)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_background_child_does_not_outlive_its_exec() -> TestResult {
     let request = ExecRequest::new(script("sleep 30 >/dev/null 2>&1 & echo $!")?, false, 60_000)?;
     let ((mut reader, _writer), server) = start(request, &CancellationToken::new(), 1 << 20);
