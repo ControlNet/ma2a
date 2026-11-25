@@ -21,20 +21,36 @@ if ./scripts/validate-release-metadata.sh "$archive" "$incomplete" "$report" >/d
   exit 1
 fi
 
-tooled="$temporary/tooled.spdx.json"
-jq '.packages += [{SPDXID: "SPDXRef-Tool", name: "xtask", versionInfo: "0.0.0"}]' "$sbom" > "$tooled"
-if ./scripts/validate-release-metadata.sh "$archive" "$tooled" "$report" >/dev/null 2>&1; then
-  printf 'SBOM listing a workspace tool unexpectedly passed validation\n' >&2
-  exit 1
-fi
+# Each excluded package is a copy of a valid one under another name, so only its exclusion can
+# refuse it.
+for mutation in \
+  'workspace tool|xtask' \
+  'procedural macro|serde_derive'
+do
+  label=${mutation%%|*}
+  mutated="$temporary/${mutation#*|}.spdx.json"
+  jq --arg name "${mutation#*|}" \
+    '.packages += [.packages[] | select(.name == "serde") | .SPDXID = "SPDXRef-Copy" | .name = $name]' \
+    "$sbom" > "$mutated"
+  if ./scripts/validate-release-metadata.sh "$archive" "$mutated" "$report" >/dev/null 2>&1; then
+    printf 'SBOM listing a %s unexpectedly passed validation\n' "$label" >&2
+    exit 1
+  fi
+done
 
-macro="$temporary/macro.spdx.json"
-jq '.packages += [{SPDXID: "SPDXRef-Macro", name: "serde_derive", versionInfo: "1.0.0"}]' \
-  "$sbom" > "$macro"
-if ./scripts/validate-release-metadata.sh "$archive" "$macro" "$report" >/dev/null 2>&1; then
-  printf 'SBOM listing a procedural macro unexpectedly passed validation\n' >&2
-  exit 1
-fi
+# Every package declares a license, as an SPDX expression.
+for mutation in \
+  'missing|.packages[0] |= del(.licenseDeclared)' \
+  'slashed|.packages[0].licenseDeclared = "MIT / Apache-2.0"'
+do
+  label=${mutation%%|*}
+  mutated="$temporary/$label-license.spdx.json"
+  jq "${mutation#*|}" "$sbom" > "$mutated"
+  if ./scripts/validate-release-metadata.sh "$archive" "$mutated" "$report" >/dev/null 2>&1; then
+    printf 'SBOM with a %s license unexpectedly passed validation\n' "$label" >&2
+    exit 1
+  fi
+done
 
 # A report that names a build directory is refused, however the tools spelled the path.
 for mutation in \
@@ -46,7 +62,11 @@ for mutation in \
   'inner-unix-path|.rust["ma2a-app 0.1.0 (/tmp/build/crates/ma2a-app)"] = {licenses: ["MIT"]}' \
   'inner-windows-path|.rust["ma2a-app 0.1.0 (D:\\a\\build\\crates\\ma2a-app)"] = {licenses: ["MIT"]}' \
   'drive-url|.rust["ma2a-app 0.1.0 path+file://C:/a/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
-  'host-url|.rust["ma2a-app 0.1.0 path+file://localhost/tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}'
+  'host-url|.rust["ma2a-app 0.1.0 path+file://localhost/tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
+  'upper-url|.rust["ma2a-app 0.1.0 path+FILE:///tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
+  'climbing-url|.rust["ma2a-app 0.1.0 path+file://crates/../../tmp/build"] = {licenses: ["MIT"]}' \
+  'assigned-path|.rust["ma2a-app 0.1.0 path=/tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
+  'bracketed-path|.rust["ma2a-app 0.1.0 [D:\\a\\build\\crates\\ma2a-app]"] = {licenses: ["MIT"]}'
 do
   label=${mutation%%|*}
   mutated="$temporary/$label.licenses.json"
@@ -56,6 +76,11 @@ do
     exit 1
   fi
 done
+
+# A license expression written with a slash between spaces names no path.
+spaced="$temporary/spaced.licenses.json"
+jq '.frontend["MIT / Apache-2.0"] = [{name: "ky", versions: ["2.1.0"]}]' "$report" > "$spaced"
+./scripts/validate-release-metadata.sh "$archive" "$sbom" "$spaced" >/dev/null
 
 # The described package must resolve to exactly the application package.
 application=$(jq -r '.packages[] | select(.name == "ma2a-app") | .SPDXID' "$sbom")
