@@ -18,7 +18,11 @@ use crate::commands::remote::{open_as, open_bound};
 const RETRY: Duration = Duration::from_secs(1);
 
 pub(super) fn refusal(error: &ClientError) -> Refusal {
-    Refusal::named(error.status().map_or("unavailable", ServiceError::name))
+    match error {
+        // A target that broke the contract refused nothing the client sent.
+        ClientError::Stream(ServiceError::InvalidInput) => Refusal::named("internal"),
+        _ => Refusal::named(error.status().map_or("unavailable", ServiceError::name)),
+    }
 }
 
 pub(super) fn parts(route: &Route) -> Result<(&str, &AgentId), Refusal> {
@@ -60,42 +64,24 @@ async fn call(
 }
 
 /// Runs one content-free operation, however long its target takes, and answers what the
-/// target did.
+/// target did, once it is an answer to that operation (see [`client::answer::agent`]): a
+/// `submit` Summary of the task its own `RequestId` created, the Summary of a `cancel` once the
+/// task ended, and only a mutation answered from caller-side replay.
 async fn answer(
     backend: &Backend,
     (endpoint, request_id): (&str, Option<&str>),
     request: AgentRequest,
 ) -> Result<Answer, Refusal> {
-    let (submit, mutation) = (
-        matches!(request, AgentRequest::Submit(_)),
-        matches!(
-            request,
-            AgentRequest::Submit(_) | AgentRequest::Send(..) | AgentRequest::Cancel(..)
-        ),
-    );
     let (opened, (mut reader, writer)) = open_bound(
         &backend.paths,
         (endpoint, request_id),
-        OpenBody::Agent(request),
+        OpenBody::Agent(request.clone()),
     )
     .await?;
     let answer = client::agent::call(&mut reader).await;
     drop(writer);
     let (accept, reply) = answer.map_err(|error| refusal(&error))?;
-    // `submit` is accepted as Submitted and any other operation as Admitted; only a mutation,
-    // whose RequestId is reserved, can be answered from caller-side replay with no accept.
-    let fits = match accept {
-        None => mutation,
-        Some(AgentAccept::Submitted(..)) => submit,
-        Some(AgentAccept::Admitted) => !submit,
-        Some(AgentAccept::Watching(..)) => false,
-    };
-    // A submit answers the task its own RequestId created, never another submission's.
-    let created_by_another = matches!(
-        &reply,
-        AgentReply::Summary(summary) if submit && summary.request_id != opened
-    );
-    if !fits || created_by_another {
+    if !client::answer::agent((&request, &opened), (accept, &reply)) {
         return Err(Refusal::named("internal"));
     }
     Ok((accept, reply))
@@ -295,3 +281,7 @@ const fn is_transient(error: &ClientError) -> bool {
 #[cfg(test)]
 #[path = "remote_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "remote_answer_tests.rs"]
+mod answer_tests;
