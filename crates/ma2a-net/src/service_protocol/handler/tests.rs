@@ -156,25 +156,27 @@ async fn a_handler_without_a_runtime_receiver_is_unavailable() -> TestResult {
 
 #[tokio::test]
 async fn refusals_beyond_the_bound_are_reset_without_a_reply() -> TestResult {
-    // Given: as many refusals in flight as the service admits streams, none of them read.
+    // Given: every refusal slot is taken. Unread refusals would hold them only until their
+    // reject frames are acknowledged, which the transport does without the reader, so the
+    // slots are held directly.
     let handler = ServiceHandler::new(ServiceKind::Shell, None, ServiceMetrics::default());
+    let global =
+        u32::try_from(ServiceLimits::of(ServiceKind::Shell).global()).map_err(io::Error::other)?;
+    let held = std::sync::Arc::clone(&handler.refusals)
+        .try_acquire_many_owned(global)
+        .map_err(io::Error::other)?;
     let (router, client, connection) = connect(handler).await?;
-    let mut pending = Vec::new();
-    for _ in 0..ServiceLimits::of(ServiceKind::Shell).global() {
-        pending.push(announce(&connection).await?);
-    }
 
     // When
     let (_send, mut receive) = announce(&connection).await?;
 
-    // Then
+    // Then: reset with no reply, and a refusal once a slot is free is answered.
     let mut header = [0_u8; FRAME_HEADER_LEN];
     assert!(receive.read_exact(&mut header).await.is_err());
-    let (_first_send, first_receive) = pending
-        .first_mut()
-        .ok_or_else(|| io::Error::other("pending refusal missing"))?;
+    drop(held);
+    let (_next_send, mut next_receive) = announce(&connection).await?;
     assert_eq!(
-        read_reject(first_receive).await?,
+        read_reject(&mut next_receive).await?,
         Some(ServiceError::Unavailable)
     );
     client.close().await;
