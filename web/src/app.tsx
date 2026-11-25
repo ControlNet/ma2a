@@ -83,6 +83,9 @@ export function App({
     setSession(undefined)
     setLiveRuntime(undefined)
     setRuntimeLoadFailed(false)
+    setSelectedPeer(undefined)
+    // Clearing the request also stops a late answer to it from installing itself.
+    setSyncStatus(undefined)
     navigate(ROUTE_PATHS.login)
   }, [navigate])
 

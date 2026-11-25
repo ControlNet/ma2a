@@ -90,3 +90,49 @@ test("a peer's inspector never shows another peer's sync status", async () => {
 
   expect(screen.queryByText("The Runtime rejected the request.")).not.toBeInTheDocument()
 })
+
+test("signing in again forgets the last session's peer and its sync answer", async () => {
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+  let answer: (response: Response) => void = () => undefined
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init): Promise<Response> => {
+    const path = new URL(new Request(input, init).url).pathname
+    if (path === "/api/v1/control-sync/trigger") {
+      return new Promise<Response>((resolve) => (answer = resolve))
+    }
+    return Promise.resolve(
+      path === "/api/v1/web/auth/login"
+        ? Response.json({ csrf_token: "ef".repeat(32) })
+        : new Response(null, { status: 204 }),
+    )
+  })
+  window.history.replaceState(null, "", "/endpoint")
+  holdControllers()
+  const user = userEvent.setup()
+  const given = render(<App />)
+  act(() => controllers[0]?.onRuntime(MANY_RUNTIME_FIXTURE))
+  const peer = (): HTMLElement => {
+    const first = given.container.querySelector<HTMLElement>(".peer")
+    if (first === null) throw new Error("fixture has a peer")
+    return first
+  }
+  await user.click(peer())
+  await user.click(screen.getByRole("button", { name: "Sync now" }))
+  const pending = answer
+  act(() => controllers[0]?.onSessionExpired())
+
+  await user.type(screen.getByLabelText("Password"), "browser-login-password-9!")
+  await user.click(screen.getByRole("button", { name: "Sign in" }))
+  await screen.findByRole("main", { name: "Runtime content" })
+  act(() => controllers[1]?.onRuntime(MANY_RUNTIME_FIXTURE))
+  window.history.replaceState(null, "", "/endpoint")
+  act(() => window.dispatchEvent(new window.PopStateEvent("popstate")))
+
+  expect(screen.queryByRole("button", { name: "Sync now" })).not.toBeInTheDocument()
+  await act(async () => pending(new Response(null, { status: 500 })))
+  await user.click(peer())
+  expect(screen.getByRole("button", { name: "Sync now" })).toBeVisible()
+  expect(screen.queryByText(/control round|rejected the request/)).not.toBeInTheDocument()
+})
