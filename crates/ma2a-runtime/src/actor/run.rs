@@ -47,6 +47,7 @@ impl Actor {
                 () = self.cancellation.cancelled() => return Ok(Stop::Cancelled),
                 command = self.commands.recv() => match command {
                     Some(Command::Status(reply)) => {
+                        self.refresh_revision().await;
                         let _unsent = reply.send(self.state.clone());
                     }
                     Some(Command::SpaceDetails(id, reply)) => self.handle_space_details(id, reply).await,
@@ -87,7 +88,11 @@ impl Actor {
                         let _unsent = reply.send(self.state.revision);
                     }
                     Some(Command::ControlSyncStatus { peer, reply }) => {
-                        let _unsent = reply.send(ma2a_store::Committed::new(self.state.revision, self.synchronized_control_peers.contains(&peer)));
+                        let revision = self.refresh_revision().await;
+                        let _unsent = reply.send(ma2a_store::Committed::new(
+                            revision,
+                            self.synchronized_control_peers.contains(&peer),
+                        ));
                     }
                     Some(Command::SyncControl { peer, reply }) => {
                         let scope = peer.map_or_else(
@@ -186,5 +191,12 @@ impl Actor {
                 },
             }
         }
+    }
+
+    async fn refresh_revision(&mut self) -> u64 {
+        if let Ok(revision) = self.store.revision().await {
+            self.state.revision = self.state.revision.max(revision);
+        }
+        self.state.revision
     }
 }

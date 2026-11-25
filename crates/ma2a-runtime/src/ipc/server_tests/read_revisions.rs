@@ -12,24 +12,8 @@ use serde_json::json;
 
 use super::{services::call, *};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn process_and_agent_reads_answer_at_the_revision_they_read() -> TestResult {
-    // Given: a Process, an Agent task, and Store commits the Runtime itself did not make, as
-    // the Process and Agent hosts make them.
-    let state = TempState::new_named("read-revisions")?;
-    let config = StoreConfig::new(&state.0);
-    let runtime = Runtime::start(config.clone()).await?;
-    let control = CurrentUserRuntime::open_at(
-        &state.0,
-        Arc::new(SystemClock::default()),
-        WebAuthConfig::default(),
-    )
-    .await?;
-    let paths = IpcPaths::new(&state.0)?;
-    let server = LiveServer::spawn(
-        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?,
-    );
-    let client = LocalApiClient::new(paths.clone());
+fn seed_external_commits(state: &std::path::Path, task: &str) -> TestResult<u64> {
+    let config = StoreConfig::new(state);
     let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
     let start = ProcessStart::new(spec, true, MAX_LOG_LIMIT)?.to_bytes()?;
     let mut repository = Repository::open(&config)?;
@@ -46,27 +30,59 @@ async fn process_and_agent_reads_answer_at_the_revision_they_read() -> TestResul
         &AgentDefinition {
             id: AgentId::new("helper")?,
             description: String::new(),
-            start: start.clone(),
+            start,
             tools: 0,
             max_tasks: 1,
         },
         1,
     )?;
     let input = AgentMessage::text(MessageRole::User, "hello")?.to_bytes()?;
-    let task = "35".repeat(16);
+    let content = b"artifact-bytes";
+    let digest = blake3::hash(content);
+    let blobs = state.join("agents-v1").join("blobs");
+    std::fs::create_dir_all(&blobs)?;
+    std::fs::write(blobs.join(digest.to_hex().as_str()), content)?;
     let sql = rusqlite::Connection::open(config.database_path())?;
     sql.execute_batch(&format!(
         "INSERT INTO agent_tasks (task_id, agent_id, creator_endpoint_id, request_id,
              fingerprint, state, input, last_seq, created_at_ms)
          VALUES (X'{task}', 'helper', zeroblob(32), randomblob(16), zeroblob(32), 0,
              X'{}', 0, 1);
+         INSERT INTO agent_artifacts (task_id, name, position, media_type, size, blake3)
+         VALUES (X'{task}', 'note.txt', 0, 'text/plain', {}, X'{}');
          UPDATE runtime_metadata SET revision = revision + 1;",
-        api::encode_hex(&input)
+        api::encode_hex(&input),
+        content.len(),
+        digest.to_hex()
     ))?;
-    let committed: u64 = sql.query_row("SELECT revision FROM runtime_metadata", [], |row| {
-        row.get(0)
-    })?;
-    assert!(runtime.handle().status().await?.revision() < committed);
+    Ok(
+        sql.query_row("SELECT revision FROM runtime_metadata", [], |row| {
+            row.get(0)
+        })?,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_and_agent_reads_answer_at_the_revision_they_read() -> TestResult {
+    // Given: a Process, an Agent task, and Store commits the Runtime itself did not make, as
+    // the Process and Agent hosts make them.
+    let state = TempState::new_named("read-revisions")?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server = LiveServer::spawn(
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?,
+    );
+    let client = LocalApiClient::new(paths.clone());
+    let before = runtime.handle().status().await?.revision();
+    let task = "35".repeat(16);
+    let committed = seed_external_commits(&state.0, &task)?;
+    assert!(before < committed);
 
     // When
     let reads = [
@@ -74,6 +90,12 @@ async fn process_and_agent_reads_answer_at_the_revision_they_read() -> TestResul
         json!({"version": 1, "operation": "process_inspect", "process_id": "31".repeat(16)}),
         json!({"version": 1, "operation": "agent_task_inspect", "task_id": task}),
         json!({"version": 1, "operation": "agent_task_events", "task_id": task, "after": 0}),
+        json!({"version": 1, "operation": "agent_task_artifact_read", "task_id": task, "name": "note.txt", "offset": 0}),
+        json!({"version": 1, "operation": "status"}),
+        json!({"version": 1, "operation": "endpoint_info"}),
+        json!({"version": 1, "operation": "control_sync_status", "peer_endpoint_id": PEER_ENDPOINT_ID}),
+        json!({"version": 1, "operation": "operations_status"}),
+        json!({"version": 1, "operation": "ui_status"}),
     ];
     let mut answers = Vec::new();
     for read in reads {
@@ -91,6 +113,19 @@ async fn process_and_agent_reads_answer_at_the_revision_they_read() -> TestResul
             revision.is_some_and(|revision| revision >= committed),
             "{answer}"
         );
+        if answer
+            .pointer("/result/type")
+            .and_then(serde_json::Value::as_str)
+            == Some("status")
+        {
+            let payload_revision = answer
+                .pointer("/result/payload/revision")
+                .and_then(serde_json::Value::as_u64);
+            assert!(
+                payload_revision.is_some_and(|revision| revision >= committed),
+                "{answer}"
+            );
+        }
     }
     Ok(())
 }
