@@ -41,7 +41,7 @@ pub(super) async fn invite(
     let (space_id, ttl_ms, output_path) =
         command.space_invite().ok_or(ProtocolError::INVALID_INPUT)?;
     // Refused before the invitation is committed, so a bad path never costs a revision.
-    invite_file::check_destination(output_path)?;
+    let destination = invite_file::Destination::open(output_path)?;
     let created = context
         .handle
         .create_enrollment_invite_committed(
@@ -54,12 +54,11 @@ pub(super) async fn invite(
         )
         .await
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let output_path = output_path.to_owned();
     let encoded = created.ticket().encode_string().into_bytes();
     let written = if injected_write_failure(context) {
         Err(ProtocolError::INTERNAL)
     } else {
-        tokio::task::spawn_blocking(move || invite_file::write_owner_only(&output_path, &encoded))
+        tokio::task::spawn_blocking(move || destination.write(&encoded))
             .await
             .unwrap_or(Err(ProtocolError::INTERNAL))
     };

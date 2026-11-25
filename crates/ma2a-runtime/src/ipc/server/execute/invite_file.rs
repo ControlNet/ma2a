@@ -6,7 +6,7 @@ use ma2a_core::ProtocolError;
 /// use is refused before anything is committed: it must name a file that does not exist yet,
 /// in an existing directory, by a name this host can create, and may not hold NUL. The name
 /// must end the path, as a trailing separator or `.` asks for a directory.
-pub(super) fn check_destination(path: &str) -> Result<(), ProtocolError> {
+fn check_destination(path: &str) -> Result<(), ProtocolError> {
     let destination = std::path::Path::new(path);
     let name = destination.file_name().and_then(std::ffi::OsStr::to_str);
     let Some(name) = name.filter(|name| !path.contains('\0') && path.ends_with(name)) else {
@@ -41,23 +41,47 @@ fn staging_name() -> Result<String, ProtocolError> {
     Ok(name)
 }
 
-/// Writes the ticket into an owner-only staging file in the destination's directory and links
-/// it into place without replacing anything. Until the link, the destination name is never
-/// touched, so a failed or interrupted write leaves it unpublished and cleanup removes only the
-/// staging file, never a file someone else put at the destination.
+/// Where one ticket is going to be written, checked before the invitation is committed.
 ///
-/// The directory is opened once and every step runs relative to that handle, so all of them
-/// happen in the same directory: one renamed meanwhile receives the ticket under its new name,
-/// and no staging file is left behind in it.
+/// On Unix the destination's directory is already open, so a directory the ticket cannot be
+/// written through is refused before anything is committed rather than after.
 #[cfg(unix)]
-pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
-    check_destination(path)?;
-    let (directory, name) = destination_directory(path)?;
-    let staged = stage(&directory, contents)?;
-    publish_staged(&directory, &staged, name)
+pub(super) struct Destination {
+    directory: std::os::fd::OwnedFd,
+    name: std::ffi::OsString,
+}
+
+#[cfg(unix)]
+impl Destination {
+    /// Checks `path` and opens the directory it names its file in.
+    pub(super) fn open(path: &str) -> Result<Self, ProtocolError> {
+        check_destination(path)?;
+        let (directory, name) = destination_directory(path)?;
+        Ok(Self {
+            directory,
+            name: name.to_owned(),
+        })
+    }
+
+    /// Writes the ticket into an owner-only staging file in the destination's directory and
+    /// links it into place without replacing anything. Until the link, the destination name is
+    /// never touched, so a failed or interrupted write leaves it unpublished and cleanup removes
+    /// only the staging file, never a file someone else put at the destination.
+    ///
+    /// Every step runs relative to the directory opened before the commit, so all of them
+    /// happen in the same directory: one renamed meanwhile receives the ticket under its new
+    /// name, and no staging file is left behind in it.
+    pub(super) fn write(self, contents: &[u8]) -> Result<(), ProtocolError> {
+        let staged = stage(&self.directory, contents)?;
+        publish_staged(&self.directory, &staged, &self.name)
+    }
 }
 
 /// Opens the directory `path` names its file in, and returns it with that file name.
+///
+/// Creating, linking, and removing a named file needs only write and search permission on the
+/// directory, so where the host can open a directory for search alone it is not also asked to
+/// be readable: an owner-only `0300` directory still receives the ticket.
 #[cfg(unix)]
 fn destination_directory(
     path: &str,
@@ -71,7 +95,11 @@ fn destination_directory(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
-    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let access = OFlags::PATH;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let access = OFlags::RDONLY;
+    let flags = access | OFlags::DIRECTORY | OFlags::CLOEXEC;
     let directory =
         rustix::fs::open(parent, flags, Mode::empty()).map_err(|_| ProtocolError::INVALID_INPUT)?;
     Ok((directory, name))
@@ -140,11 +168,28 @@ fn rename_no_clobber(
     Err(rustix::io::Errno::NOSYS)
 }
 
+/// Where one ticket is going to be written, checked before the invitation is committed.
+#[cfg(windows)]
+pub(super) struct Destination(String);
+
+#[cfg(windows)]
+impl Destination {
+    /// Checks `path`; its directory is pinned when the ticket is written.
+    pub(super) fn open(path: &str) -> Result<Self, ProtocolError> {
+        check_destination(path)?;
+        Ok(Self(path.to_owned()))
+    }
+
+    pub(super) fn write(self, contents: &[u8]) -> Result<(), ProtocolError> {
+        write_owner_only(&self.0, contents)
+    }
+}
+
 /// Writes the ticket into a protected staging directory and moves it into place without
 /// replacing anything. The destination's directory is pinned first, and staging, publishing,
 /// and cleanup all go through its final path, so they all happen in that one directory.
 #[cfg(windows)]
-pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
+fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), ProtocolError> {
     use std::{io::Write as _, path::Path};
 
     use ma2a_services::windows_files;
@@ -183,115 +228,5 @@ pub(super) fn write_owner_only(path: &str, contents: &[u8]) -> Result<(), Protoc
 }
 
 #[cfg(test)]
-mod tests {
-    use super::check_destination;
-
-    #[test]
-    fn only_a_new_file_in_an_existing_directory_is_accepted() -> Result<(), std::io::Error> {
-        let directory =
-            std::env::temp_dir().join(format!("ma2a-invite-check-{}", std::process::id()));
-        let _stale = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory)?;
-        std::fs::write(directory.join("taken"), b"")?;
-        let path = |name: &str| directory.join(name).to_string_lossy().into_owned();
-
-        assert!(check_destination(&path("ticket")).is_ok());
-        assert!(check_destination(&path("taken")).is_err());
-        assert!(check_destination(&path("missing/ticket")).is_err());
-        assert!(check_destination(&path("taken/ticket")).is_err());
-        assert!(check_destination("").is_err());
-        assert!(check_destination(&path("..")).is_err());
-        assert!(check_destination(&path("ti\0cket")).is_err());
-        assert!(check_destination(&format!("{}/", path("ticket"))).is_err());
-        assert!(check_destination(&format!("{}/.", path("ticket"))).is_err());
-        assert!(check_destination(&path(&"t".repeat(300))).is_err());
-        std::fs::remove_dir_all(&directory)
-    }
-
-    #[test]
-    fn a_ticket_is_published_once_and_no_staging_is_left() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let base = std::env::temp_dir().join(format!("ma2a-invite-{}", std::process::id()));
-        let _stale = std::fs::remove_dir_all(&base);
-        std::fs::create_dir(&base)?;
-        let output = base.join("ticket");
-        let path = output.to_str().ok_or("path")?;
-        super::write_owner_only(path, b"secret")?;
-        assert_eq!(std::fs::read(&output)?, b"secret\n");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&output)?.permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-        // An existing file is never replaced, and no staging entry is left either way.
-        assert!(super::write_owner_only(path, b"other").is_err());
-        assert_eq!(std::fs::read(&output)?, b"secret\n");
-        let names = std::fs::read_dir(&base)?
-            .map(|entry| Ok(entry?.file_name()))
-            .collect::<std::io::Result<Vec<_>>>()?;
-        assert_eq!(names, ["ticket"]);
-        std::fs::remove_dir_all(&base)?;
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_ticket_stays_in_its_directory_when_the_directory_is_renamed()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // Given: the ticket is staged in its output directory.
-        let base = std::env::temp_dir().join(format!("ma2a-invite-moved-{}", std::process::id()));
-        let _stale = std::fs::remove_dir_all(&base);
-        let (output, retired) = (base.join("output"), base.join("retired"));
-        std::fs::create_dir_all(&output)?;
-        let path = output.join("ticket");
-        let path = path.to_str().ok_or("path")?;
-        let (directory, name) = super::destination_directory(path)?;
-        let staged = super::stage(&directory, b"secret")?;
-
-        // When: the directory is rotated away and an empty one takes its name before publication.
-        std::fs::rename(&output, &retired)?;
-        std::fs::create_dir(&output)?;
-        let published = super::publish_staged(&directory, &staged, name);
-
-        // Then: the ticket is published in the directory it was staged in, with no staging left.
-        let names = |directory: &std::path::Path| {
-            std::fs::read_dir(directory)?
-                .map(|entry| Ok(entry?.file_name()))
-                .collect::<std::io::Result<Vec<_>>>()
-        };
-        let (moved, replacement) = (names(&retired)?, names(&output)?);
-        let ticket = std::fs::read(retired.join("ticket"));
-        std::fs::remove_dir_all(&base)?;
-        assert!(published.is_ok(), "{published:?}");
-        assert_eq!(moved, ["ticket"]);
-        assert!(replacement.is_empty(), "{replacement:?}");
-        assert_eq!(ticket?, b"secret\n");
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn publishing_claims_a_free_name_and_never_replaces_a_file()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let base = std::env::temp_dir().join(format!("ma2a-invite-publish-{}", std::process::id()));
-        let _stale = std::fs::remove_dir_all(&base);
-        std::fs::create_dir(&base)?;
-        let destination = base.join("ticket");
-        let path = destination.to_str().ok_or("path")?;
-        let (directory, name) = super::destination_directory(path)?;
-        let staged = super::stage(&directory, b"secret")?;
-        super::publish_staged(&directory, &staged, name)?;
-        assert_eq!(std::fs::read(&destination)?, b"secret\n");
-
-        // A file someone else put at the name stays, whether linked or renamed over.
-        std::fs::remove_file(&destination)?;
-        std::fs::write(&destination, b"theirs")?;
-        let staged = super::stage(&directory, b"secret")?;
-        assert!(super::rename_no_clobber(&directory, (&staged, name)).is_err());
-        assert!(super::publish_staged(&directory, &staged, name).is_err());
-        assert_eq!(std::fs::read(&destination)?, b"theirs");
-        std::fs::remove_dir_all(&base)?;
-        Ok(())
-    }
-}
+#[path = "invite_file_tests.rs"]
+mod tests;
