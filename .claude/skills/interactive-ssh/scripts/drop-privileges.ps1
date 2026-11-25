@@ -2,6 +2,10 @@
 # exits with the command's exit code. An upterm session enables both, and with them Windows skips
 # file access checks. A token that does not hold a privilege is left as it is.
 param([string]$Command)
+if (-not $Command) {
+  [Console]::Error.WriteLine("drop-privileges: -Command is required")
+  exit 2
+}
 try {
   if (-not ('Priv' -as [type])) {
     Add-Type @"
@@ -31,6 +35,15 @@ public static class Priv {
   [Console]::Error.WriteLine("drop-privileges: $_")
   exit 1
 }
+# As in a CI step with `shell: pwsh`, a PowerShell error, such as a command that does not exist,
+# a failed cmdlet or a throw, stops the command and exits with 1; only a native program sets
+# $LASTEXITCODE.
+$ErrorActionPreference = 'Stop'
 $global:LASTEXITCODE = 0
-Invoke-Expression $Command
+try {
+  Invoke-Expression $Command
+} catch {
+  [Console]::Error.WriteLine("drop-privileges: $_")
+  exit 1
+}
 exit $LASTEXITCODE

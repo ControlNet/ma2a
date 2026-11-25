@@ -46,10 +46,12 @@ bash .claude/skills/interactive-ssh/scripts/open-session.sh \
   Windows skips file access checks. Check with `C:\Windows\System32\whoami.exe /priv`. Run ACL and permission tests through
   `scripts/drop-privileges.ps1`: copy it with
   `scp -F <config> .claude/skills/interactive-ssh/scripts/drop-privileges.ps1 windows-latest:D:/a/`, then
-  `ssh -F <config> windows-latest 'cd D:\a\ma2a\ma2a; D:\a\drop-privileges.ps1 -Command "cargo test ..."; exit $LASTEXITCODE'`,
+  `ssh -F <config> windows-latest 'cd D:\a\ma2a\ma2a -ErrorAction Stop; D:\a\drop-privileges.ps1 -Command "cargo test ..."; exit $LASTEXITCODE'`,
   or a test can pass in one shell and fail in the other. PowerShell needs the Windows form of the
-  workspace path (`/d/a/ma2a/ma2a` is `D:\a\ma2a\ma2a`). The script exits with the command's exit
-  code, and the trailing `exit $LASTEXITCODE` hands it to ssh; without it a failure ends as 1.
+  workspace path (`/d/a/ma2a/ma2a` is `D:\a\ma2a\ma2a`); `-ErrorAction Stop` ends the line if
+  that path is wrong. The script exits with the command's exit code, or with 1 for a PowerShell
+  error such as a command that does not exist or a failed cmdlet, as a `shell: pwsh` CI step does.
+  The trailing `exit $LASTEXITCODE` hands that code to ssh; without it a failure ends as 1.
 - Known session-only failures on master (they pass in CI): `backup::a_destination_name_near_the_component_limit_is_backed_up`
   and four `migration` tests in ma2a-store.
 - Build and test as CI does, for example
