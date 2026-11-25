@@ -40,14 +40,71 @@ fn content_must_be_what_the_artifact_reference_names() {
 
 #[cfg(unix)]
 mod through_the_daemon {
-    use ma2a_core::service::ServiceError;
+    use ma2a_core::service::{
+        AgentAccept, AgentMessage, AgentReply, AgentTaskDetails, MessagePart, MessageRole,
+        ServiceError,
+    };
     use tokio::time::Instant;
 
     use super::{super::CALL_DEADLINE, id};
     use crate::a2a::{
         backend::Refusal,
-        remote_fixture::{Daemon, TestResult},
+        remote_fixture::{Daemon, Script, TestResult, answering, summary},
     };
+
+    fn details(task: u8, agent: &str) -> TestResult<AgentReply> {
+        let input = AgentMessage::new(MessageRole::User, vec![MessagePart::Text("hi".into())])?;
+        let details = AgentTaskDetails::new(summary(id(task), agent)?, input);
+        Ok(AgentReply::Details(Box::new(details)))
+    }
+
+    fn brief(task: u8, agent: &str) -> TestResult<AgentReply> {
+        Ok(AgentReply::Summary(summary(id(task), agent)?))
+    }
+
+    /// Whether a remote Get of task 1 through a target answering `script` succeeds.
+    async fn got(script: Script) -> TestResult<bool> {
+        let daemon = Daemon::start("get", script)?;
+        let task = id(1).to_string();
+        Ok(super::super::details(&daemon.backend, &daemon.route, &task)
+            .await
+            .is_ok())
+    }
+
+    /// Whether a remote Submit through a target answering `script` succeeds.
+    async fn submitted(script: Script) -> TestResult<bool> {
+        let daemon = Daemon::start("submit", script)?;
+        let message = AgentMessage::new(MessageRole::User, vec![MessagePart::Text("hi".into())])?;
+        let request_id = "09".repeat(16);
+        let sent = (&message, request_id.as_str());
+        Ok(super::super::submit(&daemon.backend, &daemon.route, sent)
+            .await
+            .is_ok())
+    }
+
+    #[tokio::test]
+    async fn a_get_takes_only_the_details_of_the_task_it_named() -> TestResult {
+        let admitted = |reply: TestResult<AgentReply>| answering(AgentAccept::Admitted, &reply?);
+        assert!(got(admitted(details(1, "worker"))?).await?);
+        // Another task of the same Agent, a task of another Agent, or a bare summary.
+        assert!(!got(admitted(details(2, "worker"))?).await?);
+        assert!(!got(admitted(details(1, "helper"))?).await?);
+        assert!(!got(admitted(brief(1, "worker"))?).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_submit_takes_only_the_summary_of_the_task_it_was_bound_to() -> TestResult {
+        let bound = |reply: TestResult<AgentReply>| {
+            answering(AgentAccept::Submitted(id(1), false), &reply?)
+        };
+        assert!(submitted(bound(brief(1, "worker"))?).await?);
+        // Details in place of the summary, which a stream would follow as no task at all.
+        assert!(!submitted(bound(details(1, "worker"))?).await?);
+        assert!(!submitted(bound(brief(2, "worker"))?).await?);
+        assert!(!submitted(answering(AgentAccept::Admitted, &brief(1, "worker")?)?).await?);
+        Ok(())
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_target_that_never_answers_fails_as_timed_out() -> TestResult {

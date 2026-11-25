@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use ma2a_core::service::{
-    AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit, AgentTaskId, OpenBody,
-    ServiceError,
+    AgentAccept, AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit, AgentTaskId,
+    OpenBody, ServiceError,
 };
 use ma2a_runtime::api::{agent_event_value, agent_task_details_value, agent_task_value};
 use ma2a_services::client::{self, ClientError};
@@ -46,21 +46,26 @@ async fn bounded<T>(
         .unwrap_or_else(|_| Err(Refusal::named(ServiceError::TimedOut.name())))
 }
 
-/// Runs one content-free operation under [`CALL_DEADLINE`] and answers its reply.
+/// What a target answered one content-free operation: its accept, unless the outcome came
+/// from caller-side replay, and its reply.
+type Answer = (Option<AgentAccept>, AgentReply);
+
+/// Runs one content-free operation under [`CALL_DEADLINE`] and answers what the target did.
 async fn call(
     backend: &Backend,
     target: (&str, Option<&str>),
     request: AgentRequest,
-) -> Result<AgentReply, Refusal> {
+) -> Result<Answer, Refusal> {
     bounded(CALL_DEADLINE, answer(backend, target, request)).await
 }
 
-/// Runs one content-free operation, however long its target takes, and answers its reply.
+/// Runs one content-free operation, however long its target takes, and answers what the
+/// target did.
 async fn answer(
     backend: &Backend,
     (endpoint, request_id): (&str, Option<&str>),
     request: AgentRequest,
-) -> Result<AgentReply, Refusal> {
+) -> Result<Answer, Refusal> {
     let (mut reader, writer) = open_as(
         &backend.paths,
         (endpoint, request_id),
@@ -69,17 +74,26 @@ async fn answer(
     .await?;
     let answer = client::agent::call(&mut reader).await;
     drop(writer);
-    answer
-        .map(|(_, reply)| reply)
-        .map_err(|error| refusal(&error))
+    answer.map_err(|error| refusal(&error))
 }
 
-fn summary(reply: &AgentReply) -> Result<Value, Refusal> {
-    match reply {
-        AgentReply::Summary(summary) => Ok(agent_task_value(summary)),
-        AgentReply::Details(details) => Ok(agent_task_details_value(details)),
-        AgentReply::Cards(..) | AgentReply::Page(..) => Err(Refusal::named("internal")),
+/// The task one operation answered, which must be what it asked for: the Details of `get`,
+/// or the Summary of any other, of the route's Agent and, once known, of the task named.
+/// Anything else is a malformed answer, never another task passed off as this one.
+fn outcome(
+    reply: &AgentReply,
+    (agent, task): (&AgentId, Option<AgentTaskId>),
+    details: bool,
+) -> Result<Value, Refusal> {
+    let (summary, value) = match (reply, details) {
+        (AgentReply::Summary(summary), false) => (summary, agent_task_value(summary)),
+        (AgentReply::Details(full), true) => (&full.summary, agent_task_details_value(full)),
+        _ => return Err(Refusal::named("internal")),
+    };
+    if summary.agent != *agent || task.is_some_and(|task| task != summary.id) {
+        return Err(Refusal::named("internal"));
     }
+    Ok(value)
 }
 
 pub(super) async fn submit(
@@ -90,7 +104,14 @@ pub(super) async fn submit(
     let (endpoint, agent) = parts(route)?;
     let submit = AgentSubmit::new(agent.clone(), message.clone(), None);
     let request = AgentRequest::Submit(submit);
-    summary(&call(backend, (endpoint, Some(request_id)), request).await?)
+    let (accept, reply) = call(backend, (endpoint, Some(request_id)), request).await?;
+    // A replayed outcome has no accept; a fresh one names the task it was bound to.
+    let task = match accept {
+        None => None,
+        Some(AgentAccept::Submitted(task, _)) => Some(task),
+        Some(_) => return Err(Refusal::named("internal")),
+    };
+    outcome(&reply, (agent, task), false)
 }
 
 pub(super) async fn send(
@@ -99,8 +120,10 @@ pub(super) async fn send(
     (task, message, request_id): (&str, &AgentMessage, &str),
 ) -> Result<Value, Refusal> {
     let (endpoint, agent) = parts(route)?;
-    let request = AgentRequest::Send(agent.clone(), task_id(task)?, message.clone());
-    summary(&call(backend, (endpoint, Some(request_id)), request).await?)
+    let task = task_id(task)?;
+    let request = AgentRequest::Send(agent.clone(), task, message.clone());
+    let (_, reply) = call(backend, (endpoint, Some(request_id)), request).await?;
+    outcome(&reply, (agent, Some(task)), false)
 }
 
 pub(super) async fn details(
@@ -109,8 +132,14 @@ pub(super) async fn details(
     task: &str,
 ) -> Result<Value, Refusal> {
     let (endpoint, agent) = parts(route)?;
-    let request = AgentRequest::Get(agent.clone(), task_id(task)?);
-    summary(&call(backend, (endpoint, None), request).await?)
+    let task = task_id(task)?;
+    let (_, reply) = call(
+        backend,
+        (endpoint, None),
+        AgentRequest::Get(agent.clone(), task),
+    )
+    .await?;
+    outcome(&reply, (agent, Some(task)), true)
 }
 
 /// Whether a page lies strictly after the cursor sent, and so does the cursor it names next; a
@@ -136,6 +165,7 @@ pub(super) async fn tasks(
         AgentRequest::Tasks(agent.clone(), after),
     )
     .await?
+    .1
     {
         AgentReply::Page(tasks, next)
             if moves_past(after, (tasks.iter().map(|task| task.id), next)) =>
@@ -152,10 +182,12 @@ pub(super) async fn tasks(
 /// Cancels a task; the target answers once it ended.
 pub(super) async fn cancel(backend: &Backend, route: &Route, task: &str) -> Result<Value, Refusal> {
     let (endpoint, agent) = parts(route)?;
-    let request = AgentRequest::Cancel(agent.clone(), task_id(task)?);
+    let task = task_id(task)?;
+    let request = AgentRequest::Cancel(agent.clone(), task);
     // `CancelTask` bounds the cancel by its own wait and then answers the task as it is, so
     // a deadline here would only turn that answer into a failure.
-    summary(&answer(backend, (endpoint, None), request).await?)
+    let (_, reply) = answer(backend, (endpoint, None), request).await?;
+    outcome(&reply, (agent, Some(task)), false)
 }
 
 pub(super) async fn card(backend: &Backend, route: &Route) -> Result<(String, bool), Refusal> {
@@ -163,7 +195,8 @@ pub(super) async fn card(backend: &Backend, route: &Route) -> Result<(String, bo
     let mut after = None;
     for _ in 0..MAX_CARD_PAGES {
         let request = AgentRequest::Agents(after.clone());
-        let AgentReply::Cards(cards, next) = call(backend, (endpoint, None), request).await? else {
+        let (_, AgentReply::Cards(cards, next)) = call(backend, (endpoint, None), request).await?
+        else {
             return Err(Refusal::named("internal"));
         };
         if let Some(card) = cards.iter().find(|card| card.id == *agent) {

@@ -3,7 +3,10 @@
 
 use std::fs::File;
 
-use ma2a_core::service::{AgentId, FrameKind};
+use ma2a_core::{
+    EndpointId, RequestId,
+    service::{AgentAccept, AgentId, AgentReply, AgentTaskId, AgentTaskSummary, FrameKind},
+};
 use ma2a_runtime::{
     api::{LOCAL_API_VERSION, MAX_LOCAL_REQUEST_BYTES},
     ipc::IpcPaths,
@@ -22,6 +25,32 @@ pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send 
 
 /// The frames the target sends on every stream it is opened for.
 pub(super) type Script = Vec<(FrameKind, Vec<u8>)>;
+
+/// A target that accepts with `accept` and answers `reply`.
+pub(super) fn answering(accept: AgentAccept, reply: &AgentReply) -> TestResult<Script> {
+    Ok(vec![
+        (FrameKind::Accept, accept.encode()?),
+        (
+            FrameKind::Outcome,
+            AgentReply::encode_outcome(&Ok(reply.clone()))?,
+        ),
+    ])
+}
+
+/// A queued task of `agent` on the target.
+pub(super) fn summary(task: AgentTaskId, agent: &str) -> TestResult<AgentTaskSummary> {
+    // The identity point is a valid Ed25519 key.
+    let mut creator = [0_u8; 32];
+    creator[0] = 1;
+    Ok(AgentTaskSummary::new(
+        (task, AgentId::new(agent)?),
+        (
+            EndpointId::try_from(creator.as_slice())?,
+            RequestId::try_from([9; 16].as_slice())?,
+        ),
+        1_000,
+    ))
+}
 
 pub(super) struct Daemon {
     pub(super) backend: Backend,
