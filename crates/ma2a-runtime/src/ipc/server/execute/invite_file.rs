@@ -269,4 +269,29 @@ mod tests {
         assert_eq!(ticket?, b"secret\n");
         Ok(())
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn publishing_claims_a_free_name_and_never_replaces_a_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = std::env::temp_dir().join(format!("ma2a-invite-publish-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base)?;
+        let destination = base.join("ticket");
+        let path = destination.to_str().ok_or("path")?;
+        let (directory, name) = super::destination_directory(path)?;
+        let staged = super::stage(&directory, b"secret")?;
+        super::publish_staged(&directory, &staged, name)?;
+        assert_eq!(std::fs::read(&destination)?, b"secret\n");
+
+        // A file someone else put at the name stays, whether linked or renamed over.
+        std::fs::remove_file(&destination)?;
+        std::fs::write(&destination, b"theirs")?;
+        let staged = super::stage(&directory, b"secret")?;
+        assert!(super::rename_no_clobber(&directory, (&staged, name)).is_err());
+        assert!(super::publish_staged(&directory, &staged, name).is_err());
+        assert_eq!(std::fs::read(&destination)?, b"theirs");
+        std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
 }
