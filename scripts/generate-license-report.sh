@@ -12,30 +12,40 @@ trap 'rm -rf "$temporary"' EXIT
 
 cargo deny list --format json --layout crate > "$temporary/rust.json"
 # The pinned Bun has no license listing, so the production dependency closure is read from the
-# installed packages, resolving each dependency the way Node does, and grouped by license.
+# installed packages, resolving each dependency the way Node does, and grouped by license. An
+# optional dependency counts when it is installed, since it then ships like any other.
 (cd web && bun --eval "$(cat <<'JS'
 const { existsSync, readFileSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const manifest = (dir) => JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-const resolve = (from, name) => {
+const resolve = (from, name, optional) => {
   for (let dir = from; ; dir = dirname(dir)) {
     const candidate = join(dir, "node_modules", name);
     if (existsSync(join(candidate, "package.json"))) return candidate;
-    if (dir === process.cwd()) throw new Error(`${name} is not installed`);
+    if (dir === process.cwd()) {
+      if (optional) return undefined;
+      throw new Error(`${name} is not installed`);
+    }
   }
 };
+// A license is an SPDX string, a legacy {type} object, or a legacy list of either.
 const license = ({ license, licenses }) =>
-  typeof license === "string" ? license
-  : license?.type ?? (Array.isArray(licenses) ? licenses.map((l) => l.type).join(" OR ") : "UNKNOWN");
+  (typeof license === "string" ? license
+  : license?.type ?? (Array.isArray(licenses) ? licenses.map((l) => l?.type ?? l).join(" OR ") : ""))
+  || "UNKNOWN";
 const seen = new Map();
-const visit = (from, name) => {
-  const dir = resolve(from, name);
-  if (seen.has(dir)) return;
+const visit = (from, name, optional = false) => {
+  const dir = resolve(from, name, optional);
+  if (dir === undefined || seen.has(dir)) return;
   const pkg = manifest(dir);
   seen.set(dir, pkg);
-  for (const dep of Object.keys(pkg.dependencies ?? {})) visit(dir, dep);
+  dependencies(dir, pkg);
 };
-for (const dep of Object.keys(manifest(".").dependencies ?? {})) visit(process.cwd(), dep);
+const dependencies = (dir, pkg) => {
+  for (const dep of Object.keys(pkg.dependencies ?? {})) visit(dir, dep);
+  for (const dep of Object.keys(pkg.optionalDependencies ?? {})) visit(dir, dep, true);
+};
+dependencies(process.cwd(), manifest("."));
 const report = {};
 for (const pkg of seen.values()) {
   const group = (report[license(pkg)] ??= []);
