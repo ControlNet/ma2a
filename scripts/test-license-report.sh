@@ -80,7 +80,8 @@ package() {
 # A dependency also listed as optional is optional, so its absence is no error.
 printf '%s\n' '{"dependencies": {"component": "1.0.0", "absent": "1.0.0", "legacy": "1.0.0",
   "unlicensed": "1.0.0", "spaced": "1.0.0", "filed": "1.0.0", "proprietary": "1.0.0",
-  "compound": "1.0.0", "trailing": "1.0.0", "bare": "1.0.0"},
+  "compound": "1.0.0", "trailing": "1.0.0", "bare": "1.0.0", "dangling": "1.0.0",
+  "pathed": "1.0.0"},
   "optionalDependencies": {"absent": "1.0.0"}}' \
   > "$fixture/web/package.json"
 # The component ships its peer, the renderer, and does without an optional peer that is absent.
@@ -99,6 +100,8 @@ package compound '{"name": "compound", "version": "1.0.0",
   "license": "(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception"}'
 package trailing '{"name": "trailing", "version": "1.0.0", "license": "MIT / "}'
 package bare '{"name": "bare", "version": "1.0.0", "license": "/"}'
+package dangling '{"name": "dangling", "version": "1.0.0", "license": "MIT / WITH LLVM-exception"}'
+package pathed '{"name": "pathed", "version": "1.0.0", "license": "./LICENSE"}'
 (cd "$fixture" && "$repo/scripts/generate-license-report.sh" "$temporary/fixture.json")
 expected='{"Apache-2.0":[{"name":"renderer","versions":["1.0.0"]}],
   "MIT":[{"name":"component","versions":["1.0.0"]},{"name":"legacy","versions":["1.0.0"]}],
@@ -108,7 +111,9 @@ expected='{"Apache-2.0":[{"name":"renderer","versions":["1.0.0"]}],
   "UNLICENSED":[{"name":"proprietary","versions":["1.0.0"]}],
   "(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception":[{"name":"compound","versions":["1.0.0"]}],
   "MIT /":[{"name":"trailing","versions":["1.0.0"]}],
-  "/":[{"name":"bare","versions":["1.0.0"]}]}'
+  "/":[{"name":"bare","versions":["1.0.0"]}],
+  "MIT / WITH LLVM-exception":[{"name":"dangling","versions":["1.0.0"]}],
+  "./LICENSE":[{"name":"pathed","versions":["1.0.0"]}]}'
 if ! jq -e --argjson expected "$expected" '.frontend == $expected' "$temporary/fixture.json" \
   >/dev/null; then
   printf 'the synthetic frontend report is wrong:\n' >&2
@@ -125,7 +130,7 @@ printf '%s *fixture.tar.xz\n' "$(printf '0%.0s' $(seq 64))" > "$temporary/fixtur
 expected='{"component":"MIT","legacy":"MIT","renderer":"Apache-2.0",
   "spaced":"MIT OR Apache-2.0","unlicensed":"NOASSERTION","filed":"NOASSERTION",
   "proprietary":"NOASSERTION","compound":"(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception",
-  "trailing":"MIT","bare":"NOASSERTION"}'
+  "trailing":"MIT","bare":"NOASSERTION","dangling":"NOASSERTION","pathed":"NOASSERTION"}'
 if ! jq -e --argjson expected "$expected" \
   '[.packages[] | select(.SPDXID | startswith("SPDXRef-Frontend-")) | {(.name): .licenseDeclared}]
    | add == $expected' "$temporary/fixture.spdx.json" >/dev/null; then

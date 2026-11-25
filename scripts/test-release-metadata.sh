@@ -46,7 +46,17 @@ for mutation in \
   'empty|.packages[0].licenseDeclared = ""' \
   'file|.packages[0].licenseDeclared = "SEE LICENSE IN LICENSE.md"' \
   'unlicensed|.packages[0].licenseDeclared = "UNLICENSED"' \
-  'unbalanced|.packages[0].licenseDeclared = "(MIT OR Apache-2.0"'
+  'unbalanced|.packages[0].licenseDeclared = "(MIT OR Apache-2.0"' \
+  'and-with|.packages[0].licenseDeclared = "MIT AND WITH Classpath-exception-2.0"' \
+  'or-with|.packages[0].licenseDeclared = "MIT OR WITH LLVM-exception"' \
+  'parenthesized-with|.packages[0].licenseDeclared = "MIT AND (WITH LLVM-exception)"' \
+  'exception-plus|.packages[0].licenseDeclared = "Apache-2.0 WITH LLVM-exception+"' \
+  'none-plus|.packages[0].licenseDeclared = "NONE+"' \
+  'unlicensed-plus|.packages[0].licenseDeclared = "UNLICENSED+"' \
+  'lowercase-ref|.packages[0].licenseDeclared = "licenseref-custom"' \
+  'newline|.packages[0].licenseDeclared = "MIT\nOR Apache-2.0"' \
+  'trailing-newline|.packages[0].licenseDeclared = "MIT\n"' \
+  'punctuation|.packages[0].licenseDeclared = ". OR LICENSE"'
 do
   label=${mutation%%|*}
   mutated="$temporary/$label-license.spdx.json"
@@ -57,9 +67,9 @@ do
   fi
 done
 
-# A compound expression with parentheses and an exception is an SPDX expression.
+# A compound expression with parentheses and exceptions, one after a "+", is an SPDX expression.
 compound="$temporary/compound-license.spdx.json"
-jq '.packages[0].licenseDeclared = "(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception"' \
+jq '.packages[0].licenseDeclared = "(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception OR GPL-2.0+ WITH Classpath-exception-2.0"' \
   "$sbom" > "$compound"
 ./scripts/validate-release-metadata.sh "$archive" "$compound" "$report" >/dev/null
 
