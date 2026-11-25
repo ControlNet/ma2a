@@ -457,6 +457,68 @@ fn a_task_stored_before_schema_twelve_takes_its_newest_recorded_time() -> TestRe
     Ok(())
 }
 
+#[test]
+fn schema_twelve_backfills_changed_at_ms_from_the_last_state_event() -> TestResult {
+    // Given: one task that moved between running and waiting before later messages and
+    // progress, and one task with no retained state event to exercise the fallback.
+    let (dir, mut repository, generation, task) = running("agent-state-time-events")?;
+    let fallback = created(
+        &repository
+            .create_agent_task(&new_task(2, endpoint(1))?)?
+            .into_value(),
+    )?;
+    repository.assign_agent_tasks(&agent()?, 25)?;
+    apply(
+        &mut repository,
+        (generation, 10),
+        state(task, AgentTaskState::Waiting),
+    )?;
+    apply(
+        &mut repository,
+        (generation, 11),
+        state(task, AgentTaskState::Running),
+    )?;
+    apply(
+        &mut repository,
+        (generation, 12),
+        state(task, AgentTaskState::Waiting),
+    )?;
+    apply(
+        &mut repository,
+        (generation, 13),
+        AgentOutputEffect::Message(task, text(MessageRole::Agent, "question")?),
+    )?;
+    apply(
+        &mut repository,
+        (generation, 14),
+        AgentOutputEffect::Progress(task, "still waiting".to_owned()),
+    )?;
+    drop(repository);
+
+    let config = StoreConfig::new(dir.path());
+    let connection = rusqlite::Connection::open(config.database_path())?;
+    connection.execute(
+        "DELETE FROM agent_task_events WHERE task_id = ?1",
+        [fallback.as_bytes().as_slice()],
+    )?;
+    connection.execute_batch(
+        "ALTER TABLE agent_tasks DROP COLUMN changed_at_ms;
+         DELETE FROM schema_migrations WHERE version = 12; PRAGMA user_version = 11;",
+    )?;
+    drop(connection);
+
+    // When: schema 12 migrates the store.
+    let repository = Repository::open(&config)?;
+
+    // Then: the migrated task keeps the last state transition time, ignoring later message
+    // and progress events, while a task without retained state events keeps its fallback.
+    let migrated = repository.agent_task(task)?.ok_or("missing")?.summary;
+    assert_eq!(migrated.changed_ms, 2_012);
+    let migrated_fallback = repository.agent_task(fallback)?.ok_or("missing")?.summary;
+    assert_eq!(migrated_fallback.changed_ms, 25);
+    Ok(())
+}
+
 /// Asserts the instance holding the task was last sent its cancellation, so a handler waiting
 /// in `ask` for a message that will never come returns.
 fn told_to_stop(repository: &Repository, (generation, task): (u64, AgentTaskId)) -> TestResult {

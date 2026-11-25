@@ -1,4 +1,5 @@
-use rusqlite::{Connection, TransactionBehavior};
+use ma2a_core::service::{AgentEvent, AgentEventBody};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use crate::StoreError;
 
@@ -86,10 +87,43 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     }
     if current_version(&transaction)? == 11 {
         transaction.execute_batch(MIGRATION_V12)?;
+        backfill_task_changed_at(&transaction)?;
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     validate(&transaction)?;
     transaction.commit()?;
+    Ok(())
+}
+
+/// Refines `agent_tasks.changed_at_ms` from each task's newest retained `state` event;
+/// tasks without a retained state event keep the SQL fallback.
+fn backfill_task_changed_at(transaction: &Transaction<'_>) -> Result<(), StoreError> {
+    let mut updates = Vec::new();
+    {
+        let mut statement = transaction.prepare(
+            "SELECT task_id, event FROM agent_task_events WHERE progress = 0
+             ORDER BY task_id, seq DESC",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut seen: Option<Vec<u8>> = None;
+        while let Some(row) = rows.next()? {
+            let task_id: Vec<u8> = row.get(0)?;
+            if seen.as_deref() == Some(task_id.as_slice()) {
+                continue;
+            }
+            let raw: Vec<u8> = row.get(1)?;
+            let event = AgentEvent::from_bytes(&raw)?;
+            if matches!(event.body, AgentEventBody::State(..)) {
+                seen = Some(task_id.clone());
+                updates.push((task_id, event.at_ms));
+            }
+        }
+    }
+    let mut update =
+        transaction.prepare("UPDATE agent_tasks SET changed_at_ms = ?2 WHERE task_id = ?1")?;
+    for (task_id, at_ms) in updates {
+        update.execute(params![task_id, at_ms])?;
+    }
     Ok(())
 }
 
