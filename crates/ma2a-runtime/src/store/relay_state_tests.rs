@@ -54,3 +54,11 @@ fn each_part_is_kept_only_while_the_runtime_can_use_it() {
         }
     );
 }
+
+#[test]
+fn a_kept_url_is_saved_as_parsed() {
+    let spelled = format!("https://Relay.Example.Invalid/{}relay", "a/../".repeat(110));
+    let kept = usable_relay_configuration(&with_private(public(&spelled), &spelled));
+    let parsed = "https://relay.example.invalid/relay";
+    assert_eq!(kept, with_private(public(parsed), parsed));
+}

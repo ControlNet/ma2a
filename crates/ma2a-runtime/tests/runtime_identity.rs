@@ -239,6 +239,52 @@ async fn a_stored_relay_url_the_runtime_now_refuses_does_not_stop_startup() -> T
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_usable_relay_spelled_longer_than_the_bound_survives_repair_of_another() -> TestResult {
+    // Given: a private relay URL with credentials, which must be switched off, and a public
+    // relay URL written longer than the bound whose parsed form is short.
+    let state = TempState::new("long-spelled-relay")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    repository.set_relay_configuration(&ma2a_store::RelayConfiguration {
+        private_provider_enabled: true,
+        listener_address: Some("127.0.0.1:3340".to_owned()),
+        private_relay_url: Some("https://user:secret@relay.example.invalid/".to_owned()),
+        served_spaces: vec![SpaceId::derive(b"long-spelled-relay")],
+        transport: Some(ma2a_store::RelayTransportConfiguration::ExternalTlsTermination),
+        ..repository.relay_configuration()?
+    })?;
+    drop(repository);
+    let spelled = format!("https://relay.example.invalid/{}relay", "a/../".repeat(110));
+    assert!(spelled.len() > ma2a_core::MAX_RELAY_URL_LEN);
+    let connection = Connection::open(config.database_path())?;
+    connection.execute(
+        "UPDATE relay_configuration SET public_fallback_enabled = 1, public_relay_url = ?1",
+        [&spelled],
+    )?;
+    connection.execute(
+        "INSERT INTO relay_public_fallback_urls(position, relay_url) VALUES (0, ?1)",
+        [&spelled],
+    )?;
+    drop(connection);
+
+    // When: the Runtime starts, twice.
+    Runtime::start(config.clone()).await?.shutdown().await?;
+    Runtime::start(config.clone()).await?.shutdown().await?;
+
+    // Then: the public relay keeps its meaning, in its parsed spelling, and the private relay
+    // is switched off.
+    let configuration = Repository::open(&config)?.relay_configuration()?;
+    assert!(configuration.public_fallback_enabled);
+    assert_eq!(
+        configuration.public_relay_urls,
+        vec!["https://relay.example.invalid/relay".to_owned()]
+    );
+    assert!(!configuration.private_provider_enabled);
+    assert!(configuration.private_relay_url.is_none());
+    Ok(())
+}
+
 async fn start_error(config: StoreConfig) -> TestResultValue<RuntimeErrorCode> {
     match Runtime::start(config).await {
         Ok(runtime) => {

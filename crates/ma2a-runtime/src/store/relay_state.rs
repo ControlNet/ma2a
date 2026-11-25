@@ -76,7 +76,8 @@ impl StoreBackend {
 
     /// Switches off each part of the stored relay configuration this Runtime cannot use, such
     /// as one whose URL a later version refuses, so that it cannot stop the Runtime from
-    /// starting. The operator configures that relay again.
+    /// starting, and saves the URLs it keeps as parsed. The operator configures a switched-off
+    /// relay again.
     pub(super) fn drop_unusable_relay_configuration(&mut self) -> Result<(), RuntimeError> {
         let stored = self.repository.relay_configuration()?;
         let usable = usable_relay_configuration(&stored);
@@ -126,6 +127,14 @@ fn usable_relay_configuration(
         kept.served_spaces.clear();
         kept.transport = None;
     }
+    // A kept URL is saved as parsed, the spelling the Runtime uses and the Store bounds; text
+    // written before the bound existed may be longer than its parsed form.
+    let parsed = |url: &String| {
+        url.parse::<ma2a_net::RelayUrl>()
+            .map_or_else(|_| url.clone(), |parsed| parsed.as_str().to_owned())
+    };
+    kept.public_relay_urls = kept.public_relay_urls.iter().map(parsed).collect();
+    kept.private_relay_url = kept.private_relay_url.as_ref().map(parsed);
     kept
 }
 
