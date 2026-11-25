@@ -674,3 +674,99 @@ async fn a_relay_completes_only_once_both_sides_ended_and_every_byte_was_taken()
     assert!(ran.is_ok(), "cancelled: {ran:?}");
     Ok(())
 }
+
+/// Where a local sink first fails, if anywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailsOn {
+    Write,
+    Flush,
+    Shutdown,
+    Nothing,
+}
+
+/// A local sink that keeps what it was given and fails at one step.
+struct Sink(FailsOn, Vec<u8>);
+
+impl Sink {
+    fn step(&self, step: FailsOn) -> Poll<std::io::Result<()>> {
+        if self.0 == step {
+            Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        } else {
+            Poll::Ready(Ok(()))
+        }
+    }
+}
+
+impl AsyncWrite for Sink {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.0 == FailsOn::Write {
+            return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+        }
+        self.1.extend_from_slice(bytes);
+        Poll::Ready(Ok(bytes.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.step(FailsOn::Flush)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        self.step(FailsOn::Shutdown)
+    }
+}
+
+/// Runs a Proxy caller with no local input, its destination's bytes going to `sink`, against
+/// a target that takes the caller's `end`, then relays `abc` from the destination, ends it,
+/// and reports the relay complete.
+async fn proxied_into(sink: &mut Sink) -> TestResult<Result<ProxyResult, ClientError>> {
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let target = async {
+        send(&mut target_writer, &[accept(&EMPTY_ACCEPT)]).await?;
+        assert_eq!(target_reader.expect().await?.end()?, Channel::Input);
+        let relay = [
+            Sent::Data(Channel::Input, b"abc"),
+            Sent::End(Channel::Input),
+            relayed(0, 3)?,
+        ];
+        send(&mut target_writer, &relay).await
+    };
+    let relaying = proxy::run((&mut reader, &mut writer), (&b""[..], sink));
+    let (relayed, scripted) = within(async { tokio::join!(relaying, target) }).await?;
+    scripted?;
+    Ok(relayed)
+}
+
+#[tokio::test]
+async fn a_relay_whose_bytes_could_not_be_delivered_locally_is_not_completed() -> TestResult {
+    for fails in [
+        FailsOn::Write,
+        FailsOn::Flush,
+        FailsOn::Shutdown,
+        FailsOn::Nothing,
+    ] {
+        // Given: a local side that fails to take the destination's bytes, or their end.
+        let mut sink = Sink(fails, Vec::new());
+
+        // When: the target reports the relay complete.
+        let ran = proxied_into(&mut sink).await?;
+
+        // Then: only a sink that took every byte makes a completed relay.
+        if fails == FailsOn::Nothing {
+            assert!(ran.is_ok(), "{ran:?}");
+            assert_eq!(sink.1, b"abc");
+        } else {
+            assert!(
+                matches!(ran, Err(ClientError::Local(_))),
+                "{fails:?}: {ran:?}"
+            );
+        }
+    }
+    Ok(())
+}

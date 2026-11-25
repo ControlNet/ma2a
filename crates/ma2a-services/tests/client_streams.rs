@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ma2a_core::service::{
     EMPTY_ACCEPT, EndReason, ExecRequest, FrameKind, ProcessSpec, ProxyHost, ProxyRequest,
-    ServiceError, ShellRequest, TerminalSize, Termination, failed_outcome,
+    ProxyResult, ServiceError, ShellRequest, TerminalSize, Termination,
 };
 use ma2a_services::{
     client::{
@@ -212,22 +212,21 @@ async fn a_reset_local_connection_cancels_the_proxy_instead_of_ending_its_input(
     let caller = client::proxy::run((&mut reader, &mut writer), (Reset, Vec::new()));
     let target = async {
         let frame = target_reader.expect().await?;
+        let cancelled = ProxyResult::new(EndReason::Cancelled, (0, 0), 1);
         target_writer
             .frame(
                 FrameKind::Outcome,
-                &failed_outcome(ServiceError::Cancelled)?,
+                &ProxyResult::encode_outcome(&Ok(cancelled))?,
             )
             .await?;
         TestResult::Ok(frame.kind())
     };
     let (result, seen) = within(async { tokio::join!(caller, target) }).await?;
 
-    // Then: the target is told to cancel at once, not that input ended cleanly.
+    // Then: the target is told to cancel at once, not that input ended cleanly, and the
+    // failed read is the answer, not the cancelled relay it caused.
     assert_eq!(seen?, FrameKind::Cancel);
-    assert!(
-        matches!(result, Err(ClientError::Failed(ServiceError::Cancelled))),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(ClientError::Local(_))), "{result:?}");
     Ok(())
 }
 
