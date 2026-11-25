@@ -31,6 +31,11 @@ impl Actor {
         match self.store.redeem_enrollment(authorized).await {
             Ok(EnrollmentOutcome::Redeemed { revision, chain }) => {
                 self.state.revision = revision;
+                // The Space has a new member, so no peer is synchronized with it yet.
+                self.synchronized_control_peers.clear();
+                let _receivers = self
+                    .events
+                    .send(crate::state::RuntimeEvent::memberships_changed(revision));
                 self.maintenance.membership_pending =
                     Some(crate::control_sync::ControlRoundTrigger::EnrollmentCompleted);
                 if let Err(error) = self.reconcile_membership_completion().await {

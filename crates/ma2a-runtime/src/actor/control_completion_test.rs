@@ -211,3 +211,41 @@ async fn explicit_membership_observation_retains_failed_followup() -> TestResult
     store_task.await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_completed_round_that_changed_memberships_announces_it() -> TestResult {
+    // Given: a Space committed by a control round the actor has not projected yet.
+    let directory = TempState::new("control-membership-event")?;
+    let config = StoreConfig::new(&directory.0);
+    let (mut actor, store_task) = fixture(&config).await?;
+    let member = SpaceMemberV1::new(
+        actor.state.endpoint_id,
+        "owner".to_owned(),
+        MemberCapabilities::new(true, true),
+    )?;
+    let created = Repository::open(&config)?.create_owned_space(&SpaceCreation::new(
+        10,
+        member,
+        SpacePolicyV1::phase_one_default(),
+    ))?;
+    let mut events = actor.events.subscribe();
+    let changes = ControlChanges {
+        manifest: true,
+        address: false,
+        relay: false,
+    };
+
+    // When
+    actor.retain_control_completion(changes, BTreeSet::new());
+    actor.reconcile_control_completion().await?;
+
+    // Then
+    assert!(actor.state.memberships.contains(&created.space_id()));
+    assert_eq!(
+        events.try_recv()?,
+        crate::state::RuntimeEvent::memberships_changed(created.revision())
+    );
+    actor.finish(false).await?;
+    store_task.await?;
+    Ok(())
+}

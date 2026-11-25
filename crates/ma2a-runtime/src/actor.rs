@@ -35,6 +35,8 @@ mod local_control;
 pub(crate) mod maintenance;
 mod membership;
 #[cfg(test)]
+mod membership_event_test;
+#[cfg(test)]
 mod outbound_bound_test;
 #[cfg(test)]
 mod owner_invariant_test;

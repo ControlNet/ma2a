@@ -31,6 +31,7 @@ impl Actor {
             return Ok(());
         };
         let peers = pending.peers.clone();
+        let manifest_advanced = pending.changes.manifest;
         // A completed task may be older than a local departure. Read one current
         // Store receipt, never install the task's stale lookup/membership snapshot.
         let projection = self.store.memberships(self.state.endpoint_id).await?;
@@ -39,6 +40,13 @@ impl Actor {
         self.state.memberships = projection.into_value();
         if changed {
             self.synchronized_control_peers.clear();
+        }
+        if changed || manifest_advanced {
+            let _receivers = self
+                .events
+                .send(crate::state::RuntimeEvent::memberships_changed(
+                    self.state.revision,
+                ));
         }
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
