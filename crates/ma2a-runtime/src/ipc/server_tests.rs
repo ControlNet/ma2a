@@ -16,6 +16,8 @@ use super::LocalApiServer;
 mod agent_revisions;
 #[path = "server_tests/committed_response.rs"]
 mod committed_response;
+#[path = "server_tests/control_sync_peers.rs"]
+mod control_sync_peers;
 #[path = "server_tests/failed_replay.rs"]
 mod failed_replay;
 #[path = "server_tests/grant_refusals.rs"]

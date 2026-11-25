@@ -43,7 +43,7 @@ impl Actor {
         let changed = self.state.memberships != *projection.value();
         self.state.revision = self.state.revision.max(projection.revision());
         self.state.memberships = projection.into_value();
-        if changed {
+        if changed || manifest_advanced {
             self.synchronized_control_peers.clear();
         }
         if changed || (manifest_advanced && !already_announced) {
