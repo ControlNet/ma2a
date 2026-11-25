@@ -43,21 +43,26 @@ impl RuntimeHandle {
     ) -> Result<ma2a_core::SignedInviteTicket, EnrollmentError> {
         Ok(self
             .create_enrollment_invite_committed(creation)
-            .await?
+            .await
+            .map_err(|_| EnrollmentError::internal())?
             .ticket()
             .clone())
     }
 
+    /// Creates one invitation, keeping the Store's refusal when it made one.
     pub(crate) async fn create_enrollment_invite_committed(
         &self,
         creation: EnrollmentCreation,
-    ) -> Result<ma2a_store::CreatedEnrollmentInvite, EnrollmentError> {
+    ) -> Result<ma2a_store::CreatedEnrollmentInvite, crate::RuntimeError> {
+        use crate::error::{RuntimeError, RuntimeErrorKind};
         let (reply, response) = oneshot::channel();
         self.commands
             .send(Command::CreateEnrollmentInvite { creation, reply })
             .await
-            .map_err(|_| EnrollmentError::internal())?;
-        response.await.map_err(|_| EnrollmentError::internal())?
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
+        response
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
     }
 
     /// Redeems an invitation and establishes local membership only after durable chain persistence.

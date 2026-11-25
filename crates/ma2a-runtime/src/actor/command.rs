@@ -43,7 +43,7 @@ pub(crate) enum Command {
     },
     CreateEnrollmentInvite {
         creation: EnrollmentCreation,
-        reply: oneshot::Sender<Result<ma2a_store::CreatedEnrollmentInvite, EnrollmentError>>,
+        reply: oneshot::Sender<Result<ma2a_store::CreatedEnrollmentInvite, RuntimeError>>,
     },
     RedeemEnrollment {
         attempt: Box<EnrollmentAttempt>,

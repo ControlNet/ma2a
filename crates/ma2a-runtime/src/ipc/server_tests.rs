@@ -22,6 +22,8 @@ mod handshake;
 mod hosted;
 #[path = "server_tests/hosted_calls.rs"]
 mod hosted_calls;
+#[path = "server_tests/invite_refusals.rs"]
+mod invite_refusals;
 #[path = "server_tests/large_snapshot.rs"]
 mod large_snapshot;
 #[path = "server_tests/lifecycle.rs"]

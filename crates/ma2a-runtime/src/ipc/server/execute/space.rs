@@ -6,8 +6,9 @@ use ma2a_core::{
 use crate::{SpaceDepartureErrorCode, api::ApiError, api::CommandResult};
 
 use super::super::ConnectionContext;
-#[path = "invite_file.rs"]
-mod invite_file;
+#[path = "space_invite.rs"]
+mod invite;
+pub(super) use invite::invite;
 
 pub(super) async fn create(
     context: &ConnectionContext,
@@ -32,49 +33,6 @@ fn committed_space(chain: &ma2a_core::SpaceChain) -> Result<crate::api::SpaceVie
         u32::try_from(chain.members().len()).map_err(|_| ProtocolError::INTERNAL)?,
     )
     .map_err(|_| ProtocolError::INTERNAL)
-}
-
-pub(super) async fn invite(
-    context: &ConnectionContext,
-    command: &crate::api::Command,
-) -> Result<CommandResult, ApiError> {
-    let (space_id, ttl_ms, output_path) = command.space_invite().ok_or_else(not_run)?;
-    // Refused before the invitation is committed, so a bad path never costs a revision, and
-    // the same request can run once the path is fixed.
-    let destination = invite_file::Destination::open(output_path).map_err(without_effects)?;
-    let entropy =
-        ma2a_core::InviteEntropy::random().map_err(|_| without_effects(ProtocolError::INTERNAL))?;
-    let creation =
-        crate::EnrollmentCreation::new(space_id, ttl_ms, entropy).map_err(|_| not_run())?;
-    let created = context
-        .handle
-        .create_enrollment_invite_committed(creation)
-        .await
-        .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let encoded = created.ticket().encode_string().into_bytes();
-    let written = if injected_write_failure(context) {
-        Err(ProtocolError::INTERNAL)
-    } else {
-        tokio::task::spawn_blocking(move || destination.write(&encoded))
-            .await
-            .unwrap_or(Err(ProtocolError::INTERNAL))
-    };
-    written.map_err(|error| ApiError::new(error).after_commit(created.revision()))?;
-    Ok(
-        CommandResult::space_invitation_created(committed_space(created.chain())?)
-            .at_revision(created.revision()),
-    )
-}
-
-/// Deterministic fault point: the ticket file fails to be written after the commit.
-#[cfg(test)]
-fn injected_write_failure(context: &ConnectionContext) -> bool {
-    context.mutation_hooks.take_invite_write_failure()
-}
-
-#[cfg(not(test))]
-const fn injected_write_failure(_context: &ConnectionContext) -> bool {
-    false
 }
 
 pub(super) async fn list(context: &ConnectionContext) -> Result<CommandResult, ProtocolError> {
@@ -227,7 +185,7 @@ pub(super) async fn revoke(
                 )
                 .without_effects()
             } else {
-                committed_runtime_error(&error)
+                authority_error(&error)
             }
         })?;
     Ok(
@@ -260,6 +218,21 @@ const fn without_effects(error: ProtocolError) -> ApiError {
 /// Invalid input found before the request ran.
 const fn not_run() -> ApiError {
     ApiError::invalid_input().without_effects()
+}
+
+/// Maps a failure of a change signed with a Space's authority. What the Store refused before
+/// writing anything has no effect: a Space or member it does not hold, a Space this Runtime
+/// does not own, or a bound the change would pass.
+fn authority_error(error: &crate::RuntimeError) -> ApiError {
+    if error.is_space_not_found() {
+        without_effects(ProtocolError::NOT_FOUND)
+    } else if error.is_not_space_owner() {
+        without_effects(ProtocolError::UNAUTHORIZED)
+    } else if error.is_request_refusal() {
+        without_effects(ProtocolError::CONFLICT)
+    } else {
+        committed_runtime_error(error)
+    }
 }
 
 fn committed_runtime_error(error: &crate::RuntimeError) -> ApiError {

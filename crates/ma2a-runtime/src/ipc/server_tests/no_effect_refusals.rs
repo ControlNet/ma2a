@@ -3,16 +3,16 @@
 use super::*;
 
 /// A Runtime and its local API server over a private state directory.
-struct Served {
-    state: TempState,
-    runtime: Runtime,
+pub(super) struct Served {
+    pub(super) state: TempState,
+    pub(super) runtime: Runtime,
     server: LiveServer,
     paths: IpcPaths,
-    client: LocalApiClient,
+    pub(super) client: LocalApiClient,
 }
 
 impl Served {
-    async fn start() -> TestResult<Self> {
+    pub(super) async fn start() -> TestResult<Self> {
         let state = TempState::new_named("no-effect-refusals")?;
         let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
         let control = CurrentUserRuntime::open_at(
@@ -36,7 +36,11 @@ impl Served {
     }
 
     /// Sends `request` and checks it is refused with `error`, as having had no effect.
-    async fn refused(&self, request: &serde_json::Value, error: ProtocolError) -> TestResult {
+    pub(super) async fn refused(
+        &self,
+        request: &serde_json::Value,
+        error: ProtocolError,
+    ) -> TestResult {
         let command = api::decode_command(&serde_json::to_vec(request)?)?;
         let value: serde_json::Value = serde_json::from_slice(&self.client.call(&command).await?)?;
         assert_eq!(
@@ -53,7 +57,7 @@ impl Served {
         Ok(())
     }
 
-    async fn stop(self) -> TestResult {
+    pub(super) async fn stop(self) -> TestResult {
         self.server.cancel().await?;
         self.paths.remove_stale_endpoint()?;
         self.runtime.shutdown().await?;
@@ -97,6 +101,7 @@ async fn requests_refused_before_they_run_have_no_effect() -> TestResult {
     let space_id = api::encode_hex(space.as_bytes());
     let output = served.state.0.join("ticket");
     let output = output.to_str().ok_or("invalid path")?;
+    let peer = api::encode_hex(iroh::SecretKey::generate().public().as_bytes());
     let refusals = [
         // An invitation may live at most five minutes.
         (
@@ -119,6 +124,21 @@ async fn requests_refused_before_they_run_have_no_effect() -> TestResult {
                 "invitation": "not-a-ticket",
             }),
             ProtocolError::INVALID_INPUT,
+        ),
+        // A Space this Runtime does not hold, and a peer that is no member of one it owns.
+        (
+            serde_json::json!({
+                "version": 1, "operation": "space_revoke", "request_id": "57".repeat(16),
+                "space_id": "58".repeat(32), "peer_endpoint_id": peer,
+            }),
+            ProtocolError::NOT_FOUND,
+        ),
+        (
+            serde_json::json!({
+                "version": 1, "operation": "space_revoke", "request_id": "59".repeat(16),
+                "space_id": space_id, "peer_endpoint_id": peer,
+            }),
+            ProtocolError::NOT_FOUND,
         ),
         // Native TLS needs both files; external termination takes neither.
         (
@@ -235,7 +255,7 @@ fn set_writable(directory: &std::path::Path, writable: bool) -> TestResult {
     Ok(())
 }
 
-fn invitations(served: &Served) -> TestResult<u64> {
+pub(super) fn invitations(served: &Served) -> TestResult<u64> {
     let config = StoreConfig::new(&served.state.0);
     let connection = rusqlite::Connection::open(config.database_path())?;
     Ok(connection.query_row("SELECT COUNT(*) FROM invitations", [], |row| row.get(0))?)

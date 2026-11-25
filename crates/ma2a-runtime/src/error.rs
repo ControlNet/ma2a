@@ -102,6 +102,14 @@ impl RuntimeError {
         matches!(self.0, RuntimeErrorKind::Store(StoreError::SpaceNotFound))
     }
 
+    /// This Runtime holds the named Space but not its authority, so it cannot sign for it.
+    pub(crate) const fn is_not_space_owner(&self) -> bool {
+        matches!(
+            self.0,
+            RuntimeErrorKind::Store(StoreError::SpaceAuthorityUnavailable)
+        )
+    }
+
     /// Returns a stable non-secret error classification.
     pub const fn code(&self) -> RuntimeErrorCode {
         let kind = match &self.0 {
