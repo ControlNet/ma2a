@@ -50,7 +50,7 @@ printf 'license report is independent of the checkout path\n'
 # The synthetic checkout: a small workspace, and installed frontend packages written here.
 fixture="$temporary/fixture"
 mkdir -p "$fixture/web"
-printf '[workspace]\nmembers = ["crates/ma2a-app"]\nresolver = "2"\n' > "$fixture/Cargo.toml"
+printf '[workspace]\nmembers = ["crates/ma2a-app", "crates/tool"]\nresolver = "2"\n' > "$fixture/Cargo.toml"
 crate() {
   mkdir -p "$fixture/crates/$1/src"
   printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n%s\n' \
@@ -58,10 +58,13 @@ crate() {
   touch "$fixture/crates/$1/src/lib.rs"
 }
 # Only the tests turn on the feature of shared that pulls in extra and common, so extra does not
-# ship; common ships anyway, since the application also depends on it directly.
+# ship; common ships anyway, since the application also depends on it directly. The application
+# ships itoa from crates.io, while a workspace tool uses a local crate with the same name and
+# version and another license, which does not ship.
 crate ma2a-app '[dependencies]
 shared = { path = "../shared" }
 common = { path = "../common" }
+itoa = "=1.0.18"
 [dev-dependencies]
 shared = { path = "../shared", features = ["testing"] }'
 printf 'fn main() {}\n' > "$fixture/crates/ma2a-app/src/main.rs"
@@ -72,6 +75,12 @@ common = { path = "../common", optional = true }
 testing = ["dep:extra", "dep:common"]'
 crate extra ''
 crate common ''
+crate tool '[dependencies]
+itoa = { path = "../itoa" }'
+mkdir -p "$fixture/crates/itoa/src"
+printf '[package]\nname = "itoa"\nversion = "1.0.18"\nedition = "2021"\nlicense = "ISC"\n' \
+  > "$fixture/crates/itoa/Cargo.toml"
+touch "$fixture/crates/itoa/src/lib.rs"
 (cd "$fixture" && cargo generate-lockfile --offline --quiet)
 package() {
   mkdir -p "$fixture/web/node_modules/$1"
@@ -141,11 +150,17 @@ if ! jq -e --argjson expected "$expected" \
 fi
 
 # The SBOM lists the Rust packages the application's build compiles in, and no package that only
-# the tests reach.
-if ! jq -e '[.packages[] | select(.SPDXID | startswith("SPDXRef-Rust-")) | .name] | sort
-    == ["common", "ma2a-app", "shared"]' "$temporary/fixture.spdx.json" >/dev/null; then
+# the tests or a workspace tool reach, even one with a shipped package's name and version.
+if ! jq -e '[.packages[] | select(.SPDXID | startswith("SPDXRef-Rust-"))
+    | {name, licenseDeclared, downloadLocation}] | sort_by(.name)
+    == [{name: "common", licenseDeclared: "MIT", downloadLocation: "NOASSERTION"},
+      {name: "itoa", licenseDeclared: "MIT OR Apache-2.0",
+        downloadLocation: "https://crates.io/crates/itoa/1.0.18"},
+      {name: "ma2a-app", licenseDeclared: "MIT", downloadLocation: "NOASSERTION"},
+      {name: "shared", licenseDeclared: "MIT", downloadLocation: "NOASSERTION"}]' \
+    "$temporary/fixture.spdx.json" >/dev/null; then
   printf 'the synthetic SBOM lists the wrong Rust packages:\n' >&2
-  jq -S '[.packages[] | select(.SPDXID | startswith("SPDXRef-Rust-")) | .name]' \
+  jq -S '[.packages[] | select(.SPDXID | startswith("SPDXRef-Rust-"))]' \
     "$temporary/fixture.spdx.json" >&2
   exit 1
 fi

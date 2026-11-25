@@ -118,7 +118,9 @@ build of `ma2a-app` turns on, without passing through a procedural macro (`cargo
 and only its expansion is compiled in, so it, and any package only it depends on, is not listed; a
 library a macro shares with the program stays listed through the program's own path. Another
 platform's dependencies, build and dev dependencies, optional dependencies that only a test or
-another workspace member turns on, and workspace tools such as `xtask` are not listed either. The
+another workspace member turns on, and workspace tools such as `xtask` are not listed either. A
+package is matched by name, version and whether it comes from crates.io, so a local crate that
+shares a shipped crate's name and version is not listed in its place. The
 SBOM therefore describes what ships, not the full build toolchain; `Cargo.lock` at the archive's commit
 records that. Its frontend packages are the installed closure of the console's production
 dependencies, counting peers and installed optional dependencies. Each package declares its

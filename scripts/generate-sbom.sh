@@ -15,15 +15,21 @@ trap 'rm -rf "$temporary"' EXIT
 
 cargo metadata --locked --format-version 1 --filter-platform "$target" \
   > "$temporary/cargo-metadata.json"
-# The packages whose code the archive carries, by name and version: `ma2a-app` and everything it
-# reaches through normal dependency edges on the archive's target, without passing through a
-# procedural macro, with features resolved for that build alone. A macro runs on the build host
-# and only its expansion is compiled in, so it, and whatever only it depends on, is not listed; a
-# library a macro shares with the program is still reached on its own path. Build and dev
-# dependencies, the features only they turn on, and workspace tools such as xtask are not shipped.
+# The packages whose code the archive carries: `ma2a-app` and everything it reaches through
+# normal dependency edges on the archive's target, without passing through a procedural macro,
+# with features resolved for that build alone. A macro runs on the build host and only its
+# expansion is compiled in, so it, and whatever only it depends on, is not listed; a library a
+# macro shares with the program is still reached on its own path. Build and dev dependencies, the
+# features only they turn on, and workspace tools such as xtask are not shipped. Each is named by
+# name, version and whether it comes from crates.io, as Cargo prints a source only for a package
+# from elsewhere, so a local crate with a shipped crate's name and version is not taken for it.
 cargo tree --locked --color never -p ma2a-app --target "$target" -e normal,no-proc-macro \
   --prefix none --format '{p}' \
-  | jq -Rn '[inputs | split(" ") | {key: (.[0] + " " + (.[1] | ltrimstr("v"))), value: true}]
+  | jq -Rn '[inputs | sub(" \\(\\*\\)$"; "")
+      | (capture("^(?<name>[^ ]+) v(?<version>[^ ]+)(?<elsewhere> \\(.*\\))?$")
+        // error("unexpected cargo tree line: \(.)"))
+      | {key: "\(.name) \(.version) \(if .elsewhere then "elsewhere" else "crates.io" end)",
+        value: true}]
     | from_entries' > "$temporary/shipped.json"
 digest=$(awk 'NF >= 2 {print $1; exit}' "${archive}.sha256" | tr -d '\r')
 [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
@@ -49,15 +55,20 @@ jq -n -L "$(dirname "$0")" \
   --slurpfile shipped "$temporary/shipped.json" \
   --slurpfile licenses "$report" '
   include "spdx";
+  def crates_io: .source == "registry+https://github.com/rust-lang/crates.io-index";
+  def shipped_key: "\(.name) \(.version) \(if crates_io then "crates.io" else "elsewhere" end)";
   def rust_packages:
-    [$cargo[0].packages[] | select($shipped[0][.name + " " + .version])]
+    [$cargo[0].packages[] | select($shipped[0][shipped_key])]
+    | if (map(shipped_key) | unique | length) == ($shipped[0] | length)
+        and length == ($shipped[0] | length) then .
+      else error("the shipped Rust packages do not match the workspace metadata one to one") end
     | to_entries
     | map({
         SPDXID: ("SPDXRef-Rust-" + (.key | tostring)),
         name: .value.name,
         versionInfo: .value.version,
         downloadLocation: (
-          if .value.source == "registry+https://github.com/rust-lang/crates.io-index" then
+          if .value | crates_io then
             ("https://crates.io/crates/" + .value.name + "/" + .value.version)
           else
             "NOASSERTION"
