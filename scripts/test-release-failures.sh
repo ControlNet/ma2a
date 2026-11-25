@@ -94,6 +94,23 @@ if ./scripts/validate-release-metadata.sh "$archive" "$macro" "$report" >/dev/nu
   exit 1
 fi
 
+# A report that names a build directory is refused, however the tools spelled the path.
+for mutation in \
+  'unix-url|.rust["ma2a-app 0.1.0 path+file:///tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
+  'windows-url|.rust["ma2a-app 0.1.0 path+file:///D:/a/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
+  'windows-path|.frontend.MIT += [{name: "ky", paths: ["D:\\a\\build\\web\\node_modules\\ky"]}]' \
+  'mixed-path|.frontend.MIT += [{name: "ky", paths: ["d:/a/build/web/node_modules/ky"]}]' \
+  'unix-path|.frontend.MIT += [{name: "ky", paths: ["/tmp/build/web/node_modules/ky"]}]'
+do
+  label=${mutation%%|*}
+  mutated="$temporary/$label.licenses.json"
+  jq "${mutation#*|}" "$report" > "$mutated"
+  if ./scripts/validate-release-metadata.sh "$archive" "$sbom" "$mutated" >/dev/null 2>&1; then
+    printf 'license report with a %s build path unexpectedly passed validation\n' "$label" >&2
+    exit 1
+  fi
+done
+
 # The described package must resolve to exactly the application package.
 application=$(jq -r '.packages[] | select(.name == "ma2a-app") | .SPDXID' "$sbom")
 other=$(jq -r '.packages[] | select(.name == "serde") | .SPDXID' "$sbom")

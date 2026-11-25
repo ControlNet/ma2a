@@ -35,6 +35,14 @@ jq -e '
   (.frontend.MIT | any(.name == "react"))
 ' "$report" >/dev/null
 
+# The report never names where it was built. The generator removes the checkout paths it knows
+# about; this refuses any file URL or absolute path left over, in a Unix or Windows spelling.
+jq -e '[.. | strings, (.. | objects | keys[])]
+  | all((test("file:///") or test("^([A-Za-z]:)?[/\\\\]")) | not)' "$report" >/dev/null || {
+  printf 'license report names a build directory\n' >&2
+  exit 1
+}
+
 jq -e --arg expected "$(basename "$archive")" '.name == $expected' "$sbom" >/dev/null || {
   printf 'SBOM name does not bind the archive filename\n' >&2
   exit 1
