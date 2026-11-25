@@ -10,7 +10,7 @@ mod read;
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
-    io::{self, Write as _},
+    io::{self, Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
 };
 
@@ -161,7 +161,19 @@ impl LogWriter {
         record.push(code);
         record.extend_from_slice(&length.to_be_bytes());
         record.extend_from_slice(bytes);
-        file.write_all(&record)?;
+        if let Err(error) = file.write_all(&record) {
+            // A partly written record would shift every later one, so the segment is cut back
+            // to its last whole record. If that fails, the next append starts a new segment
+            // and the torn record stays last in this one, where reads ignore it.
+            let whole = self.segments.back().map_or(0, |last| last.file_bytes);
+            let cut = file
+                .set_len(whole)
+                .and_then(|()| file.seek(SeekFrom::Start(whole)));
+            if cut.is_err() {
+                self.current = None;
+            }
+            return Err(error);
+        }
         let added = u64::from(length);
         if let Some(last) = self.segments.back_mut() {
             last.content += added;
@@ -182,9 +194,11 @@ impl LogWriter {
 
     fn rotate(&mut self) -> io::Result<()> {
         self.sync()?;
+        // Written in place rather than appended: on Windows an append-only handle cannot be
+        // truncated back after a failed write.
         let file = OpenOptions::new()
             .create_new(true)
-            .append(true)
+            .write(true)
             .open(self.directory.join(name(self.end)))?;
         self.current = Some(file);
         self.segments.push_back(Segment {

@@ -178,3 +178,52 @@ fn a_missing_segment_is_reported_as_a_gap_never_read_across() -> TestResult {
     assert_eq!((after.start, after.truncated), (third, true));
     Ok(())
 }
+
+/// Runs `write` while files may grow to at most `limit` bytes, so a write past it is short.
+///
+/// The limit is per process, and nextest runs each test in its own process. `SIGXFSZ` is
+/// caught so the write fails with `EFBIG` instead of ending the process.
+#[cfg(unix)]
+fn with_file_size_limit<T>(limit: u64, write: impl FnOnce() -> T) -> TestResult<T> {
+    use rustix::process::{Resource, Signal, getrlimit, setrlimit};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let _caught = runtime.block_on(async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(
+            Signal::XFSZ.as_raw(),
+        ))
+    })?;
+    let previous = getrlimit(Resource::Fsize);
+    let mut lowered = previous;
+    lowered.current = Some(limit);
+    setrlimit(Resource::Fsize, lowered)?;
+    let result = write();
+    setrlimit(Resource::Fsize, previous)?;
+    Ok(result)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_record_cut_short_by_a_failed_write_never_corrupts_the_next_one() -> TestResult {
+    // Given: one record of 2 bytes, 7 file bytes with its header.
+    let root = TempRoot::new("log-short")?;
+    let mut writer = LogWriter::create(root.path(), MIB)?;
+    assert_eq!(writer.append(Channel::Output, b"OK")?, 2);
+
+    // When: the next record stops after its header and 3 of its bytes, as on a full disk.
+    let failed = with_file_size_limit(15, || writer.append(Channel::Output, b"LOST-RECORD"))?;
+    assert!(failed.is_err(), "{failed:?}");
+
+    // And: a later record is written in full.
+    assert_eq!(writer.append(Channel::Output, b"NEXT")?, 6);
+    writer.sync()?;
+
+    // Then: the live cursor, the window on disk, and the bytes read back agree.
+    assert_eq!(writer.window(), LogWindow::new(0, 6));
+    assert_eq!(log::window(root.path())?, LogWindow::new(0, 6));
+    let read = log::read(root.path(), 0, 1024)?;
+    assert_eq!(joined(&read), b"OKNEXT");
+    assert_eq!(read.next, 6);
+    Ok(())
+}
