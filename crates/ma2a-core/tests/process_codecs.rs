@@ -255,3 +255,16 @@ fn start_bytes_are_canonical_and_stable() -> TestResult {
     assert!(ProcessStart::from_bytes(&trailing).is_err());
     Ok(())
 }
+
+#[test]
+fn a_label_with_an_empty_value_roundtrips() -> TestResult {
+    let start = start()?.with_label("empty".to_owned(), String::new())?;
+    assert_eq!(ProcessStart::from_bytes(&start.to_bytes()?)?, start);
+    let header = OpenHeader::new(
+        request_id()?,
+        target(),
+        OpenBody::Process(ProcessRequest::Start(start)),
+    );
+    assert_eq!(OpenHeader::decode(&header.encode()?)?, header);
+    Ok(())
+}

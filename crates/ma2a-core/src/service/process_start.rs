@@ -147,7 +147,8 @@ impl ProcessStart {
         for _ in 0..decoder.array(MAX_PROCESS_LABELS)? {
             decoder.array_exact(2)?;
             let key = decoder.text(MAX_LABEL_KEY_LEN)?.to_owned();
-            let value = decoder.text(MAX_LABEL_VALUE_LEN)?.to_owned();
+            // A value may be empty; `with_label` refuses control characters.
+            let value = decoder.text_without_nul(MAX_LABEL_VALUE_LEN)?.to_owned();
             start = start.with_label(key, value)?;
         }
         Ok(start)
