@@ -190,6 +190,7 @@ pub(super) fn refuse(refusals: &Arc<Semaphore>, mut stream: ServiceStream, error
 }
 
 async fn write_reject(mut stream: ServiceStream, error: ServiceError) {
+    let mut finished = false;
     let _written = tokio::time::timeout(REJECT_WRITE_DEADLINE, async {
         let header = FrameHeader::new(FrameKind::Reject, 1)
             .and_then(FrameHeader::encode)
@@ -197,8 +198,15 @@ async fn write_reject(mut stream: ServiceStream, error: ServiceError) {
         stream.send.write_all(&header).await.ok()?;
         stream.send.write_all(&[error.code()]).await.ok()?;
         stream.send.finish().ok()?;
+        finished = true;
         let _unread = stream.receive.stop(0_u8.into());
         stream.send.stopped().await.ok()
     })
     .await;
+    // Dropping an unfinished stream finishes it, so a frame cut short would reach the peer
+    // as a clean end; it is reset instead. A finished reject is never reset, which could
+    // discard it before the peer read it.
+    if !finished {
+        let _reset = stream.send.reset(0_u8.into());
+    }
 }
