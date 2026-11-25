@@ -16,17 +16,17 @@ case "$runs" in
     printf 'MA2A_E2E_RUNS must be an integer from 1 to 9999 without leading zeros\n' >&2; exit 2 ;;
 esac
 # Trailing separators and `.` components are dropped, so `dir`, `dir/` and `dir/.` name the same
-# directory in every check and share one claim. A name ending in `.` or `..` has no sibling to
-# hold that claim and is refused.
+# directory in every check and share one claim. A name ending in `.` or `..`, and the root
+# directory, have no sibling to hold that claim and are refused.
 while :; do
   case "$output" in
-    */.) output=${output%/.} ;;
+    ?*/.) output=${output%/.} ;;
     ?*/) output=${output%/} ;;
     *) break ;;
   esac
 done
 case "$output" in
-  .|..|*/..)
+  /|/.|.|..|*/..)
     printf 'MA2A_E2E_OUTPUT must name the evidence directory itself, not . or ..\n' >&2; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 2; }

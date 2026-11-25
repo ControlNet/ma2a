@@ -11,11 +11,11 @@ printf '#!/bin/sh\nexit 1\n' > "$temporary/bin/cargo"
 chmod +x "$temporary/bin/cargo"
 
 # Runs the script against output directory $1, with run count $2 (default 1), and prints its
-# exit status.
+# exit status. Its stderr is kept in $temporary/stderr.
 run() {
   local status=0
   PATH="$temporary/bin:$PATH" MA2A_E2E_OUTPUT="$1" MA2A_E2E_RUNS="${2:-1}" \
-    ./scripts/run-e2e.sh >/dev/null 2>&1 || status=$?
+    ./scripts/run-e2e.sh >/dev/null 2>"$temporary/stderr" || status=$?
   printf '%s' "$status"
 }
 
@@ -71,9 +71,12 @@ test "$(cat "$near/run-1-notes.log")" = notes
 test "$(cat "$near/run-1.log")" = old
 
 # A spelling with no sibling to hold the claim is refused before anything is touched.
-for spelling in . .. "$temporary/slash/.."; do
+for spelling in . .. / // /. /./ "$temporary/slash/.." "$temporary/never-existed/.."; do
   test "$(run "$spelling")" -eq 2 || { printf '%s was accepted\n' "$spelling" >&2; exit 1; }
+  grep -q 'must name the evidence directory itself' "$temporary/stderr" \
+    || { printf '%s was refused for another reason\n' "$spelling" >&2; exit 1; }
 done
+test ! -e "$temporary/never-existed" || { printf 'a refused spelling created its parent\n' >&2; exit 1; }
 
 # A directory another run has claimed is refused and left as it is.
 claimed="$temporary/claimed"
