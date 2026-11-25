@@ -107,7 +107,7 @@ session cannot make this Runtime serve anything.
 
 The client keeps its side open until it receives a terminal frame. Closing the connection earlier
 cancels the operation. A client that takes no frame for 30 seconds is treated as gone and the
-operation is cancelled; the terminal frame itself is given 5 seconds.
+operation is cancelled; the `accept` and the terminal frame are given 5 seconds.
 
 Admission and replay:
 

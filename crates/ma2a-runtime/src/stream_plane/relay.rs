@@ -278,8 +278,9 @@ where
         }
         if !shared.client_gone.load(Ordering::Relaxed) {
             writing.writing.store(true, Ordering::Relaxed);
-            // A terminal frame has the final-write bound; the operation is over either way.
-            let bound = if terminal.is_some() {
+            // The frames that open and end an operation have the final-write bound: a client
+            // that does not take them must not hold the operation for the stall bound.
+            let bound = if terminal.is_some() || frame.kind() == FrameKind::Accept {
                 FINAL_WRITE_GRACE
             } else {
                 FORWARD_STALL

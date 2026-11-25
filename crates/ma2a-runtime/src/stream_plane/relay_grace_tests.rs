@@ -76,3 +76,24 @@ async fn a_terminal_read_within_the_grace_is_kept_when_the_client_never_takes_it
     ));
     assert!(!relayed.client_present);
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_accept_the_client_does_not_take_is_given_up_after_the_final_write_grace() {
+    // Given: a client that reads nothing, through a pipe with no room.
+    let ((_client_reader, _client_writer), (mut target_reader, mut target_writer), _task) =
+        start_with(1);
+
+    // When: the target accepts the operation.
+    let started = tokio::time::Instant::now();
+    target_writer
+        .frame(FrameKind::Accept, &[0xa0])
+        .await
+        .expect("accept");
+
+    // Then: the target is cancelled after the final-write grace, not the 30 s stall bound.
+    assert_eq!(
+        target_reader.expect().await.expect("cancel").kind(),
+        FrameKind::Cancel
+    );
+    assert_eq!(started.elapsed(), super::FINAL_WRITE_GRACE);
+}
