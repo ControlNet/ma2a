@@ -2,6 +2,7 @@ import {
   createRuntimeApiClient,
   parseRuntimeEvent,
   parseRuntimeSnapshot,
+  RuntimeApiPathError,
   RuntimeApiPayloadError,
   type RuntimeSnapshot,
 } from "./client"
@@ -52,6 +53,21 @@ afterEach(() => {
 })
 
 describe("runtime API boundary", () => {
+  // Browsers read a backslash as a slash and drop tabs and newlines, so each of these resolves to
+  // another origin.
+  test.each([
+    "//evil.example/x",
+    "/\\evil.example/x",
+    "/\t/evil.example/x",
+    "/\n/evil.example/x",
+    "/\r/evil.example/x",
+  ])("refuses a Runtime API path that leaves the origin: %#", (path) => {
+    const paths = { snapshot: "/api/v1/snapshot", events: "/api/v1/events" }
+
+    expect(() => createRuntimeApiClient({ ...paths, snapshot: path })).toThrow(RuntimeApiPathError)
+    expect(() => createRuntimeApiClient({ ...paths, events: path })).toThrow(RuntimeApiPathError)
+  })
+
   test("parses the planned safe snapshot envelope", () => {
     const given = runtimeSnapshot(10)
 

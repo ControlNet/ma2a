@@ -25,7 +25,13 @@ export {
   StaleRuntimeSnapshotError,
 } from "./coordinator"
 
-const SameOriginPathSchema = z.string().regex(/^\/(?!\/)/)
+// A path is resolved as the browser resolves it, which reads a backslash as a slash and drops
+// tabs and newlines, so only a path that stays on the page's origin is accepted.
+const PATH_BASE = "http://same-origin.invalid"
+const SameOriginPathSchema = z
+  .string()
+  .regex(/^\/(?!\/)/)
+  .refine((path) => new URL(path, PATH_BASE).origin === PATH_BASE)
 
 export class RuntimeApiPathError extends Error {
   readonly name = "RuntimeApiPathError"
