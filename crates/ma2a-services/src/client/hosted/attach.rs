@@ -17,7 +17,9 @@ use tokio::{
 use super::{Gaps, accepted, advanced, deliver, reading, reply, skipped, until};
 use crate::{
     FrameReader, FrameWriter,
-    client::{ClientError, First, first_or_cancel, next, process::ProcessIo, unexpected},
+    client::{
+        ClientError, First, first_or_cancel, next, process::ProcessIo, sinks::settled, unexpected,
+    },
 };
 
 /// How one attachment ended.
@@ -49,8 +51,8 @@ pub struct Attached {
 /// of that window. Only an attachment with stdin, a mutation, may be answered from replay.
 ///
 /// # Errors
-/// Returns the refusal (`writer_busy` when another attachment holds stdin), the failed
-/// outcome, the stream failure, or, once detached, the failed local write or read.
+/// Returns the refusal (`writer_busy` when another attachment holds stdin), the stream
+/// failure, the failed local write or read that detached, or the failed outcome.
 pub async fn attach<R, W, I, O, E, D>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     ((id, from), local): ((ProcessId, LogFrom), ProcessIo<I, O, E>),
@@ -95,10 +97,8 @@ where
             () = &mut inbound => outbound.await?,
         }
     };
-    let attached = attached((Some(accept), &frame), (id, Some(reached)), gaps)?;
-    unwritten
-        .or(unread)
-        .map_or(Ok(attached), |failure| Err(ClientError::Local(failure)))
+    let attached = attached((Some(accept), &frame), (id, Some(reached)), gaps);
+    settled((attached, unwritten), unread)
 }
 
 /// Caller → target: stdin until EOF, then at most one `cancel` on detach, lost output, or a

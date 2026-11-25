@@ -247,14 +247,16 @@ async fn attach_writing<I: AsyncRead + Unpin>(
     input: I,
     reason: EndReason,
 ) -> TestResult<(Result<hosted::Attached, ClientError>, Vec<FrameKind>)> {
-    attach_writing_through(input, std::convert::identity, reason).await
+    let outcome = detached(reason, process(1), 0)?;
+    attach_writing_through(input, std::convert::identity, outcome).await
 }
 
-/// As [`attach_writing`], with the caller's stream wrapped by `wrap`.
+/// As [`attach_writing`], with the caller's stream wrapped by `wrap`, and `outcome` ending
+/// the attachment.
 async fn attach_writing_through<I, W>(
     input: I,
     wrap: impl FnOnce(tokio::io::WriteHalf<tokio::io::DuplexStream>) -> W,
-    reason: EndReason,
+    outcome: Sent,
 ) -> TestResult<(Result<hosted::Attached, ClientError>, Vec<FrameKind>)>
 where
     I: AsyncRead + Unpin,
@@ -269,8 +271,7 @@ where
         let first = service_reader.expect().await?;
         assert_eq!(first.data()?, (Channel::Input, &b"ab"[..]));
         let second = service_reader.expect().await?;
-        let (kind, outcome) = detached(reason, process(1), 0)?;
-        service_writer.frame(kind, &outcome).await?;
+        service_writer.frame(outcome.0, &outcome.1).await?;
         service_writer.flush().await?;
         TestResult::Ok(vec![first.kind(), second.kind()])
     };
@@ -314,9 +315,11 @@ async fn the_end_of_local_input_closes_the_process_stdin() -> TestResult {
 #[tokio::test(start_paused = true)]
 async fn the_end_of_local_input_reaches_the_target_through_a_buffered_stream() -> TestResult {
     // Given: a caller stream that holds writes until flushed.
+    let completed = detached(EndReason::Completed, process(1), 0)?;
+
     // When: local input ends after one chunk.
     let (attached, kinds) =
-        attach_writing_through(&b"ab"[..], tokio::io::BufWriter::new, EndReason::Completed).await?;
+        attach_writing_through(&b"ab"[..], tokio::io::BufWriter::new, completed).await?;
 
     // Then: the target receives the `end` without anything else being sent after it.
     assert_eq!(kinds, [FrameKind::Data, FrameKind::End]);
@@ -349,11 +352,11 @@ impl tokio::io::AsyncWrite for Broken {
 }
 
 /// Attaches with stdout going to a pipe that fails, against a target that sends `abc`, takes
-/// the caller's next frame, sends `after`, and then reports a detach at `cursor`; returns the
-/// answer and the kind of the caller's frame.
+/// the caller's next frame, sends `after`, and then ends with `outcome`; returns the answer and
+/// the kind of the caller's frame.
 async fn attach_failing_output(
     after: Vec<Sent>,
-    cursor: u64,
+    (kind, outcome): Sent,
 ) -> TestResult<(Result<hosted::Attached, ClientError>, FrameKind)> {
     let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();
     let target = async {
@@ -365,7 +368,6 @@ async fn attach_failing_output(
         for (kind, payload) in after {
             service_writer.frame(kind, &payload).await?;
         }
-        let (kind, outcome) = detached(EndReason::Cancelled, process(1), cursor)?;
         service_writer.frame(kind, &outcome).await?;
         service_writer.flush().await?;
         TestResult::Ok(seen)
@@ -388,7 +390,8 @@ async fn attach_failing_output(
 async fn a_failed_local_output_write_detaches_and_is_reported() -> TestResult {
     // Given: a local output that fails.
     // When: the attachment detaches at the cursor its bytes reached.
-    let (attached, seen) = attach_failing_output(Vec::new(), 3).await?;
+    let detach = detached(EndReason::Cancelled, process(1), 3)?;
+    let (attached, seen) = attach_failing_output(Vec::new(), detach).await?;
 
     // Then: the target is told to detach, and the failed write is the answer.
     assert_eq!(seen, FrameKind::Cancel);
@@ -408,9 +411,48 @@ async fn input_sent_back_by_the_target_is_refused_after_a_failed_output_write() 
     );
 
     // When
-    let (attached, _) = attach_failing_output(vec![input], 5).await?;
+    let detach = detached(EndReason::Cancelled, process(1), 5)?;
+    let (attached, _) = attach_failing_output(vec![input], detach).await?;
 
     // Then
+    assert!(
+        matches!(
+            attached,
+            Err(ClientError::Stream(ServiceError::InvalidInput))
+        ),
+        "{attached:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_local_failure_is_reported_over_a_failed_detach() -> TestResult {
+    // Given: the supervisor missed the detach, so the target answers it as cancelled.
+    let cancelled = || -> TestResult<Sent> {
+        let outcome = ProcessReply::encode_outcome(&Err(ServiceError::Cancelled))?;
+        Ok((FrameKind::Outcome, outcome))
+    };
+
+    // When: a local output write failed, or a local read did.
+    let (written, _) = attach_failing_output(Vec::new(), cancelled()?).await?;
+    let (read, _) = attach_writing_through(
+        FailsAfter(Some(b"ab")),
+        std::convert::identity,
+        cancelled()?,
+    )
+    .await?;
+
+    // Then: the local failure is the answer, not the failed detach it caused.
+    for attached in [written, read] {
+        assert!(
+            matches!(attached, Err(ClientError::Local(_))),
+            "{attached:?}"
+        );
+    }
+
+    // Then: an answer whose cursor is not where the bytes reached is still a broken stream.
+    let misplaced = detached(EndReason::Cancelled, process(1), 7)?;
+    let (attached, _) = attach_failing_output(Vec::new(), misplaced).await?;
     assert!(
         matches!(
             attached,
@@ -670,8 +712,8 @@ async fn a_failed_local_read_is_reported_when_the_outcome_comes_first() -> TestR
     let wrap = |writer| Flushes(writer, 1);
 
     // When
-    let (attached, kinds) =
-        attach_writing_through(FailsAfter(Some(b"ab")), wrap, EndReason::Cancelled).await?;
+    let detach = detached(EndReason::Cancelled, process(1), 0)?;
+    let (attached, kinds) = attach_writing_through(FailsAfter(Some(b"ab")), wrap, detach).await?;
 
     // Then: the failed read is still the answer.
     assert_eq!(kinds, [FrameKind::Data, FrameKind::Cancel]);
