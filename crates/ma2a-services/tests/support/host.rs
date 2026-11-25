@@ -90,3 +90,35 @@ pub(crate) fn content(length: usize) -> Vec<u8> {
         })
         .collect()
 }
+
+/// A writer whose writes go through and whose flushes after the first `.1` never finish, as a
+/// stream whose peer stopped reading does.
+pub(crate) struct Flushes<W>(pub(crate) W, pub(crate) usize);
+
+impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for Flushes<W> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.0).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let Some(left) = self.1.checked_sub(1) else {
+            return std::task::Poll::Pending;
+        };
+        self.1 = left;
+        std::pin::Pin::new(&mut self.0).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_shutdown(context)
+    }
+}

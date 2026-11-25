@@ -26,7 +26,7 @@ use ma2a_services::{
         proxy, service, transfer,
     },
 };
-use support::{TestResult, pipe};
+use support::{Flushes, TestResult, pipe};
 use tokio::io::AsyncWrite;
 
 /// One frame a scripted target sends.
@@ -475,16 +475,28 @@ impl tokio::io::AsyncRead for FailsAfter {
     }
 }
 
-/// Runs an Exec, or a service call when `call`, whose local input fails after `ab`, against a
-/// target that takes that input and the `cancel` after it, then sends `after` and ends the
-/// stream.
-async fn failing_input(call: bool, after: &[Sent]) -> TestResult<Result<(), ClientError>> {
-    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+/// The callers whose local input is forwarded as channel 0.
+#[derive(Clone, Copy, Debug)]
+enum Family {
+    Exec,
+    Shell,
+    Call,
+}
+
+/// Runs `family`, whose local input fails after `ab`, against a target that takes that input
+/// and the `cancel` after it, then sends `after` and ends the stream. Only the first
+/// `flushes` flushes of the caller's stream finish.
+async fn failing_input(
+    family: Family,
+    after: &[Sent],
+    flushes: usize,
+) -> TestResult<Result<(), ClientError>> {
+    let ((mut reader, writer), (mut target_reader, mut target_writer)) = pipe();
+    let mut writer = FrameWriter::new(Flushes(writer.into_inner(), flushes));
     let target = async move {
-        let accepted = if call {
-            encode_call_accept(b"")?
-        } else {
-            EMPTY_ACCEPT.to_vec()
+        let accepted = match family {
+            Family::Call => encode_call_accept(b"")?,
+            Family::Exec | Family::Shell => EMPTY_ACCEPT.to_vec(),
         };
         send(&mut target_writer, &[accept(&accepted)]).await?;
         assert_eq!(
@@ -499,9 +511,9 @@ async fn failing_input(call: bool, after: &[Sent]) -> TestResult<Result<(), Clie
     let local = ProcessIo {
         input: Some(FailsAfter(Some(b"ab"))),
         output: Vec::new(),
-        error: Some(Vec::new()),
+        error: matches!(family, Family::Exec | Family::Call).then(Vec::new),
     };
-    let (answer, scripted) = if call {
+    let (answer, scripted) = if matches!(family, Family::Call) {
         let calling = service::call((&mut reader, &mut writer), local, std::future::pending());
         let (called, scripted) = within(async { tokio::join!(calling, target) }).await?;
         (called.map(drop), scripted)
@@ -520,26 +532,48 @@ async fn failing_input(call: bool, after: &[Sent]) -> TestResult<Result<(), Clie
 
 #[tokio::test]
 async fn a_broken_stream_is_reported_over_a_failed_local_read() -> TestResult {
-    for call in [false, true] {
+    for family in [Family::Exec, Family::Call] {
         // A frame on the caller's own channel.
-        let answer = failing_input(call, &[Sent::Data(Channel::Input, b"x")]).await?;
-        assert!(malformed(&answer), "call {call}: {answer:?}");
+        let answer = failing_input(family, &[Sent::Data(Channel::Input, b"x")], usize::MAX).await?;
+        assert!(malformed(&answer), "{family:?}: {answer:?}");
         // No terminal at all.
-        let answer = failing_input(call, &[]).await?;
+        let answer = failing_input(family, &[], usize::MAX).await?;
         assert!(
             matches!(
                 answer,
                 Err(ClientError::Stream(ServiceError::OutcomeUnknown))
             ),
-            "call {call}: {answer:?}"
+            "{family:?}: {answer:?}"
         );
     }
     // An outcome counting output that never came.
-    let answer = failing_input(false, &[exited(5, 0)?]).await?;
+    let answer = failing_input(Family::Exec, &[exited(5, 0)?], usize::MAX).await?;
     assert!(miscounted(&answer), "{answer:?}");
     // Any outcome the target did report gives way to the failed read.
-    let answer = failing_input(false, &[exited(0, 0)?]).await?;
+    let answer = failing_input(Family::Exec, &[exited(0, 0)?], usize::MAX).await?;
     assert!(matches!(answer, Err(ClientError::Local(_))), "{answer:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_local_read_is_reported_when_the_outcome_comes_first() -> TestResult {
+    let called = Sent::Frame(FrameKind::Outcome, encode_call_outcome(Ok(b"r"))?);
+    for (family, outcome) in [
+        (Family::Exec, exited(0, 0)?),
+        (Family::Shell, exited(0, 0)?),
+        (Family::Call, called),
+    ] {
+        // Given: local input that fails after one chunk, and a caller stream whose flush of
+        // the `cancel` is still pending when the target answers it with success.
+        // When
+        let answer = failing_input(family, &[outcome], 1).await?;
+
+        // Then: the failed read is still the answer.
+        assert!(
+            matches!(answer, Err(ClientError::Local(_))),
+            "{family:?}: {answer:?}"
+        );
+    }
     Ok(())
 }
 

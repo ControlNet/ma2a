@@ -95,20 +95,22 @@ where
     } = local;
     let lost = Notify::new();
     let outbound = outbound(reader, Sinks::new((output, error), true, &lost));
+    // A failed local read is kept even when the outcome arrives before the cancel is sent.
+    let mut unread = None;
     // Once cancelled, nothing more is sent; the outcome still follows.
-    let (answer, unread) = if cancelled {
-        (outbound.await, None)
+    let answer = if cancelled {
+        outbound.await
     } else {
         let control = ProcessControl {
             resizes: None,
             cancel,
         };
-        let inbound = inbound(writer, (input, control), &lost);
+        let inbound = inbound(writer, (input, control), (&lost, &mut unread));
         tokio::pin!(outbound, inbound);
         tokio::select! {
             biased;
-            answer = &mut outbound => (answer, None),
-            unread = &mut inbound => (outbound.await, unread),
+            answer = &mut outbound => answer,
+            () = &mut inbound => outbound.await,
         }
     };
     Ok(Called {

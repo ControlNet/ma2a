@@ -122,16 +122,19 @@ where
     let lost = Notify::new();
     let errors = error.is_some();
     let outbound = outbound(reader, Sinks::new((output, error), errors, &lost));
+    // A failed local read is kept even when the outcome arrives before the cancel is sent.
+    let mut unread = None;
     // Once cancelled, nothing more is sent; the outcome still follows.
-    let (answer, unread) = if cancelled {
-        (outbound.await, None)
+    let answer = if cancelled {
+        outbound.await
     } else {
-        let inbound = inbound(writer, (input, ProcessControl { resizes, cancel }), &lost);
+        let control = ProcessControl { resizes, cancel };
+        let inbound = inbound(writer, (input, control), (&lost, &mut unread));
         tokio::pin!(outbound, inbound);
         tokio::select! {
             biased;
-            answer = &mut outbound => (answer, None),
-            unread = &mut inbound => (outbound.await, unread),
+            answer = &mut outbound => answer,
+            () = &mut inbound => outbound.await,
         }
     };
     Ok(Streamed {
@@ -141,13 +144,12 @@ where
 }
 
 /// Caller → target: input, resizes, and at most one `cancel`, until nothing is left to send;
-/// returns a failed local read, which cancels instead of ending input.
+/// a failed local read cancels instead of ending input, and is kept in `unread` first.
 pub(super) async fn inbound<W, I, C>(
     writer: &mut FrameWriter<W>,
     (mut input, control): (Option<I>, ProcessControl<C>),
-    lost: &Notify,
-) -> Option<std::io::Error>
-where
+    (lost, unread): (&Notify, &mut Option<std::io::Error>),
+) where
     W: AsyncWrite + Unpin,
     I: AsyncRead + Unpin,
     C: Future<Output = ()>,
@@ -158,7 +160,6 @@ where
     } = control;
     tokio::pin!(cancel);
     let mut cancelled = false;
-    let mut failed = None;
     let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
     while input.is_some() || resizes.is_some() || !cancelled {
         let reading = input.is_some();
@@ -181,7 +182,7 @@ where
                     false
                 }
                 Err(error) => {
-                    failed = Some(error);
+                    *unread = Some(error);
                     true
                 }
             },
@@ -201,7 +202,6 @@ where
             send(writer, FrameKind::Cancel, &[]).await;
         }
     }
-    failed
 }
 
 /// Target → caller until the outcome; lost local output asks the inbound side to cancel.
