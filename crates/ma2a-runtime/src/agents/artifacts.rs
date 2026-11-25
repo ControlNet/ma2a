@@ -100,12 +100,12 @@ fn holds(blob: &Path, (size, hash): (u64, &[u8; 32])) -> io::Result<bool> {
 
 /// Makes a staged copy the blob of `hash`. A sound blob already stored is left untouched, so
 /// a resumed download of it keeps its content identity, and the copy is discarded; a damaged
-/// one is replaced by the copy. Downloads never follow a link to a blob, so only a regular
-/// file can be sound; anything else in its place is replaced too.
+/// or unreadable one is replaced by the copy. Downloads never follow a link to a blob, so only
+/// a regular file can be sound; anything else in its place is replaced too.
 fn place_blob(staging: &Path, blobs: &Path, (size, hash): (u64, &[u8; 32])) -> io::Result<()> {
     let blob = blobs.join(hex(hash));
     let regular = std::fs::symlink_metadata(&blob).is_ok_and(|entry| entry.file_type().is_file());
-    let placed = if regular && holds(&blob, (size, hash))? {
+    let placed = if regular && matches!(holds(&blob, (size, hash)), Ok(true)) {
         std::fs::remove_file(staging)
     } else {
         std::fs::rename(staging, &blob)

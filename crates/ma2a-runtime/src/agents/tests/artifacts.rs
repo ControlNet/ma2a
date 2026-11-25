@@ -66,3 +66,34 @@ fn a_link_to_matching_content_is_replaced_by_the_published_copy()
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// A stored blob that cannot be read is no sound blob: the copy replaces it, and the staging
+/// file never outlives the publication.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_blob_is_replaced_by_the_published_copy() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut nonce = [0_u8; 8];
+    getrandom::fill(&mut nonce)?;
+    let dir = std::env::temp_dir().join(format!("ma2a-blob-unreadable-{}", hex(&nonce)));
+    std::fs::create_dir_all(&dir)?;
+    let (source, blobs) = (dir.join("report.txt"), dir.join("blobs"));
+    std::fs::write(&source, b"the same content")?;
+    let (size, hash, staging) = stage_blob(open_regular(&source)?, &blobs)?;
+    place_blob(&staging, &blobs, (size, &hash))?;
+    let blob = blobs.join(hex(&hash));
+    std::fs::set_permissions(&blob, std::fs::Permissions::from_mode(0o000))?;
+
+    let (_, _, staging) = stage_blob(open_regular(&source)?, &blobs)?;
+    let placed = place_blob(&staging, &blobs, (size, &hash));
+
+    let left = std::fs::read_dir(&blobs)?.count();
+    let content = std::fs::read(&blob);
+    std::fs::set_permissions(&blob, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::remove_dir_all(&dir)?;
+    placed?;
+    assert_eq!(content?, b"the same content");
+    assert_eq!(left, 1, "the staging file is gone");
+    Ok(())
+}
