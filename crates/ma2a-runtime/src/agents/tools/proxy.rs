@@ -8,17 +8,26 @@ use ma2a_agent::{
     protocol::ToolError,
     tools::{ProxyListening, ProxyOpen},
 };
+use std::{path::PathBuf, sync::Arc};
+
 use ma2a_core::{
     RequestId, ServiceKind,
-    service::{OpenBody, ProxyHost, ProxyRequest},
+    service::{AgentId, AgentTaskId, OpenBody, ProxyHost, ProxyRequest},
 };
 use ma2a_services::client;
-use tokio::net::TcpListener;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::Semaphore,
+};
 
 use super::{Call, Outcome, ok};
+use crate::agents::AgentManager;
 
 /// Idle timeout of each relayed connection: ten minutes.
 const IDLE_TIMEOUT_MS: u64 = 600_000;
+/// Most connections one listener opens or relays at once: the size of the Runtime's local
+/// stream pool, as for `ma2a proxy forward`. Later ones wait in the listen backlog.
+const MAX_RELAYS: usize = 64;
 /// Pause after a failed accept before trying again.
 const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -44,12 +53,16 @@ impl Call<'_> {
             .entry(self.task)
             .or_default()
             .push(token.clone());
-        let manager = self.manager.clone();
-        let (endpoint, task) = (args.endpoint, self.task);
-        let workspace = self.workspace.clone();
-        let agent = self.agent.clone();
         // Each accepted connection is opened on behalf of the `proxy.open` call.
-        let opened_by = self.id.to_owned();
+        let shared = Arc::new((
+            args.endpoint,
+            self.id.to_owned(),
+            self.agent.clone(),
+            self.workspace.clone(),
+            request,
+        ));
+        let (manager, task) = (self.manager.clone(), self.task);
+        let permits = Arc::new(Semaphore::new(MAX_RELAYS));
         self.manager.0.tasks.spawn(async move {
             loop {
                 let accepted = tokio::select! {
@@ -61,32 +74,24 @@ impl Call<'_> {
                     tokio::time::sleep(ACCEPT_BACKOFF).await;
                     continue;
                 };
-                let Ok(request_id) = RequestId::random() else {
-                    continue;
-                };
-                let call = Call {
-                    manager: &manager,
-                    task,
-                    id: &opened_by,
-                    agent: agent.clone(),
-                    workspace: workspace.clone(),
-                    request_id,
-                };
-                // Opening can stall; the task's end still closes the listener meanwhile.
-                let opened = tokio::select! {
+                // At the bound, the next connection waits here and later ones in the backlog.
+                let acquired = Arc::clone(&permits).acquire_owned();
+                let Ok(permit) = (tokio::select! {
                     () = token.cancelled() => return,
-                    opened = call.open(&endpoint, OpenBody::Proxy(request.clone())) => opened,
+                    permit = acquired => permit,
+                }) else {
+                    return;
                 };
-                let Ok((mut reader, mut writer)) = opened else {
-                    continue;
-                };
-                let stop = token.clone();
+                let (relaying, shared, stop) =
+                    (manager.clone(), Arc::clone(&shared), token.clone());
+                // Opening can stall; it never holds the next connection, and the task's end
+                // still ends it.
                 manager.0.tasks.spawn(async move {
-                    let (read, write) = socket.into_split();
                     tokio::select! {
-                        _relayed = client::proxy::run((&mut reader, &mut writer), (read, write)) => {}
+                        () = relay((&relaying, task), &shared, socket) => {}
                         () = stop.cancelled() => {}
                     }
+                    drop(permit);
                 });
             }
         });
@@ -94,4 +99,29 @@ impl Call<'_> {
             listen: listen.to_string(),
         })
     }
+}
+
+/// What every connection of one listener shares: target, call, Agent, workspace, request.
+type Shared = (String, String, AgentId, PathBuf, ProxyRequest);
+
+/// Opens one accepted connection's Proxy stream and relays it until either side ends.
+async fn relay((manager, task): (&AgentManager, AgentTaskId), shared: &Shared, socket: TcpStream) {
+    let (endpoint, opened_by, agent, workspace, request) = shared;
+    let Ok(request_id) = RequestId::random() else {
+        return;
+    };
+    let call = Call {
+        manager,
+        task,
+        id: opened_by,
+        agent: agent.clone(),
+        workspace: workspace.clone(),
+        request_id,
+    };
+    let Ok((mut reader, mut writer)) = call.open(endpoint, OpenBody::Proxy(request.clone())).await
+    else {
+        return;
+    };
+    let (read, write) = socket.into_split();
+    let _relayed = client::proxy::run((&mut reader, &mut writer), (read, write)).await;
 }

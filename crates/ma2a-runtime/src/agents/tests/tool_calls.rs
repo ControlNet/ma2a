@@ -331,3 +331,36 @@ async fn proxy_open_to_an_invalid_or_own_endpoint_fails_before_listening() -> Te
     assert!(fixture.manager.coordination().listeners.is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn a_proxy_connection_still_opening_does_not_hold_the_next_one() -> TestResult {
+    // Given: a daemon that takes each connection's stream open and never answers it.
+    let fixture = Fixture::new("proxy-parallel", false)?;
+    let call = fixture.call()?;
+    let args = ProxyOpen {
+        endpoint: target(),
+        host: "localhost".to_owned(),
+        port: 80,
+    };
+    let listening = call.proxy_open(args).await.map_err(|error| error.message)?;
+    let listen: std::net::SocketAddr = listening
+        .get("listen")
+        .and_then(Value::as_str)
+        .ok_or("no listen address")?
+        .parse()?;
+
+    // When: two connections arrive while the first is still opening.
+    let _first = tokio::net::TcpStream::connect(listen).await?;
+    let _second = tokio::net::TcpStream::connect(listen).await?;
+
+    // Then: both are being opened at once.
+    let opened = tokio::time::timeout(Duration::from_secs(5), async {
+        while fixture.opened.load(Ordering::Relaxed) < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    fixture.manager.task_ended(call.task);
+    opened.map_err(|_| "the second connection waited for the first to open")?;
+    Ok(())
+}
