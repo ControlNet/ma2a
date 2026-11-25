@@ -124,10 +124,14 @@ shares a shipped crate's name and version is not listed in its place. The
 SBOM therefore describes what ships, not the full build toolchain; `Cargo.lock` at the archive's commit
 records that. Its frontend packages are the installed closure of the console's production
 dependencies, counting peers and installed optional dependencies. Each package declares its
-license as an SPDX expression, with a slash between licenses read as `OR`; a package with no
-stated license, or one that is not an SPDX expression, such as npm's `SEE LICENSE IN <file>` or
-`UNLICENSED`, is declared `NOASSERTION`, and the license report keeps the text as written. Validation refuses an SBOM listing `xtask` or `serde_derive`, or missing `serde`, one with a
-declared license that is neither `NOASSERTION`, `NONE` nor an SPDX expression, and one whose
+license as an SPDX expression, with a slash between licenses read as `OR`. Every identifier in it
+must be on the SPDX License List 3.29.0, whose license and exception identifiers
+`scripts/spdx-ids.jq` holds, with its source. A package with no stated license, one that is not an
+SPDX expression, such as npm's `SEE LICENSE IN <file>` or `UNLICENSED`, and one that names an
+identifier not on that list is declared `NOASSERTION`, and the license report keeps the text as
+written. Validation refuses an SBOM listing `xtask` or `serde_derive`, or missing `serde`, one with a
+declared license that is neither `NOASSERTION`, `NONE` nor an SPDX expression of listed
+identifiers, and one whose
 `documentNamespace` does not carry the SHA-256 of the archive's actual bytes, so an SBOM of
 another build with the same archive name is refused before it is attested. The dependency/license report must have both
 `rust` and `frontend` sections. The clean-room smoke logs only HTTP methods, paths, and statuses while proving failed unauthenticated

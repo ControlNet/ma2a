@@ -59,7 +59,12 @@ for mutation in \
   'lowercase-ref|.packages[0].licenseDeclared = "licenseref-custom"' \
   'newline|.packages[0].licenseDeclared = "MIT\nOR Apache-2.0"' \
   'trailing-newline|.packages[0].licenseDeclared = "MIT\n"' \
-  'punctuation|.packages[0].licenseDeclared = ". OR LICENSE"'
+  'punctuation|.packages[0].licenseDeclared = ". OR LICENSE"' \
+  'unlisted|.packages[0].licenseDeclared = "MIT AND Foo-1.0"' \
+  'license-as-exception|.packages[0].licenseDeclared = "Apache-2.0 WITH MIT"' \
+  'exception-as-license|.packages[0].licenseDeclared = "LLVM-exception"' \
+  'unlisted-exception|.packages[0].licenseDeclared = "Apache-2.0 WITH Foo-exception"' \
+  'double-plus|.packages[0].licenseDeclared = "GPL-2.0++"'
 do
   label=${mutation%%|*}
   mutated="$temporary/$label-license.spdx.json"
@@ -70,11 +75,16 @@ do
   fi
 done
 
-# A compound expression with parentheses and exceptions, one after a "+", is an SPDX expression.
+# A compound expression with parentheses and exceptions, one after a "+", is an SPDX expression,
+# and so is one whose listed identifiers are written in another case.
 compound="$temporary/compound-license.spdx.json"
-jq '.packages[0].licenseDeclared = "(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception OR GPL-2.0+ WITH Classpath-exception-2.0"' \
-  "$sbom" > "$compound"
-./scripts/validate-release-metadata.sh "$archive" "$compound" "$report" >/dev/null
+for expression in \
+  '(MIT OR Apache-2.0) AND Apache-2.0 WITH LLVM-exception OR GPL-2.0+ WITH Classpath-exception-2.0' \
+  'mit OR APACHE-2.0 WITH llvm-exception'
+do
+  jq --arg expression "$expression" '.packages[0].licenseDeclared = $expression' "$sbom" > "$compound"
+  ./scripts/validate-release-metadata.sh "$archive" "$compound" "$report" >/dev/null
+done
 
 # A report that names a build directory is refused, however the tools spelled the path.
 for mutation in \
