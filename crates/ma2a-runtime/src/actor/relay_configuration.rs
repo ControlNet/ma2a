@@ -6,6 +6,40 @@ use super::{
 };
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
+#[cfg(test)]
+pub(super) struct TlsLoadGate {
+    pub(super) entered: std::sync::mpsc::Sender<()>,
+    pub(super) release: std::sync::mpsc::Receiver<()>,
+    pub(super) released_in_time: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(test)]
+pub(super) static TLS_LOAD_GATE: std::sync::Mutex<Option<TlsLoadGate>> =
+    std::sync::Mutex::new(None);
+
+pub(super) fn load_native_tls_blocking(
+    tls: &ma2a_net::NativeRelayTlsConfig,
+) -> Result<ma2a_net::LoadedRelayTls, RuntimeError> {
+    #[cfg(test)]
+    {
+        let gate = TLS_LOAD_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(gate) = gate {
+            let _entered = gate.entered.send(());
+            let woke = gate
+                .release
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_ok();
+            gate.released_in_time
+                .store(woke, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    tls.load_tls()
+        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
+}
+
 impl Actor {
     pub(super) async fn relay_runtime_status(
         &self,
@@ -47,26 +81,19 @@ impl Actor {
     pub(super) async fn set_relay_configuration(
         &mut self,
         configuration: ma2a_store::RelayConfiguration,
-        mode: PrivateRelayApply,
+        (mode, preloaded_tls): (PrivateRelayApply, Option<ma2a_net::LoadedRelayTls>),
     ) -> Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError> {
-        let runtime = RuntimeRelayConfiguration::try_from(configuration.clone())
+        let _runtime = RuntimeRelayConfiguration::try_from(configuration.clone())
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
         // Every URL parsed, so it is saved and reported as parsed, as startup would save it.
         let configuration = crate::store::with_parsed_relay_urls(configuration);
-        // Reject bad TLS input before committing desired state or touching the old listener.
-        if let Some(provider) = runtime.private_provider()
-            && let ma2a_net::PrivateRelayTransport::NativeTls(tls) = provider.transport()
-        {
-            tls.load_server_config()
-                .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-        }
         let revision = self
             .store
             .set_relay_configuration(configuration.clone())
             .await?;
         self.state.revision = self.state.revision.max(revision);
         self.maintenance.relay_configuration = Some(RelayCompletion::Pending(mode));
-        self.reconcile_relay_configuration()
+        self.reconcile_relay_configuration_with(preloaded_tls)
             .await
             .map_err(|error| error.after_commit(revision))?;
         Ok(ma2a_store::Committed::new(
@@ -77,6 +104,13 @@ impl Actor {
     }
 
     pub(crate) async fn reconcile_relay_configuration(&mut self) -> Result<(), RuntimeError> {
+        self.reconcile_relay_configuration_with(None).await
+    }
+
+    async fn reconcile_relay_configuration_with(
+        &mut self,
+        preloaded_tls: Option<ma2a_net::LoadedRelayTls>,
+    ) -> Result<(), RuntimeError> {
         let desired = self.store.relay_configuration().await?;
         let runtime = RuntimeRelayConfiguration::try_from(desired)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
@@ -93,7 +127,7 @@ impl Actor {
             None => PrivateRelayApply::IfChanged,
         };
         self.maintenance.relay_configuration = Some(RelayCompletion::Pending(mode));
-        self.apply_private_relay(runtime.private_provider(), mode)
+        self.apply_private_relay(runtime.private_provider(), (mode, preloaded_tls))
             .await?;
         // Once a server is installed, later publication failures must not restart it again.
         self.maintenance.relay_configuration =

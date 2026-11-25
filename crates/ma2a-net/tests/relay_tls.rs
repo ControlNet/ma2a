@@ -242,3 +242,64 @@ fn private_key_with_special_permission_bits_fails_closed() -> TestResult {
     ));
     Ok(())
 }
+
+#[cfg(windows)]
+#[test]
+fn unc_and_named_pipe_tls_material_fails_closed() -> TestResult {
+    let pid = std::process::id();
+    let name = format!("ma2a-relay-tls-win-{pid}");
+    let dir = Path::new(r"C:\").join(&name);
+    let _stale = fs::remove_dir_all(&dir);
+    fs::create_dir(&dir)?;
+    let generated =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])?;
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    fs::write(&cert_path, generated.cert.pem())?;
+    fs::write(&key_path, generated.signing_key.serialize_pem())?;
+    ma2a_store::protect_private_file(&key_path, "test relay key")?;
+
+    let unc_cert = PathBuf::from(format!(r"\\localhost\C$\{name}\cert.pem"));
+    let unc_key = PathBuf::from(format!(r"\\localhost\C$\{name}\key.pem"));
+    let unc_cert_result =
+        NativeRelayTlsConfig::new(unc_cert, key_path.clone()).load_server_config();
+    let unc_key_result = NativeRelayTlsConfig::new(cert_path.clone(), unc_key).load_server_config();
+    let device_result =
+        NativeRelayTlsConfig::new(dir.join("NUL"), key_path.clone()).load_server_config();
+
+    let pipe_name = format!(r"\\.\pipe\ma2a-relay-tls-pipe-{pid}");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let _server = runtime.block_on(async {
+        tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&pipe_name)
+    })?;
+    let (sender, results) = std::sync::mpsc::channel();
+    let pipe_path = PathBuf::from(&pipe_name);
+    std::thread::spawn(move || {
+        let cert = NativeRelayTlsConfig::new(pipe_path.clone(), key_path).load_server_config();
+        let key = NativeRelayTlsConfig::new(cert_path, pipe_path).load_server_config();
+        let _unsent = sender.send((cert, key));
+    });
+    let (pipe_cert_result, pipe_key_result) =
+        results.recv_timeout(std::time::Duration::from_secs(5))?;
+    let _cleanup = fs::remove_dir_all(&dir);
+
+    assert!(matches!(
+        unc_cert_result,
+        Err(RelayTlsError::CertificateFile)
+    ));
+    assert!(matches!(unc_key_result, Err(RelayTlsError::PrivateKeyFile)));
+    assert!(matches!(device_result, Err(RelayTlsError::CertificateFile)));
+    assert!(matches!(
+        pipe_cert_result,
+        Err(RelayTlsError::CertificateFile)
+    ));
+    assert!(matches!(
+        pipe_key_result,
+        Err(RelayTlsError::PrivateKeyFile)
+    ));
+    Ok(())
+}

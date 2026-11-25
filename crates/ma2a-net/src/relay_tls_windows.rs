@@ -27,6 +27,12 @@ mod sid;
 
 use sid::{builtin_administrators_sid, current_user_sid, local_system_sid};
 
+pub(super) fn is_disk_file(file: &File) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_DISK, GetFileType};
+    // SAFETY: [Category 8 - FFI boundary] the handle is borrowed from the live file.
+    unsafe { GetFileType(file.as_raw_handle()) == FILE_TYPE_DISK }
+}
+
 pub(super) fn validate_private_key_acl(file: &File) -> Result<(), ()> {
     let mut descriptor = file_security_descriptor(file)?;
     let descriptor_ptr = descriptor.as_mut_ptr().cast::<c_void>();

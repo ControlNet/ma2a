@@ -15,6 +15,21 @@ use zeroize::Zeroizing;
 const MAX_CERTIFICATE_FILE_BYTES: u64 = 1_048_576;
 const MAX_PRIVATE_KEY_FILE_BYTES: u64 = 262_144;
 
+/// Validated native TLS server configuration loaded from operator-supplied files.
+pub struct LoadedRelayTls(Box<ServerConfig>);
+
+impl LoadedRelayTls {
+    pub(crate) fn into_server_config(self) -> ServerConfig {
+        *self.0
+    }
+}
+
+impl fmt::Debug for LoadedRelayTls {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LoadedRelayTls(..)")
+    }
+}
+
 /// Operator-supplied native TLS certificate and private-key paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeRelayTlsConfig {
@@ -77,6 +92,25 @@ impl NativeRelayTlsConfig {
         builder
             .with_single_cert(certificates, private_key)
             .map_err(|_| RelayTlsError::KeyMismatch)
+    }
+
+    /// Loads validated TLS material as an opaque handle for [`crate::PrivateRelayServer`].
+    ///
+    /// # Errors
+    /// Returns [`RelayTlsError`] for unreadable, expired, malformed, mismatched, or insecure files.
+    pub fn load_tls(&self) -> Result<LoadedRelayTls, RelayTlsError> {
+        self.load_server_config().map(Box::new).map(LoadedRelayTls)
+    }
+
+    /// Loads validated TLS material on Tokio's blocking thread pool.
+    ///
+    /// # Errors
+    /// Returns [`RelayTlsError`] when loading fails or the blocking task cannot join.
+    pub async fn load_tls_async(&self) -> Result<LoadedRelayTls, RelayTlsError> {
+        let config = self.clone();
+        tokio::task::spawn_blocking(move || config.load_tls())
+            .await
+            .map_err(|_| RelayTlsError::TlsConfiguration)?
     }
 }
 
@@ -205,12 +239,17 @@ fn open_without_following_links(
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
     };
 
+    if !ma2a_store::is_local_absolute(path) {
+        return Err(error);
+    }
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .map_err(|_| error)?;
-    if file.metadata().map_err(|_| error)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    if !crate::relay_tls_windows::is_disk_file(&file)
+        || file.metadata().map_err(|_| error)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
         return Err(error);
     }
     Ok(file)

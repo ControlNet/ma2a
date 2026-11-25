@@ -84,6 +84,7 @@ pub(crate) enum Command {
     SetRelayConfiguration {
         configuration: ma2a_store::RelayConfiguration,
         mode: super::relay_server::PrivateRelayApply,
+        preloaded_tls: Option<ma2a_net::LoadedRelayTls>,
         reply:
             oneshot::Sender<Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError>>,
     },

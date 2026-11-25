@@ -10,7 +10,10 @@ use iroh_relay::server::{
 };
 use ma2a_core::SpaceAuthorizationView;
 
-use crate::{PrivateRelayAccess, PrivateRelayProviderConfig, PrivateRelayTransport, RelayTlsError};
+use crate::{
+    LoadedRelayTls, PrivateRelayAccess, PrivateRelayProviderConfig, PrivateRelayTransport,
+    RelayTlsError,
+};
 
 /// Running private Iroh relay hosted by the Runtime process.
 #[derive(Debug)]
@@ -32,11 +35,28 @@ impl PrivateRelayServer {
         config: &PrivateRelayProviderConfig,
         access: PrivateRelayAccess,
     ) -> Result<Self, PrivateRelayServerError> {
+        Self::spawn_with_tls(config, access, None).await
+    }
+
+    /// Starts the configured private relay, using preloaded native TLS material when provided.
+    ///
+    /// # Errors
+    /// Returns [`PrivateRelayServerError`] when TLS loading or relay startup fails closed.
+    pub async fn spawn_with_tls(
+        config: &PrivateRelayProviderConfig,
+        access: PrivateRelayAccess,
+        preloaded_tls: Option<LoadedRelayTls>,
+    ) -> Result<Self, PrivateRelayServerError> {
         let (relay, native_tls) = match config.transport() {
             PrivateRelayTransport::NativeTls(tls) => {
-                let server_config = tls
-                    .load_server_config()
-                    .map_err(PrivateRelayServerError::Tls)?;
+                let server_config = match preloaded_tls {
+                    Some(loaded) => loaded.into_server_config(),
+                    None => tls
+                        .load_tls_async()
+                        .await
+                        .map_err(PrivateRelayServerError::Tls)?
+                        .into_server_config(),
+                };
                 // Iroh also binds a plain HTTP listener for its captive-portal check; nothing
                 // uses it, so it stays on loopback instead of beside the TLS listener.
                 let loopback: IpAddr = if config.listen_addr().is_ipv4() {

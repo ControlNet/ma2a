@@ -122,8 +122,16 @@ impl Actor {
                     Some(Command::RelayStatus { reply }) => {
                         let _unsent = reply.send(self.relay_runtime_status().await);
                     }
-                    Some(Command::SetRelayConfiguration { configuration, mode, reply }) => {
-                        let _unsent = reply.send(self.set_relay_configuration(configuration, mode).await);
+                    Some(Command::SetRelayConfiguration {
+                        configuration,
+                        mode,
+                        preloaded_tls,
+                        reply,
+                    }) => {
+                        let _unsent = reply.send(
+                            self.set_relay_configuration(configuration, (mode, preloaded_tls))
+                                .await,
+                        );
                     }
                     Some(Command::Echo { request_id, target, payload, reply }) => {
                         self.spawn_outbound_echo(

@@ -86,7 +86,7 @@ pub use relay_config::{
     PublicRelayFallbackConfig, RelayConfigError, RuntimeRelayConfiguration,
 };
 pub use relay_map::{LocalIrohRelayMap, PrivateRelayCandidate};
-pub use relay_tls::{NativeRelayTlsConfig, RelayTlsError};
+pub use relay_tls::{LoadedRelayTls, NativeRelayTlsConfig, RelayTlsError};
 pub use service_protocol::{
     AGENT_ALPN, EXEC_ALPN, FILES_ALPN, PROCESS_ALPN, PROXY_ALPN, SERVICE_ALPN, SHELL_ALPN,
     STREAMING_SERVICES, ServiceCall, ServiceClient, ServiceLimits, ServiceMetrics,

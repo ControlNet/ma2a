@@ -77,11 +77,29 @@ impl RuntimeHandle {
         configuration: ma2a_store::RelayConfiguration,
         mode: super::relay_server::PrivateRelayApply,
     ) -> Result<ma2a_store::Committed<RelayRuntimeStatus>, RuntimeError> {
+        let runtime = ma2a_net::RuntimeRelayConfiguration::try_from(configuration.clone())
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        // Load and validate native TLS files on the blocking pool before entering the Actor,
+        // so slow filesystems never stall status, snapshot, or peer protocols.
+        let preloaded_tls = if let Some(provider) = runtime.private_provider()
+            && let ma2a_net::PrivateRelayTransport::NativeTls(tls) = provider.transport()
+        {
+            let tls = tls.clone();
+            let loaded = tokio::task::spawn_blocking(move || {
+                super::relay_configuration::load_native_tls_blocking(&tls)
+            })
+            .await
+            .map_err(RuntimeError::from)??;
+            Some(loaded)
+        } else {
+            None
+        };
         let (reply, response) = oneshot::channel();
         self.commands
             .send(Command::SetRelayConfiguration {
                 configuration,
                 mode,
+                preloaded_tls,
                 reply,
             })
             .await

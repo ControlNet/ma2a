@@ -34,6 +34,57 @@ async fn invalid_tls_reconfiguration_preserves_desired_and_applied_server() -> T
     Ok(())
 }
 
+#[tokio::test]
+async fn native_tls_loading_does_not_stall_runtime_status() -> TestResult {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    let state = TempState::new("tls-nonblocking")?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let handle = runtime.handle();
+    let space = handle.create_owned_space("tls-blocking".to_owned()).await?;
+    let mut desired = enabled_configuration(vec![space]);
+    desired.transport = Some(ma2a_store::RelayTransportConfiguration::NativeTls {
+        certificate_path: state.0.join("missing.cert.pem").display().to_string(),
+        private_key_path: state.0.join("missing.key.pem").display().to_string(),
+    });
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let released_in_time = Arc::new(AtomicBool::new(false));
+    *crate::actor::relay_configuration::TLS_LOAD_GATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(crate::actor::relay_configuration::TlsLoadGate {
+            entered: entered_tx,
+            release: release_rx,
+            released_in_time: Arc::clone(&released_in_time),
+        });
+
+    let configuring = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.reconfigure_private_relay(desired).await }
+    });
+    // Wait until TLS loading has actually started, then prove status still answers on this
+    // single-threaded Tokio runtime before releasing the blocked TLS load.
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(std::time::Duration::from_secs(2)))
+        .await??;
+    let status = tokio::time::timeout(std::time::Duration::from_millis(500), handle.status())
+        .await
+        .map_err(|_| "Runtime status stalled while TLS files loaded")??;
+    assert!(status.is_ready());
+    let _released = release_tx.send(());
+    assert!(configuring.await?.is_err());
+    assert!(
+        released_in_time.load(Ordering::SeqCst),
+        "TLS load blocked the Runtime actor / Tokio worker thread"
+    );
+    runtime.shutdown().await?;
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn failed_same_port_replacement_recovers_after_old_listener_release() -> TestResult {
     let state = TempState::new("replacement-start-failure")?;

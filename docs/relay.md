@@ -40,7 +40,8 @@ listener Iroh adds for its captive-portal check binds an ephemeral port on loopb
 Startup fails closed unless:
 
 - the certificate and key are opened without following links, verified from the open handles, and
-  read with hard byte limits;
+  read with hard byte limits (on Windows, both must be local disk files on a drive letter; UNC
+  shares, named pipes, and device paths are refused);
 - every certificate is currently valid;
 - the private key matches the certificate;
 - on Unix, the key is owned by the effective user and has mode exactly `0600`;

@@ -20,7 +20,7 @@ impl Actor {
     pub(super) async fn apply_private_relay(
         &mut self,
         desired: Option<&PrivateRelayProviderConfig>,
-        mode: PrivateRelayApply,
+        (mode, preloaded_tls): (PrivateRelayApply, Option<ma2a_net::LoadedRelayTls>),
     ) -> Result<(), RuntimeError> {
         let applied = self
             .private_relay_server
@@ -38,7 +38,7 @@ impl Actor {
             self.stop_private_relay().await?;
         }
         let replacement = match desired {
-            Some(provider) => Some(self.spawn_private_relay(provider).await?),
+            Some(provider) => Some(self.spawn_private_relay(provider, preloaded_tls).await?),
             None => None,
         };
         if let Err(error) = self.stop_private_relay().await {
@@ -54,6 +54,7 @@ impl Actor {
     async fn spawn_private_relay(
         &self,
         provider: &PrivateRelayProviderConfig,
+        preloaded_tls: Option<ma2a_net::LoadedRelayTls>,
     ) -> Result<PrivateRelayServer, RuntimeError> {
         #[cfg(test)]
         self.maintenance
@@ -65,7 +66,7 @@ impl Actor {
                 .relay_authorizations(self.state.endpoint_id)
                 .await?,
         );
-        PrivateRelayServer::spawn(provider, access)
+        PrivateRelayServer::spawn_with_tls(provider, access, preloaded_tls)
             .await
             .map_err(|error| RuntimeError::new(RuntimeErrorKind::PrivateRelay(error)))
     }
