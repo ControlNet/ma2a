@@ -84,3 +84,19 @@ fn rejects_noncanonical_uppercase_identifiers() {
         assert_eq!(error.code(), ProtocolError::INVALID_INPUT);
     }
 }
+
+/// A Space name is signed into the Space's genesis, which takes no control characters, so one
+/// that has them is refused before the request ID is reserved.
+#[test]
+fn rejects_a_space_name_with_control_characters_without_callbacks() {
+    for name in ["lab\\n1", "lab\\t1", "lab\\u007f1"] {
+        let input = format!(
+            r#"{{"version":1,"operation":"space_create","request_id":"{REQUEST_ID}","name":"{name}"}}"#
+        );
+        let mut boundary = CallbackProbe::default();
+        let error = dispatch_request(input.as_bytes(), &mut boundary).expect_err(name);
+
+        assert_eq!(error.code(), ProtocolError::INVALID_INPUT);
+        assert_eq!(boundary.callbacks, 0);
+    }
+}

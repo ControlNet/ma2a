@@ -77,9 +77,14 @@ fn unit(object: &Map<String, Value>, kind: CommandKind) -> Result<CommandKind, A
 
 fn space_create(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
     exact_fields(object, &["version", "operation", "request_id", "name"])?;
+    let name = bounded_text(object, "name", ma2a_core::MAX_SPACE_NAME_LEN)?;
+    // The name is signed into the Space's genesis, which takes no control characters.
+    if name.as_str().chars().any(char::is_control) {
+        return Err(ApiError::invalid_input());
+    }
     Ok(CommandKind::SpaceCreate(
         request_id(object, "request_id")?,
-        bounded_text(object, "name", 128)?,
+        name,
     ))
 }
 
