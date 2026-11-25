@@ -10,15 +10,15 @@ use tokio::sync::{Semaphore, mpsc};
 use super::{
     ServiceCall, ServiceLimits, ServiceMetrics,
     call::{ServiceStream, refuse},
-    limit::ServiceLimiter,
 };
+use crate::peer_limit::PeerLimiter;
 
 /// Inbound handler for one streaming service ALPN.
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceHandler {
     kind: ServiceKind,
     calls: Option<mpsc::Sender<ServiceCall>>,
-    limiter: ServiceLimiter,
+    limiter: PeerLimiter,
     metrics: ServiceMetrics,
     /// Bounds the reject frames being written for this service across all its connections.
     refusals: Arc<Semaphore>,
@@ -34,7 +34,7 @@ impl ServiceHandler {
         Self {
             kind,
             calls,
-            limiter: ServiceLimiter::new(limits),
+            limiter: PeerLimiter::new(limits.per_peer(), limits.global()),
             metrics,
             refusals: Arc::new(Semaphore::new(limits.global())),
         }

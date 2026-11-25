@@ -21,6 +21,7 @@ use crate::{
     control::{CONTROL_ALPN, ControlClient, ControlHandler, ControlMetrics},
     echo_protocol::{ECHO_ALPN, EchoClient, EchoHandler, EchoMetrics},
     enrollment::{EnrollmentCall, EnrollmentHandler},
+    inbound::InboundLimiter,
     protocols::ENROLLMENT_ALPN,
     service_protocol::{ServiceClient, ServiceMetrics},
 };
@@ -156,18 +157,27 @@ impl RuntimeEndpoint {
         let echo_metrics = EchoMetrics::default();
         let service_metrics = ServiceMetrics::default();
         let endpoint_id = endpoint.id().into();
+        let inbound = InboundLimiter::default();
         let router = Router::builder(endpoint)
-            .accept(ENROLLMENT_ALPN, EnrollmentHandler::new(enrollment_calls))
+            .accept(
+                ENROLLMENT_ALPN,
+                inbound.bound(EnrollmentHandler::new(enrollment_calls)),
+            )
             .accept(
                 ECHO_ALPN,
-                EchoHandler::new(endpoint_id, echo_calls, echo_metrics.clone()),
+                inbound.bound(EchoHandler::new(
+                    endpoint_id,
+                    echo_calls,
+                    echo_metrics.clone(),
+                )),
             )
             .accept(
                 CONTROL_ALPN,
-                ControlHandler::new(control_calls, control_metrics.clone()),
+                inbound.bound(ControlHandler::new(control_calls, control_metrics.clone())),
             );
         let router =
-            services::accept_services(router, service_calls.as_ref(), &service_metrics).spawn();
+            services::accept_services(router, service_calls.as_ref(), (&service_metrics, &inbound))
+                .spawn();
         if !control_enabled {
             router.endpoint().set_alpns(vec![ENROLLMENT_ALPN.to_vec()]);
         }

@@ -15,7 +15,9 @@ mod dial;
 mod echo_protocol;
 mod endpoint;
 mod enrollment;
+mod inbound;
 mod metrics;
+mod peer_limit;
 mod private_relay;
 mod protocols;
 mod publisher;
@@ -57,6 +59,7 @@ pub use endpoint::{
     EndpointBindOptions, EndpointSecret, InvalidEndpointSecret, NetError, RuntimeEndpoint,
 };
 pub use enrollment::EnrollmentCall;
+pub use inbound::PEER_CONNECTION_LIMIT;
 pub use iroh::{
     EndpointAddr, RelayUrl,
     address_lookup::UserData,

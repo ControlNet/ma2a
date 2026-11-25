@@ -28,6 +28,10 @@ on restart until the new process observes current state.
 
 ## Known Trade-offs
 
+- **Inbound connections are bounded per peer only.** One peer may hold 64 inbound connections
+  at once ([authorization](protocol/authorization.md#inbound-connection-bound)), but there is no
+  Runtime-wide connection bound. Endpoint keys cost nothing to make, so many keys can still keep
+  many idle connections open; a Runtime-wide bound would let those same keys lock out members.
 - **Request fences grow.** Every admitted local mutation leaves a permanent RequestId fingerprint
   (no command body) so that the request can never run twice, even after its cached response was
   evicted. Fences have no expiry; their growth follows the number of admitted mutations,

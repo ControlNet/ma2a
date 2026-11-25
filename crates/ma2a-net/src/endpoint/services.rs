@@ -5,6 +5,7 @@ use super::RuntimeEndpoint;
 use crate::{
     control::CONTROL_ALPN,
     echo_protocol::ECHO_ALPN,
+    inbound::InboundLimiter,
     protocols::ENROLLMENT_ALPN,
     service_protocol::{
         STREAMING_SERVICES, ServiceCall, ServiceClient, ServiceHandler, ServiceMetrics,
@@ -16,13 +17,13 @@ use crate::{
 pub(super) fn accept_services(
     mut router: RouterBuilder,
     calls: Option<&mpsc::Sender<ServiceCall>>,
-    metrics: &ServiceMetrics,
+    (metrics, inbound): (&ServiceMetrics, &InboundLimiter),
 ) -> RouterBuilder {
     for kind in STREAMING_SERVICES {
         if let Some(alpn) = service_alpn(kind) {
             router = router.accept(
                 alpn,
-                ServiceHandler::new(kind, calls.cloned(), metrics.clone()),
+                inbound.bound(ServiceHandler::new(kind, calls.cloned(), metrics.clone())),
             );
         }
     }

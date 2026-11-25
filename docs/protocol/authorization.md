@@ -46,3 +46,7 @@ A zero-Space Runtime accepts only `ma2a/enrollment/1` on a new connection. Start
 Enrollment remains a separate bootstrap authorization path based on the signed, short-lived, single-use invite contract. Establishing transport for enrollment does not authorize any normal operation.
 
 The normal ALPN inventory is closed and maps every known normal protocol to a typed operation. Every registered normal handler checks authorization before it reads a service body.
+
+## Inbound connection bound
+
+Every ALPN is open to any peer that completes the handshake, so connections are counted before any handler runs. One peer may hold 64 inbound connections at once, whatever their ALPNs; one past that is closed at once, before its handler awaits a stream. A connection counts from accept until its handler returns, including the bounded wait for the peer to close after an enrollment or control answer. A peer that behaves needs at most 16 Echo calls, 8 enrollment exchanges and 2 control rounds at once, each on its own connection, plus one cached connection per service family. Each handler's own stream bounds still apply inside this one. There is no Runtime-wide connection bound (see [limitations](../limitations.md)).
