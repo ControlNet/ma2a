@@ -73,7 +73,8 @@ async fn an_agent_submit_takes_only_the_task_it_was_bound_to() -> TestResult {
                 texts: vec!["hi".to_owned()],
                 data: Vec::new(),
             },
-            request_id: None,
+            // The RequestId the target's summaries name as their task's creation.
+            request_id: Some("09".repeat(16)),
             wait: false,
             from_agent: None,
         })
@@ -86,7 +87,14 @@ async fn an_agent_submit_takes_only_the_task_it_was_bound_to() -> TestResult {
     };
     let own = agent(bound(A, "worker")?, submit()).await?;
     assert!(own.is_ok(), "{own:?}");
-    for script in [bound(B, "worker")?, bound(A, "other")?] {
+    // Another submission's task, bound and answered in full, is not this submit's.
+    let mut another = summary(A, "worker")?;
+    another.request_id = RequestId::try_from([8; 16].as_slice())?;
+    let another = answering(
+        AgentAccept::Submitted(A, false),
+        &AgentReply::Summary(another),
+    )?;
+    for script in [bound(B, "worker")?, bound(A, "other")?, another] {
         let answered = agent(script, submit()).await?;
         assert!(protocol(&answered), "{answered:?}");
     }

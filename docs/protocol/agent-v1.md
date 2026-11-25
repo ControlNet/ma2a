@@ -302,6 +302,9 @@ Callers use the Phase 2 stream plane unchanged. `submit`, `send`, and `cancel` r
 RequestId in the caller Runtime's durable replay table; reads never reserve. As in Process v1, a
 completed operation's terminal frame is replayed verbatim to the same RequestId, a target `reject`
 releases the reservation, and a stream lost after `open` was sent is settled as `outcome_unknown`.
+Since only a mutation can be answered from replay, a caller refuses a read's outcome that came
+without `accept`. It also refuses a `submit` Summary whose `request_id` is not the one it opened,
+and a `cancel` Summary of a task that is not terminal.
 
 The remediation for an unknown `submit` is `tasks`, whose summaries carry each task's
 `request_id`. The target-side binding guarantees that no duplicate task is created. Each `send` and

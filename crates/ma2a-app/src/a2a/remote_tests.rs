@@ -36,9 +36,12 @@ fn a_page_must_move_past_the_cursor_sent() {
 
 #[cfg(unix)]
 mod through_the_daemon {
-    use ma2a_core::service::{
-        AgentAccept, AgentCard, AgentId, AgentMessage, AgentReply, AgentTaskDetails,
-        AgentTaskState, FrameKind, MessagePart, MessageRole, ServiceError,
+    use ma2a_core::{
+        RequestId,
+        service::{
+            AgentAccept, AgentCard, AgentId, AgentMessage, AgentReply, AgentTaskDetails,
+            AgentTaskState, FrameKind, MessagePart, MessageRole, ServiceError,
+        },
     };
     use tokio::time::Instant;
 
@@ -110,6 +113,12 @@ mod through_the_daemon {
         assert!(!submitted(bound(details(1, "worker"))?).await?);
         assert!(!submitted(bound(brief(2, "worker"))?).await?);
         assert!(!submitted(answering(AgentAccept::Admitted, &brief(1, "worker")?)?).await?);
+        // The task of another submission, bound and answered in full, fresh or from replay.
+        let mut another = summary(id(1), "worker")?;
+        another.request_id = RequestId::try_from([8; 16].as_slice())?;
+        let another = AgentReply::Summary(another);
+        assert!(!submitted(bound(Ok(another.clone()))?).await?);
+        assert!(!submitted(replayed(&another)?).await?);
         Ok(())
     }
 

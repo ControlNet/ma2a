@@ -119,7 +119,7 @@ impl Fixture {
             id: "call-1",
             agent: AgentId::new("caller")?,
             workspace: self.state.0.clone(),
-            request_id: RequestId::random()?,
+            request_id: RequestId::try_from(OPENED.as_slice())?,
         })
     }
 }
@@ -488,13 +488,16 @@ fn agent_answer(
     ])
 }
 
-/// A completed task of `agent` on the target.
+/// The `RequestId` every tool call here opens its mutations under.
+const OPENED: [u8; 16] = [9; 16];
+
+/// A completed task of `agent` on the target, created by a call opened under [`OPENED`].
 fn ended(task: AgentTaskId, agent: &str) -> TestResult<ma2a_core::service::AgentTaskSummary> {
     let mut summary = ma2a_core::service::AgentTaskSummary::new(
         (task, AgentId::new(agent)?),
         (
             iroh::SecretKey::generate().public().into(),
-            RequestId::random()?,
+            RequestId::try_from(OPENED.as_slice())?,
         ),
         1_000,
     );
@@ -592,6 +595,17 @@ async fn agent_tools_take_only_the_task_they_named() -> TestResult {
         });
         assert_eq!(submitted.await?.as_deref(), code, "{case}");
     }
+    // Nor the task another submission created, bound and answered in full.
+    let mut another = ended(a, "helper")?;
+    another.request_id = RequestId::try_from([8; 16].as_slice())?;
+    let script = agent_answer(
+        AgentAccept::Submitted(a, false),
+        &AgentReply::Summary(another),
+    )?;
+    let submitted = answered_code("submit-another-request", script, async |call| {
+        call.agent_submit(submit.clone()).await
+    });
+    assert_eq!(submitted.await?.as_deref(), Some("invalid_tool"));
     Ok(())
 }
 

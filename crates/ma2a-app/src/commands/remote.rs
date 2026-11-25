@@ -5,7 +5,10 @@
 
 use std::io;
 
-use ma2a_core::service::{FrameKind, OpenBody, OpenHeader, RemotePath, ServiceError};
+use ma2a_core::{
+    RequestId,
+    service::{FrameKind, OpenBody, OpenHeader, RemotePath, ServiceError},
+};
 use ma2a_runtime::ipc::{IpcPaths, LocalApiClient, LocalStream, StreamUpgrade};
 use ma2a_services::{FrameReader, FrameWriter, client::ClientError};
 use serde_json::Value;
@@ -72,9 +75,19 @@ pub(crate) async fn open(
 /// Opens one remote operation under `request_id`, or a fresh one when it is `None`.
 pub(crate) async fn open_as(
     paths: &IpcPaths,
-    (endpoint, request_id): (&str, Option<&str>),
+    target: (&str, Option<&str>),
     body: OpenBody,
 ) -> Result<Halves, AppError> {
+    Ok(open_bound(paths, target, body).await?.1)
+}
+
+/// Opens one remote operation as [`open_as`] does, and returns the `RequestId` it was opened
+/// under, which the answer to a creating operation names.
+pub(crate) async fn open_bound(
+    paths: &IpcPaths,
+    (endpoint, request_id): (&str, Option<&str>),
+    body: OpenBody,
+) -> Result<(RequestId, Halves), AppError> {
     crate::daemon_control::require(paths).await?;
     let mut fields = request_fields()?;
     if let Some(request_id) = request_id {
@@ -117,7 +130,7 @@ pub(crate) async fn open_as(
         writer.flush().await
     };
     sent.await.map_err(ClientError::Stream)?;
-    Ok((reader, writer))
+    Ok((request_id, (reader, writer)))
 }
 
 /// Ends the process with `outcome`, reported as `main` reports it.

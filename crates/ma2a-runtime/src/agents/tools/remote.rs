@@ -44,6 +44,24 @@ impl Call<'_> {
         self.open_as((endpoint, request_id), body).await
     }
 
+    /// Opens one operation as its kind needs: a mutation under the call's derived
+    /// `RequestId`, a read under a fresh one; returns the `RequestId` it was opened under.
+    pub(super) async fn open_bound(
+        &self,
+        endpoint: &str,
+        body: OpenBody,
+    ) -> Result<(RequestId, Halves), ToolError> {
+        let request_id = if body.is_mutation() {
+            self.request_id
+        } else {
+            RequestId::random().map_err(|_| status(ServiceError::Internal))?
+        };
+        Ok((
+            request_id,
+            self.open_as((endpoint, request_id), body).await?,
+        ))
+    }
+
     async fn open_as(
         &self,
         (endpoint, request_id): (&str, RequestId),

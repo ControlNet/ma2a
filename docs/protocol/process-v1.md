@@ -372,6 +372,9 @@ in the caller Runtime's durable replay table. Reads never reserve.
 - A target `reject` releases the reservation.
 - A stream lost after `open` was sent is settled as `outcome_unknown`, and that answer is also
   what a retry of the same RequestId receives.
+- Since only a mutation can be answered from replay, the caller refuses a read's outcome that
+  came without `accept`. It also refuses a `start` Summary whose `request_id` is not the one it
+  opened, and a `terminate` Summary of a Process that is not terminal.
 
 The remediation for an unknown `start` is `process list`, whose summaries carry each Process's
 `request_id`. The target-side binding guarantees that no duplicate is created, even for a caller

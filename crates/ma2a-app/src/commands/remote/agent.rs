@@ -10,7 +10,7 @@ use ma2a_runtime::{api::agent_event_value, ipc::IpcPaths};
 use ma2a_services::client::{self, ClientError};
 use serde_json::{Value, json};
 
-use super::{READ_DEADLINE, agent_view::view, bounded, open, open_as};
+use super::{READ_DEADLINE, agent_view::view, bounded, open, open_bound};
 use crate::{
     AppError,
     cli::agents::{AgentCommand, MessageArgs, SubmitArgs, TaskTarget},
@@ -132,10 +132,10 @@ async fn call(
     request_id: Option<&str>,
 ) -> Result<(Option<AgentAccept>, AgentReply), AppError> {
     let body = OpenBody::Agent(request.clone());
-    let (mut reader, writer) = open_as(target.0, (target.1, request_id), body).await?;
+    let (opened, (mut reader, writer)) = open_bound(target.0, (target.1, request_id), body).await?;
     let (accept, reply) = client::agent::call(&mut reader).await?;
     drop(writer);
-    if !client::answer::agent(&request, (accept, &reply)) {
+    if !client::answer::agent((&request, &opened), (accept, &reply)) {
         return Err(AppError::Protocol(
             "the target answered another task or operation".to_owned(),
         ));

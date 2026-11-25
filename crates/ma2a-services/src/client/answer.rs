@@ -5,21 +5,33 @@
 //! the frame contract, so a caller passes every answer through the check for what it sent
 //! before it reports anything as that request's result.
 
-use ma2a_core::service::{
-    AgentAccept, AgentId, AgentReply, AgentRequest, AgentTaskId, AgentTaskSummary, ProcessAccept,
-    ProcessReply, ProcessRequest,
+use ma2a_core::{
+    RequestId,
+    service::{
+        AgentAccept, AgentId, AgentReply, AgentRequest, AgentTaskId, AgentTaskSummary,
+        ProcessAccept, ProcessReply, ProcessRequest,
+    },
 };
 
-/// Whether `accept` and `reply` answer the content-free Agent operation `request`.
+/// Whether `accept` and `reply` answer the content-free Agent operation `request`, opened
+/// under the `RequestId` `opened`.
 ///
 /// The reply must be the operation's own form, of the Agent and task it named: Cards for
 /// `agents`, the Summary for `submit`, `send`, and `cancel`, Details for `get`, and a Page of
-/// the named Agent's tasks for `tasks`. The accept is Submitted for `submit`, binding the task
-/// the Summary describes, and Admitted for the others; an outcome answered from replay has no
-/// accept. A page lists ascending IDs strictly after the cursor sent and names its own last
-/// one as the next cursor. `watch` and `artifact` have no such answer.
-pub fn agent(request: &AgentRequest, (accept, reply): (Option<AgentAccept>, &AgentReply)) -> bool {
-    let admitted = matches!(accept, None | Some(AgentAccept::Admitted));
+/// the named Agent's tasks for `tasks`. The Summary of `submit` is of the task `opened`
+/// created, and that of `cancel` of an ended task. The accept is Submitted for `submit`,
+/// binding the task the Summary describes, and Admitted for the others; the outcome of a
+/// mutation answered from replay has no accept, but a read reserves no `RequestId` and is never
+/// answered that way. A page lists ascending IDs strictly after the cursor sent and names its
+/// own last one as the next cursor. `watch` and `artifact` have no such answer.
+pub fn agent(
+    (request, opened): (&AgentRequest, &RequestId),
+    (accept, reply): (Option<AgentAccept>, &AgentReply),
+) -> bool {
+    let admitted = accept.map_or_else(
+        || request.is_mutation(),
+        |accept| accept == AgentAccept::Admitted,
+    );
     let names = |summary: &AgentTaskSummary, (agent, task): (&AgentId, &AgentTaskId)| {
         summary.agent == *agent && summary.id == *task
     };
@@ -30,16 +42,19 @@ pub fn agent(request: &AgentRequest, (accept, reply): (Option<AgentAccept>, &Age
         }
         (AgentRequest::Submit(_), AgentReply::Summary(summary)) => {
             request.agent() == Some(&summary.agent)
+                && summary.request_id == *opened
                 && match accept {
                     None => true,
                     Some(AgentAccept::Submitted(task, _)) => task == summary.id,
                     Some(_) => false,
                 }
         }
-        (
-            AgentRequest::Send(agent, task, _) | AgentRequest::Cancel(agent, task),
-            AgentReply::Summary(summary),
-        ) => admitted && names(summary, (agent, task)),
+        (AgentRequest::Send(agent, task, _), AgentReply::Summary(summary)) => {
+            admitted && names(summary, (agent, task))
+        }
+        (AgentRequest::Cancel(agent, task), AgentReply::Summary(summary)) => {
+            admitted && names(summary, (agent, task)) && summary.state.is_terminal()
+        }
         (AgentRequest::Get(agent, task), AgentReply::Details(details)) => {
             admitted && names(&details.summary, (agent, task))
         }
@@ -53,25 +68,34 @@ pub fn agent(request: &AgentRequest, (accept, reply): (Option<AgentAccept>, &Age
     }
 }
 
-/// Whether `accept` and `reply` answer the content-free Process operation `request`.
+/// Whether `accept` and `reply` answer the content-free Process operation `request`, opened
+/// under the `RequestId` `opened`.
 ///
 /// The reply must be the operation's own form, of the Process it named: the Summary for
 /// `start`, `signal`, and `terminate`, a Page for `list`, Details for `inspect`, and Deleted
-/// for `delete`. The accept is Started for `start`, binding the Process the Summary describes,
-/// and Admitted for the others; an outcome answered from replay has no accept. A page lists
-/// ascending IDs strictly after the cursor sent and names its own last one as the next
-/// cursor. `logs`, `attach`, and `stdin` have no such answer.
+/// for `delete`. The Summary of `start` is of the Process `opened` created, and that of
+/// `terminate` of an ended Process. The accept is Started for `start`, binding the Process the
+/// Summary describes, and Admitted for the others; the outcome of a mutation answered from
+/// replay has no accept, but a read reserves no `RequestId` and is never answered that way. A
+/// page lists ascending IDs strictly after the cursor sent and names its own last one as the
+/// next cursor. `logs`, `attach`, and `stdin` have no such answer.
 pub fn process(
-    request: &ProcessRequest,
+    (request, opened): (&ProcessRequest, &RequestId),
     (accept, reply): (Option<ProcessAccept>, &ProcessReply),
 ) -> bool {
-    let admitted = matches!(accept, None | Some(ProcessAccept::Admitted));
+    let admitted = accept.map_or_else(
+        || request.is_mutation(),
+        |accept| accept == ProcessAccept::Admitted,
+    );
     match (request, reply) {
-        (ProcessRequest::Start(_), ProcessReply::Summary(summary)) => match accept {
-            None => true,
-            Some(ProcessAccept::Started(id, _)) => id == summary.id,
-            Some(_) => false,
-        },
+        (ProcessRequest::Start(_), ProcessReply::Summary(summary)) => {
+            summary.request_id == *opened
+                && match accept {
+                    None => true,
+                    Some(ProcessAccept::Started(id, _)) => id == summary.id,
+                    Some(_) => false,
+                }
+        }
         (ProcessRequest::List(after), ProcessReply::Page(processes, next)) => {
             let listed = processes.iter().map(|process| &process.id);
             admitted && ascending(after.as_ref(), (listed, next.as_ref()))
@@ -79,10 +103,12 @@ pub fn process(
         (ProcessRequest::Inspect(id), ProcessReply::Details(details)) => {
             admitted && details.summary.id == *id
         }
-        (
-            ProcessRequest::Signal(id, _) | ProcessRequest::Terminate(id, _),
-            ProcessReply::Summary(summary),
-        ) => admitted && summary.id == *id,
+        (ProcessRequest::Signal(id, _), ProcessReply::Summary(summary)) => {
+            admitted && summary.id == *id
+        }
+        (ProcessRequest::Terminate(id, _), ProcessReply::Summary(summary)) => {
+            admitted && summary.id == *id && summary.state.is_terminal()
+        }
         (ProcessRequest::Delete(_), ProcessReply::Deleted) => admitted,
         _ => false,
     }

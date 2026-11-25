@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::backend::{Backend, Refusal, Route};
-use crate::commands::remote::open_as;
+use crate::commands::remote::{open_as, open_bound};
 
 /// Pause before reaching a target again that is restarting or unreachable.
 const RETRY: Duration = Duration::from_secs(1);
@@ -73,7 +73,7 @@ async fn answer(
             AgentRequest::Submit(_) | AgentRequest::Send(..) | AgentRequest::Cancel(..)
         ),
     );
-    let (mut reader, writer) = open_as(
+    let (opened, (mut reader, writer)) = open_bound(
         &backend.paths,
         (endpoint, request_id),
         OpenBody::Agent(request),
@@ -90,7 +90,12 @@ async fn answer(
         Some(AgentAccept::Admitted) => !submit,
         Some(AgentAccept::Watching(..)) => false,
     };
-    if !fits {
+    // A submit answers the task its own RequestId created, never another submission's.
+    let created_by_another = matches!(
+        &reply,
+        AgentReply::Summary(summary) if submit && summary.request_id != opened
+    );
+    if !fits || created_by_another {
         return Err(Refusal::named("internal"));
     }
     Ok((accept, reply))

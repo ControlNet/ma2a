@@ -68,15 +68,11 @@ impl Call<'_> {
         (endpoint, request): (&str, AgentRequest),
     ) -> Result<AgentReply, ToolError> {
         let body = OpenBody::Agent(request.clone());
-        let (mut reader, _writer) = if request.is_mutation() {
-            self.open(endpoint, body).await?
-        } else {
-            self.open_read(endpoint, body).await?
-        };
+        let (opened, (mut reader, _writer)) = self.open_bound(endpoint, body).await?;
         let (accept, reply) = client::agent::call(&mut reader)
             .await
             .map_err(|error| failed(&error))?;
-        if !client::answer::agent(&request, (accept, &reply)) {
+        if !client::answer::agent((&request, &opened), (accept, &reply)) {
             return Err(invalid("Agent answer"));
         }
         Ok(reply)
