@@ -237,7 +237,8 @@ At most 8 readers are attached to one Process at a time. The ninth is
   `closed = true`; the caller need not end its input first.
 - `cancel` or stream loss ends the operation with outcome `cancelled`, also after `end` while
   the Process is still taking earlier input. Bytes already delivered stay delivered.
-- Input the Process does not take within 30 seconds ends the operation with `timed_out`.
+- Input the Process does not take within 30 seconds ends the operation with `timed_out`, also
+  input it is still taking 30 seconds after the caller's `end`.
 
 **`signal`.** This needs a `running` Process, and is otherwise `reject(not_running)`.
 

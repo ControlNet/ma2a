@@ -368,3 +368,61 @@ async fn an_attach_or_stdin_stopped_while_opening_is_unavailable() -> TestResult
     shutdown.cancel();
     Ok(())
 }
+
+/// Starts a Process that keeps its stdin open and never reads it, and opens a stdin write to it.
+async fn stdin_to_a_sleeper(
+    (harness, manager): (&Harness, &ProcessManager),
+    byte: u8,
+) -> TestResult<(ProcessId, End, End)> {
+    let request = ProcessRequest::Start(stdin_start("sleep 90")?);
+    let (accept, _) = call((harness, manager), (byte, request)).await??;
+    let Some(ProcessAccept::Started(id, false)) = accept else {
+        return Err(format!("expected a new Process, got {accept:?}").into());
+    };
+    let (caller, host) = pipe();
+    Ok((id, caller, host))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stdin_write_the_process_never_takes_after_end_times_out() -> TestResult {
+    // Given: a Process that keeps its stdin open and never reads it.
+    let harness = Harness::new("driver-stdin-stall").await?;
+    let (manager, shutdown) = harness.manager();
+    let (id, (mut reader, mut writer), (mut host_reader, mut host_writer)) =
+        stdin_to_a_sleeper((&harness, &manager), 70).await?;
+    let stop = CancellationToken::new();
+    let request = ProcessRequest::Stdin(id, false);
+    let scope = ((harness.creator, request_id(71)?), request, &stop);
+    let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
+
+    // When: more input than its pipe holds is followed by `end`, and the caller waits.
+    let caller = async {
+        assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+        let chunk = vec![b'x'; MAX_DATA_CHUNK_LEN];
+        for _ in 0..2 {
+            writer.data(Channel::Input, &chunk).await?;
+        }
+        writer.end(Channel::Input).await?;
+        writer.flush().await?;
+        TestResult::Ok(reader.expect().await?)
+    };
+    let (_report, answered) = tokio::time::timeout(Duration::from_secs(40), async {
+        tokio::join!(host, caller)
+    })
+    .await?;
+
+    // Then: the input the Process did not take within 30 s ends the write as `timed_out`.
+    let answered = answered?;
+    assert_eq!(answered.kind(), FrameKind::Outcome, "{answered:?}");
+    assert_eq!(
+        ProcessReply::decode_outcome(answered.payload())?,
+        Err(ServiceError::TimedOut)
+    );
+    call(
+        (&harness, &manager),
+        (72, ProcessRequest::Terminate(id, 500)),
+    )
+    .await??;
+    shutdown.cancel();
+    Ok(())
+}
