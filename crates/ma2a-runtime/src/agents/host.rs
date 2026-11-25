@@ -110,14 +110,16 @@ impl AgentManager {
                 continue;
             }
             let access = ServiceAccess::Agent(id.clone());
-            if self
+            // Only an Agent the peer may not use is left out; a failed read fails the page.
+            match self
                 .0
                 .store
                 .authorize_service((self.0.local, peer), access)
                 .await
-                .is_err()
             {
-                continue;
+                Ok(_) => {}
+                Err(ServiceError::Unauthorized) => continue,
+                Err(error) => return Err(error),
             }
             if cards.len() == MAX_AGENT_PAGE {
                 more = true;
@@ -213,6 +215,10 @@ async fn answer<W: AsyncWrite + Unpin + Send>(
         Err(error) => refuse(writer, error).await,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/host.rs"]
+mod discovery_tests;
 
 #[cfg(test)]
 mod tests {
