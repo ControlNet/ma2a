@@ -222,3 +222,48 @@ async fn streamed_progress_and_messages_keep_the_last_state_change_timestamp() -
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_stream_fails_when_the_watch_ends_without_a_terminal_event() -> TestResult {
+    // Given: a running task at event 1 whose watch sends no events and claims it ended at 1.
+    let empty = streamed(vec![watch(1, Vec::new(), (AgentTaskState::Completed, 1))?]).await?;
+
+    // Then: the stream refuses with -32603 instead of closing cleanly while still working.
+    assert!(empty.contains("-32603"), "{empty}");
+    assert!(!empty.contains("TASK_STATE_COMPLETED"), "{empty}");
+
+    // Same for a continued stream (`sent_at = 1`, `shown = 3`) whose watch claims an end at
+    // event 2 (`<= shown`).
+    let mut running = summary(TASK, "worker")?;
+    (running.state, running.last_seq) = (AgentTaskState::Running, 3);
+    let input = AgentMessage::new(MessageRole::User, vec![MessagePart::Text("hi".into())])?;
+    let details = AgentReply::Details(Box::new(AgentTaskDetails::new(running, input)));
+    let scripts = vec![
+        answering(AgentAccept::Admitted, &details)?,
+        watch(
+            1,
+            vec![state_at(2, AgentTaskState::Completed)?],
+            (AgentTaskState::Completed, 2),
+        )?,
+    ];
+    let daemon = Daemon::paging("stream-stale-end", scripts)?;
+    let (backend, route) = Backend::standing_in(&daemon)?;
+    let owned = Owned {
+        backend,
+        route,
+        base: "http://127.0.0.1".to_owned(),
+    };
+    let lifecycle = Lifecycle {
+        id: json!(1),
+        method: "SendStreamingMessage",
+        task: TASK.to_string(),
+        history: None,
+        until_waiting: true,
+        sent_at: Some(1),
+    };
+    let body = respond(owned, lifecycle).into_body();
+    let stale = String::from_utf8(axum::body::to_bytes(body, 1 << 20).await?.to_vec())?;
+    assert!(stale.contains("-32603"), "{stale}");
+    assert!(!stale.contains("TASK_STATE_COMPLETED"), "{stale}");
+    Ok(())
+}

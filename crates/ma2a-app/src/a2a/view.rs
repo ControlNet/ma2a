@@ -138,25 +138,44 @@ pub(super) async fn wait(
         return Ok(());
     }
     let task = text(summary, "/task_id");
+    let after = last_seq(summary);
     let (events, mut received) = mpsc::unbounded_channel();
     let following = served
         .backend
-        .follow((served.route, (task, last_seq(summary))), &events);
+        .follow((served.route, (task, after)), &events);
     tokio::pin!(following);
     // An end is left to the follow, which returns once it confirmed it.
-    let reached = |event: &Value| {
+    let mut saw_end = false;
+    let observe = |event: &Value, saw_end: &mut bool| {
+        if text(event, "/kind") != "state" {
+            return false;
+        }
         let state = text(event, "/state");
-        text(event, "/kind") == "state" && until(state) && !ended(state)
+        let seq = event.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        if seq > u64::from(after) && ended(state) {
+            *saw_end = true;
+            return false;
+        }
+        until(state) && !ended(state)
     };
     loop {
         tokio::select! {
-            Some(event) = received.recv() => if reached(&event) {
+            Some(event) = received.recv() => if observe(&event, &mut saw_end) {
                 return Ok(());
             },
             followed = &mut following => {
                 followed?;
                 // The task ended: whatever is still queued is its last events.
-                return Ok(());
+                while let Ok(event) = received.try_recv() {
+                    if observe(&event, &mut saw_end) {
+                        return Ok(());
+                    }
+                }
+                return if saw_end {
+                    Ok(())
+                } else {
+                    Err(Refusal::named("internal"))
+                };
             }
         }
     }

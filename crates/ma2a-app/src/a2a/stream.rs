@@ -174,7 +174,9 @@ async fn produce(
     let last = match (followed, end) {
         (Err(refusal), _) => refused(refusal),
         (Ok(()), (_, Some(update))) => success(id, &update),
-        (Ok(()), _) => return Some(()),
+        // The first frame showed a non-terminal state, so a follow ending without a terminal
+        // event past `shown` contradicts it.
+        (Ok(()), _) => refused(Refusal::named("internal")),
     };
     send(frames, &last).await;
     Some(())

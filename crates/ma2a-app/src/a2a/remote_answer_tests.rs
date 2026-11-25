@@ -206,6 +206,23 @@ async fn a_wait_ends_on_the_task_end_only_once_the_watch_confirmed_it() -> TestR
     let mut unconfirmed = ending(AgentTaskState::Completed)?;
     unconfirmed.pop();
     assert_eq!(waited(unconfirmed).await?, None);
+    // A watch that sends no terminal event after `last_seq` fails instead of succeeding.
+    let mut already_ended = summary(TASK, "worker")?;
+    (already_ended.state, already_ended.last_seq) = (AgentTaskState::Completed, 1);
+    let empty_end = vec![
+        (
+            FrameKind::Accept,
+            AgentAccept::Watching(AgentTaskState::Running, 2).encode()?,
+        ),
+        (
+            FrameKind::Outcome,
+            AgentReply::encode_outcome(&Ok(AgentReply::Summary(already_ended)))?,
+        ),
+    ];
+    assert_eq!(
+        waited(empty_end).await?,
+        Some(Err(Refusal::named("internal")))
+    );
     Ok(())
 }
 
