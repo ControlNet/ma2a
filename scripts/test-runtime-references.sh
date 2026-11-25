@@ -72,7 +72,7 @@ scan_built() {
   references=$(./scripts/extract-runtime-references.pl js "$built") || return 1
   [[ -n "$references" ]] || return 0
   while IFS=$'\t' read -r _ reference; do
-    [[ "$reference" =~ ^\.{0,2}/[A-Za-z0-9._/-]*$ ]] || {
+    [[ "$reference" =~ ^\.{0,2}/[A-Za-z0-9._/-]*$ && "$reference" != //* ]] || {
       printf 'unexpected runtime reference in %s: %s\n' "$built" "$reference" >&2
       return 1
     }
@@ -84,6 +84,26 @@ if scan_built "$temporary/missing.js" 2>/dev/null; then
   printf 'an unreadable asset passed the scan\n' >&2
   exit 1
 fi
+
+# A protocol-relative reference names another host.
+printf 'fetch("//evil.invalid/steal");\n' > "$temporary/protocol-relative.js"
+if scan_built "$temporary/protocol-relative.js" 2>/dev/null; then
+  printf 'a protocol-relative reference passed the scan\n' >&2
+  exit 1
+fi
+
+# Browsers drop tabs and newlines anywhere in a URL and control characters around it, so a
+# reference holding any of them is refused rather than checked as written.
+printf '<img src="/\t/bad.test/x">\n' > "$temporary/tab.html"
+printf '<img src="/\n/bad.test/x">\n' > "$temporary/newline.html"
+printf 'fetch("\001//bad.test/x");\n' > "$temporary/control.js"
+printf 'fetch(`http\n://bad.test/x`);\n' > "$temporary/template.js"
+for probe in tab.html newline.html control.js template.js; do
+  if ./scripts/extract-runtime-references.pl "${probe##*.}" "$temporary/$probe" >/dev/null 2>&1; then
+    printf 'a reference with a control character in %s was extracted\n' "$probe" >&2
+    exit 1
+  fi
+done
 
 # The built console, when present, must carry only same-origin references.
 shopt -s nullglob

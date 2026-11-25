@@ -11,9 +11,13 @@ my $source = <$handle>;
 close $handle or die "close $path: $!\n";
 binmode STDOUT;
 
+# Browsers drop tabs and newlines anywhere in a URL and control characters around it, so a
+# reference that still holds one after trimming is refused: it would not be checked as browsers
+# read it, and it would break this tab-separated, one-line-per-reference output.
 sub emit {
     my ($reference_kind, $reference) = @_;
     $reference =~ s/^\s+|\s+$//g;
+    die "control character in a runtime reference in $path\n" if $reference =~ /[\x00-\x1f\x7f]/;
     print "$reference_kind\t$reference\n" if length $reference;
 }
 
