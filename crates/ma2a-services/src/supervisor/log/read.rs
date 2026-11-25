@@ -77,6 +77,10 @@ fn read_once(directory: &Path, from: u64, max: usize) -> io::Result<LogRead> {
     };
     let mut budget = max;
     for (index, first) in firsts.iter().enumerate() {
+        // A read that has all it asked for opens no further segment.
+        if budget == 0 {
+            break;
+        }
         if firsts
             .get(index + 1)
             .is_some_and(|next| *next <= output.next)

@@ -118,6 +118,34 @@ fn retention_bounds_the_log_on_disk_with_record_headers_counted() -> TestResult 
 }
 
 #[test]
+fn a_read_whose_budget_ends_with_a_segment_never_opens_the_next() -> TestResult {
+    // Given: two segments, the second of which cannot be read.
+    let root = TempRoot::new("log-budget")?;
+    let mut writer = LogWriter::create(root.path(), 4 * MIB)?;
+    let chunk = content(usize::try_from(MAX_RECORD_LEN)?);
+    let segment = |first: u64| root.path().join(format!("{first:020}.seg"));
+    let second = loop {
+        let before = writer.window().end;
+        writer.append(Channel::Output, &chunk)?;
+        if before > 0 && segment(before).exists() {
+            break before;
+        }
+    };
+    writer.sync()?;
+    drop(writer);
+    let path = segment(second);
+    std::fs::remove_file(&path)?;
+    std::fs::create_dir(&path)?;
+
+    // When: a read asks for exactly the first segment's bytes.
+    let read = log::read(root.path(), 0, usize::try_from(second)?)?;
+
+    // Then: it is answered from the first segment alone.
+    assert_eq!((read.start, read.next), (0, second));
+    Ok(())
+}
+
+#[test]
 fn a_torn_final_record_is_invisible_until_complete() -> TestResult {
     let root = TempRoot::new("log-torn")?;
     let mut writer = LogWriter::create(root.path(), MIB)?;
