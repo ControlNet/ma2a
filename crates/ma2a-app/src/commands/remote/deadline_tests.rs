@@ -11,6 +11,7 @@ use crate::{
     cli::{
         agents::{AgentCommand, TaskTarget},
         processes::{ProcessArgs, ProcessCommand},
+        services::{FileArgs, FileCommand},
     },
 };
 
@@ -91,5 +92,18 @@ async fn a_file_download_gives_up_on_a_silent_target() -> TestResult {
     times_out(Box::pin(got)).await?;
     // The attempt left nothing behind.
     assert!(!local.exists());
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_files_operation_gives_up_on_a_silent_target() -> TestResult {
+    let target = SilentTarget::start("files")?;
+    let arguments = FileArgs {
+        endpoint: target.endpoint.clone(),
+        command: FileCommand::Stat {
+            path: "docs:/a".to_owned(),
+        },
+    };
+    times_out(Box::pin(super::files::run(target.paths.clone(), arguments))).await?;
     Ok(())
 }
