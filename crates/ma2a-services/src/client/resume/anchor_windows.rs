@@ -1,8 +1,8 @@
-//! A download's directories on Windows, pinned: each is held open without delete sharing, so
-//! it can be neither renamed nor removed while the download runs, and neither can a directory
-//! above it, since Windows refuses to rename a directory with open handles beneath it. Each is
-//! reached afterwards by the path its handle resolves to, which has no link left to repoint,
-//! and files are recognized by their identity on the volume, as on Unix.
+//! A download's directories on Windows, pinned: each is held open to list it, without delete
+//! sharing, so it can be neither renamed nor removed while the download runs, and neither can a
+//! directory above it, since Windows refuses to rename a directory with open handles beneath
+//! it. Each is reached afterwards by the path its handle resolves to, which has no link left to
+//! repoint, and files are recognized by their identity on the volume, as on Unix.
 
 use std::{
     ffi::OsStr,
@@ -14,10 +14,10 @@ use std::{
 
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 
-use crate::windows_files::{self, FileId};
+use crate::windows_files::{self, FileId, pin};
 
 /// How a helper file is opened.
 #[derive(Clone, Copy)]
@@ -39,14 +39,6 @@ pub(super) enum Open {
 pub(super) struct Anchor {
     path: PathBuf,
     pin: File,
-}
-
-fn pin(path: &Path, flags: u32) -> io::Result<File> {
-    OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | flags)
-        .open(path)
 }
 
 /// Returns the identity of `name` in `directory` without following it, or `None` when absent.
@@ -202,3 +194,7 @@ impl Anchor {
         crate::files::rename_windows::no_clobber_io(&self.path.join(from), &to.path.join(name))
     }
 }
+
+#[cfg(test)]
+#[path = "anchor_windows_tests.rs"]
+mod tests;

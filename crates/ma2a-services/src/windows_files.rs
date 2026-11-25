@@ -107,25 +107,35 @@ pub fn final_path(file: &File) -> io::Result<PathBuf> {
     }
 }
 
-/// Opens the directory `path` and holds it so it cannot be renamed or removed while the handle
-/// lives, and returns the handle with the directory's final path.
+/// Opens the directory `path` with `flags` and holds it so that neither it nor a directory above
+/// it can be renamed or removed while the handle lives.
 ///
-/// Everything later done by that path stays in this very directory: the handle does not share
-/// deletion, so Windows refuses to move the directory or any ancestor while it is open.
+/// A handle with attribute access alone takes no part in sharing checks, so the directory is
+/// opened to list it as well, and without sharing deletion.
+pub(crate) fn pin(path: &Path, flags: u32) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, READ_CONTROL,
+    };
+
+    std::fs::OpenOptions::new()
+        .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | flags)
+        .open(path)
+}
+
+/// Opens the directory `path` and pins it (see [`pin`]), and returns the handle with the
+/// directory's final path.
+///
+/// Everything later done by that path stays in this very directory, since Windows refuses to
+/// move the directory or any ancestor while it is open.
 ///
 /// # Errors
 /// Returns the operating system's error, or `NotADirectory` when `path` names something else.
 pub fn pin_directory(path: &Path) -> io::Result<(File, PathBuf)> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let handle = std::fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
+    let handle = pin(path, 0)?;
     if !handle.metadata()?.is_dir() {
         return Err(io::ErrorKind::NotADirectory.into());
     }
@@ -141,19 +151,12 @@ pub fn pin_directory(path: &Path) -> io::Result<(File, PathBuf)> {
 /// not a directory, or when anyone but this account, SYSTEM, and the Administrators group may
 /// use it.
 pub fn pin_private_directory(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use std::os::windows::fs::MetadataExt as _;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
     };
 
-    // A handle with attribute access alone takes no part in sharing checks, so it is opened
-    // to list the directory as well.
-    let handle = std::fs::OpenOptions::new()
-        .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
+    let handle = pin(path, FILE_FLAG_OPEN_REPARSE_POINT)?;
     let metadata = handle.metadata()?;
     let linked = metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
     let sddl = crate::windows_acl::owner_and_dacl(&handle)?;

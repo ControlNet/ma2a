@@ -6,7 +6,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, READ_CONTROL,
 };
 
-use super::{create_protected_dir, file_id, final_path, pin_private_directory};
+use super::{create_protected_dir, file_id, final_path, pin_directory, pin_private_directory};
 use crate::windows_acl::{current_user_matcher, owner_and_dacl};
 
 fn open_directory(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -76,5 +76,25 @@ fn only_a_private_directory_itself_is_pinned() -> Result<(), Box<dyn std::error:
     assert!(was_pinned.is_ok(), "{was_pinned:?}");
     assert!(moved.is_err(), "{moved:?}");
     assert!(through_link.is_err() && shared.is_err());
+    Ok(())
+}
+
+#[test]
+fn a_pinned_directory_and_its_parent_cannot_be_renamed() -> Result<(), Box<dyn std::error::Error>> {
+    let base = std::env::temp_dir().join(format!("ma2a-pin-rename-{}", std::process::id()));
+    let _stale = std::fs::remove_dir_all(&base);
+    let parent = base.join("parent");
+    let pinned = parent.join("pinned");
+    std::fs::create_dir_all(&pinned)?;
+
+    let pin = pin_directory(&pinned);
+    let moved = std::fs::rename(&pinned, parent.join("moved"));
+    let parent_moved = std::fs::rename(&parent, base.join("moved"));
+
+    let was_pinned = pin.map(drop);
+    std::fs::remove_dir_all(&base)?;
+    assert!(was_pinned.is_ok(), "{was_pinned:?}");
+    assert!(moved.is_err(), "{moved:?}");
+    assert!(parent_moved.is_err(), "{parent_moved:?}");
     Ok(())
 }

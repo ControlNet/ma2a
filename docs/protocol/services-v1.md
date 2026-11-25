@@ -371,7 +371,7 @@ so a second download to the same `LOCAL` fails at once instead of writing alongs
 lock file is removed when the download ends.
 A download opens `LOCAL`'s directory, the private directory, and its lock directory once, when it
 starts, and reaches every helper file through them (on Unix by `*at` calls; on Windows each is
-held open without delete sharing, so neither it nor a directory above it can be renamed
+held open to list it, without delete sharing, so neither it nor a directory above it can be renamed
 meanwhile, and it is reached by the path its handle resolves to, with every junction and link
 resolved). Publishing first checks that `LOCAL`'s directory path still names the directory the
 download started in, and that the partial file is still the one it hashed (by device and inode
