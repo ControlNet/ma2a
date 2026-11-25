@@ -96,7 +96,7 @@ impl AsRef<[u8]> for ProtectedSecret {
 }
 
 /// Protected-key material and its immutable storage identity.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct KeyMaterial<'a> {
     kind: KeyKind,
     reference: &'a KeyReference,
@@ -111,6 +111,17 @@ impl<'a> KeyMaterial<'a> {
             reference,
             secret,
         }
+    }
+}
+
+impl fmt::Debug for KeyMaterial<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KeyMaterial")
+            .field("kind", &self.kind)
+            .field("reference", self.reference)
+            .field("secret", &format_args!("[REDACTED]"))
+            .finish()
     }
 }
 

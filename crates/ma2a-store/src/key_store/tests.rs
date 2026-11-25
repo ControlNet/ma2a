@@ -136,3 +136,19 @@ fn temporary_cleanup_failure_after_publication_is_non_fatal_and_retry_cannot_rep
     );
     Ok(())
 }
+
+#[test]
+fn formatting_a_key_write_request_never_shows_its_secret() -> TestResult {
+    // Synthetic secret bytes, distinctive in both decimal and hexadecimal.
+    let secret = [0xa7_u8; 32];
+    let reference = KeyReference::parse("debug-probe")?;
+    for kind in [KeyKind::Endpoint, KeyKind::SpaceAuthority] {
+        let material = KeyMaterial::new(kind, &reference, &secret);
+        for shown in [format!("{material:?}"), format!("{material:#?}")] {
+            assert!(!shown.contains("167"), "{shown}");
+            assert!(!shown.to_ascii_lowercase().contains("a7"), "{shown}");
+            assert!(shown.contains("debug-probe"), "{shown}");
+        }
+    }
+    Ok(())
+}
