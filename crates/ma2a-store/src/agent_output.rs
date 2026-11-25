@@ -11,7 +11,7 @@ use crate::{
     AgentTaskRecord, Committed, Repository, StoreError,
     agent_actions::record_durable_event,
     agent_log::{MAX_DURABLE_EVENTS, append_event, durable_events, held, load_task, set_state},
-    agent_tools::{fail_at_limit, record_tool_call},
+    agent_tools::{answer_ended_task_call, fail_at_limit, record_tool_call},
     repository::increment_revision,
     service_exposures::current_revision,
 };
@@ -235,10 +235,15 @@ fn apply_effect(
             name,
             request,
             rejection,
-        } => held(transaction, task, output)?.map_or(Ok(AgentOutputApplied::Ignored), |record| {
-            let call = (call, name, request, rejection);
-            record_tool_call(transaction, (&record, at_ms), call)
-        }),
+        } => match held(transaction, task, output)? {
+            Some(record) => {
+                let call = (call, name, request, rejection);
+                record_tool_call(transaction, (&record, at_ms), call)
+            }
+            None => {
+                answer_ended_task_call(transaction, (task, output, at_ms), (call, name, request))
+            }
+        },
     }
 }
 

@@ -541,7 +541,8 @@ like CBOR messages.
 | `tool` | `task`, `call`, `name`, `args` | one tool call, answered by `tool_result` with the same `call` |
 
 - `task` is the 32-character hexadecimal task ID. A line about a task that this instance
-  generation does not hold as `running` or `waiting` is ignored.
+  generation does not hold as `running` or `waiting` is ignored, except a `tool` line for a task
+  it held that has ended, which is answered `task_ended` (see [Tool bridge](#tool-bridge)).
 - In `state`, an Agent `message` is recorded as a `message` event, and with `completed` it also
   becomes the inline `result`. `failed` records `error` and reason `agent_failed`. A `message`
   that is invalid or not in role `agent` invalidates the whole line.
@@ -733,9 +734,10 @@ That call never runs. Whenever a task fails with `limit`, at this bound or at th
 bound, every call of the task still open, this one included, is answered `task_ended` in the same
 transaction, so the Agent is never left waiting for a tool result; a result that arrives later for
 one of those calls is dropped. The instance is then sent `cancel` for the task, so a handler
-waiting in `ask` returns. A tool call made after the task ended names a task the instance no longer
-holds, so it is ignored and never answered: a cancelled handler should end rather than call more
-tools. At most 8 calls of one task may be open at once; a call made while 8 are open is answered at
+waiting in `ask` returns. A tool call made after the task ended never runs: the instance that held
+the task is answered `task_ended` at once, so it is not left waiting. Such a call counts toward the
+task's 256 calls; past them it is ignored and never answered, so a cancelled handler should end
+rather than call more tools. At most 8 calls of one task may be open at once; a call made while 8 are open is answered at
 once with `concurrency_exceeded`. A result is delivered only while the task is live and its
 instance still holds it. A call whose task ended before it ran is answered `task_ended`.
 

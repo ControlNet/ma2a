@@ -71,23 +71,10 @@ pub(crate) fn record_tool_call(
     (call, name, request, rejection): (String, String, Vec<u8>, Vec<u8>),
 ) -> Result<AgentOutputApplied, StoreError> {
     let task = record.summary.id;
-    let existing: Option<Vec<u8>> = transaction
-        .query_row(
-            "SELECT request FROM agent_tool_calls WHERE task_id = ?1 AND call_id = ?2",
-            params![task.as_bytes().as_slice(), call],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if existing.is_some() {
-        // A repeated call identifier never runs twice, whatever it asks for.
+    // A repeated call identifier never runs twice, whatever it asks for.
+    let Some((total, open)) = call_counts(transaction, task, &call)? else {
         return Ok(AgentOutputApplied::Ignored);
-    }
-    let (total, open): (u32, u32) = transaction.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(result IS NULL), 0) FROM agent_tool_calls
-         WHERE task_id = ?1",
-        [task.as_bytes().as_slice()],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    };
     let limited = total >= MAX_TOOL_CALLS_PER_TASK;
     let rejected = !limited && open >= MAX_OPEN_TOOL_CALLS_PER_TASK;
     transaction.execute(
@@ -120,6 +107,63 @@ pub(crate) fn record_tool_call(
         return Ok(AgentOutputApplied::ToolRejected(task, call));
     }
     Ok(AgentOutputApplied::ToolCall(task, call))
+}
+
+/// The calls a task made so far, and how many of them are open; `None` when `call` is one of
+/// them.
+fn call_counts(
+    transaction: &Transaction<'_>,
+    task: AgentTaskId,
+    call: &str,
+) -> Result<Option<(u32, u32)>, StoreError> {
+    let (total, open, used): (u32, u32, bool) = transaction.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(result IS NULL), 0), COALESCE(SUM(call_id = ?2), 0) > 0
+         FROM agent_tool_calls WHERE task_id = ?1",
+        params![task.as_bytes().as_slice(), call],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    Ok((!used).then_some((total, open)))
+}
+
+/// Answers a tool call the instance makes for a task it held that has since ended with
+/// [`TASK_ENDED_ANSWER`], so it is not left waiting for a result that never comes.
+///
+/// The call counts toward the task's call limit; past it, or for a call identifier already
+/// used, the call is ignored. A task this instance never held is ignored too.
+pub(crate) fn answer_ended_task_call(
+    transaction: &Transaction<'_>,
+    (task, output, at_ms): (AgentTaskId, &crate::AgentOutput, u64),
+    (call, name, request): (String, String, Vec<u8>),
+) -> Result<AgentOutputApplied, StoreError> {
+    let Some(record) = load_task(transaction, task)?.filter(|record| {
+        record.summary.agent == output.agent
+            && record.generation == Some(output.generation)
+            && record.summary.state.is_terminal()
+    }) else {
+        return Ok(AgentOutputApplied::Ignored);
+    };
+    match call_counts(transaction, task, &call)? {
+        Some((total, _open)) if total < MAX_TOOL_CALLS_PER_TASK => {}
+        _ => return Ok(AgentOutputApplied::Ignored),
+    }
+    transaction.execute(
+        "INSERT INTO agent_tool_calls (task_id, call_id, name, request, result, created_at_ms,
+         completed_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            task.as_bytes().as_slice(),
+            call,
+            name,
+            request,
+            TASK_ENDED_ANSWER,
+            at_ms
+        ],
+    )?;
+    deliver_to_holder(
+        transaction,
+        &record,
+        &AgentDelivery::ToolResult(task, call.clone()),
+    )?;
+    Ok(AgentOutputApplied::ToolRejected(task, call))
 }
 
 /// Fails a task at one of its limits.

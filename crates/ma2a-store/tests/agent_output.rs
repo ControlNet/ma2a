@@ -326,6 +326,66 @@ fn answered_as_ended(
     Ok(())
 }
 
+#[test]
+fn a_tool_call_for_a_task_that_ended_is_answered_task_ended() -> TestResult {
+    let (_state, mut repository, generation, task) = running("agent-tool-ended")?;
+    apply(
+        &mut repository,
+        (generation, 11),
+        state(task, AgentTaskState::Completed),
+    )?;
+
+    // When: the instance that held the task calls a tool for it.
+    let applied = apply(&mut repository, (generation, 12), tool(task, "late"))?;
+
+    // Then: the call is answered at once instead of left waiting, and the task stays completed.
+    assert_eq!(
+        applied,
+        AgentOutputApplied::ToolRejected(task, "late".to_owned())
+    );
+    answered_as_ended(&repository, (generation, task, "late"))?;
+    let record = repository.agent_task(task)?.ok_or("missing")?;
+    assert_eq!(record.summary.state, AgentTaskState::Completed);
+    // The same call identifier is still answered only once.
+    assert_eq!(
+        apply(&mut repository, (generation, 13), tool(task, "late"))?,
+        AgentOutputApplied::Ignored
+    );
+    Ok(())
+}
+
+#[test]
+fn a_tool_call_for_an_ended_task_past_the_call_limit_is_ignored() -> TestResult {
+    let (_state, mut repository, generation, task) = running("agent-tool-ended-limit")?;
+    let mut cursor = 10;
+    for index in 0..MAX_TOOL_CALLS_PER_TASK {
+        cursor += 1;
+        let call = format!("c{index}");
+        apply(&mut repository, (generation, cursor), tool(task, &call))?;
+        repository.complete_tool_call((task, &call), (b"{\"ok\":1}", 20))?;
+    }
+    cursor += 1;
+    apply(
+        &mut repository,
+        (generation, cursor),
+        state(task, AgentTaskState::Completed),
+    )?;
+
+    // When: the ended task's instance calls once more, past the limit.
+    let applied = apply(
+        &mut repository,
+        (generation, cursor + 1),
+        tool(task, "over"),
+    )?;
+
+    // Then: nothing is recorded, and the completed task is not failed.
+    assert_eq!(applied, AgentOutputApplied::Ignored);
+    assert!(repository.tool_call((task, "over"))?.is_none());
+    let record = repository.agent_task(task)?.ok_or("missing")?;
+    assert_eq!(record.summary.state, AgentTaskState::Completed);
+    Ok(())
+}
+
 /// Asserts the instance holding the task was last sent its cancellation, so a handler waiting
 /// in `ask` for a message that will never come returns.
 fn told_to_stop(repository: &Repository, (generation, task): (u64, AgentTaskId)) -> TestResult {
