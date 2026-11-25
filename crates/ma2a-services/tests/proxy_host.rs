@@ -227,6 +227,82 @@ async fn a_cancel_after_end_stops_a_relay_to_a_silent_destination() -> TestResul
 }
 
 #[tokio::test]
+async fn a_caller_closing_before_end_cancels_the_relay() -> TestResult {
+    // Given: an EOF-delimited destination that replies once its input closes.
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let echo = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await?;
+        let mut received = Vec::new();
+        let _read = socket.read_to_end(&mut received).await;
+        let _wrote = socket.write_all(b"done").await;
+        let _closed = socket.shutdown().await;
+        Ok::<Vec<u8>, std::io::Error>(received)
+    });
+    let ((mut reader, mut writer), server) = start(loopback(port, 10_000)?);
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    writer.data(Channel::Input, b"part").await?;
+
+    // When: the caller closes its transport write half without sending End(Input).
+    writer.shutdown().await?;
+
+    // Then: truncated input is never treated as completed; the relay cancels.
+    let frames = tokio::time::timeout(Duration::from_secs(2), drain(&mut reader)).await??;
+    let result = outcome(&frames)?.map_err(|error| format!("{error:?}"))?;
+    assert_eq!(
+        (
+            result.reason,
+            result.bytes_to_target,
+            result.bytes_from_target
+        ),
+        (EndReason::Cancelled, 4, 0)
+    );
+    assert_eq!(
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::Cancelled)
+    );
+    let _done = echo.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_caller_closing_after_end_cancels_a_silent_destination() -> TestResult {
+    // Given: a silent destination with a long idle timeout.
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let holder = tokio::spawn(async move {
+        let held = listener.accept().await?.0;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok::<_, std::io::Error>(held)
+    });
+    let ((mut reader, mut writer), server) = start(loopback(port, 60_000)?);
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    writer.data(Channel::Input, b"request").await?;
+    writer.end(Channel::Input).await?;
+
+    // When: the caller closes its write half while the destination is still live.
+    writer.shutdown().await?;
+
+    // Then: the relay cancels at once instead of waiting for the idle timeout.
+    let frames = tokio::time::timeout(Duration::from_secs(2), drain(&mut reader)).await??;
+    let result = outcome(&frames)?.map_err(|error| format!("{error:?}"))?;
+    assert_eq!(
+        (
+            result.reason,
+            result.bytes_to_target,
+            result.bytes_from_target
+        ),
+        (EndReason::Cancelled, 7, 0)
+    );
+    assert_eq!(
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::Cancelled)
+    );
+    holder.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_caller_that_never_reads_the_accept_does_not_hold_the_proxy() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();

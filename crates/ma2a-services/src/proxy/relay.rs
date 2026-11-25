@@ -115,16 +115,17 @@ async fn idle_expired(counters: &Counters) {
     }
 }
 
-/// Caller → destination; `end` or a clean caller half-close shuts down the TCP write side.
+/// Caller → destination; `end` shuts down the TCP write side, and an early stream close cancels.
 async fn upstream<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,
     mut target: OwnedWriteHalf,
     counters: &Counters,
 ) -> Result<(), Stop> {
-    let ended = loop {
+    loop {
         let frame = match reader.next().await {
             Ok(Some(frame)) => frame,
-            Ok(None) => break false,
+            // A caller keeps its side open until the outcome; closing it earlier cancels.
+            Ok(None) => return Err(Stop::Caller(ServiceError::Cancelled)),
             Err(error) => return Err(Stop::Caller(error)),
         };
         match frame.kind() {
@@ -134,30 +135,27 @@ async fn upstream<R: AsyncRead + Unpin>(
                 };
                 write(&mut target, bytes, counters).await?;
             }
-            FrameKind::End if frame.end() == Ok(Channel::Input) => break true,
+            FrameKind::End if frame.end() == Ok(Channel::Input) => break,
             FrameKind::Cancel => return Err(Stop::Caller(ServiceError::Cancelled)),
             _ => return Err(Stop::Caller(ServiceError::InvalidInput)),
         }
-    };
-    target.shutdown().await.map_err(|_| Stop::Target)?;
-    if ended {
-        // The caller still holds its stream open: a later cancel or reset must end the relay
-        // at once rather than when a silent destination finally reaches the idle limit.
-        let frame = tokio::select! {
-            () = counters.delivered.notified() => return Ok(()),
-            frame = reader.next() => frame,
-        };
-        return match frame {
-            Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => {
-                Err(Stop::Caller(ServiceError::Cancelled))
-            }
-            Ok(Some(_)) => Err(Stop::Caller(ServiceError::InvalidInput)),
-            // A later clean half-close changes nothing; the destination side decides the end.
-            Ok(None) => Ok(()),
-            Err(error) => Err(Stop::Caller(error)),
-        };
     }
-    Ok(())
+    target.shutdown().await.map_err(|_| Stop::Target)?;
+    // The caller still holds its stream open: a later cancel, close, or reset must end the relay
+    // at once rather than when a silent destination finally reaches the idle limit.
+    let frame = tokio::select! {
+        biased;
+        () = counters.delivered.notified() => return Ok(()),
+        frame = reader.next() => frame,
+    };
+    match frame {
+        Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => {
+            Err(Stop::Caller(ServiceError::Cancelled))
+        }
+        Ok(Some(_)) => Err(Stop::Caller(ServiceError::InvalidInput)),
+        Ok(None) => Err(Stop::Caller(ServiceError::Cancelled)),
+        Err(error) => Err(Stop::Caller(error)),
+    }
 }
 
 /// Writes `bytes` to the destination. A write that stays blocked for the idle timeout ends
