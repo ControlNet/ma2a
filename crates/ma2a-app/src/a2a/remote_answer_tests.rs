@@ -204,3 +204,48 @@ async fn a_wait_ends_on_the_task_end_only_once_the_watch_confirmed_it() -> TestR
     assert_eq!(waited(unconfirmed).await?, None);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_followed_agent_message_is_kept_in_full_however_long_it_escapes() -> TestResult {
+    // Given: a watch delivering an Agent message that grows past the local API's view bound
+    // once escaped as JSON, then the task's end.
+    let text = "\t".repeat(11_000);
+    let message = AgentMessage::new(MessageRole::Agent, vec![MessagePart::Text(text.clone())])?;
+    let mut ended = summary(TASK, "worker")?;
+    (ended.state, ended.last_seq) = (AgentTaskState::Completed, 3);
+    let data = |seq, body| -> TestResult<(FrameKind, Vec<u8>)> {
+        let mut data = vec![1];
+        data.extend(AgentEvent::new(seq, 2_000, body).to_bytes()?);
+        Ok((FrameKind::Data, data))
+    };
+    let watch = vec![
+        (
+            FrameKind::Accept,
+            AgentAccept::Watching(AgentTaskState::Running, 2).encode()?,
+        ),
+        data(2, AgentEventBody::Message(message))?,
+        data(3, AgentEventBody::State(AgentTaskState::Completed, None))?,
+        (
+            FrameKind::Outcome,
+            AgentReply::encode_outcome(&Ok(AgentReply::Summary(ended)))?,
+        ),
+    ];
+    let daemon = Daemon::start("follow", watch)?;
+    let (backend, route) = Backend::standing_in(&daemon)?;
+    let (events, mut received) = mpsc::unbounded_channel();
+
+    // When
+    let task = TASK.to_string();
+    let following = super::follow(&backend, (&route, (&task, 1)), &events);
+    let ended = tokio::time::timeout(Duration::from_secs(60), following).await?;
+
+    // Then: the typed event is all here, so its message is not left out.
+    assert_eq!(ended, Ok(()));
+    let first = received.recv().await.ok_or("no event")?;
+    let content = first
+        .pointer("/message/parts/0/content")
+        .and_then(Value::as_str);
+    assert!(content == Some(text.as_str()), "the message was left out");
+    assert_eq!(first.get("message_elided"), Some(&Value::Bool(false)));
+    Ok(())
+}

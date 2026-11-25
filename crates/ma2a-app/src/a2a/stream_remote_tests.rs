@@ -134,3 +134,32 @@ async fn a_stream_shows_no_end_a_later_one_contradicts() -> TestResult {
     assert!(text.contains("-32603"), "{text}");
     Ok(())
 }
+
+#[tokio::test]
+async fn a_stream_shows_an_agent_message_however_long_it_escapes() -> TestResult {
+    // Given: a watch delivering an Agent message that grows past the local API's view bound
+    // once escaped as JSON, then the task's end.
+    let text = "\t".repeat(11_000);
+    let message = AgentMessage::new(MessageRole::Agent, vec![MessagePart::Text(text)])?;
+    let mut event = vec![1];
+    event.extend(AgentEvent::new(2, 2_000, AgentEventBody::Message(message)).to_bytes()?);
+    let events = vec![
+        (FrameKind::Data, event),
+        state_at(3, AgentTaskState::Completed)?,
+    ];
+
+    // When
+    let text = streamed(vec![watch(1, events, (AgentTaskState::Completed, 3))?]).await?;
+
+    // Then: one update carries the whole message.
+    assert_eq!(
+        text.matches("\\t").count(),
+        11_000,
+        "the message was left out"
+    );
+    assert!(
+        text.contains("TASK_STATE_COMPLETED"),
+        "the task did not end"
+    );
+    Ok(())
+}

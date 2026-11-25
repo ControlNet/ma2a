@@ -6,16 +6,12 @@ use ma2a_core::service::{
     AgentAccept, AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit, AgentTaskDetails,
     AgentTaskId, OpenBody, ServiceError,
 };
-use ma2a_runtime::api::{agent_event_value, agent_task_details_value, agent_task_value};
+use ma2a_runtime::api::{agent_task_details_value, agent_task_value};
 use ma2a_services::client::{self, ClientError};
 use serde_json::Value;
-use tokio::sync::mpsc;
 
 use super::backend::{Backend, Refusal, Route, message_json};
-use crate::commands::remote::{agent::passes, open_as, open_bound, own_endpoint};
-
-/// Pause before reaching a target again that is restarting or unreachable.
-const RETRY: Duration = Duration::from_secs(1);
+use crate::commands::remote::{open_bound, own_endpoint};
 
 pub(super) fn refusal(error: &ClientError) -> Refusal {
     match error {
@@ -252,55 +248,9 @@ pub(super) async fn card(backend: &Backend, route: &Route) -> Result<(String, bo
 /// to host.
 const MAX_CARD_PAGES: usize = 64;
 
-/// Follows a task until it ended, reconnecting while the target restarts; stops early
-/// once nobody receives `events` any more.
-///
-/// Once a watch was interrupted, reopening it can fail the same passing way, for example while
-/// this Runtime restarts, so that is retried too.
-pub(super) async fn follow(
-    backend: &Backend,
-    (route, (task, mut after)): (&Route, (&str, u32)),
-    events: &mpsc::UnboundedSender<Value>,
-) -> Result<(), Refusal> {
-    let (endpoint, agent) = parts(route)?;
-    let task = task_id(task)?;
-    let caller = own_endpoint(&backend.paths).await?;
-    // The task's end once taken, which a reconnected watch must end with and nothing follow.
-    let mut ended = None;
-    let mut reconnecting = false;
-    loop {
-        let request = OpenBody::Agent(AgentRequest::Watch(agent.clone(), task, after));
-        let refused = match open_as(&backend.paths, (endpoint, None), request).await {
-            Ok((mut reader, _writer)) => {
-                let watching = client::agent::watch(
-                    &mut reader,
-                    ((&caller, agent, task), (after, ended)),
-                    |event| {
-                        (after, ended) = (event.seq, client::agent::end_of(&event));
-                        let _sent = events.send(agent_event_value(&event));
-                    },
-                );
-                let watched = tokio::select! {
-                    watched = watching => watched,
-                    () = events.closed() => return Ok(()),
-                };
-                match watched {
-                    Ok(_) => return Ok(()),
-                    Err(error) => (true, refusal(&error)),
-                }
-            }
-            Err(error) => (reconnecting, Refusal::from(error)),
-        };
-        match refused {
-            (true, refusal) if passes(&refusal.0) => reconnecting = true,
-            (_, refusal) => return Err(refusal),
-        }
-        tokio::select! {
-            () = tokio::time::sleep(RETRY) => {}
-            () = events.closed() => return Ok(()),
-        }
-    }
-}
+#[path = "remote_follow.rs"]
+mod following;
+pub(super) use following::follow;
 
 #[cfg(test)]
 #[path = "remote_tests.rs"]
