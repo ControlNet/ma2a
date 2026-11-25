@@ -6,13 +6,15 @@
 //! channel 0 toward the Process.
 
 mod attach;
+mod stdin;
 
 use ma2a_core::service::{
     Channel, FrameKind, ProcessAccept, ProcessReply, ServiceError, decode_skipped,
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 
-pub use attach::{Attached, attach, stdin};
+pub use attach::{Attached, attach};
+pub use stdin::stdin;
 
 use super::{ClientError, First, decoded, first, next, unexpected};
 use crate::{Frame, FrameReader};

@@ -1,4 +1,4 @@
-//! Attachments and stdin writes: channel 0 toward the Process, output back.
+//! Attachments: output back from the Process, and with stdin, channel 0 toward it.
 //!
 //! Detaching never stops the Process. The caller sends `cancel` and still reads the
 //! target's `outcome`, which reports where the reader was.
@@ -17,7 +17,7 @@ use tokio::{
 use super::{Gaps, accepted, deliver, reply};
 use crate::{
     FrameReader, FrameWriter,
-    client::{ClientError, First, first, first_or_cancel, next, process::ProcessIo, unexpected},
+    client::{ClientError, First, first_or_cancel, next, process::ProcessIo, unexpected},
 };
 
 /// How one attachment ended.
@@ -84,74 +84,6 @@ where
         }
     }?;
     attached((Some(accept), &frame), gaps)
-}
-
-/// Writes local input to the Process stdin until EOF, then reports what was delivered.
-///
-/// Returns the bytes the Process received and whether its stdin is now closed.
-///
-/// # Errors
-/// Returns the refusal (`writer_busy`, `stdin_closed`, `not_running`), the failed outcome,
-/// or the stream failure.
-pub async fn stdin<R, W, I>(
-    (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
-    input: I,
-) -> Result<(u64, bool), ClientError>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-    I: AsyncRead + Unpin,
-{
-    let frame = match first(reader).await? {
-        First::Finished(frame) => frame,
-        First::Accepted(_) => {
-            let sent = send_all(writer, input);
-            tokio::pin!(sent);
-            // The target may end early, for example when the Process exits.
-            let early = tokio::select! {
-                biased;
-                frame = next(reader) => Some(frame?),
-                sent = &mut sent => {
-                    sent?;
-                    None
-                }
-            };
-            match early {
-                Some(frame) => frame,
-                None => next(reader).await?,
-            }
-        }
-    };
-    if frame.kind() != FrameKind::Outcome {
-        return Err(unexpected(&frame));
-    }
-    match reply(&frame)? {
-        ProcessReply::Written(bytes, closed) => Ok((bytes, closed)),
-        _ => Err(ClientError::Stream(ServiceError::InvalidInput)),
-    }
-}
-
-async fn send_all<W, I>(writer: &mut FrameWriter<W>, mut input: I) -> Result<(), ClientError>
-where
-    W: AsyncWrite + Unpin,
-    I: AsyncRead + Unpin,
-{
-    let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
-    loop {
-        let read = input.read(&mut buffer).await?;
-        let Some(chunk) = buffer.get(..read).filter(|chunk| !chunk.is_empty()) else {
-            break;
-        };
-        writer
-            .data(Channel::Input, chunk)
-            .await
-            .map_err(ClientError::Stream)?;
-    }
-    writer
-        .end(Channel::Input)
-        .await
-        .map_err(ClientError::Stream)?;
-    writer.flush().await.map_err(ClientError::Stream)
 }
 
 /// Caller → target: stdin until EOF, then at most one `cancel` on detach or lost output.
