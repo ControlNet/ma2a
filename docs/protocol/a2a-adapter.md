@@ -68,7 +68,7 @@ A card is served for a defined local Agent, found through `agent_list`, even whi
 
 - A request is `{"jsonrpc": "2.0", "id": STRING|NUMBER, "method": M, "params": {…}}`.
   - Unparseable JSON answers `-32700`.
-  - A wrong envelope, a missing or non-scalar `id`, or `params` that is neither an object nor absent answers `-32600`.
+  - A wrong envelope, a missing or non-scalar `id`, or `params` that is neither an object nor absent answers `-32600`. The error carries the request's `id` when it is a string or a number, and `null` otherwise.
   - An unknown method answers `-32601`.
 - Every answer, error or not, is HTTP `200` with `application/json`, except for the streaming methods.
 - Each error carries one `google.rpc.ErrorInfo` in `data`, with the A2A `reason` and domain `a2a-protocol.org`.
@@ -93,6 +93,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 ### Messages and idempotency
 
 - A client message must have `role: "ROLE_USER"`, a non-empty `messageId`, and 1–16 parts within the Agent v1 message bound.
+  - Each part carries exactly one of `text`, `data`, `raw`, or `url`; a null field counts as absent. A part with none or several of them, or whose `text`, `raw`, or `url` is not a string, answers `-32602` before anything is delivered. Other fields, such as `mediaType`, are ignored.
   - A `text` part maps to a text part.
   - A `data` part maps to a data part that carries its JSON.
   - A `raw` or `url` (file) part answers `-32005 ContentTypeNotSupported`.

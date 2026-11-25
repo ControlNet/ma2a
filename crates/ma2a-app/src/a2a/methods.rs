@@ -23,22 +23,23 @@ pub(super) struct Inbound {
     pub(super) task: Option<String>,
 }
 
+/// One part, which carries exactly one content field, a null one counting as absent. A part
+/// with two would lose one of them, so it is refused whole rather than read as either.
 fn part(part: &Value) -> Result<MessagePart, RpcError> {
-    if let Some(text) = part.get("text").and_then(Value::as_str) {
-        return Ok(MessagePart::Text(text.to_owned()));
-    }
-    if let Some(data) = part.get("data") {
-        return Ok(MessagePart::Data(data.to_string()));
-    }
-    let file = |name: &str| part.get(name).is_some_and(|value| !value.is_null());
-    if file("raw") || file("url") {
-        return Err(RpcError::content_type(
+    let content: Vec<(&str, &Value)> = ["text", "data", "raw", "url"]
+        .into_iter()
+        .filter_map(|name| Some((name, part.get(name).filter(|value| !value.is_null())?)))
+        .collect();
+    match content.as_slice() {
+        [("text", Value::String(text))] => Ok(MessagePart::Text(text.clone())),
+        [("data", data)] => Ok(MessagePart::Data(data.to_string())),
+        [("raw" | "url", Value::String(_))] => Err(RpcError::content_type(
             "file parts are not accepted; send text or data",
-        ));
+        )),
+        _ => Err(RpcError::invalid_params(
+            "a part carries one of text, data, raw, or url, of its type",
+        )),
     }
-    Err(RpcError::invalid_params(
-        "a part carries text, data, raw, or url",
-    ))
 }
 
 /// Reads `params.message` of `SendMessage` or `SendStreamingMessage`.
@@ -250,6 +251,19 @@ mod tests {
         );
         assert_eq!(code(json!({"raw": null})), Some(-32_602));
         assert_eq!(code(json!({"url": null})), Some(-32_602));
+        // A part carries exactly one content field, of its type; others such as `mediaType`
+        // may come with it.
+        assert_eq!(code(json!({"text": "hi", "mediaType": "text/plain"})), None);
+        for malformed in [
+            json!({"raw": 123}),
+            json!({"url": []}),
+            json!({"text": 123, "data": "x"}),
+            json!({"text": "hi", "data": {}}),
+            json!({"text": "hi", "url": "https://example.invalid/a"}),
+            json!({"data": {}, "raw": "aGk="}),
+        ] {
+            assert_eq!(code(malformed.clone()), Some(-32_602), "{malformed}");
+        }
     }
 
     #[test]
