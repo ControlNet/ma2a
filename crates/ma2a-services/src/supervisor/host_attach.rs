@@ -50,7 +50,6 @@ pub(super) async fn attach<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let following = follow(writer, shared, (start, detached));
     tokio::pin!(following);
     tokio::select! {
-        biased;
         // The caller detached, or its input stalled; the child keeps running. The frame being
         // written is finished first, so the outcome that reports where the child was follows
         // whole frames.

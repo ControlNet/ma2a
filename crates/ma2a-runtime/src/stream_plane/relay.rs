@@ -173,7 +173,6 @@ where
     let mut cancelling = false;
     let terminal = loop {
         tokio::select! {
-            biased;
             terminal = &mut downstream => break terminal,
             wait = &mut upstream, if !cancelling => {
                 // A target that took no write within its bound has used up the grace already.

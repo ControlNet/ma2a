@@ -180,3 +180,65 @@ async fn a_child_that_ended_while_its_input_stalled_still_delivers_all_its_outpu
     assert_eq!(output, OUTPUT);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_continuous_stdin_flood_never_starves_attached_output() -> TestResult {
+    // Given: a running child that closed its stdin immediately, with OUTPUT bytes in its log.
+    let child = child()?;
+    let mut closed_stdin = tokio::process::Command::new("sh")
+        .args(["-c", "exec <&-; exec sleep 60"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    *child.shared.stdin.lock().await = closed_stdin.stdin.take();
+    let (one, two) = tokio::io::duplex(1 << 20);
+    let ((daemon_read, daemon_write), (read, write)) =
+        (tokio::io::split(one), tokio::io::split(two));
+    let (mut reader, mut writer) = (
+        FrameReader::new(daemon_read),
+        FrameWriter::new(daemon_write),
+    );
+    let (mut host_reader, mut host_writer) = (FrameReader::new(read), FrameWriter::new(write));
+    let stop = tokio_util::sync::CancellationToken::new();
+    let stop_flood = stop.clone();
+    let flood = tokio::spawn(async move {
+        let chunk = [b'x'; 64];
+        loop {
+            tokio::select! {
+                () = stop_flood.cancelled() => return writer,
+                sent = writer.data(Channel::Input, &chunk) => {
+                    if sent.is_err() {
+                        return writer;
+                    }
+                }
+            }
+        }
+    });
+    let attached = super::attach(
+        (&mut host_reader, &mut host_writer),
+        &child.shared,
+        (LogFrom::Start, true),
+    );
+    let daemon = async {
+        assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+        let frame =
+            tokio::time::timeout(std::time::Duration::from_secs(2), reader.expect()).await??;
+        assert_eq!(frame.kind(), FrameKind::Data);
+        stop.cancel();
+        let mut writer = flood.await?;
+        writer.frame(FrameKind::Cancel, &[]).await?;
+        writer.flush().await?;
+        let _ = read_all(&mut reader).await?;
+        TestResult::Ok(())
+    };
+    let (attached, daemon) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(attached, daemon)
+    })
+    .await?;
+    let _killed = closed_stdin.kill().await;
+    daemon?;
+    attached?;
+    Ok(())
+}

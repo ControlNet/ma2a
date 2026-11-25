@@ -131,3 +131,52 @@ async fn a_client_cancel_the_target_never_takes_ends_the_relay_after_the_cancel_
     assert_eq!(started.elapsed(), super::CANCEL_GRACE);
     assert_eq!(relayed.terminal, Terminal::Lost);
 }
+
+#[tokio::test]
+async fn a_continuous_downstream_flood_never_starves_client_cancel() {
+    use ma2a_core::service::Channel;
+    use ma2a_services::FrameWriter;
+    use tokio::io::AsyncWriteExt as _;
+
+    use super::{ClientWrite, relay, tests::ends};
+
+    let (client, plane_client) = tokio::io::duplex(1 << 20);
+    let (plane_target, target) = tokio::io::duplex(1 << 20);
+    let (_client_reader, mut client_writer) = ends(client);
+    let (mut target_reader, mut target_writer) = ends(target);
+    let mut batch = FrameWriter::new(Vec::new());
+    for _ in 0..256 {
+        batch
+            .data(Channel::Output, &[b'x'; 64])
+            .await
+            .expect("data");
+    }
+    let batch = batch.into_inner();
+    let flood =
+        tokio::spawn(
+            async move { while target_writer.get_mut().write_all(&batch).await.is_ok() {} },
+        );
+    let task = tokio::spawn(async move {
+        let ((mut client_reader, _), (mut target_reader, mut target_writer)) =
+            (ends(plane_client), ends(plane_target));
+        let mut sink = FrameWriter::new(tokio::io::sink());
+        relay(
+            (&mut client_reader, &mut sink),
+            (&mut target_reader, &mut target_writer),
+            (|| (), &ClientWrite::default()),
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    client_writer
+        .frame(FrameKind::Cancel, &[])
+        .await
+        .expect("cancel");
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(1), target_reader.expect())
+        .await
+        .expect("cancel must not starve")
+        .expect("frame");
+    assert_eq!(frame.kind(), FrameKind::Cancel);
+    flood.abort();
+    task.abort();
+}

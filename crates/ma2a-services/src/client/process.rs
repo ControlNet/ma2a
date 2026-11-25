@@ -133,7 +133,6 @@ where
             let inbound = inbound(writer, (input, control), (&lost, &mut unread));
             tokio::pin!(inbound);
             tokio::select! {
-                biased;
                 answer = &mut outbound => answer,
                 () = &mut inbound => outbound.await,
             }

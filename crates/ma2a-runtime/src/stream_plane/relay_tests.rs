@@ -9,7 +9,7 @@ use super::{Relayed, Terminal, relay};
 type Reader = FrameReader<ReadHalf<DuplexStream>>;
 type Writer = FrameWriter<WriteHalf<DuplexStream>>;
 
-fn ends(stream: DuplexStream) -> (Reader, Writer) {
+pub(super) fn ends(stream: DuplexStream) -> (Reader, Writer) {
     let (read, write) = tokio::io::split(stream);
     (FrameReader::new(read), FrameWriter::new(write))
 }

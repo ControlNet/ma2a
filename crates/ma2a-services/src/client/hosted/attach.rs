@@ -94,7 +94,6 @@ where
             let inbound = inbound(writer, (input, detach), (&lost, &mut unread));
             tokio::pin!(inbound);
             tokio::select! {
-                biased;
                 read = &mut outbound => read?,
                 () = &mut inbound => outbound.await?,
             }

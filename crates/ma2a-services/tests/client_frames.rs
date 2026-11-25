@@ -770,3 +770,292 @@ async fn a_relay_whose_bytes_could_not_be_delivered_locally_is_not_completed() -
     }
     Ok(())
 }
+
+/// Continuously floods 64-byte `data` frames on `channel` until `stop` is cancelled.
+fn flood_data<W: AsyncWrite + Unpin + Send + 'static>(
+    mut writer: FrameWriter<W>,
+    channel: Channel,
+    stop: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<TestResult> {
+    use tokio::io::AsyncWriteExt as _;
+    tokio::spawn(async move {
+        let mut batch = FrameWriter::new(Vec::new());
+        for _ in 0..256 {
+            batch.data(channel, &[b'x'; 64]).await?;
+        }
+        let batch = batch.into_inner();
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return Ok(()),
+                sent = writer.get_mut().write_all(&batch) => {
+                    if sent.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Runs `caller` under a continuous incoming `data` flood on `channel` after `accept` and
+/// asserts the peer sees one frame satisfying `check` within 2 seconds.
+async fn assert_fair_under_flood<F, Fut, C>(
+    (accept, channel): (&[u8], Channel),
+    drive: F,
+    check: C,
+) -> TestResult
+where
+    F: FnOnce(
+        FrameReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+        FrameWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+    ) -> Fut,
+    Fut: std::future::Future<Output = TestResult>,
+    C: FnOnce(&ma2a_services::Frame) -> TestResult,
+{
+    let ((reader, writer), (mut peer_reader, mut peer_writer)) = pipe();
+    peer_writer.frame(FrameKind::Accept, accept).await?;
+    peer_writer.flush().await?;
+    let stop = tokio_util::sync::CancellationToken::new();
+    let flood = flood_data(peer_writer, channel, stop.clone());
+    let caller = drive(reader, writer);
+    let peer = async {
+        let frame = tokio::time::timeout(Duration::from_secs(2), peer_reader.expect()).await??;
+        check(&frame)?;
+        stop.cancel();
+        TestResult::Ok(())
+    };
+    let result = tokio::select! {
+        result = peer => result,
+        _ = caller => Err("caller ended before peer saw outgoing frame".into()),
+    };
+    flood.abort();
+    result
+}
+
+/// A writer whose first write waits until `delay` elapses, forcing `first_or_cancel` to hand
+/// the pending `cancel` off to `drained`.
+struct DelayedWrite<W> {
+    inner: W,
+    delay: Pin<Box<tokio::time::Sleep>>,
+    ready: bool,
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for DelayedWrite<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if !self.ready {
+            if self.delay.as_mut().poll(context).is_pending() {
+                return Poll::Pending;
+            }
+            self.ready = true;
+        }
+        Pin::new(&mut self.inner).poll_write(context, buf)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(context)
+    }
+}
+
+/// Checks that a pre-accept `cancel` still flushes via `drained` while the peer floods `data`.
+async fn assert_drained_cancel_fair_under_flood() -> TestResult {
+    use tokio::io::AsyncWriteExt as _;
+    let ((mut reader, writer), (mut peer_reader, mut peer_writer)) = pipe();
+    let mut writer = FrameWriter::new(DelayedWrite {
+        inner: writer.into_inner(),
+        delay: Box::pin(tokio::time::sleep(Duration::from_millis(30))),
+        ready: false,
+    });
+    let stop = tokio_util::sync::CancellationToken::new();
+    let stop_flood = stop.clone();
+    let flood = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        peer_writer.frame(FrameKind::Accept, &EMPTY_ACCEPT).await?;
+        peer_writer.flush().await?;
+        let mut batch = FrameWriter::new(Vec::new());
+        for _ in 0..256 {
+            batch.data(Channel::Output, &[b'x'; 64]).await?;
+        }
+        let batch = batch.into_inner();
+        loop {
+            tokio::select! {
+                () = stop_flood.cancelled() => return TestResult::Ok(()),
+                sent = peer_writer.get_mut().write_all(&batch) => {
+                    if sent.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    });
+    let local = ProcessIo {
+        input: None::<&[u8]>,
+        output: tokio::io::sink(),
+        error: Some(tokio::io::sink()),
+    };
+    let control = ProcessControl {
+        resizes: None,
+        cancel: async {},
+    };
+    let caller = process::run_streamed((&mut reader, &mut writer), local, control);
+    let peer = async {
+        let frame = tokio::time::timeout(Duration::from_secs(2), peer_reader.expect()).await??;
+        assert_eq!(frame.kind(), FrameKind::Cancel);
+        stop.cancel();
+        TestResult::Ok(())
+    };
+    let result = tokio::select! {
+        result = peer => result,
+        _ = caller => Err("drained caller ended before peer saw cancel".into()),
+    };
+    flood.abort();
+    result
+}
+
+/// Drives a continuous incoming `data` stream and checks that Exec, service call, and attach
+/// outgoing cancel/detach frames still reach the peer without starvation.
+#[tokio::test]
+async fn a_continuous_incoming_stream_never_starves_exec_service_or_attach() -> TestResult {
+    use ma2a_core::service::{LogFrom, LogWindow, ProcessAccept, ProcessId, ProcessState};
+    use ma2a_services::client::hosted;
+
+    let is_cancel = |frame: &ma2a_services::Frame| -> TestResult {
+        assert_eq!(frame.kind(), FrameKind::Cancel);
+        Ok(())
+    };
+    // 1. Exec: cancel during continuous stdout flood.
+    assert_fair_under_flood(
+        (&EMPTY_ACCEPT, Channel::Output),
+        |mut reader, mut writer| async move {
+            let local = ProcessIo {
+                input: None::<&[u8]>,
+                output: tokio::io::sink(),
+                error: Some(tokio::io::sink()),
+            };
+            let control = ProcessControl {
+                resizes: None,
+                cancel: tokio::time::sleep(Duration::from_millis(20)),
+            };
+            let _ = process::run_streamed((&mut reader, &mut writer), local, control).await;
+            Ok(())
+        },
+        is_cancel,
+    )
+    .await?;
+    // 2. Exec: BrokenPipe on local output sends cancel during continuous stdout flood.
+    assert_fair_under_flood(
+        (&EMPTY_ACCEPT, Channel::Output),
+        |mut reader, mut writer| async move {
+            let local = ProcessIo {
+                input: None::<&[u8]>,
+                output: Broken,
+                error: Some(tokio::io::sink()),
+            };
+            let control = ProcessControl {
+                resizes: None,
+                cancel: std::future::pending(),
+            };
+            let _ = process::run_streamed((&mut reader, &mut writer), local, control).await;
+            Ok(())
+        },
+        is_cancel,
+    )
+    .await?;
+    // 3. Service call: cancel during continuous output flood.
+    assert_fair_under_flood(
+        (&encode_call_accept(b"")?, Channel::Output),
+        |mut reader, mut writer| async move {
+            let local = ProcessIo {
+                input: None::<&[u8]>,
+                output: tokio::io::sink(),
+                error: Some(tokio::io::sink()),
+            };
+            let _ = service::call(
+                (&mut reader, &mut writer),
+                local,
+                tokio::time::sleep(Duration::from_millis(20)),
+            )
+            .await;
+            Ok(())
+        },
+        is_cancel,
+    )
+    .await?;
+    // 4. Hosted attach: detach during continuous output flood.
+    let reading = ProcessAccept::Reading {
+        state: ProcessState::Running,
+        start: 0,
+        window: LogWindow::new(0, 0),
+        truncated: false,
+    }
+    .encode()?;
+    assert_fair_under_flood(
+        (&reading, Channel::Output),
+        |mut reader, mut writer| async move {
+            let local = ProcessIo {
+                input: None::<&[u8]>,
+                output: tokio::io::sink(),
+                error: None::<tokio::io::Sink>,
+            };
+            let _ = hosted::attach(
+                (&mut reader, &mut writer),
+                ((ProcessId::from_bytes([1; 16]), LogFrom::Now), local),
+                tokio::time::sleep(Duration::from_millis(20)),
+            )
+            .await;
+            Ok(())
+        },
+        is_cancel,
+    )
+    .await
+}
+
+/// Drives a continuous incoming `data` stream and checks that Proxy upstream data, `BrokenPipe`
+/// cancel, and a pre-accept `cancel` flushing via `drained` are never starved.
+#[tokio::test]
+async fn a_continuous_incoming_stream_never_starves_proxy_or_drained_cancel() -> TestResult {
+    let is_cancel = |frame: &ma2a_services::Frame| -> TestResult {
+        assert_eq!(frame.kind(), FrameKind::Cancel);
+        Ok(())
+    };
+    assert_fair_under_flood(
+        (&EMPTY_ACCEPT, Channel::Input),
+        |mut reader, mut writer| async move {
+            let _ = proxy::run(
+                (&mut reader, &mut writer),
+                (&b"hello"[..], tokio::io::sink()),
+            )
+            .await;
+            Ok(())
+        },
+        |frame| {
+            assert_eq!(frame.data()?, (Channel::Input, &b"hello"[..]));
+            Ok(())
+        },
+    )
+    .await?;
+    assert_fair_under_flood(
+        (&EMPTY_ACCEPT, Channel::Input),
+        |mut reader, mut writer| async move {
+            let (_hold, local_read) = tokio::io::duplex(64);
+            let _ = proxy::run((&mut reader, &mut writer), (local_read, Broken)).await;
+            Ok(())
+        },
+        is_cancel,
+    )
+    .await?;
+    assert_drained_cancel_fair_under_flood().await
+}

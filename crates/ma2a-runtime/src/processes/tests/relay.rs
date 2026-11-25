@@ -150,3 +150,67 @@ async fn a_caller_can_detach_from_a_silent_supervisor_that_stopped_taking_input(
     assert_eq!(answered?, Err(ma2a_core::service::ServiceError::Cancelled));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_continuous_output_flood_never_starves_caller_detach() -> TestResult {
+    // Given: a stand-in supervisor continuously flooding 64-byte output frames while the
+    // caller's sink drains without backpressure.
+    let harness = Harness::new("relay-fair-detach").await?;
+    let (manager, id, credentials, listener) =
+        taken_over(&harness, harness.store.clone(), 88).await?;
+    let stop_flood = CancellationToken::new();
+    let flood_token = stop_flood.clone();
+    let supervisor = async {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut reader, mut writer) = proven(&listener, &credentials).await?;
+        writer
+            .frame(FrameKind::Accept, &encode_reading((0, 0, 0), false))
+            .await?;
+        writer.flush().await?;
+        let mut batch = ma2a_services::FrameWriter::new(Vec::new());
+        for _ in 0..256 {
+            batch.data(Channel::Output, &[b'o'; 64]).await?;
+        }
+        let batch = batch.into_inner();
+        let flood = tokio::spawn(async move {
+            while !flood_token.is_cancelled() {
+                if writer.get_mut().write_all(&batch).await.is_err() {
+                    break;
+                }
+            }
+            writer
+        });
+        let frame =
+            tokio::time::timeout(std::time::Duration::from_secs(1), reader.expect()).await??;
+        assert_eq!(frame.kind(), FrameKind::Cancel);
+        stop_flood.cancel();
+        let mut writer = flood.await?;
+        writer.frame(FrameKind::Outcome, &exited(0)).await?;
+        writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let (caller_stream, host_stream) = tokio::io::duplex(1 << 20);
+    let (_caller_read, caller_write) = tokio::io::split(caller_stream);
+    let (host_read, _host_write) = tokio::io::split(host_stream);
+    let mut writer = ma2a_services::FrameWriter::new(caller_write);
+    let mut host_reader = ma2a_services::FrameReader::new(host_read);
+    let mut host_writer = ma2a_services::FrameWriter::new(tokio::io::sink());
+    let stop = CancellationToken::new();
+    let request = ProcessRequest::Attach(id, LogFrom::Now, false);
+    let scope = ((harness.creator, request_id(89)?), request, &stop);
+    let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
+    let caller = async {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        writer.frame(FrameKind::Cancel, &[]).await?;
+        writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let (report, caller, supervisor) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(host, caller, supervisor)
+        })
+        .await?;
+    caller?;
+    supervisor.map_err(|error| format!("supervisor failed ({report:?}): {error}"))?;
+    Ok(())
+}

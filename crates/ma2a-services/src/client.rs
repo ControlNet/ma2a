@@ -170,7 +170,6 @@ pub(crate) async fn drained<T>(
     };
     tokio::pin!(outcome);
     tokio::select! {
-        biased;
         answer = &mut outcome => answer,
         () = rest => outcome.await,
     }

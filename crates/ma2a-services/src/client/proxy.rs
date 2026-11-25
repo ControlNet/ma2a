@@ -49,7 +49,6 @@ where
         let upstream = upstream(writer, local_read, (&lost, &sent, &mut unread));
         tokio::pin!(downstream, upstream);
         tokio::select! {
-            biased;
             answer = &mut downstream => answer,
             () = &mut upstream => downstream.await,
         }

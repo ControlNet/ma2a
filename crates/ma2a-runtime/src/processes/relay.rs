@@ -119,9 +119,11 @@ where
         let grace = tokio::time::sleep(std::time::Duration::MAX);
         tokio::pin!(downstream, upstream, grace);
         let (mut detached, mut told) = (false, false);
+        if stop.is_cancelled() {
+            return Err(ServiceError::Unavailable);
+        }
         loop {
             tokio::select! {
-                biased;
                 () = stop.cancelled() => break Err(ServiceError::Unavailable),
                 reported = &mut downstream => break reported.map(|status| (status, told)),
                 ended = &mut upstream, if !detached => {
