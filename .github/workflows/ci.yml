@@ -56,12 +56,14 @@ jobs:
       - name: Check resumable downloads natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-services --test download_directory --test download_sidecars --test client_transfer
+      # One command per step: PowerShell does not stop at a failing native command. Not Git Bash:
+      # it enables the backup and restore privileges, which skip the file access checks tested here.
       - name: Check local IPC round trips natively
         if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          cargo test --locked -p ma2a-runtime --test ipc_lifecycle
-          cargo test --locked -p ma2a-runtime --lib -- ipc::server ipc::windows
+        run: cargo test --locked -p ma2a-runtime --test ipc_lifecycle
+      - name: Check the local IPC server natively
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p ma2a-runtime --lib -- ipc::server ipc::windows
       - name: Check Process supervisor pipe names natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-runtime --lib processes::windows_tests
