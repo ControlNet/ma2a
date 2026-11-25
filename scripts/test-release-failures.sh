@@ -182,6 +182,7 @@ for layout in rooted rooted-dir; do
   for name in LICENSE-APACHE LICENSE-MIT NOTICE README.md quickstart.md ma2a; do
     printf 'x' > "$temporary/$layout/ma2a-0.1.0/$name"
   done
+  chmod +x "$temporary/$layout/ma2a-0.1.0/ma2a"
 done
 mkdir "$temporary/rooted-dir/ma2a-0.1.0/stray"
 for layout in rooted rooted-dir; do
@@ -220,6 +221,7 @@ for name in LICENSE-APACHE LICENSE-MIT NOTICE README.md quickstart.md; do
   printf 'x' > "$temporary/dot-prefix/ma2a-0.1.0/$name"
 done
 printf 'x' > "$temporary/dot-prefix/ma2a-0X1X0/ma2a"
+chmod +x "$temporary/dot-prefix/ma2a-0X1X0/ma2a"
 dot_bad="$temporary/dot-prefix.tar.xz"
 tar -cJf "$dot_bad" -C "$temporary/dot-prefix" ma2a-0.1.0 ma2a-0X1X0
 printf '%s *%s\n' "$(hash_file "$dot_bad")" "$(basename "$dot_bad")" > "${dot_bad}.sha256"
