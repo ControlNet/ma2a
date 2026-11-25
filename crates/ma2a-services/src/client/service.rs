@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use super::{
-    ClientError, First, decoded, first, next,
+    ClientError, First, decoded, first_or_cancel, next,
     process::{ProcessControl, ProcessIo, inbound, write_flushed},
     unexpected,
 };
@@ -64,7 +64,9 @@ where
     E: AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
-    let header = match first(reader).await? {
+    tokio::pin!(cancel);
+    let (answer, cancelled) = first_or_cancel((reader, writer), cancel.as_mut()).await?;
+    let header = match answer {
         First::Finished(frame) => {
             let result = decoded(decode_call_outcome(frame.payload()))?;
             return Ok(Called {
@@ -82,16 +84,21 @@ where
     } = local;
     let lost = Notify::new();
     let outbound = outbound(reader, (output, error), &lost);
-    let control = ProcessControl {
-        resizes: None,
-        cancel,
-    };
-    let inbound = inbound(writer, (input, control), &lost);
-    tokio::pin!(outbound, inbound);
-    let result = tokio::select! {
-        biased;
-        result = &mut outbound => result,
-        () = &mut inbound => outbound.await,
+    // Once cancelled, nothing more is sent; the outcome still follows.
+    let result = if cancelled {
+        outbound.await
+    } else {
+        let control = ProcessControl {
+            resizes: None,
+            cancel,
+        };
+        let inbound = inbound(writer, (input, control), &lost);
+        tokio::pin!(outbound, inbound);
+        tokio::select! {
+            biased;
+            result = &mut outbound => result,
+            () = &mut inbound => outbound.await,
+        }
     }?;
     Ok(Called {
         header: Some(header),

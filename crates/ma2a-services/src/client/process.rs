@@ -10,7 +10,7 @@ use tokio::{
     sync::{Notify, mpsc},
 };
 
-use super::{ClientError, First, decoded, first, next, unexpected};
+use super::{ClientError, First, decoded, first_or_cancel, next, unexpected};
 use crate::{FrameReader, FrameWriter};
 
 /// Local ends of one remote process.
@@ -96,8 +96,11 @@ where
     E: AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
+    let ProcessControl { resizes, cancel } = control;
+    tokio::pin!(cancel);
+    let (answer, cancelled) = first_or_cancel((reader, writer), cancel.as_mut()).await?;
     // A running process is always accepted first; an outcome without that is a replay.
-    if let First::Finished(frame) = first(reader).await? {
+    if let First::Finished(frame) = answer {
         let result = decoded(ProcessResult::decode_outcome(frame.payload()))?;
         return Ok(Streamed {
             result,
@@ -111,12 +114,17 @@ where
     } = local;
     let lost = Notify::new();
     let outbound = outbound(reader, (output, error), &lost);
-    let inbound = inbound(writer, (input, control), &lost);
-    tokio::pin!(outbound, inbound);
-    let result = tokio::select! {
-        biased;
-        result = &mut outbound => result,
-        () = &mut inbound => outbound.await,
+    // Once cancelled, nothing more is sent; the outcome still follows.
+    let result = if cancelled {
+        outbound.await
+    } else {
+        let inbound = inbound(writer, (input, ProcessControl { resizes, cancel }), &lost);
+        tokio::pin!(outbound, inbound);
+        tokio::select! {
+            biased;
+            result = &mut outbound => result,
+            () = &mut inbound => outbound.await,
+        }
     }?;
     Ok(Streamed {
         result,

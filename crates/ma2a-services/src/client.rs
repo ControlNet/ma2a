@@ -4,12 +4,12 @@
 //! side before the target's terminal frame, because a caller EOF cancels the operation on
 //! the local stream plane.
 
-use std::{fmt, io};
+use std::{fmt, io, pin::Pin};
 
 use ma2a_core::service::{FrameKind, ServiceError, outcome_status};
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{Frame, FrameReader};
+use crate::{Frame, FrameReader, FrameWriter};
 
 pub mod agent;
 pub mod files;
@@ -106,6 +106,35 @@ pub(crate) async fn first<R: AsyncRead + Unpin>(
         }
         _ => Err(unexpected(&frame)),
     }
+}
+
+/// Reads the target's first answer while watching `cancel`, and tells whether it fired.
+///
+/// A cancel before that answer is sent at once: a unary operation may answer only with its
+/// outcome, so waiting for its `accept` would never let the target hear it.
+pub(crate) async fn first_or_cancel<R, W, C>(
+    (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
+    cancel: Pin<&mut C>,
+) -> Result<(First, bool), ClientError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    C: Future<Output = ()>,
+{
+    let answer = first(reader);
+    tokio::pin!(answer);
+    tokio::select! {
+        biased;
+        first = &mut answer => return first.map(|first| (first, false)),
+        () = cancel => {}
+    }
+    // A failed write is answered by the target's terminal anyway.
+    let _sent = async {
+        writer.frame(FrameKind::Cancel, &[]).await?;
+        writer.flush().await
+    }
+    .await;
+    Ok((answer.await?, true))
 }
 
 /// Reads one frame, treating a stream that ends without a terminal as an unknown outcome.

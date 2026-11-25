@@ -14,14 +14,14 @@ use std::{
 use ma2a_core::service::{
     Channel, DescribePage, DirEntry, EMPTY_ACCEPT, FileKind, FileMetadata, FilesOutcome,
     FilesRequest, FilesResult, FrameKind, LogWindow, ProcessAccept, ProcessReply, ProcessState,
-    RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome,
+    RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome, failed_outcome,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
     client::{
         ClientError, files,
         hosted::{self, LogsRead},
-        process::ProcessIo,
+        process::{self, ProcessControl, ProcessIo},
         service,
     },
 };
@@ -119,6 +119,57 @@ async fn a_cancelled_call_ends_with_the_services_failure() -> TestResult {
         called,
         Err(ClientError::Failed(ServiceError::Cancelled))
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_call_cancelled_before_any_answer_tells_a_unary_service() -> TestResult {
+    let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();
+    let script = async {
+        // A unary service answers only with its outcome, so it must hear the cancel first.
+        assert_eq!(service_reader.expect().await?.kind(), FrameKind::Cancel);
+        let failed = encode_call_outcome(Err(ServiceError::Cancelled))?;
+        service_writer.frame(FrameKind::Outcome, &failed).await?;
+        service_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let calling = service::call((&mut reader, &mut writer), no_input(), async {});
+    let (called, scripted) = within(async { tokio::join!(calling, script) }).await?;
+    scripted?;
+    assert!(
+        matches!(called, Err(ClientError::Failed(ServiceError::Cancelled))),
+        "{called:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_process_cancelled_before_its_accept_is_cancelled_once() -> TestResult {
+    let ((mut reader, mut writer), (mut service_reader, mut service_writer)) = pipe();
+    let script = async {
+        assert_eq!(service_reader.expect().await?.kind(), FrameKind::Cancel);
+        service_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        let failed = failed_outcome(ServiceError::Cancelled)?;
+        service_writer.frame(FrameKind::Outcome, &failed).await?;
+        service_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let control = ProcessControl {
+        resizes: None,
+        cancel: async {},
+    };
+    let running = process::run_streamed((&mut reader, &mut writer), no_input(), control);
+    let (ran, scripted) = within(async { tokio::join!(running, script) }).await?;
+    scripted?;
+    assert!(
+        matches!(ran, Err(ClientError::Failed(ServiceError::Cancelled))),
+        "{ran:?}"
+    );
+    drop((reader, writer));
+    let after = within(service_reader.next()).await??;
+    assert!(after.is_none(), "a second frame was sent: {after:?}");
     Ok(())
 }
 

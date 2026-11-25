@@ -17,7 +17,7 @@ use tokio::{
 use super::{Gaps, accepted, deliver, reply};
 use crate::{
     FrameReader, FrameWriter,
-    client::{ClientError, First, first, next, process::ProcessIo, unexpected},
+    client::{ClientError, First, first, first_or_cancel, next, process::ProcessIo, unexpected},
 };
 
 /// How one attachment ended.
@@ -58,7 +58,9 @@ where
     E: AsyncWrite + Unpin,
     D: Future<Output = ()>,
 {
-    let accept = match first(reader).await? {
+    tokio::pin!(detach);
+    let (answer, detached) = first_or_cancel((reader, writer), detach.as_mut()).await?;
+    let accept = match answer {
         First::Finished(frame) => return attached((None, &frame), Gaps::default()),
         First::Accepted(frame) => accepted(&frame)?,
     };
@@ -69,12 +71,17 @@ where
     } = local;
     let lost = Notify::new();
     let outbound = outbound(reader, (output, error), &lost);
-    let inbound = inbound(writer, (input, detach), &lost);
-    tokio::pin!(outbound, inbound);
-    let (frame, gaps) = tokio::select! {
-        biased;
-        read = &mut outbound => read,
-        () = &mut inbound => outbound.await,
+    // Once detached, nothing more is sent; the outcome still follows.
+    let (frame, gaps) = if detached {
+        outbound.await
+    } else {
+        let inbound = inbound(writer, (input, detach), &lost);
+        tokio::pin!(outbound, inbound);
+        tokio::select! {
+            biased;
+            read = &mut outbound => read,
+            () = &mut inbound => outbound.await,
+        }
     }?;
     attached((Some(accept), &frame), gaps)
 }
