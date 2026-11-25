@@ -123,6 +123,27 @@ fn a_state_path_below_a_link_to_a_network_share_is_refused_before_anything_is_cr
     Ok(())
 }
 
+/// A link whose target cannot be reached cannot be shown to be local.
+#[test]
+fn a_state_path_below_a_dangling_link_to_a_network_share_is_refused()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Given: a local link to a directory on this machine's C$ share that does not exist.
+    let name = format!("ma2a-acl-dangling-{}", std::process::id());
+    let link = std::env::temp_dir().join(&name);
+    std::os::windows::fs::symlink_dir(format!(r"\\localhost\C$\{name}"), &link)?;
+
+    // When
+    let refused = ensure_private_dir(&link.join("state"), "test");
+
+    // Then
+    std::fs::remove_dir(&link)?;
+    assert!(
+        matches!(refused, Err(StoreError::InvalidStateDirectory)),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_rule_for_children_alone_is_not_full_control_over_the_directory()
 -> Result<(), Box<dyn std::error::Error>> {

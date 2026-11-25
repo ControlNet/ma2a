@@ -13,7 +13,8 @@ filesystem work directly on an async worker.
    `\\?\C:\…`) on a local volume are accepted; a drive mapped to a network share, UNC,
    `\\?\GLOBALROOT\…`, and other verbatim or device paths are rejected before any directory is
    created. The deepest part of the path that already exists is resolved through every link, so
-   a directory symlink on a local drive that points at a network share is rejected too.
+   a directory symlink on a local drive that points at a network share is rejected too. A link
+   whose target cannot be reached, or a part of the path that cannot be read, is rejected as well.
 2. Require current-user ownership and exact `0700` directory modes and `0600` database/key-file
    modes on Unix. Symlinks and unexpected file types are rejected.
 3. Require protected Windows DACLs with exactly the current user and SYSTEM holding explicit full

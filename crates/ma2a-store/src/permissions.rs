@@ -223,14 +223,21 @@ const fn is_remote(_path: &Path) -> bool {
 /// other verbatim or device paths can reach a network share as well as a UNC path can. A drive
 /// letter can be mapped to a network share too, and a directory link on a local drive can point
 /// at one, so the nearest level that exists, with every link resolved, must be on a local drive
-/// as well. Whatever cannot be resolved counts as remote.
+/// as well. A link counts as existing even when its target cannot be reached. Whatever cannot be
+/// resolved, or read, counts as remote.
 #[cfg(windows)]
 fn is_remote(path: &Path) -> bool {
-    !is_on_local_drive(path)
-        || !path
-            .ancestors()
-            .find(|level| level.exists())
-            .is_some_and(|level| fs::canonicalize(level).is_ok_and(|real| is_on_local_drive(&real)))
+    if !is_on_local_drive(path) {
+        return true;
+    }
+    for level in path.ancestors() {
+        match fs::symlink_metadata(level) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return true,
+            Ok(_) => return !fs::canonicalize(level).is_ok_and(|real| is_on_local_drive(&real)),
+        }
+    }
+    true
 }
 
 /// Whether `path` starts with the letter of a drive that is not a network share.
