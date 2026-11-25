@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRuntimeMutationClient } from "./api/mutations"
 import type { ServicesData } from "./api/services"
 import {
@@ -33,6 +33,8 @@ export function App({
 }): ReactNode {
   const [path, setPath] = useState<RoutePath>(initialPath ?? browserPath)
   const [session, setSession] = useState<WebSession | undefined>(currentWebSession)
+  // The session signed in now, read when a request another session sent is answered.
+  const sessionRef = useRef(session)
   const [liveRuntime, setLiveRuntime] = useState<RuntimeViewData | undefined>(runtime)
   const [runtimeLoadFailed, setRuntimeLoadFailed] = useState(false)
   const [controller, setController] = useState<RuntimeController | undefined>()
@@ -76,6 +78,7 @@ export function App({
 
   // Every way a session ends clears what the last one loaded, so the next sign-in starts clean.
   const signedOut = useCallback((): void => {
+    sessionRef.current = undefined
     setSession(undefined)
     forgetSession()
     navigate(ROUTE_PATHS.login)
@@ -91,15 +94,23 @@ export function App({
       : ({ status: "ready", data: services } as const)
     : liveServices
 
+  // A late answer to a request a past session sent never ends the session signed in since.
+  const endSession = useCallback(
+    (ended: WebSession | undefined): void => {
+      if (sessionRef.current === ended) signedOut()
+    },
+    [signedOut],
+  )
+
   const actions = useMemo(() => {
     if (session === undefined || controller === undefined) return undefined
     const csrfToken = (): string => currentWebSession()?.csrfToken ?? session.csrfToken
     return createRuntimeActions(
       createRuntimeMutationClient({ csrfToken }),
       () => controller.refresh(),
-      signedOut,
+      () => endSession(session),
     )
-  }, [controller, session, signedOut])
+  }, [controller, endSession, session])
 
   useEffect(() => {
     if (controlled || session === undefined || !consoleShown) return
@@ -120,6 +131,7 @@ export function App({
     async (password: string): Promise<void> => {
       const authenticatedSession = await loginAndTouchSession(password)
       forgetSession()
+      sessionRef.current = authenticatedSession
       setSession(authenticatedSession)
       navigate(ROUTE_PATHS.overview)
     },
@@ -136,12 +148,12 @@ export function App({
             if (!sessionIsGone(error)) throw error
           }
           controller?.stop()
-          signedOut()
+          endSession(session)
         }
 
   const sessionsRevoked = (): void => {
     controller?.stop()
-    signedOut()
+    endSession(session)
   }
 
   if (path === ROUTE_PATHS.setup) {

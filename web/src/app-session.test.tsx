@@ -200,3 +200,50 @@ test.each([
     await screen.findByText("Sessions could not be revoked.")
   }
 })
+
+// A request the last session sent can still be answered after the next sign-in; its answer
+// must not end the session that is signed in now.
+test.each([
+  ["a command answered 401", "/endpoint", 401],
+  ["a log out answered 204", "/settings", 204],
+])("%s after signing in again keeps the new session", async (_, start, status) => {
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+  let answer: (response: Response) => void = () => undefined
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init): Promise<Response> => {
+    const path = new URL(new Request(input, init).url).pathname
+    if (path === "/api/v1/control-sync/trigger" || path === "/api/v1/web/auth/logout") {
+      return new Promise<Response>((resolve) => (answer = resolve))
+    }
+    return Promise.resolve(
+      path === "/api/v1/web/auth/login"
+        ? Response.json({ csrf_token: "ef".repeat(32) })
+        : new Response(null, { status: 204 }),
+    )
+  })
+  window.history.replaceState(null, "", start)
+  holdControllers()
+  const user = userEvent.setup()
+  const given = render(<App />)
+  act(() => controllers[0]?.onRuntime(MANY_RUNTIME_FIXTURE))
+  if (start === "/endpoint") {
+    const peer = given.container.querySelector<HTMLElement>(".peer")
+    if (peer === null) throw new Error("fixture has a peer")
+    await user.click(peer)
+    await user.click(screen.getByRole("button", { name: "Sync now" }))
+  } else {
+    await user.click(screen.getByRole("button", { name: "Log out" }))
+  }
+  const pending = answer
+  act(() => controllers[0]?.onSessionExpired())
+
+  await user.type(screen.getByLabelText("Password"), "browser-login-password-9!")
+  await user.click(screen.getByRole("button", { name: "Sign in" }))
+  await screen.findByRole("main", { name: "Runtime content" })
+  await act(async () => pending(new Response(null, { status })))
+
+  expect(screen.getByRole("main", { name: "Runtime content" })).toBeVisible()
+  expect(screen.queryByRole("heading", { name: "Sign in to this Runtime" })).not.toBeInTheDocument()
+})
