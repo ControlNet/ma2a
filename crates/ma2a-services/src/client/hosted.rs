@@ -75,9 +75,14 @@ pub async fn call<R: AsyncRead + Unpin>(
 /// Reads one `logs` answer of at most `max` bytes, the request's `max_bytes`, writing stdout
 /// and stderr to their sinks as they arrive.
 ///
+/// After an accept, every byte's cursor is known: the read starts at `start`, each record moves
+/// the cursor by its length, and a skip moves it forward to the cursor it names. The reply's
+/// `next` must be where those bytes ended.
+///
 /// # Errors
 /// Returns the refusal, the failed outcome, a local write failure, or the stream failure; an
-/// answer longer than `max` fails before its excess reaches either sink.
+/// answer longer than `max` fails before its excess reaches either sink, and one whose skip
+/// goes back or whose `next` is not where its bytes ended is a stream failure.
 pub async fn logs<R, O, E>(
     reader: &mut FrameReader<R>,
     (output, error): (&mut O, &mut E),
@@ -94,6 +99,11 @@ where
         First::Finished(frame) => (None, frame),
         First::Accepted(frame) => (Some(accepted(&frame)?), next(reader).await?),
     };
+    // Where the bytes read so far end; unknown for an answer from replay.
+    let mut reached = match accept {
+        Some(ProcessAccept::Reading { start, .. }) => Some(start),
+        _ => None,
+    };
     loop {
         match frame.kind() {
             FrameKind::Data => {
@@ -102,9 +112,15 @@ where
                     .checked_sub(bytes.len())
                     .ok_or(ClientError::Stream(ServiceError::InvalidInput))?;
                 deliver(&frame, (&mut *output, Some(&mut *error))).await?;
+                let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                reached = reached.map(|reached| reached.saturating_add(length));
             }
             FrameKind::Control => {
-                gaps.record(&frame)?;
+                let cursor = gaps.record(&frame)?;
+                if reached.is_some_and(|reached| cursor < reached) {
+                    return Err(ClientError::Stream(ServiceError::InvalidInput));
+                }
+                reached = reached.map(|_| cursor);
             }
             FrameKind::Outcome => break,
             _ => return Err(unexpected(&frame)),
@@ -114,6 +130,9 @@ where
     output.flush().await?;
     error.flush().await?;
     match reply(&frame)? {
+        ProcessReply::Logs(next, _) if reached.is_some_and(|reached| next != reached) => {
+            Err(ClientError::Stream(ServiceError::InvalidInput))
+        }
         ProcessReply::Logs(next, ended) => Ok(LogsRead {
             accept,
             next,

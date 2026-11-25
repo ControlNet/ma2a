@@ -200,7 +200,10 @@ Process and its supervisor have ended.
 3. If retention removed output while reading, a `control` Skipped frame reports the new cursor
    before any further data.
 4. The outcome is Logs with `next`, the cursor to continue from. `ended` is `true` once the
-   Process is terminal and `next` has reached the window's `end`.
+   Process is terminal and `next` has reached the window's `end`. `next` is always where the
+   bytes sent ended: `start` plus every byte after it, counted from the latest Skipped cursor
+   once there is one. The caller refuses an answer whose `next` is anywhere else, or whose
+   Skipped cursor goes back, and a follow-up read that starts before the cursor it asked for.
 
 **`attach`.** This follows a Process that is `starting` or `running`. Any other state is
 `reject(not_running)`, and a terminal Process is read with `logs` instead.

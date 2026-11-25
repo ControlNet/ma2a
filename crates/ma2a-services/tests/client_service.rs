@@ -14,7 +14,8 @@ use std::{
 use ma2a_core::service::{
     Channel, DescribePage, DirEntry, EMPTY_ACCEPT, FileKind, FileMetadata, FilesOutcome,
     FilesRequest, FilesResult, FrameKind, LogWindow, ProcessAccept, ProcessReply, ProcessState,
-    RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome, failed_outcome,
+    RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome, encode_skipped,
+    failed_outcome,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
@@ -278,6 +279,74 @@ async fn a_logs_answer_longer_than_requested_is_refused_before_its_excess() -> T
         (output.as_slice(), error.as_slice()),
         (&b"abc"[..], &b""[..])
     );
+    Ok(())
+}
+
+/// One record a scripted `logs` answer sends: output bytes, or a skip to a cursor.
+enum Sent {
+    Data(usize),
+    Skipped(u64),
+}
+
+/// Reads one `logs` answer that starts at `start`, sends `sent`, and replies `next`.
+async fn logs_answer(start: u64, sent: &[Sent], next: u64) -> TestResult<Result<u64, ClientError>> {
+    let ((mut reader, _writer), (_service_reader, mut service_writer)) = pipe();
+    let accept = ProcessAccept::Reading {
+        state: ProcessState::Running,
+        start,
+        window: LogWindow::new(start, start + 1000),
+        truncated: false,
+    };
+    service_writer
+        .frame(FrameKind::Accept, &accept.encode()?)
+        .await?;
+    for record in sent {
+        match record {
+            Sent::Data(length) => {
+                service_writer
+                    .data(Channel::Output, &vec![b'x'; *length])
+                    .await?;
+            }
+            Sent::Skipped(cursor) => {
+                service_writer
+                    .frame(FrameKind::Control, &encode_skipped(*cursor)?)
+                    .await?;
+            }
+        }
+    }
+    let reply = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(next, false)))?;
+    service_writer.frame(FrameKind::Outcome, &reply).await?;
+    service_writer.flush().await?;
+    let (mut output, mut error) = (Vec::new(), Vec::new());
+    let read = within(hosted::logs(&mut reader, (&mut output, &mut error), 4096)).await?;
+    Ok(read.map(|read| read.next))
+}
+
+#[tokio::test]
+async fn a_logs_cursor_must_follow_the_bytes_sent() -> TestResult {
+    // A cursor is the start plus every byte sent since, restarting at each skip.
+    assert_eq!(logs_answer(500, &[Sent::Data(100)], 600).await??, 600);
+    assert_eq!(logs_answer(500, &[], 500).await??, 500);
+    let skipped = [Sent::Data(10), Sent::Skipped(700), Sent::Data(5)];
+    assert_eq!(logs_answer(500, &skipped, 705).await??, 705);
+
+    for (start, sent, next) in [
+        // Behind the start: from `start` or `now`, the next read would print skipped history.
+        (500, vec![Sent::Data(100)], 100),
+        (500, vec![], 0),
+        // Bytes were printed but the cursor stayed, so following would print them again.
+        (100, vec![Sent::Data(50)], 100),
+        // Ahead of the bytes sent: output in between would never be printed.
+        (100, vec![Sent::Data(50)], 200),
+        // A skip that goes back.
+        (500, vec![Sent::Skipped(400)], 400),
+    ] {
+        let read = logs_answer(start, &sent, next).await?;
+        assert!(
+            matches!(read, Err(ClientError::Stream(ServiceError::InvalidInput))),
+            "start {start}, next {next}: {read:?}"
+        );
+    }
     Ok(())
 }
 
