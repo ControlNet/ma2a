@@ -50,7 +50,13 @@ pub(super) async fn execute(
         }
         ProcessCommand::Delete(_, id) => {
             manager.delete(None, id).await.map_err(refusal)?;
-            let (record, _) = manager.details(None, id).await.map_err(refusal)?;
+            // Only the archived record: a log left behind must not turn a committed deletion
+            // into a failure.
+            let record = manager
+                .local_record(id)
+                .await
+                .map_err(refusal)?
+                .ok_or_else(|| refusal(ServiceError::UnknownProcess))?;
             committed(
                 manager,
                 CommandResult::process_deleted(ProcessView::new(record)),

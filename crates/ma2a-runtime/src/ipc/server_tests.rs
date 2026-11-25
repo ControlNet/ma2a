@@ -28,6 +28,8 @@ mod large_snapshot;
 mod lifecycle;
 #[path = "server_tests/pending_replay.rs"]
 mod pending_replay;
+#[path = "server_tests/process_delete.rs"]
+mod process_delete;
 #[path = "server_tests/services.rs"]
 mod services;
 #[path = "server_tests/stream_plane.rs"]
