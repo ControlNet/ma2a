@@ -43,7 +43,8 @@ pub(super) fn format(at_ms: u64) -> String {
 }
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fraction]Z` into Unix milliseconds; `None` when malformed
-/// or before 1970.
+/// or before 1970. A finer fraction rounds up to the next millisecond, since the result is a
+/// lower bound on stored milliseconds: a task at `.123` is before `.1239`.
 pub(super) fn parse(text: &str) -> Option<u64> {
     let text = text.strip_suffix('Z')?;
     let (date, clock) = text.split_once('T')?;
@@ -81,9 +82,12 @@ pub(super) fn parse(text: &str) -> Option<u64> {
         return None;
     }
     let millis = format!("{fraction:0<3}").get(..3)?.parse::<i64>().ok()?;
+    let finer = fraction
+        .get(3..)
+        .is_some_and(|rest| rest.bytes().any(|byte| byte != b'0'));
     let seconds =
         days_from_civil(year, month, day) * 86_400 + hours * 3_600 + minutes * 60 + seconds;
-    u64::try_from(seconds * 1_000 + millis).ok()
+    u64::try_from(seconds * 1_000 + millis + i64::from(finer)).ok()
 }
 
 #[cfg(test)]
@@ -103,6 +107,14 @@ mod tests {
         assert_eq!(parse("2000-02-29T00:00:00Z"), Some(951_782_400_000));
         assert_eq!(parse("2000-02-29T00:00:00.1Z"), Some(951_782_400_100));
         assert_eq!(parse("2024-02-29T00:00:00Z"), Some(1_709_164_800_000));
+        // A lower bound between two milliseconds rounds up, so no earlier task passes it.
+        assert_eq!(parse("2026-01-01T00:00:00.123Z"), Some(1_767_225_600_123));
+        assert_eq!(parse("2026-01-01T00:00:00.1230Z"), Some(1_767_225_600_123));
+        assert_eq!(parse("2026-01-01T00:00:00.1239Z"), Some(1_767_225_600_124));
+        assert_eq!(
+            parse("2026-01-01T00:00:00.0000001Z"),
+            Some(1_767_225_600_001)
+        );
         for malformed in [
             "2000-02-29",
             "2000-13-01T00:00:00Z",

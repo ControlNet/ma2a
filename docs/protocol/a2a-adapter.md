@@ -169,7 +169,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 - **Filters**, all optional:
   - `contextId`: the task;
   - `status`: an A2A `TaskState`;
-  - `statusTimestampAfter`: ISO 8601 UTC.
+  - `statusTimestampAfter`: ISO 8601 UTC; keeps tasks whose status last changed at or after it. Tasks are timed to the millisecond, so a finer timestamp counts from the next millisecond.
   - Absent, null, or empty filters nothing. A filter or `pageToken` that is not a string answers `-32602`, and every parameter is checked before any task is read.
 - **Paging.**
   - `pageSize` is 1–100, default 50.
