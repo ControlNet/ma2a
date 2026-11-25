@@ -662,3 +662,53 @@ async fn a_detached_answer_only_completes_or_cancels() -> TestResult {
     }
     Ok(())
 }
+
+/// A writer whose writes go through and whose flushes after the first never finish.
+struct FlushesOnce<W>(W, bool);
+
+impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for FlushesOnce<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.1 {
+            return Poll::Pending;
+        }
+        self.1 = true;
+        Pin::new(&mut self.0).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(context)
+    }
+}
+
+#[tokio::test]
+async fn a_failed_local_read_is_reported_when_the_outcome_comes_first() -> TestResult {
+    // Given: local input that fails after one chunk, and a caller stream whose flush of the
+    // detach is still pending when the target answers it.
+    let wrap = |writer| FlushesOnce(writer, false);
+
+    // When
+    let (attached, kinds) =
+        attach_writing_through(FailsAfter(Some(b"ab")), wrap, EndReason::Cancelled).await?;
+
+    // Then: the failed read is still the answer.
+    assert_eq!(kinds, [FrameKind::Data, FrameKind::Cancel]);
+    assert!(
+        matches!(attached, Err(ClientError::Local(_))),
+        "{attached:?}"
+    );
+    Ok(())
+}

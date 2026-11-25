@@ -81,16 +81,18 @@ where
     } = local;
     let lost = Notify::new();
     let outbound = outbound(reader, (output, error), (&lost, start));
+    // A failed local read is kept even when the outcome arrives before the detach is sent.
+    let mut unread = None;
     // Once detached, nothing more is sent; the outcome still follows.
-    let ((frame, gaps, reached, unwritten), unread) = if detached {
-        (outbound.await?, None)
+    let (frame, gaps, reached, unwritten) = if detached {
+        outbound.await?
     } else {
-        let inbound = inbound(writer, (input, detach), &lost);
+        let inbound = inbound(writer, (input, detach), (&lost, &mut unread));
         tokio::pin!(outbound, inbound);
         tokio::select! {
             biased;
-            read = &mut outbound => (read?, None),
-            failed = &mut inbound => (outbound.await?, failed),
+            read = &mut outbound => read?,
+            () = &mut inbound => outbound.await?,
         }
     };
     let attached = attached((Some(accept), &frame), (id, Some(reached)), gaps)?;
@@ -100,20 +102,18 @@ where
 }
 
 /// Caller → target: stdin until EOF, then at most one `cancel` on detach, lost output, or a
-/// failed local read, which it returns.
+/// failed local read, which it keeps in `unread`.
 async fn inbound<W, I, D>(
     writer: &mut FrameWriter<W>,
     (mut input, detach): (Option<I>, D),
-    lost: &Notify,
-) -> Option<std::io::Error>
-where
+    (lost, unread): (&Notify, &mut Option<std::io::Error>),
+) where
     W: AsyncWrite + Unpin,
     I: AsyncRead + Unpin,
     D: Future<Output = ()>,
 {
     tokio::pin!(detach);
     let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
-    let mut failed = None;
     loop {
         let reading = input.is_some();
         tokio::select! {
@@ -125,7 +125,7 @@ where
                 let read = match read {
                     Ok(read) => read,
                     Err(error) => {
-                        failed = Some(error);
+                        *unread = Some(error);
                         break;
                     }
                 };
@@ -147,7 +147,6 @@ where
         writer.flush().await
     }
     .await;
-    failed
 }
 
 /// What the target sent until its outcome: the outcome, the gaps, the cursor reached, and the
