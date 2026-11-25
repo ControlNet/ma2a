@@ -10,7 +10,7 @@ use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client::hosted;
 use serde_json::{Value, json};
 
-use super::{duration_ms, hosted_stream, hosted_view, open, open_as};
+use super::{READ_DEADLINE, bounded, duration_ms, hosted_stream, hosted_view, open, open_as};
 use crate::{
     AppError,
     cli::processes::{ProcessArgs, ProcessCommand, StartArgs},
@@ -54,9 +54,23 @@ pub(crate) async fn run(
         }
         ProcessCommand::Delete { id } => ProcessRequest::Delete(process_id(&id)?),
     };
-    let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
-    let (accept, reply) = hosted::call(&mut reader).await?;
-    drop(writer);
+    // Only a read gives up on a target that does not answer in time: a change the target
+    // may have applied is never reported as timed out.
+    let read_only = matches!(
+        request,
+        ProcessRequest::List(_) | ProcessRequest::Inspect(_)
+    );
+    let answered = async {
+        let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
+        let answer = hosted::call(&mut reader).await?;
+        drop(writer);
+        Ok(answer)
+    };
+    let (accept, reply) = if read_only {
+        bounded(READ_DEADLINE, answered).await?
+    } else {
+        answered.await?
+    };
     print(&hosted_view::reply(accept, &reply))
 }
 

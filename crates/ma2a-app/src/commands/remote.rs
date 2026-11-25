@@ -17,6 +17,8 @@ use crate::{
 };
 
 pub(crate) mod agent;
+#[cfg(all(test, unix))]
+mod deadline_tests;
 pub(crate) mod files;
 pub(crate) mod hosted;
 mod hosted_stream;
@@ -24,6 +26,8 @@ mod hosted_view;
 pub(crate) mod process;
 pub(crate) mod proxy;
 pub(crate) mod service;
+#[cfg(all(test, unix))]
+mod silent_target;
 mod transfer;
 
 /// The caller's frame halves of one opened operation.
@@ -40,6 +44,10 @@ impl From<ClientError> for AppError {
         }
     }
 }
+
+/// Longest wait for a read-only remote operation, dial included, so a target that never
+/// answers fails the command rather than holding it forever.
+const READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Runs `read` under `deadline`, failing as `timed_out` once it passes.
 async fn bounded<T>(

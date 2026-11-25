@@ -12,7 +12,7 @@ use ma2a_services::client::{
     process::ProcessIo,
 };
 
-use super::{hosted::Target, hosted_view, open, process::interrupted};
+use super::{READ_DEADLINE, bounded, hosted::Target, hosted_view, open, process::interrupted};
 use crate::AppError;
 
 /// Prints retained output from `from`; with `follow`, then attaches until the Process ends.
@@ -62,9 +62,13 @@ async fn read_retained(
     loop {
         reads += 1;
         let request = ProcessRequest::Logs(id, from, MAX_LOGS_READ);
-        let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
-        let read = hosted::logs(&mut reader, (&mut output, &mut error), MAX_LOGS_READ).await?;
-        drop(writer);
+        let read = bounded(READ_DEADLINE, async {
+            let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
+            let read = hosted::logs(&mut reader, (&mut output, &mut error), MAX_LOGS_READ).await;
+            drop(writer);
+            Ok(read?)
+        })
+        .await?;
         if let Some(ProcessAccept::Reading {
             start,
             window,

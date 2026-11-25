@@ -264,7 +264,13 @@ restart.
 | Proxy | 64 | 256 | idle ≤ 1 h, lifetime 24 h |
 
 `ma2a file` waits at most 30 seconds for each Files operation, twice the host's bound, and fails
-with `timed_out` after that, so a target that never answers cannot hang the command.
+with `timed_out` after that, so a target that never answers cannot hang the command. The other
+read-only remote commands wait the same 30 seconds, dial included: `ma2a agent discover`,
+`tasks`, `task`, and the final view of `submit --wait`; `ma2a process list`, `inspect`, and each
+read of `process logs`; and the answer to `ma2a file get` and `ma2a agent artifact`, whose
+content then takes as long as it needs. A command that changes something on the target waits
+for its answer without this deadline, so a change the target applied is never reported as
+timed out.
 
 A stream over a bound is rejected with `concurrency_exceeded` before any byte is read. The
 `open` frame must arrive within 15 seconds. Permits are RAII and released on every exit path.

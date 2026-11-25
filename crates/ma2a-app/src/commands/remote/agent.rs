@@ -13,7 +13,7 @@ use ma2a_runtime::{
 use ma2a_services::client::{self, ClientError};
 use serde_json::{Value, json};
 
-use super::{open, open_as};
+use super::{READ_DEADLINE, bounded, open, open_as};
 use crate::{
     AppError,
     cli::agents::{AgentCommand, MessageArgs, SubmitArgs, TaskTarget},
@@ -119,7 +119,8 @@ pub(crate) async fn run(target: Target<'_>, command: AgentCommand) -> Result<(),
         }
         AgentCommand::Cancel(task) => {
             let (agent, task) = named(&task)?;
-            AgentRequest::Cancel(agent, task)
+            let body = OpenBody::Agent(AgentRequest::Cancel(agent, task));
+            return print(&view(&call(target, body, None).await?.1));
         }
         AgentCommand::Artifact {
             target: task,
@@ -137,9 +138,15 @@ pub(crate) async fn run(target: Target<'_>, command: AgentCommand) -> Result<(),
             ));
         }
     };
-    print(&view(
-        &call(target, OpenBody::Agent(request), None).await?.1,
-    ))
+    print(&view(&read(target, OpenBody::Agent(request)).await?))
+}
+
+/// Runs one read-only operation, which gives up on a target that does not answer in time.
+async fn read(target: Target<'_>, body: OpenBody) -> Result<AgentReply, AppError> {
+    bounded(READ_DEADLINE, async {
+        Ok(call(target, body, None).await?.1)
+    })
+    .await
 }
 
 async fn call(
@@ -169,7 +176,7 @@ async fn submit(target: Target<'_>, arguments: SubmitArgs) -> Result<(), AppErro
     if arguments.wait {
         follow(target, (agent.clone(), summary.id), None).await?;
         let body = OpenBody::Agent(AgentRequest::Get(agent, summary.id));
-        print(&view(&call(target, body, None).await?.1))?;
+        print(&view(&read(target, body).await?))?;
     }
     Ok(())
 }
@@ -229,8 +236,13 @@ async fn artifact(
 ) -> Result<(), AppError> {
     crate::commands::agent_artifact::refuse_existing(output)?;
     let request = AgentRequest::Artifact(agent, task, name.clone(), 0, None);
-    let (mut reader, _writer) = open(target.0, target.1, OpenBody::Agent(request)).await?;
-    let identity = client::transfer::download_accepted(&mut reader).await?;
+    // Only the answer is bounded; content may take as long as it takes to arrive.
+    let (mut reader, _writer, identity) = bounded(READ_DEADLINE, async {
+        let (mut reader, writer) = open(target.0, target.1, OpenBody::Agent(request)).await?;
+        let identity = client::transfer::download_accepted(&mut reader).await?;
+        Ok((reader, writer, identity))
+    })
+    .await?;
     let source = format!("remote agent task {task} artifact {name}");
     let mut partial = client::resume::Partial::open(output, &source, false).await?;
     if let Err(error) = partial.begin(identity).await {

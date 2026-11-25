@@ -5,7 +5,7 @@ use std::{io, path::Path};
 use ma2a_core::service::{OpenBody, ServiceError, TransferRequest, TransferResource, WriteMode};
 use ma2a_services::client::{self, ClientError, resume::Partial};
 
-use super::{open, remote_path};
+use super::{READ_DEADLINE, bounded, open, remote_path};
 use crate::AppError;
 
 type Target<'a> = (&'a ma2a_runtime::ipc::IpcPaths, &'a str);
@@ -76,16 +76,24 @@ pub(super) async fn get(
     })
 }
 
-/// Runs one download attempt; the outer error means the stream never opened.
+/// Runs one download attempt; the outer error means the stream never opened or the target
+/// did not answer in time.
 async fn attempt(
     (paths, endpoint): Target<'_>,
     resource: &TransferResource,
     partial: &mut Partial,
 ) -> Result<Result<(), ClientError>, AppError> {
     let request = TransferRequest::Get(resource.clone(), partial.offset(), partial.identity());
-    let (mut reader, _writer) = open(paths, endpoint, OpenBody::Transfer(request)).await?;
+    // Only the answer is bounded; content may take as long as it takes to arrive. A refusal
+    // stays the attempt's own result, so a changed source still restarts the download.
+    let (mut reader, _writer, accepted) = bounded(READ_DEADLINE, async {
+        let (mut reader, writer) = open(paths, endpoint, OpenBody::Transfer(request)).await?;
+        let accepted = client::transfer::download_accepted(&mut reader).await;
+        Ok((reader, writer, accepted))
+    })
+    .await?;
     Ok(async {
-        let identity = client::transfer::download_accepted(&mut reader).await?;
+        let identity = accepted?;
         partial.begin(identity).await?;
         let offset = partial.offset();
         client::transfer::download_content(&mut reader, partial.sink(), (identity, offset)).await?;
