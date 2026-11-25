@@ -42,6 +42,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 pub(crate) use host::serve;
 pub(crate) use maintain::run;
 pub(crate) use operator::AgentSpec;
+pub(crate) use tasks::Sent;
 
 use crate::{RuntimeClock, ipc::IpcPaths, processes::ProcessManager, store::StoreClient};
 

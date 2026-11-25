@@ -198,7 +198,11 @@ to an instance follows. For a retry, it is the existing task as it now is. See
 **`send`.** This records one more message from the creator and delivers it to the Agent. The task
 may be `queued`, `running`, or `waiting`. A message sent to a queued task is delivered together
 with the task when it is assigned. A terminal task, or one whose cancellation was already
-requested, is `reject(task_ended)`. The outcome is the Summary.
+requested, is `reject(task_ended)`. The outcome is the Summary. A message that would take the task
+past its durable-event bound fails the task with `limit` instead of reaching it; that send took
+effect, so it is answered `accept` Admitted and then the outcome error `task_ended`, not a
+rejection. The local API answers it `conflict` as a committed failure, so its request ID is not
+released for another try.
 
 **`get`.** This returns Details.
 

@@ -23,6 +23,16 @@ use super::{AgentManager, convert::valid_data, fault, visible};
 /// Who asks (`None` is the local operator) and the Agent the operation names, if any.
 pub(crate) type Viewer<'a> = (Option<EndpointId>, Option<&'a AgentId>);
 
+/// What a creator's message did to its live task.
+#[derive(Debug)]
+pub(crate) enum Sent {
+    /// The message reached the task; the task as it now is.
+    Delivered(Box<AgentTaskRecord>),
+    /// The task already held as many durable events as it may, so the message failed it
+    /// instead, committed at this revision: the task ended because of this send.
+    FailedTask(u64),
+}
+
 /// Fingerprints a canonical submission; a retry must send exactly the same bytes.
 fn fingerprint(submit: &AgentSubmit) -> Result<[u8; 32], ServiceError> {
     let bytes = submit.to_bytes().map_err(|_| ServiceError::InvalidInput)?;
@@ -103,18 +113,22 @@ impl AgentManager {
         &self,
         viewer: Viewer<'_>,
         (task, message): (AgentTaskId, AgentMessage),
-    ) -> Result<AgentTaskRecord, ServiceError> {
+    ) -> Result<Sent, ServiceError> {
         user_message(&message)?;
         self.visible_task(viewer, task).await?;
         let at_ms = self.now_ms();
         match self
-            .commit(move |repository| repository.send_agent_message(task, (&message, at_ms)))
+            .commit_at(move |repository| repository.send_agent_message(task, (&message, at_ms)))
             .await?
         {
-            AgentTaskChange::Changed(record) => Ok(*record),
-            AgentTaskChange::Ended(_) => Err(ServiceError::TaskEnded),
-            AgentTaskChange::Refused => Err(ServiceError::ConcurrencyExceeded),
-            AgentTaskChange::Missing => Err(ServiceError::UnknownTask),
+            (AgentTaskChange::Changed(record), _) => Ok(Sent::Delivered(record)),
+            (AgentTaskChange::Failed(_), revision) => {
+                self.task_ended(task);
+                Ok(Sent::FailedTask(revision))
+            }
+            (AgentTaskChange::Ended(_), _) => Err(ServiceError::TaskEnded),
+            (AgentTaskChange::Refused, _) => Err(ServiceError::ConcurrencyExceeded),
+            (AgentTaskChange::Missing, _) => Err(ServiceError::UnknownTask),
         }
     }
 
@@ -156,7 +170,9 @@ impl AgentManager {
             .commit(move |repository| repository.request_agent_cancel(task, (reason, at_ms)))
             .await?;
         match changed {
-            AgentTaskChange::Changed(record) | AgentTaskChange::Ended(record) => {
+            AgentTaskChange::Changed(record)
+            | AgentTaskChange::Ended(record)
+            | AgentTaskChange::Failed(record) => {
                 if record.summary.state.is_terminal() {
                     self.task_ended(task);
                 }

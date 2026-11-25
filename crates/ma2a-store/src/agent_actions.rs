@@ -28,6 +28,9 @@ pub enum AgentTaskChange {
     Changed(Box<AgentTaskRecord>),
     /// The task has already ended; nothing changed.
     Ended(Box<AgentTaskRecord>),
+    /// The task already held as many durable events as it may, so instead of recording the
+    /// action this failed the task; the task as it now is.
+    Failed(Box<AgentTaskRecord>),
     /// The task cannot take this action now: a bound is reached, or the name is taken.
     Refused,
     /// No such task exists.
@@ -98,7 +101,7 @@ impl Repository {
         let body = AgentEventBody::Message(message.clone());
         let Some(seq) = record_durable_event(&transaction, task, (body, at_ms))? else {
             // Past the event bound the message was dropped and the task failed instead.
-            return finish(transaction, (task, true), AgentTaskChange::Ended);
+            return finish(transaction, (task, true), AgentTaskChange::Failed);
         };
         deliver_to_holder(&transaction, &record, &AgentDelivery::Message(task, seq))?;
         finish(transaction, (task, true), AgentTaskChange::Changed)
@@ -239,7 +242,7 @@ fn add_artifact(
     // The event comes first: a task it fails at its bound publishes nothing.
     let body = AgentEventBody::Artifact(artifact.clone());
     if record_durable_event(&transaction, task, (body, at_ms))?.is_none() {
-        return finish(transaction, (task, true), AgentTaskChange::Ended);
+        return finish(transaction, (task, true), AgentTaskChange::Failed);
     }
     transaction.execute(
         "INSERT INTO agent_artifacts (task_id, name, position, media_type, size, blake3)

@@ -196,7 +196,7 @@ impl AgentManager {
             .await?
         {
             AgentTaskChange::Changed(_) => Ok(artifact),
-            AgentTaskChange::Ended(_) => Err(ServiceError::TaskEnded),
+            AgentTaskChange::Ended(_) | AgentTaskChange::Failed(_) => Err(ServiceError::TaskEnded),
             AgentTaskChange::Refused => Err(ServiceError::Conflict),
             AgentTaskChange::Missing => Err(ServiceError::UnknownTask),
         }

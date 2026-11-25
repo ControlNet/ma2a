@@ -428,3 +428,35 @@ async fn a_watch_hears_its_cancellation_while_history_is_still_sent() -> TestRes
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_message_that_fails_its_task_at_the_event_bound_is_a_committed_send() -> TestResult {
+    // Given: a running task with room for no more durable events.
+    let live = Live::new().await?;
+    let mut repository = Repository::open(&live.config)?;
+    for cursor in 0..u64::from(ma2a_store::MAX_DURABLE_EVENTS) - 2 {
+        let output = AgentOutput {
+            agent: live.agent.clone(),
+            generation: live.generation,
+            cursor: 10 + cursor,
+            at_ms: 3_000,
+        };
+        let note = AgentMessage::text(MessageRole::Agent, "note")?;
+        repository.apply_agent_output(&output, AgentOutputEffect::Message(live.task, note))?;
+    }
+    let before = repository.revision()?;
+
+    // When: the operator sends one more message.
+    let message = AgentMessage::text(MessageRole::User, "more")?;
+    let sent = live.manager.send((None, None), (live.task, message)).await;
+
+    // Then: the send is answered as having failed the task at the revision it committed, not
+    // as a send to a task that had already ended.
+    let after = repository.revision()?;
+    let state = repository.agent_task(live.task)?.ok_or("missing")?.summary;
+    live.finish().await?;
+    assert!(matches!(sent, Ok(super::Sent::FailedTask(revision)) if revision == after));
+    assert_eq!(after, before + 1);
+    assert_eq!(state.reason, Some(AgentTaskReason::Limit));
+    Ok(())
+}

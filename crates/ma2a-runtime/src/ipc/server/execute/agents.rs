@@ -97,11 +97,19 @@ pub(super) async fn execute(
             CommandResult::agent_task_submitted(&record.summary, existing)
         }
         AgentCommand::Send(_, task, message) => {
-            let record = manager
+            match manager
                 .send(OPERATOR, (*task, message.clone()))
                 .await
-                .map_err(refusal)?;
-            CommandResult::agent_task_sent(&record.summary)
+                .map_err(refusal)?
+            {
+                crate::agents::Sent::Delivered(record) => {
+                    CommandResult::agent_task_sent(&record.summary)
+                }
+                // The send ended the task, so its request stays bound to that commit.
+                crate::agents::Sent::FailedTask(revision) => {
+                    return Err(refusal(ServiceError::TaskEnded).after_commit(revision));
+                }
+            }
         }
         AgentCommand::Cancel(_, task) => {
             let record = manager

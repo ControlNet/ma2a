@@ -505,9 +505,13 @@ fn a_message_sent_past_the_durable_event_bound_reports_the_task_ended() -> TestR
         .send_agent_message(task, (&text(MessageRole::User, "more")?, 900))?
         .into_value();
 
-    // Then: the sender learns the task ended instead of that its message went through, and
-    // the Agent waiting for that message is told to stop.
-    assert!(matches!(sent, AgentTaskChange::Ended(_)), "{sent:?}");
+    // Then: the sender learns its message failed the task instead of going through, which
+    // tells it apart from a send to a task that had already ended, and the Agent waiting for
+    // that message is told to stop.
+    assert!(
+        matches!(&sent, AgentTaskChange::Failed(record) if record.summary.state.is_terminal()),
+        "{sent:?}"
+    );
     told_to_stop(&repository, (generation, task))
 }
 
@@ -633,7 +637,7 @@ fn an_artifact_over_the_event_bound_is_not_published() -> TestResult {
         .publish_agent_artifact((task, ("publish", b"{\"ok\":1}")), (&late, 900))?
         .into_value();
     assert!(
-        matches!(published, AgentTaskChange::Ended(_)),
+        matches!(published, AgentTaskChange::Failed(_)),
         "{published:?}"
     );
     assert!(repository.agent_artifacts(task)?.is_empty());

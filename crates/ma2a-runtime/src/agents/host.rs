@@ -38,12 +38,17 @@ where
             Err(error) => refuse(writer, error).await,
         },
         AgentRequest::Send(agent, task, message) => {
-            let sent = manager.send(viewer(&agent), (task, message)).await;
-            answer(
-                writer,
-                sent.map(|record| AgentReply::Summary(record.summary)),
-            )
-            .await
+            match manager.send(viewer(&agent), (task, message)).await {
+                Ok(super::Sent::Delivered(record)) => {
+                    answer(writer, Ok(AgentReply::Summary(record.summary))).await
+                }
+                // The send took effect, by ending the task, so it is admitted, not refused.
+                Ok(super::Sent::FailedTask(_)) => {
+                    let ended = Err(ServiceError::TaskEnded);
+                    respond(writer, AgentAccept::Admitted, ended).await
+                }
+                Err(error) => answer(writer, Err(error)).await,
+            }
         }
         AgentRequest::Get(agent, task) => {
             let details = manager.details(viewer(&agent), task).await;
