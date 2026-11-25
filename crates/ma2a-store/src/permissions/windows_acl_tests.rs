@@ -1,12 +1,13 @@
 use std::path::Path;
 
-use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+use windows_sys::Win32::{
+    Security::{CONTAINER_INHERIT_ACE, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE},
+    Storage::FileSystem::{FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ},
 };
 
 use super::{
-    PathKind, apply_windows_acl, validate_local_absolute, validate_private_file, windows_acl,
-    windows_sid,
+    PathKind, apply_windows_acl, validate_local_absolute, validate_private_file,
+    validate_private_path, windows_acl, windows_sid,
 };
 use crate::StoreError;
 
@@ -14,11 +15,11 @@ use crate::StoreError;
 /// SYSTEM with full control when `system`.
 fn set_rules(path: &Path, rights: u32, system: bool) -> std::io::Result<()> {
     let (user, local_system) = (windows_sid::current_user()?, windows_sid::local_system()?);
-    let mut rules = vec![(rights, &user)];
+    let mut rules = vec![(rights, 0, &user)];
     if system {
-        rules.push((FILE_ALL_ACCESS, &local_system));
+        rules.push((FILE_ALL_ACCESS, 0, &local_system));
     }
-    windows_acl::set_owner_and_dacl(&windows_acl::open(path, true)?, (&user, 0), &rules)
+    windows_acl::set_owner_and_dacl(&windows_acl::open(path, true)?, &user, &rules)
 }
 
 #[test]
@@ -62,4 +63,29 @@ fn only_a_path_on_a_drive_letter_counts_as_local() {
             "{remote}"
         );
     }
+}
+
+#[test]
+fn a_rule_for_children_alone_is_not_full_control_over_the_directory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::temp_dir().join(format!("ma2a-acl-children-{}", std::process::id()));
+    let _stale = std::fs::remove_dir_all(&path);
+    std::fs::create_dir(&path)?;
+    let (user, system) = (windows_sid::current_user()?, windows_sid::local_system()?);
+    let inherit = CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE;
+    let set_system_flags = |flags| {
+        let rules = [
+            (FILE_ALL_ACCESS, inherit, &user),
+            (FILE_ALL_ACCESS, flags, &system),
+        ];
+        windows_acl::set_owner_and_dacl(&windows_acl::open(&path, true)?, &user, &rules)
+    };
+    // SYSTEM's full control applies to the directory's children only.
+    set_system_flags(inherit | INHERIT_ONLY_ACE)?;
+    assert!(validate_private_path(&path, "test", PathKind::Directory).is_err());
+    // The same rule, applying to the directory too, is the private ACL the Store sets.
+    set_system_flags(inherit)?;
+    validate_private_path(&path, "test", PathKind::Directory)?;
+    std::fs::remove_dir(&path)?;
+    Ok(())
 }

@@ -19,9 +19,9 @@ use windows_sys::Win32::{
         AddAccessAllowedAceEx,
         Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
         DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetLengthSid,
-        GetSecurityDescriptorControl, INHERITED_ACE, InitializeAcl, IsValidAcl, IsValidSid,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID, SE_DACL_PROTECTED,
+        GetSecurityDescriptorControl, INHERIT_ONLY_ACE, INHERITED_ACE, InitializeAcl, IsValidAcl,
+        IsValidSid, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
     },
     Storage::FileSystem::{
         FILE_ALL_ACCESS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL,
@@ -50,27 +50,28 @@ pub(super) fn open(path: &Path, write: bool) -> io::Result<File> {
 /// under a protected DACL; `inherit` carries the ACE flags a directory's children inherit by.
 pub(super) fn protect(file: &File, inherit: ACE_FLAGS) -> io::Result<()> {
     let (user, system) = (current_user()?, local_system()?);
-    let rules = [(FILE_ALL_ACCESS, &user), (FILE_ALL_ACCESS, &system)];
+    let rules = [
+        (FILE_ALL_ACCESS, inherit, &user),
+        (FILE_ALL_ACCESS, inherit, &system),
+    ];
     // Running as SYSTEM, the two are one account, granted once.
     let count = if user.is(system.as_ptr()) { 1 } else { 2 };
-    set_owner_and_dacl(
-        file,
-        (&user, inherit),
-        rules.get(..count).unwrap_or_default(),
-    )
+    set_owner_and_dacl(file, &user, rules.get(..count).unwrap_or_default())
 }
 
-/// Replaces the owner and the DACL with a protected list of Allow `rules`, each an access mask
-/// and the account it is granted to.
+/// Replaces the owner and the DACL with a protected list of Allow `rules`, each an access mask,
+/// the ACE flags its inheritance is set by, and the account it is granted to.
 pub(super) fn set_owner_and_dacl(
     file: &File,
-    (owner, inherit): (&Sid, ACE_FLAGS),
-    rules: &[(u32, &Sid)],
+    owner: &Sid,
+    rules: &[(u32, ACE_FLAGS, &Sid)],
 ) -> io::Result<()> {
     let ace_base = offset_of!(ACCESS_ALLOWED_ACE, SidStart);
-    let size = rules.iter().fold(mem::size_of::<ACL>(), |size, (_, sid)| {
-        size + ace_base + usize::try_from(sid.len()).unwrap_or(usize::MAX)
-    });
+    let size = rules
+        .iter()
+        .fold(mem::size_of::<ACL>(), |size, (_, _, sid)| {
+            size + ace_base + usize::try_from(sid.len()).unwrap_or(usize::MAX)
+        });
     let size = u32::try_from(size).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let mut storage = aligned_storage(size);
     let acl = storage.as_mut_ptr().cast::<ACL>();
@@ -79,10 +80,10 @@ pub(super) fn set_owner_and_dacl(
     if unsafe { InitializeAcl(acl, size, ACL_REVISION) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    for (mask, sid) in rules {
+    for (mask, inherit, sid) in rules {
         // SAFETY: [Category 8 - FFI boundary] `acl` was initialized above with room for this ACE
         // and `sid` is a valid live SID.
-        if unsafe { AddAccessAllowedAceEx(acl, ACL_REVISION, inherit, *mask, sid.as_ptr()) } == 0 {
+        if unsafe { AddAccessAllowedAceEx(acl, ACL_REVISION, *inherit, *mask, sid.as_ptr()) } == 0 {
             return Err(io::Error::last_os_error());
         }
     }
@@ -107,8 +108,8 @@ pub(super) fn set_owner_and_dacl(
 
 /// Whether the object `file` refers to is private: owned by the current user, SYSTEM, or the
 /// Administrators group, under a protected DACL of one or two explicit Allow rules, each granting
-/// every `FullControl` right to the current user or SYSTEM and together covering both (one
-/// principal when running as SYSTEM), with no inherited rule. Any other owner could rewrite the
+/// every `FullControl` right over the object itself to the current user or SYSTEM and together
+/// covering both (one principal when running as SYSTEM), with no inherited rule. Any other owner could rewrite the
 /// DACL; Administrators can take ownership anyway, and elevated sessions may make it the default
 /// owner of new objects.
 pub(super) fn is_private(file: &File) -> io::Result<bool> {
@@ -175,8 +176,8 @@ fn grants_only(dacl: *mut ACL, user: &Sid, system: &Sid) -> bool {
     user_seen && system_seen
 }
 
-/// The account an explicit Allow rule grants every `FullControl` right to, or `None` for any
-/// other rule.
+/// The account an explicit Allow rule grants every `FullControl` right over the object itself
+/// to, or `None` for any other rule, an inherit-only one that applies to children alone included.
 fn full_control_sid(dacl: *mut ACL, index: u32) -> Option<PSID> {
     let mut raw_ace = ptr::null_mut();
     // SAFETY: [Category 8 - FFI boundary] `dacl` is valid and `index` is below its AceCount;
@@ -190,7 +191,7 @@ fn full_control_sid(dacl: *mut ACL, index: u32) -> Option<PSID> {
     let sid_offset = offset_of!(ACCESS_ALLOWED_ACE, SidStart);
     let size = usize::from(header.AceSize);
     if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
-        || u32::from(header.AceFlags) & INHERITED_ACE != 0
+        || u32::from(header.AceFlags) & (INHERITED_ACE | INHERIT_ONLY_ACE) != 0
         || size < sid_offset + 8
     {
         return None;

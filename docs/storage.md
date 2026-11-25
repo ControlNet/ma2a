@@ -14,7 +14,7 @@ filesystem work directly on an async worker.
 2. Require current-user ownership and exact `0700` directory modes and `0600` database/key-file
    modes on Unix. Symlinks and unexpected file types are rejected.
 3. Require protected Windows DACLs with exactly the current user and SYSTEM holding explicit full
-   control. Inherited, broad, or remote access is rejected.
+   control over the object itself. Inherited, child-only, broad, or remote access is rejected.
 4. Reject `PRAGMA user_version` values newer than schema version 11 before changing journal mode
    or running a migration.
 5. Configure a five-second busy timeout, foreign-key enforcement, WAL, and `synchronous=FULL`.
