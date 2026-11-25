@@ -53,6 +53,9 @@ for mutation in \
   'exception-plus|.packages[0].licenseDeclared = "Apache-2.0 WITH LLVM-exception+"' \
   'none-plus|.packages[0].licenseDeclared = "NONE+"' \
   'unlicensed-plus|.packages[0].licenseDeclared = "UNLICENSED+"' \
+  'and-plus|.packages[0].licenseDeclared = "AND+"' \
+  'or-plus|.packages[0].licenseDeclared = "MIT AND OR+"' \
+  'with-plus|.packages[0].licenseDeclared = "WITH+"' \
   'lowercase-ref|.packages[0].licenseDeclared = "licenseref-custom"' \
   'newline|.packages[0].licenseDeclared = "MIT\nOR Apache-2.0"' \
   'trailing-newline|.packages[0].licenseDeclared = "MIT\n"' \

@@ -3,7 +3,8 @@
 # whitespace or control character refuses the expression. An identifier starts with a letter or
 # digit, and only a license identifier, not an exception, may end with "+". The identifiers are
 # not looked up in the SPDX list. A LicenseRef is refused, in any case, since the SBOM defines
-# none, and so are the words npm and the license report use for no license or an unknown one.
+# none, and so are the words npm and the license report use for no license or an unknown one. An
+# operator with "+" or in another case, such as "AND+" or "or", is no identifier either.
 def spdx_expression:
   [scan("[()]|[^ ()]+")] as $tokens
   | ($tokens | length > 0)
@@ -24,7 +25,7 @@ def spdx_expression:
           else "^[A-Za-z0-9][A-Za-z0-9.-]*$" end) | not)
         or ($token | test("^LicenseRef-"; "i"))
         or ($token | ascii_upcase | rtrimstr("+")
-          | IN("UNKNOWN", "UNLICENSED", "NOASSERTION", "NONE")) then
+          | IN("UNKNOWN", "UNLICENSED", "NOASSERTION", "NONE", "AND", "OR", "WITH")) then
         .ok = false
       else .with = (.expect == "term") | .expect = "operator" end)
     | .ok and .expect == "operator" and .depth == 0);
