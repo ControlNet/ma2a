@@ -118,7 +118,9 @@ compiled in, so it, and any package only it depends on, is not listed; a library
 with the program stays listed through the program's own path. Another platform's dependencies,
 build and dev dependencies, and workspace tools such as `xtask` are not listed either. The SBOM
 therefore describes what ships, not the full build toolchain; `Cargo.lock` at the archive's commit
-records that. Validation refuses an SBOM listing `xtask` or `serde_derive`, or missing `serde`, and one whose
+records that. Its frontend packages are the installed closure of the console's production
+dependencies, counting peers and installed optional dependencies; a frontend package with no
+stated license is declared `NOASSERTION`. Validation refuses an SBOM listing `xtask` or `serde_derive`, or missing `serde`, and one whose
 `documentNamespace` does not carry the SHA-256 of the archive's actual bytes, so an SBOM of
 another build with the same archive name is refused before it is attested. The dependency/license report must have both
 `rust` and `frontend` sections. The clean-room smoke logs only HTTP methods, paths, and statuses while proving failed unauthenticated

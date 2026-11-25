@@ -97,7 +97,8 @@ jq -n \
         downloadLocation: "NOASSERTION",
         filesAnalyzed: false,
         licenseConcluded: "NOASSERTION",
-        licenseDeclared: .value.license,
+        licenseDeclared: (.value.license
+          | if . == "UNKNOWN" then "NOASSERTION" else gsub("\\s*/\\s*"; " OR ") end),
         copyrightText: "NOASSERTION"
       });
   rust_packages as $rust |

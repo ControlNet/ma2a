@@ -13,10 +13,11 @@ trap 'rm -rf "$temporary"' EXIT
 cargo deny list --format json --layout crate > "$temporary/rust.json"
 # The pinned Bun has no license listing, so the production dependency closure is read from the
 # installed packages, resolving each dependency the way Node does, and grouped by license. An
-# optional dependency counts when it is installed, since it then ships like any other.
+# optional dependency counts when it is installed, since it then ships like any other. The script
+# is a module: the pinned Bun exits 0 without a word when a CommonJS script given to --eval throws.
 (cd web && bun --eval "$(cat <<'JS'
-const { existsSync, readFileSync } = require("node:fs");
-const { dirname, join } = require("node:path");
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 const manifest = (dir) => JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
 const resolve = (from, name, optional) => {
   for (let dir = from; ; dir = dirname(dir)) {
@@ -28,10 +29,15 @@ const resolve = (from, name, optional) => {
     }
   }
 };
-// A license is an SPDX string, a legacy {type} object, or a legacy list of either.
+// A license is an SPDX string, a legacy {type} object, or a legacy list of either. A blank or
+// malformed entry names no license.
+const named = (value) => {
+  const name = typeof value === "string" ? value : value?.type;
+  return typeof name === "string" ? name.trim() : "";
+};
 const license = ({ license, licenses }) =>
-  (typeof license === "string" ? license
-  : license?.type ?? (Array.isArray(licenses) ? licenses.map((l) => l?.type ?? l).join(" OR ") : ""))
+  named(license)
+  || (Array.isArray(licenses) ? licenses.map(named).filter(Boolean).join(" OR ") : "")
   || "UNKNOWN";
 const seen = new Map();
 const visit = (from, name, optional = false) => {
@@ -41,9 +47,16 @@ const visit = (from, name, optional = false) => {
   seen.set(dir, pkg);
   dependencies(dir, pkg);
 };
+// A dependency also listed as optional is optional. A peer is imported by the package that
+// names it, so it ships too; one marked optional counts only when installed.
 const dependencies = (dir, pkg) => {
-  for (const dep of Object.keys(pkg.dependencies ?? {})) visit(dir, dep);
-  for (const dep of Object.keys(pkg.optionalDependencies ?? {})) visit(dir, dep, true);
+  const optional = pkg.optionalDependencies ?? {};
+  const peers = pkg.peerDependenciesMeta ?? {};
+  for (const dep of Object.keys(pkg.dependencies ?? {})) visit(dir, dep, Object.hasOwn(optional, dep));
+  for (const dep of Object.keys(optional)) visit(dir, dep, true);
+  for (const dep of Object.keys(pkg.peerDependencies ?? {})) {
+    visit(dir, dep, peers[dep]?.optional === true);
+  }
 };
 dependencies(process.cwd(), manifest("."));
 const report = {};
