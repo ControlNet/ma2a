@@ -40,6 +40,7 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 | `…/tasks/{task}/artifacts/{name}` | `GET` | The content of one artifact; `name` is percent-encoded |
 
 - A malformed `agent` or `endpoint` segment answers `404`, and so does 64 hex characters that are no Ed25519 public key.
+- An `endpoint` that is this Runtime's own is refused by the Runtime as invalid input: `404` on the card and artifact routes, `-32602` on JSON-RPC. Use `/agents/{agent}` for its own Agents.
 - The JSON-RPC routes answer a call to an Agent the caller cannot use with an error, described below.
 - Request bodies are limited to 64 KiB.
 

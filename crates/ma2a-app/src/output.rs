@@ -25,7 +25,7 @@ pub(crate) fn reject_runtime_error(document: &Value) -> Result<(), AppError> {
             || format!("Runtime rejected the request: {error}"),
             |remediation| format!("Runtime rejected the request: {error}\n{remediation}"),
         );
-    Err(AppError::Protocol(message))
+    Err(AppError::Rejected(error.to_owned(), message))
 }
 
 pub(crate) fn write_human(document: &Value) -> io::Result<()> {

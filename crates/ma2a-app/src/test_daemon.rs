@@ -1,8 +1,9 @@
 //! A stand-in daemon for the remote calls: it completes the local handshake, opens every
 //! stream, writes the target's scripted frames on it, and then falls silent. An empty script
-//! stands for a target that accepted the stream and never said a word.
+//! stands for a target that accepted the stream and never said a word. Like a real daemon,
+//! it refuses a stream aimed at its own Endpoint as invalid input.
 
-use std::{fs::File, path::PathBuf};
+use std::{fmt::Write as _, fs::File, path::PathBuf};
 
 use ma2a_core::{
     EndpointId, RequestId,
@@ -55,6 +56,8 @@ pub(crate) struct Daemon {
     pub(crate) paths: IpcPaths,
     /// A well-formed Endpoint ID for the target.
     pub(crate) endpoint: String,
+    /// The stand-in Runtime's own Endpoint, which no stream may target.
+    pub(crate) own: String,
     pub(crate) state_dir: PathBuf,
     serving: JoinHandle<()>,
     /// Held like a running daemon holds it, so callers find one running.
@@ -87,12 +90,19 @@ impl Daemon {
             .open(paths.lock_path())?;
         lock.lock()?;
         let listener = UnixListener::bind(paths.socket_path())?;
-        let serving = tokio::spawn(serve(listener, scripts));
-        let endpoint = iroh::SecretKey::generate().public();
-        let endpoint = endpoint.as_bytes().iter().map(|byte| format!("{byte:02x}"));
+        let key = || {
+            let key = iroh::SecretKey::generate().public();
+            key.as_bytes().iter().fold(String::new(), |mut hex, byte| {
+                let _written = write!(hex, "{byte:02x}");
+                hex
+            })
+        };
+        let (endpoint, own) = (key(), key());
+        let serving = tokio::spawn(serve(listener, (scripts, own.clone())));
         Ok(Self {
             paths,
-            endpoint: endpoint.collect(),
+            endpoint,
+            own,
             state_dir,
             serving,
             _lock: lock,
@@ -107,7 +117,7 @@ impl Drop for Daemon {
     }
 }
 
-async fn serve(listener: UnixListener, scripts: Vec<Script>) {
+async fn serve(listener: UnixListener, (scripts, own): (Vec<Script>, String)) {
     let mut opened = 0;
     while let Ok((mut stream, _)) = listener.accept().await {
         let Ok((correlation, request)) = read(&mut stream).await else {
@@ -123,6 +133,9 @@ async fn serve(listener: UnixListener, scripts: Vec<Script>) {
                 "version": version, "request_id": null, "revision": 1,
                 "result": {"type": "handshake", "payload": {}},
             }),
+            Some("stream_open") if request.get("target_endpoint_id") == Some(&json!(own)) => {
+                json!({"version": version, "request_id": null, "error": "invalid_input"})
+            }
             _ => json!({
                 "version": version, "request_id": null, "revision": 1,
                 "result": {"type": "stream_opened", "payload": {}},

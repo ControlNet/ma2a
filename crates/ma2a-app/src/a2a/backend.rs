@@ -56,8 +56,13 @@ impl Refusal {
 }
 
 impl From<crate::AppError> for Refusal {
-    fn from(_: crate::AppError) -> Self {
-        Self::named("unavailable")
+    /// A refusal the Runtime named keeps its name; any other local failure is the Runtime
+    /// being unavailable.
+    fn from(error: crate::AppError) -> Self {
+        match error {
+            crate::AppError::Rejected(name, _) => Self(name),
+            _ => Self::named("unavailable"),
+        }
     }
 }
 

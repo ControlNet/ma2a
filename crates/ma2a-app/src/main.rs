@@ -38,6 +38,8 @@ enum AppError {
     NotFound(String),
     /// A typed Runtime protocol error, surfaced with its real name.
     Protocol(String),
+    /// The Runtime refused a request: its error name, and the message shown for it.
+    Rejected(String, String),
     Runtime(RuntimeError),
     Usage(&'static str),
 }
@@ -55,6 +57,7 @@ impl AppError {
             | Self::Ipc(_)
             | Self::NotFound(_)
             | Self::Protocol(_)
+            | Self::Rejected(..)
             | Self::Runtime(_) => 1,
         }
     }
@@ -77,7 +80,8 @@ impl fmt::Display for AppError {
             Self::Daemon(message)
             | Self::Invalid(message)
             | Self::NotFound(message)
-            | Self::Protocol(message) => formatter.write_str(message),
+            | Self::Protocol(message)
+            | Self::Rejected(_, message) => formatter.write_str(message),
             Self::Io(error) => write!(formatter, "MA2A I/O failed: {error}"),
             Self::Ipc(error) => error.fmt(formatter),
             Self::Runtime(error) => error.fmt(formatter),
@@ -96,6 +100,7 @@ impl Error for AppError {
             | Self::Invalid(_)
             | Self::NotFound(_)
             | Self::Protocol(_)
+            | Self::Rejected(..)
             | Self::Usage(_) => None,
             Self::Io(error) => Some(error),
             Self::Ipc(error) => Some(error),

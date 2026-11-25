@@ -124,4 +124,23 @@ mod tests {
         assert_eq!(served(refused(ServiceError::Unreachable)).await?, 503);
         Ok(())
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_route_to_this_runtime_itself_answers_not_found() -> crate::test_daemon::TestResult {
+        let daemon = crate::test_daemon::Daemon::start("card-self", Vec::new())?;
+        let (backend, _) = super::super::backend::Backend::standing_in(&daemon)?;
+        let route = super::Route::Remote(
+            daemon.own.clone(),
+            ma2a_core::service::AgentId::new("worker")?,
+        );
+        let shared = super::Shared {
+            backend,
+            token: "token".into(),
+            origin: "http://127.0.0.1:1".into(),
+        };
+        // The Runtime refuses a stream to itself as invalid input: no retry reaches it.
+        assert_eq!(super::card(&shared, &route).await.status().as_u16(), 404);
+        Ok(())
+    }
 }
