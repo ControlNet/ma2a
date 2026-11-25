@@ -58,3 +58,17 @@ test("sends one Echo at a time, so a late reply never overwrites a newer one", a
   expect(await screen.findByText("Echo failed or was not authorized.")).toBeVisible()
   expect(form.getByRole("button", { name: "Send Echo" })).toBeEnabled()
 })
+
+test("a payload over the bound is not sent, even by submitting the form directly", async () => {
+  const user = userEvent.setup()
+  const actions = { ...runtimeActions(), echo: vi.fn(runtimeActions().echo) }
+  render(<EchoScreen actions={actions} runtime={ONE_RUNTIME_FIXTURE} />)
+  const form = within(screen.getByRole("form", { name: "Send an Echo" }))
+  await user.type(form.getByLabelText("Target Endpoint ID"), "11".repeat(32))
+  fireEvent.change(form.getByLabelText("Payload"), { target: { value: "x".repeat(4_097) } })
+
+  fireEvent.submit(screen.getByRole("form", { name: "Send an Echo" }))
+
+  expect(form.getByRole("button", { name: "Send Echo" })).toBeDisabled()
+  expect(actions.echo).not.toHaveBeenCalled()
+})

@@ -39,9 +39,10 @@ export function Form({
   readonly status?: string
   readonly children: ReactNode
 }): ReactNode {
+  // Enter in a field submits even while the button is disabled.
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
-    onSubmit(new FormData(event.currentTarget))
+    if (!disabled) onSubmit(new FormData(event.currentTarget))
   }
   return (
     <form aria-label={label} className="form" onSubmit={submit}>

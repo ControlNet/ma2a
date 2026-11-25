@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useState } from "react"
+import { type FormEvent, type ReactNode, useRef, useState } from "react"
 
 import { ThemeToggle } from "../components/theme-toggle"
 import { Pill } from "../components/ui"
@@ -30,15 +30,20 @@ export function LoginScreen({
 }): ReactNode {
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
+  // Enter in the password field submits even while the button is disabled; each attempt counts
+  // against the sign-in rate limit, so one in flight is never sent again.
+  const pendingRef = useRef(false)
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const password = new FormData(event.currentTarget).get("password")
-    if (typeof password !== "string" || onLogin === undefined) return
+    if (typeof password !== "string" || onLogin === undefined || pendingRef.current) return
+    pendingRef.current = true
     setPending(true)
     setFailed(false)
     void onLogin(password).then(
       () => undefined,
       () => {
+        pendingRef.current = false
         setPending(false)
         setFailed(true)
       },
