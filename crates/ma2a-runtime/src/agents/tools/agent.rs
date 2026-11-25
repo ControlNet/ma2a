@@ -18,13 +18,11 @@ use ma2a_core::service::{
 };
 use ma2a_services::client;
 
-use super::{Call, Outcome, failed, files::download, ok, status, workspace::destination};
+use super::{Call, Outcome, bounded, failed, files::download, ok, status, workspace::destination};
 use crate::agents::convert::{from_wire, hex, task_view};
 
 /// Pause before reaching a target again that was restarting or unreachable.
 const RETRY: Duration = Duration::from_secs(1);
-/// Longest wait for one task view, like a service `describe`.
-const VIEW_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Returns whether an error only means the target cannot answer right now.
 fn transient(error: &ToolError) -> bool {
@@ -93,9 +91,7 @@ impl Call<'_> {
         (agent, task): (AgentId, AgentTaskId),
     ) -> Result<TaskView, ToolError> {
         let request = AgentRequest::Get(agent, task);
-        let answered = tokio::time::timeout(VIEW_DEADLINE, self.agent_call((endpoint, request)))
-            .await
-            .unwrap_or_else(|_| Err(status(ServiceError::TimedOut)))?;
+        let answered = bounded(self.agent_call((endpoint, request))).await?;
         match answered {
             AgentReply::Details(details) => Ok(task_view(&details)),
             _ => Err(invalid("Agent answer")),

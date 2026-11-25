@@ -54,6 +54,17 @@ impl Call<'_> {
     }
 }
 
+/// Longest wait for the answer of one read-only call that answers once, like a service
+/// `describe`. Mutations and streaming calls are not bounded this way.
+const READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs one read-only call within [`READ_DEADLINE`]; `timed_out` when it did not answer.
+async fn bounded<T>(read: impl Future<Output = Result<T, ToolError>>) -> Result<T, ToolError> {
+    tokio::time::timeout(READ_DEADLINE, read)
+        .await
+        .unwrap_or_else(|_| Err(status(ServiceError::TimedOut)))
+}
+
 /// Returns a tool's typed result as the call's answer.
 fn ok(result: &impl Serialize) -> Outcome {
     serde_json::to_value(result).map_err(|_| status(ServiceError::Internal))

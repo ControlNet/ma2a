@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use ma2a_agent::tools::{AgentTaskTarget, AgentWait, ProxyOpen};
+use ma2a_agent::tools::{AgentTaskTarget, AgentWait, FilesTarget, ProcessTarget, ProxyOpen};
 use ma2a_core::{
     RequestId,
     service::{AgentId, AgentTaskId},
@@ -204,6 +204,43 @@ async fn agent_wait_reads_no_more_views_once_its_deadline_passed() -> TestResult
     assert_eq!(error.code, "timed_out");
     assert_eq!(began.elapsed(), Duration::from_secs(30));
     assert_eq!(fixture.opened.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn read_only_calls_to_a_silent_target_time_out() -> TestResult {
+    // Given
+    let fixture = Fixture::new("silent-reads", true)?;
+    let call = fixture.call()?;
+    let files = |path: &str| FilesTarget {
+        endpoint: target(),
+        root: "home".to_owned(),
+        path: path.to_owned(),
+        after: None,
+    };
+    let process = ProcessTarget {
+        endpoint: target(),
+        id: ma2a_core::service::ProcessId::from_bytes([1; 16]).to_string(),
+    };
+
+    // When
+    let bound = Duration::from_secs(60);
+    let stat = tokio::time::timeout(bound, call.files_stat(files("a"))).await;
+    let list = tokio::time::timeout(bound, call.files_list(files("b"))).await;
+    let inspect = tokio::time::timeout(bound, call.process_inspect(process)).await;
+
+    // Then: each is `timed_out` after 30 s instead of holding its call forever.
+    for (tool, answered) in [
+        ("files.stat", stat),
+        ("files.list", list),
+        ("process.inspect", inspect),
+    ] {
+        let Ok(Err(error)) = answered else {
+            return Err(format!("{tool} waited on a target that never answers").into());
+        };
+        assert_eq!(error.code, "timed_out", "{tool}");
+    }
+    assert_eq!(fixture.opened.load(Ordering::Relaxed), 3);
     Ok(())
 }
 

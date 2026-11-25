@@ -17,7 +17,7 @@ use ma2a_services::{FrameReader, client, client::resume::Partial};
 use tokio::io::AsyncRead;
 
 use super::{
-    Call, Outcome, failed, ok, status,
+    Call, Outcome, bounded, failed, ok, status,
     workspace::{destination, existing, local},
 };
 use crate::agents::convert::{artifact, hex};
@@ -48,12 +48,15 @@ fn transferred(result: TransferResult) -> Transferred {
 
 impl Call<'_> {
     async fn files(&self, endpoint: &str, request: FilesRequest) -> Result<FilesResult, ToolError> {
-        let body = OpenBody::Files(request.clone());
-        let (mut reader, mut writer) = self.open_read(endpoint, body).await?;
-        let (result, _) = client::files::run((&mut reader, &mut writer), &request, &[])
-            .await
-            .map_err(|error| failed(&error))?;
-        Ok(result)
+        bounded(async {
+            let body = OpenBody::Files(request.clone());
+            let (mut reader, mut writer) = self.open_read(endpoint, body).await?;
+            let (result, _) = client::files::run((&mut reader, &mut writer), &request, &[])
+                .await
+                .map_err(|error| failed(&error))?;
+            Ok(result)
+        })
+        .await
     }
 
     pub(super) async fn files_stat(&self, args: FilesTarget) -> Outcome {

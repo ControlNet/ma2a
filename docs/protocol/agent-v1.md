@@ -660,6 +660,9 @@ An Agent asks for a tool with a `tool` line. The daemon:
   passes. Each read of the task's view, in `agent.get` and `agent.wait`, is `timed_out` when the
   target has not answered within 30 s. A view read that ends after the deadline is the last one:
   its view or its error is the answer, so a wait ends at most 30 s after `timeout_ms`.
+- **Read deadline.** `files.stat`, `files.list`, and `process.inspect` are `timed_out` when the
+  target has not answered within 30 s, like a task view. Mutations and the streaming tools
+  (`exec.run`, `transfer.*`, `agent.artifact`) have no such deadline: they wait for the target.
 
 **Derived RequestId.** A call that opens a mutation (`transfer.put`, `exec.run`, `process.start`,
 `process.terminate`, `agent.submit`, `agent.send`, `agent.cancel`) uses

@@ -23,7 +23,7 @@ use ma2a_services::client::{
 };
 use tokio::io::AsyncWrite;
 
-use super::{Call, Outcome, failed, ok};
+use super::{Call, Outcome, bounded, failed, ok};
 
 /// Default `exec.run` timeout: one minute.
 const DEFAULT_EXEC_TIMEOUT_MS: u64 = 60_000;
@@ -172,15 +172,22 @@ impl Call<'_> {
     async fn process(&self, (endpoint, request): (&str, ProcessRequest)) -> Outcome {
         let mutation = request.is_mutation();
         let body = OpenBody::Process(request);
-        let (mut reader, _writer) = if mutation {
-            self.open(endpoint, body).await?
-        } else {
-            self.open_read(endpoint, body).await?
+        let answered = async {
+            let (mut reader, _writer) = if mutation {
+                self.open(endpoint, body).await?
+            } else {
+                self.open_read(endpoint, body).await?
+            };
+            client::hosted::call(&mut reader)
+                .await
+                .map_err(|error| failed(&error))
         };
-        match client::hosted::call(&mut reader)
-            .await
-            .map_err(|error| failed(&error))?
-        {
+        let answered = if mutation {
+            answered.await
+        } else {
+            bounded(answered).await
+        };
+        match answered? {
             (_, ProcessReply::Summary(summary)) => ok(&process_info(&summary)),
             (_, ProcessReply::Details(details)) => ok(&process_info(&details.summary)),
             _ => Err(invalid("Process answer")),
