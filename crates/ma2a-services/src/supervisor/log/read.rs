@@ -29,16 +29,25 @@ pub struct LogRead {
 /// # Errors
 /// Returns an I/O error when a segment cannot be read.
 pub fn window(directory: &Path) -> io::Result<LogWindow> {
-    let firsts = match segments(directory) {
-        Ok(firsts) => firsts,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(LogWindow::default()),
-        Err(error) => return Err(error),
-    };
-    let (Some(first), Some(last)) = (firsts.first(), firsts.last()) else {
-        return Ok(LogWindow::default());
-    };
-    let bytes = fs::read(directory.join(name(*last)))?;
-    Ok(LogWindow::new(*first, last + content_len(&parse(&bytes))))
+    for _ in 0..3 {
+        let firsts = match segments(directory) {
+            Ok(firsts) => firsts,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(LogWindow::default());
+            }
+            Err(error) => return Err(error),
+        };
+        let (Some(first), Some(last)) = (firsts.first(), firsts.last()) else {
+            return Ok(LogWindow::default());
+        };
+        match fs::read(directory.join(name(*last))) {
+            Ok(bytes) => return Ok(LogWindow::new(*first, last + content_len(&parse(&bytes)))),
+            // Retention deleted the segment between listing and reading: list again.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::from(io::ErrorKind::NotFound))
 }
 
 /// Reads at most `max` content bytes from `from`, starting at the window when `from` is older.
