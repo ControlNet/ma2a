@@ -1,7 +1,7 @@
 import ky from "ky"
 import { afterEach, expect, test, vi } from "vitest"
 
-import { createRuntimeMutationClient } from "./mutations"
+import { createRuntimeMutationClient, mutationOutcomeUnknown } from "./mutations"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -211,16 +211,20 @@ test("reads the CSRF token for every mutation, so one replaced by another tab is
 })
 
 // A creation whose answer was lost may have committed, so a retry of the same name must replay
-// it under its request ID instead of creating a second Space. Names are not unique, so a
-// creation that was answered or refused, or another name, gets a new ID.
+// it under its request ID instead of creating a second Space. Only an answer from the Runtime for
+// that ID settles it: an HTTP refusal or timeout says nothing about the earlier attempt, and
+// `unavailable` is the Runtime still running it. A settled creation, or another name, gets a new
+// ID, since names are not unique.
 test("a Space creation retried after a lost answer keeps its request ID", async () => {
   const ids: unknown[] = []
-  let answer: "lose" | "refuse" | "create" = "lose"
+  const answers: (number | string)[] = []
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
     const command = (await new Request(input, init).json()) as { request_id: unknown }
     ids.push(command.request_id)
-    if (answer === "lose") throw new TypeError("Failed to fetch")
-    if (answer === "refuse") return new Response(null, { status: 403 })
+    const answer = answers.shift()
+    if (answer === undefined) throw new TypeError("Failed to fetch")
+    if (typeof answer === "number") return new Response(null, { status: answer })
+    if (answer !== "create") return Response.json({ version: 1, error: answer })
     return Response.json({
       version: 1,
       request_id: command.request_id,
@@ -239,12 +243,24 @@ test("a Space creation retried after a lost answer keeps its request ID", async 
 
   await expect(client.createSpace("Operations")).rejects.toThrow()
   await expect(client.createSpace("Renamed")).rejects.toThrow()
-  answer = "create"
-  await client.createSpace("Renamed")
-  answer = "refuse"
-  await expect(client.createSpace("Renamed")).rejects.toThrow()
-  answer = "create"
-  await client.createSpace("Renamed")
+  answers.push(403, 408, "unavailable", "create", 403, "invalid_input", "create")
+  for (const succeeds of [false, false, false, true, false, false, true]) {
+    const created = client.createSpace("Renamed")
+    await (succeeds ? expect(created).resolves.toBeDefined() : expect(created).rejects.toThrow())
+  }
 
-  expect(ids).toEqual([1, 2, 2, 3, 4].map((id) => id.toString(16).padStart(32, "0")))
+  expect(ids).toEqual([1, 2, 2, 2, 2, 2, 3, 3, 4].map((id) => id.toString(16).padStart(32, "0")))
+})
+
+// A timeout can answer after the command reached the Runtime; any other HTTP refusal comes first.
+test.each([
+  [408, true],
+  [403, false],
+])("an HTTP %i leaves the mutation outcome unknown: %s", async (status, unknown) => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status }))
+  const client = createRuntimeMutationClient({ csrfToken: () => "cd".repeat(32) })
+
+  const error: unknown = await client.echo("ef".repeat(32), "ping").catch((caught) => caught)
+
+  expect(mutationOutcomeUnknown(error)).toBe(unknown)
 })

@@ -44,12 +44,13 @@ export class RuntimeMutationRejectedError extends Error {
 
 /**
  * Whether a failed mutation may still have taken effect: no answer came back, or none that says
- * it was refused. A rejection, or an HTTP refusal before the command ran, is definite.
+ * it was refused. A rejection, or an HTTP refusal before the command ran, is definite; a request
+ * timeout is not, since the server can time out after it passed the command on.
  */
 export function mutationOutcomeUnknown(error: unknown): boolean {
   return !(
     error instanceof RuntimeMutationRejectedError ||
-    (error instanceof HTTPError && error.response.status < 500)
+    (error instanceof HTTPError && error.response.status < 500 && error.response.status !== 408)
   )
 }
 
@@ -115,8 +116,10 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
   const endpoint = (value: string): EndpointId => EndpointIdSchema.parse(value) as EndpointId
   const space = (value: string): SpaceId => SpaceIdSchema.parse(value) as SpaceId
   // A creation without a definite answer may have committed. Retrying the same name reuses its
-  // request ID, so the Runtime replays that outcome instead of creating a second Space; a
-  // definite answer settles it, and a creation of another name replaces it.
+  // request ID, so the Runtime replays that outcome instead of creating a second Space. Only the
+  // Runtime's answer for that ID settles it: an HTTP refusal of a retry says nothing about the
+  // earlier attempt, and `unavailable` means the Runtime is still running it. Reusing an ID the
+  // Runtime never saw is harmless. A creation of another name replaces it.
   let unsettledCreation: { readonly name: string; readonly requestId: RequestId } | undefined
 
   return {
@@ -132,7 +135,7 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
         request_id: requestId,
         name,
       }).catch((error: unknown) => {
-        if (!mutationOutcomeUnknown(error)) settle()
+        if (error instanceof RuntimeMutationRejectedError && error.code !== "unavailable") settle()
         throw error
       })
       if (result.type !== "space_created") throw new RuntimeMutationPayloadError()
