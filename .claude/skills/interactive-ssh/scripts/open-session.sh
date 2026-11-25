@@ -16,24 +16,30 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$repo" ] && [ -r "$key" ] || { echo "--repo and a readable --key are required" >&2; exit 2; }
+# The handoff holds session tokens: nothing this script writes is readable by other users.
+umask 077
 
 case "$os" in
   all) runners=(ubuntu-latest windows-latest macos-15-intel) ;;
   *) runners=("$os") ;;
 esac
 
-started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# The new run is the first one after those that already exist, whatever the local clock says.
+before=$(gh run list -R "$repo" --workflow interactive.yml --event workflow_dispatch --limit 20 \
+  --json databaseId --jq '[.[].databaseId] | max // 0')
 gh workflow run interactive.yml -R "$repo" -f os="$os" -f ref="$ref" -f timeout_minutes="$timeout"
 
 run=''
-until [ -n "$run" ]; do
+for _ in $(seq 60); do
   sleep 5
-  run=$(gh run list -R "$repo" --workflow interactive.yml --event workflow_dispatch --limit 5 \
-    --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$started\")] | last | .databaseId // empty")
+  run=$(gh run list -R "$repo" --workflow interactive.yml --event workflow_dispatch --limit 20 \
+    --json databaseId --jq "[.[].databaseId | select(. > $before)] | min // empty")
+  [ -z "$run" ] || break
 done
+[ -n "$run" ] || { echo "the dispatched run did not appear within 5 minutes" >&2; exit 1; }
 echo "run: https://github.com/$repo/actions/runs/$run"
 
-out=${out:-${TMPDIR:-/tmp}/interactive-ssh-$run}
+[ -n "$out" ] || out=$(mktemp -d "${TMPDIR:-/tmp}/interactive-ssh-$run.XXXXXX")
 mkdir -p "$out"
 printf '%s\n' \
   '@cert-authority uptermd.upterm.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4' \
@@ -41,28 +47,37 @@ printf '%s\n' \
   > "$out/known_hosts"
 : > "$out/ssh_config"
 
+failed=0
 for runner in "${runners[@]}"; do
+  # A runner whose job ends before it hands off is reported; the others are still handed off.
   until gh run download "$run" -R "$repo" -n "ssh-$runner" -D "$out/$runner" > /dev/null 2>&1; do
-    if [ "$(gh run view "$run" -R "$repo" --json status --jq .status)" = completed ]; then
-      echo "run $run ended before $runner handed off a session" >&2
-      exit 1
+    status=$(gh run view "$run" -R "$repo" --json status,jobs --jq "if .status == \"completed\"
+      then .status else .jobs[] | select(.name == \"session ($runner)\") | .status end")
+    if [ "$status" = completed ]; then
+      echo "$runner: its job ended before it handed off a session" >&2
+      failed=1
+      continue 2
     fi
     sleep 10
   done
-  target=$(awk '{print $2}' "$out/$runner/ssh-command.txt")
+  target=$(awk 'NR == 1 { print $2 }' "$out/$runner/ssh-command.txt")
+  [[ "$target" =~ ^[^[:space:]@\"]+@[^[:space:]@\"]+$ ]] || {
+    echo "$runner: unexpected connection command" >&2
+    exit 1
+  }
   cat >> "$out/ssh_config" <<EOF
 Host $runner
   HostName ${target#*@}
   User ${target%@*}
-  IdentityFile $key
+  IdentityFile "$key"
   IdentitiesOnly yes
   IdentityAgent none
   BatchMode yes
-  UserKnownHostsFile $out/known_hosts
+  UserKnownHostsFile "$out/known_hosts"
   StrictHostKeyChecking yes
   ServerAliveInterval 30
 
 EOF
-  echo "$runner: ssh -F $out/ssh_config $runner   (workspace: $(cat "$out/$runner/workspace.txt"))"
+  echo "$runner: ssh -F '$out/ssh_config' $runner   (workspace: $(cat "$out/$runner/workspace.txt"))"
 done
-chmod 600 "$out/ssh_config"
+exit "$failed"
