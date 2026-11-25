@@ -299,8 +299,18 @@ enum Sent {
     Skipped(u64),
 }
 
-/// Reads one `logs` answer that starts at `start`, sends `sent`, and replies `next`.
+/// Reads one `logs` answer that starts at `start` in a window ending 1000 bytes later, sends
+/// `sent`, and replies `next`, not ended.
 async fn logs_answer(start: u64, sent: &[Sent], next: u64) -> TestResult<Result<u64, ClientError>> {
+    logs_ending(start, sent, (next, false)).await
+}
+
+/// As [`logs_answer`], with whether the reply says the Process ended and all was read.
+async fn logs_ending(
+    start: u64,
+    sent: &[Sent],
+    (next, ended): (u64, bool),
+) -> TestResult<Result<u64, ClientError>> {
     let ((mut reader, _writer), (_service_reader, mut service_writer)) = pipe();
     let accept = ProcessAccept::Reading {
         state: ProcessState::Running,
@@ -325,7 +335,7 @@ async fn logs_answer(start: u64, sent: &[Sent], next: u64) -> TestResult<Result<
             }
         }
     }
-    let reply = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(next, false)))?;
+    let reply = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(next, ended)))?;
     service_writer.frame(FrameKind::Outcome, &reply).await?;
     service_writer.flush().await?;
     let (mut output, mut error) = (Vec::new(), Vec::new());
@@ -363,6 +373,27 @@ async fn a_logs_cursor_must_follow_the_bytes_sent() -> TestResult {
             "start {start}, next {next}: {read:?}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_logs_answer_ends_only_at_the_end_of_its_window() -> TestResult {
+    // A short read that is not the last, and a last one that reached the window's end.
+    assert_eq!(
+        logs_ending(500, &[Sent::Data(1)], (501, false)).await??,
+        501
+    );
+    assert_eq!(
+        logs_ending(500, &[Sent::Data(1000)], (1500, true)).await??,
+        1500
+    );
+
+    // A read that says it ended before the window it reported.
+    let read = logs_ending(500, &[Sent::Data(1)], (501, true)).await?;
+    assert!(
+        matches!(read, Err(ClientError::Stream(ServiceError::InvalidInput))),
+        "{read:?}"
+    );
     Ok(())
 }
 

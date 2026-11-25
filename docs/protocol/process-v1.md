@@ -202,8 +202,9 @@ Process and its supervisor have ended.
 4. The outcome is Logs with `next`, the cursor to continue from. `ended` is `true` once the
    Process is terminal and `next` has reached the window's `end`. `next` is always where the
    bytes sent ended: `start` plus every byte after it, counted from the latest Skipped cursor
-   once there is one. The caller refuses an answer whose `next` is anywhere else, or whose
-   Skipped cursor goes back.
+   once there is one. The caller refuses an answer whose `next` is anywhere else, whose
+   Skipped cursor goes back, or that reports `ended` before `next` reached the `end` of the
+   window its accept reported.
 5. The caller refuses, before writing any output, an answer without `accept` Reading, since a
    read is never replayed, and an `accept` whose `start` and `truncated` are not where `from`
    resolves in the window it reports. A follow-up read from a cursor therefore never starts

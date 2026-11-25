@@ -79,7 +79,8 @@ pub async fn call<R: AsyncRead + Unpin>(
 ///
 /// Every byte's cursor is known: the read starts where `from` resolves in the window the
 /// accept reports, each record moves the cursor by its length, and a skip moves it forward to
-/// the cursor it names. The reply's `next` must be where those bytes ended.
+/// the cursor it names. The reply's `next` must be where those bytes ended, and it may say the
+/// log ended only once `next` reached the end of that window.
 ///
 /// # Errors
 /// Returns the refusal, the failed outcome, a local write failure, or the stream failure. An
@@ -120,12 +121,17 @@ where
                 output.flush().await?;
                 error.flush().await?;
                 return match reply(&frame)? {
-                    ProcessReply::Logs(next, ended) if next == reached => Ok(LogsRead {
-                        accept,
-                        next,
-                        ended,
-                        gaps,
-                    }),
+                    // An end before the window the accept reported would hide what follows.
+                    ProcessReply::Logs(next, ended)
+                        if next == reached && (!ended || next >= until(&accept)) =>
+                    {
+                        Ok(LogsRead {
+                            accept,
+                            next,
+                            ended,
+                            gaps,
+                        })
+                    }
                     _ => Err(ClientError::Stream(ServiceError::InvalidInput)),
                 };
             }
@@ -145,6 +151,15 @@ fn reading(accept: &ProcessAccept, from: LogFrom) -> Result<u64, ClientError> {
             ..
         } if window.resolve(from) == Some((start, truncated)) => Ok(start),
         _ => Err(ClientError::Stream(ServiceError::InvalidInput)),
+    }
+}
+
+/// The end of the window an accept reported; every byte before it was retained when reading
+/// began.
+const fn until(accept: &ProcessAccept) -> u64 {
+    match *accept {
+        ProcessAccept::Reading { window, .. } => window.end,
+        _ => 0,
     }
 }
 
