@@ -140,6 +140,14 @@ async fn requests_refused_before_they_run_have_no_effect() -> TestResult {
             }),
             ProtocolError::NOT_FOUND,
         ),
+        // No Web password is set yet, so there is none to reset.
+        (
+            serde_json::json!({
+                "version": 1, "operation": "ui_password_reset", "request_id": "5a".repeat(16),
+                "password": "correct horse battery staple",
+            }),
+            ProtocolError::CONFLICT,
+        ),
         // Native TLS needs both files; external termination takes neither.
         (
             serde_json::json!({

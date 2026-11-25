@@ -180,7 +180,13 @@ pub(super) async fn execute(
             .control
             .send(command.clone())
             .await
-            .map_err(|_| ProtocolError::INTERNAL)?,
+            .map_err(|error| match error {
+                // Setting a password that is set, or resetting one that is not, commits nothing.
+                crate::current_user::CurrentUserError::Authentication(
+                    crate::web::AuthFailure::Conflict,
+                ) => ApiError::new(ProtocolError::CONFLICT).without_effects(),
+                _ => ApiError::new(ProtocolError::INTERNAL),
+            })?,
         "space_grant" => services::grant(context, command).await?,
         "service_expose" => services::expose(context, command).await?,
         "service_unexpose" => services::unexpose(context, command).await?,
