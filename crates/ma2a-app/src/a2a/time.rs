@@ -46,7 +46,7 @@ pub(super) fn format(at_ms: u64) -> String {
 /// or before 1970. A finer fraction rounds up to the next millisecond, since the result is a
 /// lower bound on stored milliseconds: a task at `.123` is before `.1239`. Unix time has no
 /// leap seconds, so a leap second, which only ever ends a UTC day at `23:59:60`, counts as
-/// the start of the next day.
+/// the start of the next day, whatever its fraction.
 pub(super) fn parse(text: &str) -> Option<u64> {
     let text = text.strip_suffix('Z')?;
     let (date, clock) = text.split_once('T')?;
@@ -89,9 +89,15 @@ pub(super) fn parse(text: &str) -> Option<u64> {
     let finer = fraction
         .get(3..)
         .is_some_and(|rest| rest.bytes().any(|byte| byte != b'0'));
+    // Every instant of a leap second comes before the next day's first millisecond.
+    let within = if seconds == 60 {
+        0
+    } else {
+        millis + i64::from(finer)
+    };
     let seconds =
         days_from_civil(year, month, day) * 86_400 + hours * 3_600 + minutes * 60 + seconds;
-    u64::try_from(seconds * 1_000 + millis + i64::from(finer)).ok()
+    u64::try_from(seconds * 1_000 + within).ok()
 }
 
 #[cfg(test)]
@@ -119,9 +125,15 @@ mod tests {
             parse("2026-01-01T00:00:00.0000001Z"),
             Some(1_767_225_600_001)
         );
-        // A day-end leap second counts as the first millisecond of the next day.
-        assert_eq!(parse("2016-12-31T23:59:60Z"), Some(1_483_228_800_000));
-        assert_eq!(parse("2016-12-31T23:59:60.5Z"), Some(1_483_228_800_500));
+        // A day-end leap second, all of it, counts as the first millisecond of the next day:
+        // every instant of it comes before that day's first millisecond.
+        for leap in [
+            "2016-12-31T23:59:60Z",
+            "2016-12-31T23:59:60.5Z",
+            "2016-12-31T23:59:60.9999Z",
+        ] {
+            assert_eq!(parse(leap), Some(1_483_228_800_000), "{leap}");
+        }
         assert_eq!(parse("2026-12-31T23:59:59.9999Z"), Some(1_798_761_600_000));
         for malformed in [
             "2000-02-29",
