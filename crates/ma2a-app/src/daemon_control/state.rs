@@ -59,7 +59,7 @@ impl DaemonState {
                 "a daemon still owns this state directory but is not answering ({reason}); \
                  it was not replaced. Stop that process, then run `ma2a start`"
             )),
-            Self::Conflicted(reason) => AppError::Daemon(format!(
+            Self::Conflicted(reason) => AppError::DaemonConflicted(format!(
                 "daemon ownership of this state directory is ambiguous ({reason}); \
                  nothing was changed. Resolve it before starting or stopping a daemon"
             )),
@@ -80,9 +80,25 @@ impl DaemonState {
 /// never read as proof that the lock owner has gone: while the lock is held,
 /// every way of failing to get an answer means `Unresponsive`.
 pub(crate) async fn classify(paths: &IpcPaths) -> Result<DaemonState, AppError> {
-    if !paths.runtime_dir().is_dir() {
-        // Nothing has ever prepared this directory, so there is nothing to own.
-        return Ok(DaemonState::Absent);
+    match std::fs::symlink_metadata(paths.runtime_dir()) {
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                if metadata.file_type().is_symlink()
+                    || metadata.uid() != rustix::process::geteuid().as_raw()
+                {
+                    return Err(IpcError::UnauthorizedPeer.into());
+                }
+            }
+            if !metadata.is_dir() {
+                return Ok(DaemonState::Absent);
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(DaemonState::Absent);
+        }
+        Err(error) => return Err(error.into()),
     }
     let lock = open_lock(&paths.lock_path())?;
     match lock.try_lock() {
@@ -90,15 +106,19 @@ pub(crate) async fn classify(paths: &IpcPaths) -> Result<DaemonState, AppError> 
             // Acquiring it only proves nobody else holds it. Release it at once:
             // classifying must never quietly become owning.
             drop(lock);
-            Ok(match responder(paths).await {
-                Responder::Silent(_) => DaemonState::Absent,
-                answered => DaemonState::Conflicted(format!(
+            match responder(paths).await {
+                Responder::Silent(_) => Ok(DaemonState::Absent),
+                Responder::Denied(error) => Err(IpcError::Io(error).into()),
+                answered => Ok(DaemonState::Conflicted(format!(
                     "the daemon lock is free but {} still answers the endpoint",
                     answered.describe()
-                )),
-            })
+                ))),
+            }
         }
-        Err(TryLockError::WouldBlock) => Ok(owned_state(paths, responder(paths).await)),
+        Err(TryLockError::WouldBlock) => match responder(paths).await {
+            Responder::Denied(error) => Err(IpcError::Io(error).into()),
+            answered => Ok(owned_state(paths, answered)),
+        },
         Err(TryLockError::Error(error)) => Err(error.into()),
     }
 }
@@ -109,7 +129,10 @@ pub(crate) async fn classify(paths: &IpcPaths) -> Result<DaemonState, AppError> 
 /// over a responder it cannot account for, rather than removing an endpoint that
 /// something is still using.
 pub(crate) async fn endpoint_answers(paths: &IpcPaths) -> bool {
-    !matches!(responder(paths).await, Responder::Silent(_))
+    !matches!(
+        responder(paths).await,
+        Responder::Silent(_) | Responder::Denied(_)
+    )
 }
 
 enum Responder {
@@ -119,6 +142,8 @@ enum Responder {
     LocalApi,
     /// No lifecycle plane, and another local API version.
     IncompatibleLocalApi,
+    /// Connecting to the IPC endpoint was refused by the OS as permission denied.
+    Denied(std::io::Error),
     Silent(String),
 }
 
@@ -128,7 +153,7 @@ impl Responder {
             Self::Lifecycle(_) => "a daemon",
             Self::LocalApi => "a daemon of this API version",
             Self::IncompatibleLocalApi => "a daemon of another API version",
-            Self::Silent(_) => "nothing",
+            Self::Denied(_) | Self::Silent(_) => "nothing",
         }
     }
 }
@@ -143,6 +168,9 @@ async fn responder(paths: &IpcPaths) -> Responder {
         // responder, not about whether a daemon is there, so ask the question the
         // older contract can answer.
         Err(IpcError::NoLifecyclePlane) => legacy_responder(&client).await,
+        Err(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Responder::Denied(error)
+        }
         Err(error) => Responder::Silent(error.to_string()),
     }
 }
@@ -151,6 +179,9 @@ async fn legacy_responder(client: &LocalApiClient) -> Responder {
     match tokio::time::timeout(LIFECYCLE_DEADLINE, client.probe()).await {
         Ok(Ok(())) => Responder::LocalApi,
         Ok(Err(IpcError::VersionMismatch)) => Responder::IncompatibleLocalApi,
+        Ok(Err(IpcError::Io(error))) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Responder::Denied(error)
+        }
         Ok(Err(error)) => Responder::Silent(error.to_string()),
         Err(_elapsed) => Responder::Silent("it did not complete a handshake in time".to_owned()),
     }
@@ -167,6 +198,7 @@ fn owned_state(paths: &IpcPaths, responder: Responder) -> DaemonState {
         },
         Responder::LocalApi => DaemonState::LegacyCurrentApi,
         Responder::IncompatibleLocalApi => DaemonState::LegacyIncompatible,
+        Responder::Denied(error) => DaemonState::Unresponsive(error.to_string()),
         Responder::Silent(reason) => DaemonState::Unresponsive(reason),
     }
 }

@@ -38,7 +38,13 @@ pub(crate) fn reopening_passes(error: &AppError) -> bool {
         AppError::Rejected(name, _) => passes(name),
         AppError::Ipc(
             IpcError::VersionMismatch | IpcError::UnauthorizedPeer | IpcError::InvalidPath,
-        ) => false,
+        )
+        | AppError::DaemonConflicted(_) => false,
+        AppError::Io(error) | AppError::Ipc(IpcError::Io(error))
+            if error.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            false
+        }
         _ => true,
     }
 }

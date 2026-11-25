@@ -113,3 +113,58 @@ async fn a_watch_is_not_reopened_on_a_runtime_of_another_version() -> TestResult
     );
     Ok(())
 }
+
+#[test]
+fn reopening_stops_on_permission_denied_ipc_errors() {
+    use std::io::{Error, ErrorKind};
+
+    use ma2a_runtime::ipc::IpcError;
+
+    assert!(!super::agent::reopening_passes(&AppError::Io(Error::from(
+        ErrorKind::PermissionDenied
+    ))));
+    assert!(!super::agent::reopening_passes(&AppError::Ipc(
+        IpcError::Io(Error::from(ErrorKind::PermissionDenied))
+    )));
+    assert!(!super::agent::reopening_passes(
+        &AppError::DaemonConflicted("conflict".to_owned())
+    ));
+    assert!(super::agent::reopening_passes(&AppError::Daemon(
+        "unresponsive".to_owned()
+    )));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_watch_is_not_reopened_when_the_ipc_path_denies_permission() -> TestResult {
+    use std::{os::unix::fs::PermissionsExt as _, time::Duration};
+
+    // Given: a watch that starts normally and loses its first stream.
+    let daemon = Daemon::paging("watch-perm", vec![watch_lost()?, watch_completing(TASK)?])?;
+    let watch = AgentCommand::Watch {
+        target: TaskTarget {
+            agent: Some("worker".to_owned()),
+            task: TASK.to_string(),
+        },
+        after: 1,
+    };
+    let remote = (&daemon.paths, daemon.endpoint.as_str());
+    let lock = daemon.paths.lock_path();
+
+    // When: the lock file becomes unreadable before the 1 s reopen fires.
+    let deny = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o000))
+    };
+    let watching = tokio::time::timeout(Duration::from_secs(10), super::agent::run(remote, watch));
+    let (chmod, ended) = tokio::join!(deny, watching);
+    let _restore = std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600));
+    chmod?;
+
+    // Then: reopening stops promptly with PermissionDenied instead of retrying forever.
+    let outcome = ended.map_err(|_| "watch kept retrying after PermissionDenied")?;
+    assert!(
+        matches!(&outcome, Err(AppError::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied),
+        "{outcome:?}"
+    );
+    Ok(())
+}
