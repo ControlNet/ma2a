@@ -46,6 +46,8 @@ mod read_revisions;
 mod services;
 #[path = "server_tests/space_leave.rs"]
 mod space_leave;
+#[path = "server_tests/space_leave_outcomes.rs"]
+mod space_leave_outcomes;
 #[path = "server_tests/stream_plane.rs"]
 mod stream_plane;
 #[path = "server_tests/support.rs"]

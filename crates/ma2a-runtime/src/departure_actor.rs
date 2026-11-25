@@ -13,7 +13,9 @@ use tokio::sync::oneshot;
 use crate::{
     SpaceDepartureError,
     actor::{Actor, Command, RuntimeHandle},
-    departure::{DEPARTURE_STATUS_OK, accepts_departure, encode_departure},
+    departure::{
+        DEPARTURE_STATUS_INTERNAL, DEPARTURE_STATUS_OK, accepts_departure, encode_departure,
+    },
     state::RuntimeEvent,
 };
 
@@ -150,9 +152,18 @@ impl Actor {
         exchanged: Result<(u8, Vec<Vec<u8>>), NetError>,
     ) -> Result<u64, SpaceDepartureError> {
         let local = self.state.endpoint_id;
-        let (status, pages) = exchanged.map_err(|_| SpaceDepartureError::unreachable())?;
-        if status != DEPARTURE_STATUS_OK {
-            return Err(SpaceDepartureError::rejected());
+        let (status, pages) = exchanged.map_err(|error| {
+            if error.is_enrollment_busy() {
+                // The authority read nothing, so the same departure can be retried.
+                SpaceDepartureError::busy()
+            } else {
+                SpaceDepartureError::unreachable()
+            }
+        })?;
+        match status {
+            DEPARTURE_STATUS_OK => {}
+            DEPARTURE_STATUS_INTERNAL => return Err(SpaceDepartureError::unreachable()),
+            _ => return Err(SpaceDepartureError::rejected()),
         }
         // The authority answers with the same bounded page stream enrollment uses,
         // so a long Space history still fits the transport, and the same validator

@@ -48,8 +48,9 @@ impl SpaceDepartureErrorCode {
     pub const REJECTED: Self = Self(DepartureErrorKind::Rejected);
     /// A departure of the same Space is still waiting on the authority; nothing was sent.
     pub const IN_FLIGHT: Self = Self(DepartureErrorKind::InFlight);
-    /// Too many departures are already waiting on their Space authorities; nothing was sent, so
-    /// the same departure can be retried once one of them ends.
+    /// Too many departures are already waiting on their Space authorities, or the authority was
+    /// serving as many enrollment connections as it allows; nothing was done, so the same
+    /// departure can be retried once one ends.
     pub const BUSY: Self = Self(DepartureErrorKind::Busy);
     /// The local Runtime failed before or after the exchange.
     pub const INTERNAL: Self = Self(DepartureErrorKind::Internal);
