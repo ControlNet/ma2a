@@ -44,14 +44,14 @@ pub(crate) fn check(root: &Path) -> Result<(), XtaskError> {
     checks.exact_array("hosting", []);
 
     let configured = string_set(dist.get("targets"));
-    if configured != supported {
+    if configured.as_ref() != Some(&supported) {
         violations.push(format!(
             "dist targets must equal matrix-supported targets {supported:?}, observed {configured:?}"
         ));
     }
     let includes = string_set(dist.get("include"));
     let required_includes = REQUIRED_INCLUDES.into_iter().collect::<BTreeSet<_>>();
-    if includes != required_includes {
+    if includes.as_ref() != Some(&required_includes) {
         violations.push(format!(
             "archive includes must be exactly {required_includes:?}, observed {includes:?}"
         ));
@@ -150,7 +150,7 @@ impl PolicyChecks<'_> {
     fn exact_array<const N: usize>(&mut self, field: &str, expected: [&str; N]) {
         let expected = expected.into_iter().collect::<BTreeSet<_>>();
         let observed = string_set(self.dist.get(field));
-        if observed != expected {
+        if observed.as_ref() != Some(&expected) {
             self.violations.push(format!(
                 "`{field}` must be exactly {expected:?}, observed {observed:?}"
             ));
@@ -158,11 +158,8 @@ impl PolicyChecks<'_> {
     }
 }
 
-fn string_set(value: Option<&TomlValue>) -> BTreeSet<&str> {
-    value
-        .and_then(TomlValue::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(TomlValue::as_str)
-        .collect()
+/// The strings of an array field; `None` when the field is missing, is not an array, or holds
+/// anything but strings, so a malformed field never reads as an empty one.
+fn string_set(value: Option<&TomlValue>) -> Option<BTreeSet<&str>> {
+    value?.as_array()?.iter().map(TomlValue::as_str).collect()
 }

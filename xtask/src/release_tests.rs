@@ -61,14 +61,48 @@ missing_target_test!(
     "x86_64-unknown-linux-gnu"
 );
 
-#[test]
-fn release_policy_rejects_installers() -> TestResult {
+macro_rules! rejected_config_test {
+    ($name:ident, $from:literal, $to:literal, $field:literal) => {
+        #[test]
+        fn $name() -> TestResult {
+            assert_config_rejected(($from, $to), $field)
+        }
+    };
+}
+
+rejected_config_test!(
+    release_policy_rejects_installers,
+    "installers = []",
+    "installers = [\"shell\"]",
+    "installers"
+);
+// A list that is missing, not a list, or holds a non-string is not an empty list.
+rejected_config_test!(
+    release_policy_rejects_installers_that_are_not_a_list,
+    "installers = []",
+    "installers = \"shell\"",
+    "installers"
+);
+rejected_config_test!(
+    release_policy_rejects_missing_hosting,
+    "hosting = []",
+    "",
+    "hosting"
+);
+rejected_config_test!(
+    release_policy_rejects_a_ci_entry_that_is_not_a_string,
+    "ci = []",
+    "ci = [1]",
+    "ci"
+);
+
+fn assert_config_rejected((from, to): (&str, &str), field: &str) -> TestResult {
     // Given
     let root = fixture_root()?;
     write_support_matrix(&root, false)?;
     write_dist_config(&root, false)?;
     let path = root.join("dist-workspace.toml");
-    let config = fs::read_to_string(&path)?.replace("installers = []", "installers = [\"shell\"]");
+    let config = fs::read_to_string(&path)?.replace(from, to);
     fs::write(path, config)?;
 
     // When
@@ -77,7 +111,7 @@ fn release_policy_rejects_installers() -> TestResult {
         .ok_or("release policy unexpectedly passed")?;
 
     // Then
-    assert!(error.to_string().contains("installers"));
+    assert!(error.to_string().contains(field));
     fs::remove_dir_all(root)?;
     Ok(())
 }
