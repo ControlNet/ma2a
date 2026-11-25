@@ -177,7 +177,12 @@ fn owned_state(paths: &IpcPaths, responder: Responder) -> DaemonState {
 /// with one owner the two always agree. A disagreement means more than one thing
 /// has been acting as the owner, which is not something to repair by guessing.
 fn recorded_disagreement(paths: &IpcPaths, answering: &DaemonReport) -> Option<String> {
-    let recorded = DaemonReport::parse(&std::fs::read(paths.daemon_record_path()).ok()?)?;
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    super::open_runtime_read(&paths.daemon_record_path())
+        .and_then(|file| file.take(8192).read_to_end(&mut bytes))
+        .ok()?;
+    let recorded = DaemonReport::parse(&bytes)?;
     (recorded.launch_nonce() != answering.launch_nonce()
         || recorded.incarnation() != answering.incarnation())
     .then(|| {

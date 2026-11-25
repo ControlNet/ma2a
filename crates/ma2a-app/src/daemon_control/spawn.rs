@@ -6,7 +6,7 @@
 //! released to run on its own — or it is terminated and reaped here.
 
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, BufRead as _, BufReader, Read as _},
     path::Path,
     process::{Child, ChildStdout, Command, Stdio},
@@ -176,20 +176,15 @@ async fn exited_within_grace(child: &mut Child) -> bool {
 /// than growing without bound, and it lives in the owner-only runtime directory
 /// because it can name local paths.
 fn open_daemon_log(paths: &IpcPaths) -> Result<File, AppError> {
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    Ok(options.open(paths.log_path())?)
+    Ok(super::open_runtime_write(&paths.log_path())?)
 }
 
 /// Returns what the daemon wrote before it died, bounded for one error message.
 fn daemon_diagnostics(log: &Path) -> String {
     let mut recorded = String::new();
-    match File::open(log).and_then(|file| file.take(4096).read_to_string(&mut recorded)) {
+    match super::open_runtime_read(log)
+        .and_then(|file| file.take(4096).read_to_string(&mut recorded))
+    {
         Ok(_) if !recorded.trim().is_empty() => recorded.trim().to_owned(),
         Ok(_) | Err(_) => "it recorded no reason".to_owned(),
     }

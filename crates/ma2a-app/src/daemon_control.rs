@@ -1,11 +1,6 @@
 //! Deciding what to do about a state directory's daemon, and proving it happened.
 
-use std::{
-    fs::{File, OpenOptions},
-    io,
-    path::Path,
-    time::Duration,
-};
+use std::{fs::File, io, path::Path, time::Duration};
 
 use ma2a_runtime::ipc::{DaemonReport, IpcError, IpcPaths, LocalApiClient};
 
@@ -180,23 +175,63 @@ pub(crate) async fn acquire_startup_lock(lock: &File) -> Result<(), AppError> {
 pub(crate) fn open_lock(path: &Path) -> Result<File, AppError> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        Ok(OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)?)
+        use rustix::fs::{Mode, OFlags};
+        let fd = rustix::fs::open(
+            path,
+            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(io::Error::from)?;
+        Ok(File::from(fd))
     }
     #[cfg(windows)]
     {
-        Ok(OpenOptions::new()
+        Ok(std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
             .open(path)?)
+    }
+}
+
+pub(crate) fn open_runtime_write(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{Mode, OFlags};
+        let fd = rustix::fs::open(
+            path,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(io::Error::from)?;
+        Ok(File::from(fd))
+    }
+    #[cfg(windows)]
+    {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+    }
+}
+
+pub(crate) fn open_runtime_read(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{Mode, OFlags};
+        let fd = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+        Ok(File::from(fd))
+    }
+    #[cfg(windows)]
+    {
+        File::open(path)
     }
 }
 
@@ -230,5 +265,29 @@ mod tests {
                 .into_iter()
                 .all(|delay| delay <= Duration::from_millis(MAX_RETRY_MILLIS))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_lock_refuses_symlinks_without_touching_target() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let base = std::env::temp_dir().join(format!("ma2a-lock-nofollow-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base)?;
+        let target = base.join("victim");
+        let link = base.join("daemon.lock");
+        std::os::unix::fs::symlink(&target, &link)?;
+
+        let opened = super::open_lock(&link);
+        let written = super::open_runtime_write(&link);
+        let read = super::open_runtime_read(&link);
+        let created_target = target.exists();
+        std::fs::remove_dir_all(&base)?;
+
+        assert!(opened.is_err(), "open_lock followed symlink");
+        assert!(written.is_err(), "open_runtime_write followed symlink");
+        assert!(read.is_err(), "open_runtime_read followed symlink");
+        assert!(!created_target, "open_lock created symlink target");
+        Ok(())
     }
 }

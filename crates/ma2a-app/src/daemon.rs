@@ -1,8 +1,8 @@
 //! Running the daemon that owns one state directory.
 
 use std::{
-    fs::{File, OpenOptions, TryLockError},
-    io::{self, Write as _},
+    fs::{File, TryLockError},
+    io::{self, Read as _, Write as _},
     path::PathBuf,
     sync::{Arc, OnceLock},
     time::Duration,
@@ -19,7 +19,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AppError,
-    daemon_control::{LAUNCH_NONCE_VARIABLE, acquire_startup_lock, endpoint_answers, open_lock},
+    daemon_control::{
+        LAUNCH_NONCE_VARIABLE, acquire_startup_lock, endpoint_answers, open_lock,
+        open_runtime_read, open_runtime_write,
+    },
 };
 
 /// Bounds a graceful Runtime shutdown before this process leaves regardless.
@@ -214,14 +217,7 @@ fn report_ready(identity: &DaemonIdentity) -> Result<(), AppError> {
 }
 
 fn write_record(paths: &IpcPaths, identity: &DaemonIdentity) -> Result<(), AppError> {
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut record = options.open(paths.daemon_record_path())?;
+    let mut record = open_runtime_write(&paths.daemon_record_path())?;
     record.write_all(identity.metadata().as_bytes())?;
     record.flush()?;
     Ok(())
@@ -233,9 +229,11 @@ fn write_record(paths: &IpcPaths, identity: &DaemonIdentity) -> Result<(), AppEr
 /// one, and erasing it would take away a live daemon's identity.
 fn remove_record(paths: &IpcPaths, identity: &DaemonIdentity) {
     let path = paths.daemon_record_path();
-    let ours = std::fs::read(&path)
+    let mut recorded = Vec::new();
+    let ours = open_runtime_read(&path)
+        .and_then(|file| file.take(8192).read_to_end(&mut recorded))
         .ok()
-        .and_then(|recorded| DaemonReport::parse(&recorded))
+        .and_then(|_| DaemonReport::parse(&recorded))
         .is_some_and(|recorded| {
             recorded.launch_nonce() == identity.launch_nonce()
                 && recorded.incarnation().pid() == std::process::id()

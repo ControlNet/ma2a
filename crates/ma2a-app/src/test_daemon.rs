@@ -143,6 +143,7 @@ impl Daemon {
             u64::from_le_bytes(nonce)
         ));
         std::fs::create_dir(&state_dir)?;
+        ma2a_store::protect_private_directory(&state_dir, "test state directory")?;
         let paths = IpcPaths::new(&state_dir)?;
         paths.prepare()?;
         let lock = File::options()

@@ -164,13 +164,15 @@ fn a_daemon_that_cannot_report_readiness_stops_instead_of_detaching() -> TestRes
 #[cfg(unix)]
 #[test]
 fn a_failed_start_reaps_its_child_and_releases_the_directory() -> TestResult {
-    // Given: the daemon refuses a state directory anyone else can read. Reaching
+    // Given: the daemon refuses a database anyone else can read. Reaching
     // that refusal is the point: it happens after the parent has detached, so
     // the reason exists only on the child's standard error.
     use std::os::unix::fs::PermissionsExt as _;
 
     let fixture = DaemonFixture::idle("lifecycle-failed-start")?;
-    fs::set_permissions(fixture.state_dir(), fs::Permissions::from_mode(0o755))?;
+    let database = fixture.state_dir().join("state-v1.sqlite3");
+    fs::write(&database, b"")?;
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o644))?;
 
     // When
     let started = fixture.run(&["start"])?;
@@ -178,9 +180,9 @@ fn a_failed_start_reaps_its_child_and_releases_the_directory() -> TestResult {
     // Then
     assert!(!started.status.success());
     let recorded = fs::read_to_string(fixture.runtime_dir().join("daemon.log"))?;
-    assert!(recorded.contains("state directory"), "{recorded}");
+    assert!(recorded.contains("SQLite database"), "{recorded}");
     assert!(
-        String::from_utf8_lossy(&started.stderr).contains("state directory"),
+        String::from_utf8_lossy(&started.stderr).contains("SQLite database"),
         "the failure must carry the daemon's own reason: {}",
         String::from_utf8_lossy(&started.stderr)
     );
@@ -193,6 +195,25 @@ fn a_failed_start_reaps_its_child_and_releases_the_directory() -> TestResult {
         assert!(!is_owned(&fixture)?);
         std::thread::sleep(Duration::from_millis(50));
     }
+    fixture.shutdown()
+}
+
+/// A shared state directory is refused before creating runtime files or spawning a child.
+#[cfg(unix)]
+#[test]
+fn a_shared_state_directory_is_refused_before_creating_runtime_files() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = DaemonFixture::idle("lifecycle-shared-state-dir")?;
+    fs::set_permissions(fixture.state_dir(), fs::Permissions::from_mode(0o755))?;
+
+    let started = fixture.run(&["start"])?;
+
+    assert!(!started.status.success());
+    assert!(
+        !fixture.runtime_dir().exists(),
+        "run-v1 must not be created inside an insecure state directory"
+    );
     fs::set_permissions(fixture.state_dir(), fs::Permissions::from_mode(0o700))?;
     fixture.shutdown()
 }

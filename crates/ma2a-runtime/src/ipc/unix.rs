@@ -1,7 +1,4 @@
-use std::{
-    fs, io,
-    os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _},
-};
+use std::{fs, io, os::unix::fs::PermissionsExt as _, path::Path};
 
 use interprocess::local_socket::{
     GenericFilePath, ListenerOptions, ToFsName as _,
@@ -14,20 +11,21 @@ pub(crate) type PlatformListener = Listener;
 pub(crate) type PlatformStream = Stream;
 
 pub(crate) fn prepare(paths: &IpcPaths) -> Result<(), IpcError> {
-    let mut builder = fs::DirBuilder::new();
-    builder
-        .recursive(true)
-        .mode(0o700)
-        .create(paths.runtime_dir())?;
-    let metadata = fs::symlink_metadata(paths.runtime_dir())?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_dir()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.permissions().mode() & 0o777 != 0o700
-    {
-        return Err(IpcError::UnauthorizedPeer);
+    ensure_private_dir(paths.state_dir(), "state directory")?;
+    ensure_private_dir(paths.runtime_dir(), "runtime directory")
+}
+
+fn ensure_private_dir(path: &Path, target: &'static str) -> Result<(), IpcError> {
+    ma2a_store::ensure_private_directory(path, target).map_err(store_dir_error)
+}
+
+fn store_dir_error(error: ma2a_store::StoreError) -> IpcError {
+    match error {
+        ma2a_store::StoreError::InvalidStateDirectory => IpcError::InvalidPath,
+        ma2a_store::StoreError::InsecurePermissions { .. } => IpcError::UnauthorizedPeer,
+        ma2a_store::StoreError::Io(error) => IpcError::Io(error),
+        other => IpcError::Io(io::Error::other(other)),
     }
-    Ok(())
 }
 
 pub(crate) fn bind(paths: &IpcPaths) -> Result<PlatformListener, IpcError> {
@@ -88,5 +86,41 @@ mod tests {
 
         // Then
         assert!(matches!(result, Err(IpcError::UnauthorizedPeer)));
+    }
+
+    #[test]
+    fn prepare_rejects_shared_or_symlinked_state_directory_before_creating_runtime_dir()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = std::env::temp_dir().join(format!("ma2a-ipc-prepare-{}", std::process::id()));
+        let _stale = fs::remove_dir_all(&base);
+        let shared = base.join("shared");
+        let target = base.join("private");
+        let link = base.join("link");
+        fs::create_dir_all(&shared)?;
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o755))?;
+        fs::create_dir(&target)?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700))?;
+        std::os::unix::fs::symlink(&target, &link)?;
+
+        let shared_result = IpcPaths::new(&shared)?.prepare();
+        let link_result = IpcPaths::new(&link)?.prepare();
+        let shared_created = shared.join("run-v1").exists();
+        let link_created = target.join("run-v1").exists();
+        fs::remove_dir_all(&base)?;
+
+        assert!(
+            matches!(shared_result, Err(IpcError::UnauthorizedPeer)),
+            "{shared_result:?}"
+        );
+        assert!(
+            matches!(link_result, Err(IpcError::UnauthorizedPeer)),
+            "{link_result:?}"
+        );
+        assert!(!shared_created, "run-v1 was created in a 0755 state dir");
+        assert!(
+            !link_created,
+            "run-v1 was created through a symlinked state dir"
+        );
+        Ok(())
     }
 }
