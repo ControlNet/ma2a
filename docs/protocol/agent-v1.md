@@ -566,9 +566,10 @@ skips empty and malformed lines, deduplicates by `seq`, acknowledges, and gives 
 with progress, messages, `ask`, cancellation, and tool calls as futures (call IDs `c1`, `c2`, …). A
 handle dropped without an end reports `failed`, or `cancelled` after a cancellation request.
 The SDK checks every message against the Runtime's message bounds (`Message::is_within_bounds`:
-1–16 parts, 12,288 content bytes, no NUL) before sending it, because the Runtime ignores a whole
-line that carries an out-of-bounds message. An out-of-bounds result or `ask` question fails the
-task instead, and `message` returns `false` without sending. A task delivered again while the
+1–16 parts, 12,288 content bytes, no NUL) and the `agent` role before sending it, because the
+Runtime ignores a whole line that carries any other message. Such a result or `ask` question
+fails the task instead, and `message` returns `false` without sending. Once a task ended, its
+handle sends no more progress or messages. A task delivered again while the
 SDK holds it is ignored. At most 64 progress lines and 64 messages wait to be written: past
 that, new progress is dropped and `message` returns `false` until the Runtime reads, while
 acknowledgements, state reports, and tool calls are always kept.

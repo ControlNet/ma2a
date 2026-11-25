@@ -126,6 +126,21 @@ async fn handle(mut task: Task) {
             task.complete(Some(Message::agent_text(sent.to_string())));
         }
         "nul-result" => task.complete(Some(Message::agent_text("a\0b"))),
+        "user-result" => {
+            let input = task.input().clone();
+            task.complete(Some(input));
+        }
+        "user-question" => {
+            let answer = task.ask(Message::user_text("which?")).await;
+            assert!(answer.is_none());
+            // The task ended there, so nothing more is sent for it.
+            task.progress("late");
+            assert!(!task.message(Message::agent_text("late")));
+        }
+        "user-message" => {
+            let sent = task.message(Message::user_text("m"));
+            task.complete(Some(Message::agent_text(sent.to_string())));
+        }
         "huge-question" => {
             let text = "x".repeat(ma2a_agent::protocol::MAX_MESSAGE_BYTES + 1);
             let answer = task.ask(Message::agent_text(text)).await;
@@ -388,5 +403,57 @@ async fn messages_a_stalled_reader_has_not_taken_are_refused_but_the_end_is_not(
         .count();
     assert!(messages > 0 && messages <= 100, "{messages}");
     assert_eq!(completed, Some(messages.to_string()));
+    Ok(())
+}
+
+/// The Runtime ignores a whole line whose message is not in the Agent's role, so the SDK must
+/// not send one either.
+#[tokio::test]
+async fn a_message_in_the_users_role_is_never_sent_for_the_agent() -> TestResult {
+    let mut runtime = Runtime::start();
+    runtime.next().await?;
+    for (seq, id, text) in [(1, "a", "user-result"), (2, "b", "user-question")] {
+        runtime.send(&task(seq, id, text)).await?;
+        let mut reported = None;
+        runtime
+            .until(|line| match line {
+                AgentToRuntime::State {
+                    task,
+                    state,
+                    message,
+                    error,
+                } if task == id => {
+                    reported = Some((*state, message.is_some(), error.is_some()));
+                    true
+                }
+                _ => false,
+            })
+            .await?;
+        assert_eq!(reported, Some((ReportedState::Failed, false, true)), "{id}");
+    }
+    runtime.send(&task(3, "c", "user-message")).await?;
+    let mut completed = None;
+    let seen = runtime
+        .until(|line| match line {
+            AgentToRuntime::State {
+                task,
+                state: ReportedState::Completed,
+                message,
+                ..
+            } if task == "c" => {
+                completed = message.as_ref().map(Message::text);
+                true
+            }
+            _ => false,
+        })
+        .await?;
+    assert_eq!(completed.as_deref(), Some("false"));
+    assert!(
+        !seen.iter().any(|line| matches!(
+            line,
+            AgentToRuntime::Message { .. } | AgentToRuntime::Progress { .. }
+        )),
+        "{seen:?}"
+    );
     Ok(())
 }

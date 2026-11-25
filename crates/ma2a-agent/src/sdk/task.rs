@@ -11,14 +11,21 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use super::Shared;
 use crate::{
-    protocol::{AgentToRuntime, MAX_TOOL_ARGS_LEN, Message, Origin, ReportedState, ToolError},
+    protocol::{
+        AgentToRuntime, MAX_TOOL_ARGS_LEN, Message, Origin, ReportedState, Role, ToolError,
+    },
     tools::Tool,
 };
 
 /// Longest progress text the Runtime retains, in bytes.
 const MAX_PROGRESS_LEN: usize = 1_024;
 /// The error a task reports instead of a message the Runtime would ignore.
-const OUT_OF_BOUNDS: &str = "the message exceeds the adapter message bounds";
+const UNUSABLE: &str = "the message is not an Agent message within the adapter message bounds";
+
+/// Whether the Runtime records this message: it ignores the whole line of any other.
+fn usable(message: &Message) -> bool {
+    message.role == Role::Agent && message.is_within_bounds()
+}
 
 /// One task this Agent works on.
 ///
@@ -69,8 +76,12 @@ impl Task {
         &self.input
     }
 
-    /// Reports transient progress, cut to 1 KiB at a character boundary.
+    /// Reports transient progress, cut to 1 KiB at a character boundary; nothing once the
+    /// task ended.
     pub fn progress(&self, text: &str) {
+        if self.ended {
+            return;
+        }
         let mut end = text.len().min(MAX_PROGRESS_LEN);
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -83,10 +94,12 @@ impl Task {
 
     /// Adds one Agent message to the conversation; returns whether it was sent.
     ///
-    /// A message outside [`Message::is_within_bounds`] is not sent, and neither is one while
-    /// 64 earlier messages still wait for the Runtime to read them.
+    /// A message not in the Agent's role or outside [`Message::is_within_bounds`] is not
+    /// sent, and neither is one after the task ended or while 64 earlier messages still wait
+    /// for the Runtime to read them.
     pub fn message(&self, message: Message) -> bool {
-        message.is_within_bounds()
+        !self.ended
+            && usable(&message)
             && self.shared.emit(&AgentToRuntime::Message {
                 task: self.id.clone(),
                 message,
@@ -106,15 +119,12 @@ impl Task {
 
     /// Asks the creator for input: the task waits until their next message arrives.
     ///
-    /// Returns `None` when the task was cancelled instead. A question outside
-    /// [`Message::is_within_bounds`] fails the task and also returns `None`; the task has
-    /// then ended, and later reports for it send nothing.
+    /// Returns `None` when the task was cancelled instead. A question not in the Agent's
+    /// role or outside [`Message::is_within_bounds`] fails the task and also returns `None`;
+    /// the task has then ended, and later reports for it send nothing.
     pub async fn ask(&mut self, question: Message) -> Option<Message> {
-        if !question.is_within_bounds() {
-            self.report(
-                ReportedState::Failed,
-                (None, Some(OUT_OF_BOUNDS.to_owned())),
-            );
+        if !usable(&question) {
+            self.report(ReportedState::Failed, (None, Some(UNUSABLE.to_owned())));
             return None;
         }
         if !self.report(ReportedState::Waiting, (Some(question), None)) {
@@ -207,16 +217,10 @@ impl Task {
         if self.ended {
             return false;
         }
-        // The Runtime ignores a whole report whose message is out of bounds, which would
+        // The Runtime ignores a whole report whose message it would not record, which would
         // leave a released task running forever.
-        if message
-            .as_ref()
-            .is_some_and(|message| !message.is_within_bounds())
-        {
-            self.report(
-                ReportedState::Failed,
-                (None, Some(OUT_OF_BOUNDS.to_owned())),
-            );
+        if message.as_ref().is_some_and(|message| !usable(message)) {
+            self.report(ReportedState::Failed, (None, Some(UNUSABLE.to_owned())));
             return false;
         }
         let terminal = matches!(
