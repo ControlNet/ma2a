@@ -59,9 +59,19 @@ const BUSINESS_CONNECTION_LIMIT: usize = 32;
 /// from this reserve answer lifecycle calls and refuse everything else.
 ///
 /// These are additional to [`BUSINESS_CONNECTION_LIMIT`] rather than carved out
-/// of it, so the daemon accepts at most 36 connections in total. Carving them
-/// out instead would have quietly reduced the business budget to 28.
+/// of it. Carving them out instead would have quietly reduced the business budget
+/// to 28.
 const LIFECYCLE_RESERVE: usize = 4;
+
+/// Connection slots kept back for `service_accept`, so a hosted call is never
+/// refused because other local traffic holds every business slot.
+///
+/// A hosted call arrives over the `ma2a/service/1` protocol, which admits at most
+/// this many inbound calls Runtime-wide, so this many accepts can never be short.
+/// Connections taken from this reserve answer lifecycle calls and `service_accept`
+/// and refuse everything else. Like the lifecycle reserve it is additional to the
+/// business budget, so the daemon accepts at most 100 connections in total.
+const ACCEPT_RESERVE: usize = ma2a_core::service::stream_limits(ma2a_core::ServiceKind::Service).1;
 
 #[cfg(unix)]
 use unix as platform;

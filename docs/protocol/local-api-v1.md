@@ -321,7 +321,9 @@ Process upgrades (no request ID; never replayed):
   call. Its answer `service_call` carries `service`, `call_id`, `caller_endpoint_id`,
   `request_id`, `version`, `operation`, and `body` (standard base64, at most 8 KiB decoded). The
   connection then carries Services v1 frames for the call. A call not accepted within 10 s is
-  withdrawn.
+  withdrawn. The daemon keeps connection slots for `service_accept` apart from the ones other
+  local requests share, so an accept is admitted even when every one of those is taken; it needs
+  no `handshake` first, and its own `version` is checked.
 
 Errors:
 

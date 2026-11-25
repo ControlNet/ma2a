@@ -115,17 +115,20 @@ Only a large `snapshot_fetch` or `space_list` response spans ordered `snapshot_f
 all with the original correlation, one frozen revision/boot, and a final marker.
 Other commands still use one response frame. Clients discard incomplete or mixed
 streams; see `docs/protocol/local-api-v1.md` for the exact fragment contract. The
-server allows 32 in-flight business connections, plus a reserve of four that answer lifecycle calls
-only. A connection that upgrades gives up its business slot: a `stream_open` stream moves to a
-separate pool of 64 stream connections, and a hosted-service link or accepted call runs under the
-hosted-service limits in `docs/protocol/service-v1.md`.
+server allows 32 in-flight business connections, plus two reserves beyond them: 64 connections
+that answer lifecycle calls and `service_accept` only, then four that answer lifecycle calls only.
+The accept reserve matches the 64 hosted calls the Runtime admits at once, so a service accepting
+its calls never competes with other local clients for a business slot. A connection that upgrades
+gives up its slot: a `stream_open` stream moves to a separate pool of 64 stream connections, and a
+hosted-service link or accepted call runs under the hosted-service limits in
+`docs/protocol/service-v1.md`.
 
 Two planes share this one endpoint and are kept logically apart. Business commands go through the
 versioned local API, the durable mutation-replay lock and the Runtime actor. Lifecycle calls — "are
 you there, which daemon are you" and "please stop" — are answered from an identity record the daemon
 fixed before it began serving, and touch none of those. That separation exists because the moment a
 caller most needs to ask whether a daemon is alive is the moment its Runtime is stuck, and a probe
-that queues behind the stuck work answers nothing. The four reserve connections sit beyond the 32
+that queues behind the stuck work answers nothing. The four lifecycle connections sit beyond the 32
 business ones rather than inside them, so a lifecycle call is still answered when every business
 slot is held by callers blocked on the same Runtime, and business traffic keeps its full budget.
 

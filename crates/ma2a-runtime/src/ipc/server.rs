@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{RuntimeHandle, current_user::CurrentUserRuntime};
 
 use super::{
-    BUSINESS_CONNECTION_LIMIT, IpcError, IpcPaths, LIFECYCLE_RESERVE,
+    ACCEPT_RESERVE, BUSINESS_CONNECTION_LIMIT, IpcError, IpcPaths, LIFECYCLE_RESERVE,
     lifecycle::{DaemonIdentity, RuntimeBoot},
     platform,
 };
@@ -56,6 +56,7 @@ pub struct LocalApiServer {
     #[cfg(test)]
     mutation_hooks: mutation_test_hooks::MutationTestHooks,
     permits: Arc<Semaphore>,
+    accepts: Arc<Semaphore>,
     reserve: Arc<Semaphore>,
     streams: Arc<Semaphore>,
     in_flight: crate::stream_plane::InFlight,
@@ -95,6 +96,7 @@ impl LocalApiServer {
             #[cfg(test)]
             mutation_hooks: mutation_test_hooks::MutationTestHooks::default(),
             permits: Arc::new(Semaphore::new(BUSINESS_CONNECTION_LIMIT)),
+            accepts: Arc::new(Semaphore::new(ACCEPT_RESERVE)),
             reserve: Arc::new(Semaphore::new(LIFECYCLE_RESERVE)),
             streams: Arc::new(Semaphore::new(crate::stream_plane::STREAM_CONNECTION_LIMIT)),
             in_flight: crate::stream_plane::InFlight::default(),
@@ -170,7 +172,12 @@ impl LocalApiServer {
                             () = tokio::time::sleep(ACCEPT_BACKOFF) => continue,
                         }
                     };
-                    let Some(admission) = admit(&self.permits, &self.reserve)? else { continue };
+                    let pools = [
+                        (&self.permits, Class::Business),
+                        (&self.accepts, Class::Accept),
+                        (&self.reserve, Class::Lifecycle),
+                    ];
+                    let Some(admission) = admit(pools)? else { continue };
                     let context = ConnectionContext {
                         paths: self.paths.clone(),
                         handle: self.handle.clone(),
@@ -204,34 +211,37 @@ impl LocalApiServer {
     }
 }
 
-struct Admission {
-    permit: OwnedSemaphorePermit,
-    lifecycle_only: bool,
+/// The pool a connection's slot came from, which decides what it may ask.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Class {
+    /// Anything.
+    Business,
+    /// Lifecycle calls and `service_accept` only.
+    Accept,
+    /// Lifecycle calls only.
+    Lifecycle,
 }
 
-/// Admits a connection, falling back to the reserve kept for lifecycle calls.
+struct Admission {
+    permit: OwnedSemaphorePermit,
+    class: Class,
+}
+
+/// Admits a connection from the first pool with a free slot, in the order given.
 ///
-/// `Ok(None)` means every slot including the reserve is taken, which is the only
-/// case where a connection is dropped unanswered.
-fn admit(
-    permits: &Arc<Semaphore>,
-    reserve: &Arc<Semaphore>,
-) -> Result<Option<Admission>, IpcError> {
-    match Arc::clone(permits).try_acquire_owned() {
-        Ok(permit) => Ok(Some(Admission {
-            permit,
-            lifecycle_only: false,
-        })),
-        Err(TryAcquireError::NoPermits) => match Arc::clone(reserve).try_acquire_owned() {
-            Ok(permit) => Ok(Some(Admission {
-                permit,
-                lifecycle_only: true,
-            })),
-            Err(TryAcquireError::NoPermits) => Ok(None),
-            Err(TryAcquireError::Closed) => Err(IpcError::InvalidFrame),
-        },
-        Err(TryAcquireError::Closed) => Err(IpcError::InvalidFrame),
+/// A connection is admitted before its request is read, so a reserve slot is
+/// taken on trust and its request is refused if it is not one the reserve serves.
+/// `Ok(None)` means every slot of every pool is taken, which is the only case
+/// where a connection is dropped unanswered.
+fn admit(pools: [(&Arc<Semaphore>, Class); 3]) -> Result<Option<Admission>, IpcError> {
+    for (pool, class) in pools {
+        match Arc::clone(pool).try_acquire_owned() {
+            Ok(permit) => return Ok(Some(Admission { permit, class })),
+            Err(TryAcquireError::NoPermits) => {}
+            Err(TryAcquireError::Closed) => return Err(IpcError::InvalidFrame),
+        }
     }
+    Ok(None)
 }
 
 struct ConnectionContext {

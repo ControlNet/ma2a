@@ -10,10 +10,10 @@
 use ma2a_core::ProtocolError;
 use serde_json::Value;
 
-use crate::api;
+use crate::api::{self, HostedCommand};
 
 use super::{
-    ConnectionContext, IpcError,
+    Class, ConnectionContext, IpcError,
     execute::{authoritative_revision, execute},
     platform,
 };
@@ -27,15 +27,14 @@ pub(super) async fn handle_connection(
     context: ConnectionContext,
     admission: super::Admission,
 ) -> Result<(), IpcError> {
-    let lifecycle_only = admission.lifecycle_only;
+    let class = admission.class;
     // Windows names a pipe client only once something was read from the pipe, so the request is
     // read, within its bound, before the caller's account is checked; nothing is decoded or
     // answered until it is.
     let frame = read_frame(&mut stream, api::MAX_LOCAL_REQUEST_BYTES).await?;
     platform::authorize(&stream, &context.paths)?;
-    if !lifecycle_only
-        && let Ok(command) = api::decode_command(&frame.payload)
-        && (command.stream_open().is_some() || command.is_hosted_upgrade())
+    if let Ok(command) = api::decode_command(&frame.payload)
+        && upgrades(class, &command)
     {
         let upgrade = ((frame.correlation, &command), admission.permit);
         return if command.is_hosted_upgrade() {
@@ -45,7 +44,8 @@ pub(super) async fn handle_connection(
         };
     }
     let _permit = admission.permit;
-    let (encoded, requests_shutdown) = answer(&frame.payload, &context, lifecycle_only).await?;
+    let reserved = class != Class::Business;
+    let (encoded, requests_shutdown) = answer(&frame.payload, &context, reserved).await?;
     if encoded.len() > api::MAX_LOCAL_RESPONSE_BYTES {
         let value: Value = serde_json::from_slice(&encoded).map_err(|_| IpcError::InvalidFrame)?;
         if !matches!(
@@ -94,10 +94,19 @@ pub(super) async fn handle_connection(
     Ok(())
 }
 
+/// Whether `command` upgrades the connection, which only the upgrades its slot serves do.
+const fn upgrades(class: Class, command: &api::Command) -> bool {
+    match class {
+        Class::Business => command.stream_open().is_some() || command.is_hosted_upgrade(),
+        Class::Accept => matches!(command.hosted_command(), Some(HostedCommand::Accept(..))),
+        Class::Lifecycle => false,
+    }
+}
+
 async fn answer(
     payload: &[u8],
     context: &ConnectionContext,
-    lifecycle_only: bool,
+    reserved: bool,
 ) -> Result<(Vec<u8>, bool), IpcError> {
     if let Some(request) = LifecycleRequest::parse(payload) {
         return Ok(match request {
@@ -105,9 +114,10 @@ async fn answer(
             LifecycleRequest::Stop => (context.identity.reply("stopping"), true),
         });
     }
-    if lifecycle_only {
-        // This connection came from the reserve, which exists so lifecycle calls
-        // survive saturation. Answering business traffic from it would defeat that.
+    if reserved {
+        // This connection came from a reserve, which exists so lifecycle calls and
+        // hosted-call accepts survive saturation. Answering business traffic from it
+        // would defeat that.
         return Ok((
             api::encode_error(api::ApiError::new(ProtocolError::UNAVAILABLE))?,
             false,

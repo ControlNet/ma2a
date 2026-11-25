@@ -23,6 +23,8 @@ pub(super) struct Harness {
     runtime: Runtime,
     live_server: LiveServer,
     pub(super) client: LocalApiClient,
+    /// The connection slots ordinary local traffic competes for.
+    pub(super) slots: Arc<tokio::sync::Semaphore>,
     space: String,
     local: String,
     _state: TempState,
@@ -48,10 +50,12 @@ impl Harness {
         .await?;
         let paths = IpcPaths::new(&state.0)?;
         let server = LocalApiServer::bind_for_launch(paths.clone(), handle, control, None).await?;
+        let slots = server.business_slots();
         Ok(Self {
             runtime,
             live_server: LiveServer::spawn(server),
             client: LocalApiClient::new(paths),
+            slots,
             space,
             local,
             _state: state,

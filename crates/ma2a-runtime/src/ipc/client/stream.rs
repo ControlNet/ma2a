@@ -50,8 +50,12 @@ impl LocalApiClient {
         Ok(stream.map_or(StreamUpgrade::Refused(response), StreamUpgrade::Opened))
     }
 
-    /// Performs the handshake, then upgrades one fresh connection with `service_attach` or
-    /// `service_accept`.
+    /// Upgrades one fresh connection with `service_attach` or `service_accept`, after the
+    /// handshake for an attach.
+    ///
+    /// An accept skips the separate handshake: the daemon serves it from slots kept for
+    /// accepts, which a handshake may not use, and the link it answers was already attached
+    /// after one. The command's own `version` is still checked.
     ///
     /// Returns the daemon's exact answer, and the upgraded connection when it was accepted:
     /// a link after `service_attached`, or one call's Services v1 frames after
@@ -64,12 +68,11 @@ impl LocalApiClient {
         &self,
         command: &Command,
     ) -> Result<(Vec<u8>, Option<LocalStream>), IpcError> {
-        let upgraded = match command.operation() {
-            "service_attach" => "service_attached",
-            "service_accept" => "service_call",
-            _ => return Err(IpcError::InvalidFrame),
-        };
-        self.upgrade(command, upgraded).await
+        match command.operation() {
+            "service_attach" => self.upgrade(command, "service_attached").await,
+            "service_accept" => self.upgrade_now(command, "service_call").await,
+            _ => Err(IpcError::InvalidFrame),
+        }
     }
 
     async fn upgrade(
@@ -78,6 +81,15 @@ impl LocalApiClient {
         upgraded: &str,
     ) -> Result<(Vec<u8>, Option<LocalStream>), IpcError> {
         validate_handshake(&self.roundtrip(&handshake_command()?).await?)?;
+        self.upgrade_now(command, upgraded).await
+    }
+
+    /// Upgrades one fresh connection with `command`, without a handshake first.
+    async fn upgrade_now(
+        &self,
+        command: &Command,
+        upgraded: &str,
+    ) -> Result<(Vec<u8>, Option<LocalStream>), IpcError> {
         let correlation = NEXT_CORRELATION.fetch_add(1, Ordering::Relaxed);
         let mut stream = platform::connect(&self.paths).await?;
         write_frame(

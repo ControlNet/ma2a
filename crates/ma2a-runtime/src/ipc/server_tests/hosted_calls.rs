@@ -14,9 +14,12 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::hosted::{named, register};
-use super::services::{Harness, call};
+use super::services::{Harness, call, text};
 use super::*;
-use crate::hosting::{Accepted, HostedServices, Notice};
+use crate::{
+    hosting::{Accepted, HostedServices, Notice},
+    ipc::BUSINESS_CONNECTION_LIMIT,
+};
 
 type Ends = (
     FrameReader<ReadHalf<DuplexStream>>,
@@ -136,5 +139,42 @@ async fn a_successful_outcome_the_caller_never_takes_is_not_audited_as_completed
 
     // Then: the audit says the outcome was never delivered.
     assert_eq!(report.end, OperationEnd::Failed(ServiceError::TimedOut));
+    announced.harness.stop().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_accept_is_admitted_while_every_business_slot_is_taken() -> TestResult {
+    // Given: a call waiting for its service, and every business slot held by other local work.
+    let announced = announce("hosted-accept-reserve", 1024).await?;
+    let client = &announced.harness.client;
+    let held = Arc::clone(&announced.harness.slots)
+        .acquire_many_owned(u32::try_from(BUSINESS_CONNECTION_LIMIT)?)
+        .await?;
+
+    // When: the service accepts the call.
+    let accept = serde_json::json!({
+        "version": 1, "operation": "service_accept", "service": "example",
+        "call_id": api::encode_hex(&announced.id),
+    });
+    let accept = api::decode_command(&serde_json::to_vec(&accept)?)?;
+    let opened = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client.open_hosted(&accept),
+    )
+    .await??;
+
+    // Then: it is handed the call at once, while other local requests are still turned away.
+    let answer: serde_json::Value = serde_json::from_slice(&opened.0)?;
+    assert_eq!(
+        text(&answer, "/result/type"),
+        Some("service_call"),
+        "{answer}"
+    );
+    assert!(opened.1.is_some(), "the accepted call has no stream");
+    assert!(
+        matches!(client.probe().await, Err(IpcError::Api(error)) if error.code() == ProtocolError::UNAVAILABLE),
+        "a handshake must not take a slot kept for service_accept"
+    );
+    drop((opened, held));
     announced.harness.stop().await
 }

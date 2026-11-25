@@ -39,7 +39,7 @@ impl Drop for Detach {
 pub(super) async fn upgrade(
     mut stream: PlatformStream,
     context: &ConnectionContext,
-    ((correlation, command), business): ((u64, &Command), OwnedSemaphorePermit),
+    ((correlation, command), slot): ((u64, &Command), OwnedSemaphorePermit),
 ) -> Result<(), IpcError> {
     let revision = context.handle.status().await?.revision();
     let Some(hosted) = context.handle.hosted() else {
@@ -63,7 +63,7 @@ pub(super) async fn upgrade(
                 name: name.clone(),
                 id: link.id,
             };
-            drop(business);
+            drop(slot);
             let result = CommandResult::service_attached(name, &manifest);
             let attached = api::encode_response(&ApiResponse::new(None, revision, result))?;
             answer(&mut stream, correlation, &attached).await?;
@@ -91,7 +91,7 @@ pub(super) async fn upgrade(
                 payload: &encoded,
                 maximum: api::MAX_LOCAL_RESPONSE_BYTES,
             })?;
-            drop(business);
+            drop(slot);
             let _delivered = deliver.send(Accepted {
                 stream: Box::new(stream),
                 answer,
