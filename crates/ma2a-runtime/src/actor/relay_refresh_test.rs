@@ -88,12 +88,7 @@ async fn relay_map_failures_retry_without_committing_actor_or_churning_address()
     let publisher = actor.endpoint.address_publisher()?;
     let (_revision, advanced) = actor
         .store
-        .publish_address(
-            publisher,
-            identity.endpoint_id,
-            u64::try_from(NOW_MS)?,
-            false,
-        )
+        .publish_address(publisher, identity.endpoint_id, u64::try_from(NOW_MS)?)
         .await?;
     assert!(advanced);
     let initial = repository

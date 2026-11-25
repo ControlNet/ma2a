@@ -168,14 +168,8 @@ impl StoreBackend {
                 publisher,
                 local_endpoint_id,
                 now_ms,
-                force_advance,
                 reply,
-            } => drop(reply.send(self.publish_address(
-                &publisher,
-                local_endpoint_id,
-                now_ms,
-                force_advance,
-            ))),
+            } => drop(reply.send(self.publish_address(&publisher, local_endpoint_id, now_ms))),
             StoreCommand::PublishRelayAdvertisements {
                 publisher,
                 local_endpoint_id,

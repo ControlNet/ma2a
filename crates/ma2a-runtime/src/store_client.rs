@@ -173,14 +173,12 @@ impl StoreClient {
         publisher: ma2a_net::AddressPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
         now_ms: u64,
-        force_advance: bool,
     ) -> Result<(u64, bool), RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PublishAddress {
             publisher,
             local_endpoint_id,
             now_ms,
-            force_advance,
             reply,
         })
         .await?;

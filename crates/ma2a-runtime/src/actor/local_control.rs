@@ -3,7 +3,7 @@ use crate::error::{RuntimeError, RuntimeErrorKind};
 
 impl Actor {
     pub(crate) async fn refresh_local_control_publications(&mut self) -> Result<(), RuntimeError> {
-        self.publish_local_address_with_mode(false).await?;
+        self.publish_local_address().await?;
         self.refresh_local_relay_publication().await?;
         Ok(())
     }
@@ -78,14 +78,7 @@ impl Actor {
         Ok(())
     }
 
-    pub(super) async fn publish_local_address(&mut self) -> Result<u64, RuntimeError> {
-        self.publish_local_address_with_mode(false).await
-    }
-
-    pub(crate) async fn publish_local_address_with_mode(
-        &mut self,
-        force_advance: bool,
-    ) -> Result<u64, RuntimeError> {
+    pub(crate) async fn publish_local_address(&mut self) -> Result<u64, RuntimeError> {
         let now_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
         let publisher = self
@@ -94,7 +87,7 @@ impl Actor {
             .map_err(RuntimeError::from)?;
         let write_result = self
             .store
-            .publish_address(publisher, self.state.endpoint_id, now_ms, force_advance)
+            .publish_address(publisher, self.state.endpoint_id, now_ms)
             .await;
         if write_result.is_err() {
             // The Store may have committed some Space records before failing.
