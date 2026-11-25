@@ -1,74 +1,9 @@
 import { HTTPError } from "ky"
 import { describe, expect, test } from "vitest"
 
-import type { RuntimeApiClient, RuntimeEventCallbacks } from "./api/client"
 import { runtimeSnapshot } from "./api/test-fixtures"
-import {
-  RuntimeController,
-  type RuntimeRetryScheduler,
-  UNCERTAIN_GRACE_MS,
-} from "./runtime-controller"
-
-class ManualScheduler implements RuntimeRetryScheduler {
-  readonly delays: number[] = []
-  private tasks: Array<(() => void) | undefined> = []
-
-  schedule(delayMs: number, task: () => void): () => void {
-    this.delays.push(delayMs)
-    const index = this.tasks.push(task) - 1
-    return () => {
-      this.tasks[index] = undefined
-    }
-  }
-
-  runNext(): void {
-    const index = this.tasks.findIndex((task) => task !== undefined)
-    const task = index === -1 ? undefined : this.tasks[index]
-    if (task === undefined) return
-    this.tasks[index] = undefined
-    task()
-  }
-
-  pending(): number {
-    return this.tasks.filter((task) => task !== undefined).length
-  }
-}
-
-function fakeClient(fetchSnapshot: RuntimeApiClient["fetchSnapshot"]): {
-  readonly client: RuntimeApiClient
-  readonly callbacks: RuntimeEventCallbacks[]
-  readonly baselines: number[]
-  readonly closed: () => number
-} {
-  const callbacks: RuntimeEventCallbacks[] = []
-  const baselines: number[] = []
-  let closed = 0
-  return {
-    client: {
-      fetchSnapshot,
-      fetchSpaceDetails: () => Promise.reject(new Error("No Space details in this fixture")),
-      subscribe: (revision, eventCallbacks) => {
-        baselines.push(revision)
-        callbacks.push(eventCallbacks)
-        let active = true
-        return () => {
-          if (!active) return
-          active = false
-          closed += 1
-        }
-      },
-    },
-    callbacks,
-    baselines,
-    closed: () => closed,
-  }
-}
-
-async function flushRecovery(): Promise<void> {
-  for (let continuation = 0; continuation < 4; continuation += 1) {
-    await Promise.resolve()
-  }
-}
+import { RuntimeController, UNCERTAIN_GRACE_MS } from "./runtime-controller"
+import { fakeClient, flushRecovery, ManualScheduler } from "./test/runtime-controller-fakes"
 
 describe("runtime controller recovery", () => {
   test("reports an initial snapshot failure and stops after three scheduled retries", async () => {
@@ -124,6 +59,7 @@ describe("runtime controller recovery", () => {
     )
     await controller.start()
 
+    given.callbacks[0]?.onOpen()
     given.callbacks[0]?.onDisconnect()
     await flushRecovery()
 
@@ -152,6 +88,7 @@ describe("runtime controller recovery", () => {
       scheduler,
     )
     await controller.start()
+    given.callbacks[0]?.onOpen()
     given.callbacks[0]?.onDisconnect()
     await flushRecovery()
 
@@ -179,6 +116,7 @@ describe("runtime controller recovery", () => {
       scheduler,
     )
     await controller.start()
+    given.callbacks[0]?.onOpen()
     given.callbacks[0]?.onDisconnect()
     await flushRecovery()
 
@@ -190,6 +128,47 @@ describe("runtime controller recovery", () => {
     expect(given.closed()).toBe(1)
     expect(given.callbacks).toHaveLength(1)
   })
+})
+
+test("an event stream refused at once is reopened only after a growing pause", async () => {
+  // Given: a Runtime whose snapshot loads but whose event stream fails before it opens, as
+  // when every event connection is taken.
+  const scheduler = new ManualScheduler()
+  let reads = 0
+  const given = fakeClient(() => {
+    reads += 1
+    return Promise.resolve(runtimeSnapshot(10))
+  })
+  const controller = new RuntimeController(
+    { onRuntime: () => undefined, onSessionExpired: () => undefined, onError: () => undefined },
+    given.client,
+    scheduler,
+  )
+  await controller.start()
+
+  // When: each stream fails before opening.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    given.callbacks.at(-1)?.onDisconnect()
+    await flushRecovery()
+    scheduler.runNext()
+    await flushRecovery()
+  }
+
+  // Then: every reconnect waited, and the pause grew to its bound.
+  expect(reads).toBe(5)
+  expect(scheduler.delays.filter((delay) => delay !== UNCERTAIN_GRACE_MS)).toEqual([
+    250, 1_000, 4_000, 4_000,
+  ])
+
+  // Once a stream opened, losing it reconnects at once and from the first pause again.
+  given.callbacks.at(-1)?.onOpen()
+  given.callbacks.at(-1)?.onDisconnect()
+  await flushRecovery()
+  expect(reads).toBe(6)
+  given.callbacks.at(-1)?.onDisconnect()
+  await flushRecovery()
+  expect(scheduler.delays.filter((delay) => delay !== UNCERTAIN_GRACE_MS).at(-1)).toBe(250)
+  controller.stop()
 })
 
 test("a stopped controller reports nothing when its pending request fails late", async () => {

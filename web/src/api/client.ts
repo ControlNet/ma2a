@@ -49,6 +49,8 @@ export type RuntimeApiPaths = {
 }
 
 export type RuntimeEventCallbacks = {
+  /** The stream is open: the Runtime accepted it. */
+  readonly onOpen: () => void
   readonly onEvent: (event: RuntimeEvent) => void
   readonly onResyncRequired: () => void
   readonly onDisconnect: () => void
@@ -94,6 +96,7 @@ export function createRuntimeApiClient(
     },
     subscribe: (revision, callbacks) => {
       const source = createEventSource(`${eventsPath}?since=${revision}`, { withCredentials: true })
+      source.addEventListener("open", () => callbacks.onOpen())
       source.addEventListener("message", (message) => {
         if (!(message instanceof MessageEvent)) {
           source.close()

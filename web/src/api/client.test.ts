@@ -102,6 +102,7 @@ describe("runtime API boundary", () => {
   test("subscribes from the installed revision and closes malformed streams for recovery", () => {
     const payloadErrors: RuntimeApiPayloadError[] = []
     let recoveries = 0
+    let opened = 0
     const given = createRuntimeApiClient(
       {
         snapshot: "/api/v1/snapshot",
@@ -112,6 +113,9 @@ describe("runtime API boundary", () => {
     )
 
     given.subscribe(41, {
+      onOpen: () => {
+        opened += 1
+      },
       onEvent: () => undefined,
       onResyncRequired: () => {
         recoveries += 1
@@ -120,8 +124,10 @@ describe("runtime API boundary", () => {
       onPayloadError: (error) => payloadErrors.push(error),
     })
     const source = FakeEventSource.latest()
+    source.dispatch("open", new Event("open"))
     source.dispatch("message", new MessageEvent("message", { data: "{" }))
 
+    expect(opened).toBe(1)
     expect(source.url).toBe("/api/v1/events?since=41")
     expect(source.withCredentials).toBe(true)
     expect(payloadErrors).toHaveLength(1)
@@ -141,6 +147,7 @@ describe("runtime API boundary", () => {
         new FakeEventSource(url, init.withCredentials ?? false),
     )
     given.subscribe(10, {
+      onOpen: () => undefined,
       onEvent: () => {
         throw callbackError
       },

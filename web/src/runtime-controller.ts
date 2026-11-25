@@ -150,7 +150,6 @@ export class RuntimeController {
         this.details.delete(id)
     }
     this.failedDetails.clear()
-    this.retryAttempt = 0
     this.offline = false
     this.cancelRetry?.()
     this.cancelRetry = undefined
@@ -159,7 +158,15 @@ export class RuntimeController {
     )
     this.loadDetails()
     this.closeEvents?.()
+    // A stream the Runtime refuses at once, as when every event connection is taken, would
+    // otherwise reload the snapshot in a tight loop. Only an open stream resets the pause, and
+    // only losing one reconnects at once.
+    let opened = false
     this.closeEvents = this.client.subscribe(snapshot.revision, {
+      onOpen: () => {
+        opened = true
+        this.retryAttempt = 0
+      },
       onEvent: () => void this.refresh(),
       onResyncRequired: () => {
         this.clearDetails()
@@ -167,7 +174,8 @@ export class RuntimeController {
       },
       onDisconnect: () => {
         this.clearDetails()
-        void this.refresh()
+        if (opened) void this.refresh()
+        else this.scheduleRetry()
       },
       onPayloadError: (error) => this.handleError(error),
     })
