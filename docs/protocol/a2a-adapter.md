@@ -131,7 +131,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - local task: the input, then every retained message event;
   - remote task: the input and the result only, because Agent v1 `get` carries no message events.
 - **`artifacts`.** Each artifact has `artifactId` and `name` equal to its artifact name, and one file part. That part's `url` is the adapter's artifact route, with `filename` and `mediaType`. `metadata.size` and `metadata.blake3` identify the content.
-- **`metadata.ma2a`** carries `agent`, `creatorEndpointId`, `fromAgent` (attribution only), `reason`, and `progress`.
+- **`metadata.ma2a`** carries `agent`, `creatorEndpointId`, `fromAgent` (attribution only), `reason`, and `progress`. `inputElided` and `resultElided` are `true` when the local API's view of a local task left out that message, which happens above 20 KiB of encoded JSON (`docs/protocol/local-api-v1.md`); the task then shows no such message, and the flag says why. Another Endpoint's task always shows both messages in full.
 
 ### Stream updates
 

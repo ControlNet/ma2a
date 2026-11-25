@@ -160,6 +160,9 @@ pub(super) fn task(details: &Value, (history, base): (&[Value], &str), detail: D
             "fromAgent": summary.get("from_agent"),
             "reason": summary.get("reason"),
             "progress": details.get("progress"),
+            // Whether the local API's view left out a message too large for it.
+            "inputElided": details.get("input_elided") == Some(&Value::Bool(true)),
+            "resultElided": details.get("result_elided") == Some(&Value::Bool(true)),
         }}),
     );
     Value::Object(task)
@@ -167,7 +170,38 @@ pub(super) fn task(details: &Value, (history, base): (&[Value], &str), detail: D
 
 #[cfg(test)]
 mod tests {
-    use super::{segment, state};
+    use serde_json::json;
+
+    use super::{Detail, segment, state, task};
+
+    #[test]
+    fn a_message_the_local_view_left_out_is_flagged_as_left_out() {
+        // Given: a completed local task whose result was too large for the local API's view.
+        let details = json!({
+            "task": {"task_id": "t", "state": "completed"},
+            "input": {"role": "user", "parts": []},
+            "input_elided": false,
+            "result": null,
+            "result_elided": true,
+        });
+        let detail = Detail {
+            history: None,
+            artifacts: false,
+        };
+
+        // When
+        let shown = task(&details, (&[], "b"), detail);
+
+        // Then: the task says so, rather than look like one that completed with no result.
+        assert_eq!(
+            shown.pointer("/metadata/ma2a/resultElided"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            shown.pointer("/metadata/ma2a/inputElided"),
+            Some(&json!(false))
+        );
+    }
 
     #[test]
     fn every_local_state_has_its_a2a_state() {

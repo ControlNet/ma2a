@@ -3,15 +3,15 @@
 use std::time::Duration;
 
 use ma2a_core::service::{
-    AgentAccept, AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit, AgentTaskId,
-    OpenBody, ServiceError,
+    AgentAccept, AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit, AgentTaskDetails,
+    AgentTaskId, OpenBody, ServiceError,
 };
 use ma2a_runtime::api::{agent_event_value, agent_task_details_value, agent_task_value};
 use ma2a_services::client::{self, ClientError};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::backend::{Backend, Refusal, Route};
+use super::backend::{Backend, Refusal, Route, message_json};
 use crate::commands::remote::{agent::passes, open_as, open_bound};
 
 /// Pause before reaching a target again that is restarting or unreachable.
@@ -97,13 +97,27 @@ fn outcome(
 ) -> Result<Value, Refusal> {
     let (summary, value) = match (reply, details) {
         (AgentReply::Summary(summary), false) => (summary, agent_task_value(summary)),
-        (AgentReply::Details(full), true) => (&full.summary, agent_task_details_value(full)),
+        (AgentReply::Details(full), true) => (&full.summary, in_full(full)),
         _ => return Err(Refusal::named("internal")),
     };
     if summary.agent != *agent || task.is_some_and(|task| task != summary.id) {
         return Err(Refusal::named("internal"));
     }
     Ok(value)
+}
+
+/// The details of a task with its messages in full. The local API's view leaves out a message
+/// too large for a local response, but here the typed answer is already all here.
+fn in_full(details: &AgentTaskDetails) -> Value {
+    let mut value = agent_task_details_value(details);
+    if let Some(fields) = value.as_object_mut() {
+        let result = details.result.as_ref().map_or(Value::Null, message_json);
+        fields.insert("input".to_owned(), message_json(&details.input));
+        fields.insert("result".to_owned(), result);
+        fields.insert("input_elided".to_owned(), Value::Bool(false));
+        fields.insert("result_elided".to_owned(), Value::Bool(false));
+    }
+    value
 }
 
 pub(super) async fn submit(

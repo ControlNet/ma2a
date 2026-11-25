@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use ma2a_core::service::{
-    AgentAccept, AgentReply, AgentTaskId, AgentTaskState, FrameKind, ServiceError,
+    AgentAccept, AgentMessage, AgentReply, AgentTaskDetails, AgentTaskId, AgentTaskState,
+    FrameKind, MessagePart, MessageRole, ServiceError,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -112,5 +113,36 @@ async fn a_follow_reconnects_while_reopening_its_watch_fails_for_now() -> TestRe
         (seqs, ended),
         (Vec::new(), Err(Refusal::named("unavailable")))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_remote_result_is_kept_in_full_however_long_it_escapes() -> TestResult {
+    // Given: a completed task whose valid result grows past the local API's view bound once
+    // escaped as JSON.
+    let mut task = summary(TASK, "worker")?;
+    task.state = AgentTaskState::Completed;
+    let input = AgentMessage::new(MessageRole::User, vec![MessagePart::Text("hi".into())])?;
+    let text = "\t".repeat(11_000);
+    let mut full = AgentTaskDetails::new(task, input);
+    full.result = Some(AgentMessage::new(
+        MessageRole::Agent,
+        vec![MessagePart::Text(text.clone())],
+    )?);
+    let answer = answering(AgentAccept::Admitted, &AgentReply::Details(Box::new(full)))?;
+    let daemon = Daemon::start("get", answer)?;
+    let (backend, route) = Backend::standing_in(&daemon)?;
+
+    // When
+    let got = super::details(&backend, &route, &TASK.to_string())
+        .await
+        .map_err(|refusal| refusal.0)?;
+
+    // Then: the typed answer is all here, so nothing is left out.
+    let content = got
+        .pointer("/result/parts/0/content")
+        .and_then(Value::as_str);
+    assert_eq!(content, Some(text.as_str()));
+    assert_eq!(got.get("result_elided"), Some(&Value::Bool(false)));
     Ok(())
 }
