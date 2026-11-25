@@ -36,9 +36,12 @@ jq -e '
 ' "$report" >/dev/null
 
 # The report never names where it was built. The generator removes the checkout paths it knows
-# about; this refuses any file URL or absolute path left over, in a Unix or Windows spelling.
+# about; this refuses any absolute path left over, in a Unix or Windows spelling, at the start of
+# a string or after a space or parenthesis, and any file URL that does not continue with a
+# workspace member's path relative to the checkout, as the generator leaves them.
 jq -e '[.. | strings, (.. | objects | keys[])]
-  | all((test("file:///") or test("^([A-Za-z]:)?[/\\\\]")) | not)' "$report" >/dev/null || {
+  | all((test("file://(?!crates/|xtask$)") or test("(^|[\\s(])([A-Za-z]:)?[/\\\\]")) | not)' \
+  "$report" >/dev/null || {
   printf 'license report names a build directory\n' >&2
   exit 1
 }

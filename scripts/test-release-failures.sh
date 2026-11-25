@@ -123,7 +123,11 @@ for mutation in \
   'windows-url|.rust["ma2a-app 0.1.0 path+file:///D:/a/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
   'windows-path|.frontend.MIT += [{name: "ky", paths: ["D:\\a\\build\\web\\node_modules\\ky"]}]' \
   'mixed-path|.frontend.MIT += [{name: "ky", paths: ["d:/a/build/web/node_modules/ky"]}]' \
-  'unix-path|.frontend.MIT += [{name: "ky", paths: ["/tmp/build/web/node_modules/ky"]}]'
+  'unix-path|.frontend.MIT += [{name: "ky", paths: ["/tmp/build/web/node_modules/ky"]}]' \
+  'inner-unix-path|.rust["ma2a-app 0.1.0 (/tmp/build/crates/ma2a-app)"] = {licenses: ["MIT"]}' \
+  'inner-windows-path|.rust["ma2a-app 0.1.0 (D:\\a\\build\\crates\\ma2a-app)"] = {licenses: ["MIT"]}' \
+  'drive-url|.rust["ma2a-app 0.1.0 path+file://C:/a/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
+  'host-url|.rust["ma2a-app 0.1.0 path+file://localhost/tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}'
 do
   label=${mutation%%|*}
   mutated="$temporary/$label.licenses.json"
