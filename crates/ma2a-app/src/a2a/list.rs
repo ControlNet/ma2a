@@ -27,15 +27,17 @@ struct Filter<'a> {
 
 impl Filter<'_> {
     fn keeps(&self, task: &Value) -> bool {
-        let changed_ms = task
+        let summary = task.get("task").unwrap_or(task);
+        let changed_ms = summary
             .get("changed_at_ms")
             .and_then(Value::as_u64)
             .unwrap_or_default();
-        let state = task
+        let state = summary
             .get("state")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        self.context.is_none_or(|context| task_id(task) == context)
+        self.context
+            .is_none_or(|context| task_id(summary) == context)
             && self
                 .status
                 .is_none_or(|status| mapping::state(state) == status)
@@ -105,20 +107,33 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
             .position(|task| task_id(task).as_str() > token)
             .unwrap_or(matching.len())
     });
-    let page: Vec<&Value> = matching
-        .iter()
-        .skip(start)
-        .take(page_size)
-        .copied()
-        .collect();
-    let more = start + page.len() < matching.len();
-    let mut tasks = Vec::with_capacity(page.len());
-    for summary in &page {
-        // History and artifacts need each task's details; a bare page needs none.
-        let task = if detail.artifacts || detail.history.is_some_and(|history| history > 0) {
-            view::task(served, &task_id(summary), detail)
-                .await
-                .map_err(refused)?
+    let needs_details = detail.artifacts || detail.history.is_some_and(|history| history > 0);
+    let mut tasks = Vec::with_capacity(page_size.min(matching.len().saturating_sub(start)));
+    let mut last_id = None;
+    let mut dropped = 0_usize;
+    let mut visited = start;
+    for summary in matching.iter().skip(start) {
+        if tasks.len() >= page_size {
+            break;
+        }
+        visited += 1;
+        let id = task_id(summary);
+        // History and artifacts need each task's details; recheck the filter against the
+        // fetched details so no returned entry fails the filter on its displayed fields.
+        let task = if needs_details {
+            let details = match served.backend.details(served.route, &id).await {
+                Ok(details) => details,
+                Err(refusal) if matches!(refusal.0.as_str(), "not_found" | "unknown_task") => {
+                    dropped += 1;
+                    continue;
+                }
+                Err(refusal) => return Err(refused(refusal)),
+            };
+            if !filter.keeps(&details) {
+                dropped += 1;
+                continue;
+            }
+            view::of(served, &details, detail).await.map_err(refused)?
         } else {
             let bare = Detail {
                 history: Some(0),
@@ -126,10 +141,11 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
             };
             mapping::task(summary, (&[], served.base), bare)
         };
+        last_id = Some(id);
         tasks.push(task);
     }
-    let next = if more {
-        page.last().map(|task| task_id(task))
+    let next = if visited < matching.len() {
+        last_id
     } else {
         None
     };
@@ -137,143 +153,10 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
         "tasks": tasks,
         "nextPageToken": next.unwrap_or_default(),
         "pageSize": page_size,
-        "totalSize": matching.len(),
+        "totalSize": matching.len() - dropped,
     }))
 }
 
 #[cfg(test)]
-mod tests {
-    use ma2a_core::service::AgentId;
-    use ma2a_runtime::ipc::IpcPaths;
-    use serde_json::{Value, json};
-
-    use super::list;
-    use crate::a2a::{
-        backend::{Backend, Route},
-        view::Served,
-    };
-
-    /// The error code `ListTasks` answers `params` with, through a Runtime that is not
-    /// running: a parameter it refuses answers `-32602` before any task is read.
-    async fn code(params: Value) -> Result<i64, Box<dyn std::error::Error>> {
-        let state_dir = std::env::temp_dir().join("ma2a-a2a-list-no-runtime");
-        let backend = Backend {
-            paths: IpcPaths::new(&state_dir)?,
-            state_dir,
-        };
-        let route = Route::Local(AgentId::new("lead")?);
-        let served = Served {
-            backend: &backend,
-            route: &route,
-            base: "http://127.0.0.1",
-        };
-        let listed = list(served, &params).await;
-        Ok(listed.err().ok_or("listed without a Runtime")?.code)
-    }
-
-    #[tokio::test]
-    async fn a_filter_or_token_that_is_not_a_string_is_refused()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for name in ["contextId", "status", "statusTimestampAfter", "pageToken"] {
-            assert_eq!(code(json!({name: 7})).await?, -32_602, "{name}");
-        }
-        // Absent, null, or empty names nothing, so the listing goes on to read tasks.
-        assert_eq!(
-            code(json!({"contextId": null, "pageToken": ""})).await?,
-            -32_603
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn a_task_is_kept_by_the_time_of_its_last_state_change() {
-        // Started at 1 s, waiting since 5 s; the filter's bound is inclusive.
-        let task = json!({"task_id": "t", "state": "waiting", "created_at_ms": 500,
-            "started_at_ms": 1_000, "ended_at_ms": null, "changed_at_ms": 5_000});
-        let after = |changed_after_ms| super::Filter {
-            context: None,
-            status: None,
-            changed_after_ms: Some(changed_after_ms),
-        };
-        assert!(after(3_000).keeps(&task) && after(5_000).keeps(&task));
-        assert!(!after(5_001).keeps(&task));
-    }
-
-    #[tokio::test]
-    async fn include_artifacts_is_a_boolean() -> Result<(), Box<dyn std::error::Error>> {
-        for flag in [json!("true"), json!(1)] {
-            assert_eq!(code(json!({"includeArtifacts": flag})).await?, -32_602);
-        }
-        assert_eq!(code(json!({"includeArtifacts": true})).await?, -32_603);
-        assert_eq!(code(json!({"includeArtifacts": null})).await?, -32_603);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_page_token_is_a_task_id_as_listed() -> Result<(), Box<dyn std::error::Error>> {
-        // Task IDs are listed in lowercase, so an uppercase token would sort before its task.
-        let upper = format!("{}A", "0".repeat(31));
-        assert_eq!(code(json!({"pageToken": upper})).await?, -32_602);
-        let lower = format!("{}a", "0".repeat(31));
-        assert_eq!(code(json!({"pageToken": lower})).await?, -32_603);
-        Ok(())
-    }
-
-    /// Lists the tasks of a target whose only page lists `tasks`, a page of one at a time,
-    /// following each token; answers the IDs listed, or the error.
-    #[cfg(unix)]
-    async fn follow_tokens(tasks: &[u8]) -> crate::test_daemon::TestResult<Vec<String>> {
-        use ma2a_core::service::{AgentAccept, AgentReply, AgentTaskId};
-
-        use crate::{
-            a2a::backend::Backend,
-            test_daemon::{Daemon, answering, summary},
-        };
-        let page = tasks
-            .iter()
-            .map(|byte| summary(AgentTaskId::from_bytes([*byte; 16]), "worker"))
-            .collect::<Result<_, _>>()?;
-        let script = answering(AgentAccept::Admitted, &AgentReply::Page(page, None))?;
-        let daemon = Daemon::start("list", script)?;
-        let (backend, route) = Backend::standing_in(&daemon)?;
-        let served = Served {
-            backend: &backend,
-            route: &route,
-            base: "http://127.0.0.1",
-        };
-        let (mut listed, mut token) = (Vec::new(), String::new());
-        loop {
-            let params = json!({"pageSize": 1, "pageToken": token});
-            let page = list(served, &params).await.map_err(|error| error.message)?;
-            let text = |value: &Value, name: &str| {
-                value
-                    .get(name)
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned()
-            };
-            let ids = page
-                .get("tasks")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten();
-            listed.extend(ids.map(|task| text(task, "id")));
-            token = text(&page, "nextPageToken");
-            if token.is_empty() {
-                return Ok(listed);
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn every_remote_task_is_reachable_by_its_tokens() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let id = |byte: u8| format!("{byte:02x}").repeat(16);
-        assert_eq!(follow_tokens(&[1, 2]).await.ok(), Some(vec![id(1), id(2)]));
-        // A target listing out of order is not believed, rather than leaving a task behind.
-        assert!(follow_tokens(&[2, 1]).await.is_err());
-        assert!(follow_tokens(&[1, 1]).await.is_err());
-        Ok(())
-    }
-}
+#[path = "list_tests.rs"]
+mod tests;
