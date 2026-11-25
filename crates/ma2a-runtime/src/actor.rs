@@ -39,6 +39,8 @@ mod partial_relay_publication_test;
 #[cfg(test)]
 mod private_server_test;
 #[cfg(test)]
+mod redemption_bound_test;
+#[cfg(test)]
 mod redemption_test;
 #[cfg(test)]
 mod relay_clock_test;

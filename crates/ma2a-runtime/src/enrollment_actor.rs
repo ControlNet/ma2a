@@ -18,6 +18,11 @@ use crate::{
 
 type RedemptionReply = oneshot::Sender<Result<EstablishedEnrollment, EnrollmentError>>;
 
+/// Most redemptions that wait on their Space owners at once: as many as the local API serves
+/// requests at once, so normally only callers that bypass it, such as an embedding application,
+/// meet it.
+pub(crate) const MAX_PENDING_REDEMPTIONS: usize = 32;
+
 /// One finished exchange with a Space owner, handed back to the actor loop.
 pub(crate) struct RedemptionCompletion {
     /// The Space the invitation names, and the owner that answered for it.
@@ -97,12 +102,17 @@ impl RuntimeHandle {
 }
 
 impl Actor {
-    /// Encodes the attempt, then starts the exchange with the Space owner as a task.
+    /// Encodes the attempt, then starts the exchange with the Space owner as a task, unless
+    /// as many exchanges are already waiting as are allowed.
     pub(crate) fn redeem_enrollment(
         &mut self,
         attempt: &EnrollmentAttempt,
         reply: RedemptionReply,
     ) {
+        if self.redemption_tasks.len() >= MAX_PENDING_REDEMPTIONS {
+            let _unsent = reply.send(Err(EnrollmentError::busy()));
+            return;
+        }
         let owner_addr = attempt.owner_addr();
         let target = (attempt.space_id(), owner_addr.id.into());
         match encode_attempt(attempt) {

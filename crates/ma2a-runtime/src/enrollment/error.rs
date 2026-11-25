@@ -28,6 +28,7 @@ enum EnrollmentErrorKind {
     Expired,
     Cancelled,
     Conflict,
+    Busy,
     Internal,
 }
 
@@ -44,6 +45,9 @@ impl EnrollmentErrorCode {
     pub const CANCELLED: Self = Self(EnrollmentErrorKind::Cancelled);
     /// Another candidate or request already consumed the invitation.
     pub const CONFLICT: Self = Self(EnrollmentErrorKind::Conflict);
+    /// Too many redemptions are already waiting on their Space owners; nothing was done, so the
+    /// same redemption can be retried once one of them ends.
+    pub const BUSY: Self = Self(EnrollmentErrorKind::Busy);
 }
 
 #[derive(Debug)]
@@ -57,6 +61,9 @@ impl EnrollmentError {
     }
     pub(crate) const fn internal() -> Self {
         Self(EnrollmentErrorKind::Internal, None, None)
+    }
+    pub(crate) const fn busy() -> Self {
+        Self(EnrollmentErrorKind::Busy, None, None)
     }
     pub(crate) const fn from_status(status: u8) -> Self {
         Self(
@@ -112,6 +119,9 @@ impl fmt::Display for EnrollmentError {
             EnrollmentErrorKind::Cancelled => "enrollment invitation was cancelled",
             EnrollmentErrorKind::Conflict => {
                 "enrollment invitation was consumed by another candidate"
+            }
+            EnrollmentErrorKind::Busy => {
+                "too many invitation redemptions are pending; retry once one ends"
             }
             EnrollmentErrorKind::Internal => "enrollment exchange failed",
         })
