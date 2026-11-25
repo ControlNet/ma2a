@@ -66,6 +66,32 @@ fn only_a_path_on_a_drive_letter_counts_as_local() {
 }
 
 #[test]
+fn a_drive_letter_mapped_to_a_network_share_is_refused_before_anything_is_created()
+-> Result<(), Box<dyn std::error::Error>> {
+    let subst = |args: &[&str]| std::process::Command::new("subst").args(args).status();
+    // A free drive letter, mapped to the administrative share of this machine's C: drive.
+    let drive = (b'G'..=b'Y')
+        .rev()
+        .map(|letter| format!("{}:", char::from(letter)))
+        .find(|drive| !Path::new(&format!(r"{drive}\")).exists())
+        .ok_or("no free drive letter")?;
+    assert!(subst(&[&drive, r"\\localhost\C$"])?.success());
+    let name = format!("ma2a-acl-mapped-{}", std::process::id());
+    let result = ensure_private_dir(Path::new(&format!(r"{drive}\{name}\state")), "test");
+    let unmapped = subst(&[&drive, "/D"])?;
+    let created = Path::new(r"C:\").join(&name);
+    let was_created = created.exists();
+    let _cleanup = std::fs::remove_dir_all(&created);
+    assert!(unmapped.success());
+    assert!(
+        matches!(result, Err(StoreError::InvalidStateDirectory)),
+        "{result:?}"
+    );
+    assert!(!was_created);
+    Ok(())
+}
+
+#[test]
 fn a_rule_for_children_alone_is_not_full_control_over_the_directory()
 -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::temp_dir().join(format!("ma2a-acl-children-{}", std::process::id()));

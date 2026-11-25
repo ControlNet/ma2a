@@ -24,13 +24,21 @@ use windows_sys::Win32::{
         PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
     },
     Storage::FileSystem::{
-        FILE_ALL_ACCESS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL,
-        WRITE_DAC, WRITE_OWNER,
+        FILE_ALL_ACCESS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, GetDriveTypeW,
+        READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     },
-    System::SystemServices::ACCESS_ALLOWED_ACE_TYPE,
+    System::{SystemServices::ACCESS_ALLOWED_ACE_TYPE, WindowsProgramming::DRIVE_REMOTE},
 };
 
 use super::windows_sid::{Sid, administrators, aligned_storage, current_user, local_system};
+
+/// Whether the drive named by `letter` is a network share, as a mapped network drive is.
+pub(super) fn is_remote_drive(letter: u8) -> bool {
+    let root = [u16::from(letter), u16::from(b':'), u16::from(b'\\'), 0];
+    // SAFETY: [Category 8 - FFI boundary] `root` is a NUL-terminated UTF-16 string that outlives
+    // this synchronous call.
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+}
 
 /// Opens `path`, a file or a directory, itself rather than whatever a link there points at,
 /// to read its security descriptor and, when `write`, to replace its owner and DACL.
