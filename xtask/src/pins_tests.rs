@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use crate::pins;
+use crate::{error::XtaskError, pins};
 
 static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -15,6 +15,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(dependency: &str) -> Result<Self, Box<dyn Error>> {
+        Self::with_manifest_tail(dependency, "")
+    }
+
+    /// A workspace whose root manifest ends with `tail`.
+    fn with_manifest_tail(dependency: &str, tail: &str) -> Result<Self, Box<dyn Error>> {
         let id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         let parent =
             std::env::temp_dir().join(format!("ma2a-pin-policy-{}-{id}", std::process::id()));
@@ -27,7 +32,7 @@ impl Fixture {
         fs::write(
             root.join("Cargo.toml"),
             format!(
-                "[workspace]\nmembers = [\"member\"]\nresolver = \"3\"\n\n[workspace.dependencies]\nprobe = {dependency}\n"
+                "[workspace]\nmembers = [\"member\"]\nresolver = \"3\"\n\n[workspace.dependencies]\nprobe = {dependency}\n{tail}"
             ),
         )?;
         write_package(&member, "member")?;
@@ -37,6 +42,13 @@ impl Fixture {
 
     fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn write_web_manifest(&self, manifest: &str) -> std::io::Result<()> {
+        let web = self.root.join("web");
+        fs::create_dir_all(&web)?;
+        fs::write(web.join("bun.lock"), "{}\n")?;
+        fs::write(web.join("package.json"), manifest)
     }
 }
 
@@ -102,6 +114,81 @@ fn rejects_workspace_path_without_exact_version() -> Result<(), Box<dyn Error>> 
         assert!(
             result.is_err(),
             "malformed path version must fail: {dependency}"
+        );
+    }
+    Ok(())
+}
+
+/// The pin policy's own violations, so a check that failed for another reason is not mistaken
+/// for one that refused the probe.
+fn violations(fixture: &Fixture) -> Vec<String> {
+    match pins::check(fixture.root()) {
+        Err(XtaskError::Policy { violations, .. }) => violations,
+        other => panic!("expected pin policy violations: {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_git_dependency_with_exact_version() -> Result<(), Box<dyn Error>> {
+    // Given
+    let fixture = Fixture::new(
+        "{ git = \"https://example.com/probe.git\", branch = \"main\", version = \"=0.1.0\" }",
+    )?;
+
+    // When
+    let violations = violations(&fixture);
+
+    // Then
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("`probe`")),
+        "a floating git source must fail: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_patch_outside_workspace_members() -> Result<(), Box<dyn Error>> {
+    // Given
+    let fixture = Fixture::with_manifest_tail(
+        "\"=0.1.0\"",
+        "\n[patch.crates-io]\nexternal = { path = \"../external\" }\n",
+    )?;
+
+    // When
+    let violations = violations(&fixture);
+
+    // Then
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("`external` in [patch.crates-io]")),
+        "an unpinned patch must fail: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_unpinned_or_malformed_web_dependency_sections() -> Result<(), Box<dyn Error>> {
+    for (section, value) in [
+        ("optionalDependencies", "{ \"probe\": \"^1.0.0\" }"),
+        ("peerDependencies", "{ \"probe\": \"~1.0.0\" }"),
+        ("dependencies", "[\"probe\"]"),
+    ] {
+        // Given
+        let fixture = Fixture::new("\"=0.1.0\"")?;
+        fixture.write_web_manifest(&format!("{{ \"{section}\": {value} }}"))?;
+
+        // When
+        let violations = violations(&fixture);
+
+        // Then
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains(section)),
+            "web `{section}` must fail: {violations:?}"
         );
     }
     Ok(())

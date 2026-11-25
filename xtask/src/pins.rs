@@ -108,11 +108,17 @@ fn inspect_web_manifest(root: &Path, violations: &mut Vec<String>) -> Result<(),
             path: path.clone(),
             message: error.to_string(),
         })?;
-    for table_name in ["dependencies", "devDependencies"] {
-        let Some(dependencies) = document
-            .get(table_name)
-            .and_then(serde_json::Value::as_object)
-        else {
+    for table_name in [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ] {
+        let Some(section) = document.get(table_name) else {
+            continue;
+        };
+        let Some(dependencies) = section.as_object() else {
+            violations.push(format!("web/package.json: `{table_name}` is not an object"));
             continue;
         };
         for (name, version) in dependencies {
@@ -153,6 +159,14 @@ fn inspect_manifest(
             inspect_tables(target, &mut inspection);
         }
     }
+    // A patch replaces a dependency's source for the whole build, so it is held to the same rule.
+    if let Some(patches) = document.get("patch").and_then(Value::as_table) {
+        for (source, dependencies) in patches {
+            if let Some(dependencies) = dependencies.as_table() {
+                inspect_dependencies(dependencies, &format!("patch.{source}"), &mut inspection);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -164,20 +178,27 @@ struct ManifestInspection<'a> {
 
 fn inspect_tables(value: &Value, inspection: &mut ManifestInspection<'_>) {
     for table_name in DEPENDENCY_TABLES {
-        let Some(dependencies) = value.get(table_name).and_then(Value::as_table) else {
-            continue;
-        };
-        for (name, specification) in dependencies {
-            if !is_pinned(inspection.policy, inspection.manifest, specification) {
-                let relative = inspection
-                    .manifest
-                    .strip_prefix(inspection.policy.root)
-                    .unwrap_or(inspection.manifest);
-                inspection.violations.push(format!(
-                    "{}: dependency `{name}` in [{table_name}] violates exact-version/workspace-path policy",
-                    relative.display()
-                ));
-            }
+        if let Some(dependencies) = value.get(table_name).and_then(Value::as_table) {
+            inspect_dependencies(dependencies, table_name, inspection);
+        }
+    }
+}
+
+fn inspect_dependencies(
+    dependencies: &toml::Table,
+    table_name: &str,
+    inspection: &mut ManifestInspection<'_>,
+) {
+    for (name, specification) in dependencies {
+        if !is_pinned(inspection.policy, inspection.manifest, specification) {
+            let relative = inspection
+                .manifest
+                .strip_prefix(inspection.policy.root)
+                .unwrap_or(inspection.manifest);
+            inspection.violations.push(format!(
+                "{}: dependency `{name}` in [{table_name}] violates exact-version/workspace-path policy",
+                relative.display()
+            ));
         }
     }
 }
@@ -189,6 +210,10 @@ fn is_pinned(policy: &PinPolicy<'_>, manifest: &Path, specification: &Value) -> 
     let Some(table) = specification.as_table() else {
         return false;
     };
+    // A git source is neither a registry version nor a workspace path, whatever version it names.
+    if table.contains_key("git") {
+        return false;
+    }
     if table.get("workspace").and_then(Value::as_bool) == Some(true) {
         return true;
     }
