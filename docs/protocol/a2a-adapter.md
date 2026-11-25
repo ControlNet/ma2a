@@ -103,7 +103,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 
   `route_path` is the route's path, for example `/agents/lead` or `/endpoints/{endpoint}/agents/worker`.
   - Resending the same message to the same route replays the original operation and answers the same task.
-  - Reusing a `messageId` for a different message conflicts, and answers `-32603` with reason `CONFLICT`.
+  - Reusing a `messageId` for a different message conflicts, and answers `-32603` with reason `CONFLICT`, even once the task has ended.
   - The same `messageId` sent to two routes names two operations.
 - `taskId` or `contextId` names the task a message continues; when both are present they must be equal. A message without either, or with them null or empty, creates a task. Any value other than a string answers `-32602`.
 
@@ -187,7 +187,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 | `-32001` `TaskNotFound` | No such task for this caller and Agent, including a message whose `taskId` names none. |
 | `-32002` `TaskNotCancelable` | `CancelTask` on a task that has already ended. |
 | `-32003` | Push notification methods. |
-| `-32004` `UnsupportedOperation` | A message to, or a subscription on, a task that has already ended. |
+| `-32004` `UnsupportedOperation` | A message to a task that has already ended or is being cancelled, or a subscription on a task that has already ended. |
 | `-32005` | A file part in a request. |
 | `-32007` | `GetExtendedAgentCard`. |
 | `-32009` | Missing or unsupported `A2A-Version`. |

@@ -83,21 +83,11 @@ pub(super) async fn deliver(served: Served<'_>, inbound: &Inbound) -> Result<Val
     let request_id = rpc::request_id(served.route, &inbound.message_id);
     if let Some(task) = &inbound.task {
         let sent = (task.as_str(), &inbound.message, request_id.as_str());
-        let refusal = match served.backend.send(served.route, sent).await {
+        match served.backend.send(served.route, sent).await {
             // The local API answers a task it does not know as `not_found`.
-            Err(refusal) if refusal.0 == "not_found" => {
-                return Err(Refusal::named("unknown_task"));
-            }
-            Err(refusal) if refusal.0 == "conflict" => refusal,
-            other => return other,
-        };
-        // The local API answers a message to an ended task as a conflict.
-        let details = served.backend.details(served.route, task).await?;
-        let state = details.pointer("/task/state").and_then(Value::as_str);
-        if state.is_some_and(ended) {
-            return Err(Refusal::named("task_ended"));
+            Err(refusal) if refusal.0 == "not_found" => Err(Refusal::named("unknown_task")),
+            other => other,
         }
-        Err(refusal)
     } else {
         let submitted = (&inbound.message, request_id.as_str());
         match served.backend.submit(served.route, submitted).await {

@@ -15,6 +15,9 @@ use super::{
 pub const MAX_AGENT_LIST_PAGE: usize = 16;
 /// Most tasks one `agent_task_list` page carries.
 pub const MAX_AGENT_TASK_PAGE: usize = 32;
+/// The remediation of the `conflict` that answers a message to a task that has ended or is
+/// being cancelled; a reused request ID with a different body answers `conflict` without one.
+pub const TASK_ENDED_REMEDIATION: &str = "the task has already ended";
 /// Most events one `agent_task_events` page carries.
 pub const MAX_AGENT_EVENT_PAGE: usize = 64;
 /// Encoded size one page stays within, so a whole response fits one frame.

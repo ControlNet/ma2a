@@ -11,7 +11,7 @@ use crate::{
     agents::AgentManager,
     api::{
         AgentCommand, AgentView, ApiError, Command, CommandResult, MAX_AGENT_EVENT_PAGE,
-        MAX_AGENT_LIST_PAGE, MAX_AGENT_TASK_PAGE,
+        MAX_AGENT_LIST_PAGE, MAX_AGENT_TASK_PAGE, TASK_ENDED_REMEDIATION,
     },
 };
 
@@ -166,7 +166,7 @@ const fn refusal(error: ServiceError) -> ApiError {
         )
         .without_effects(),
         ServiceError::TaskEnded => {
-            ApiError::with_remediation(ProtocolError::CONFLICT, "the task has already ended")
+            ApiError::with_remediation(ProtocolError::CONFLICT, TASK_ENDED_REMEDIATION)
                 .without_effects()
         }
         ServiceError::Conflict => ApiError::new(ProtocolError::CONFLICT).without_effects(),

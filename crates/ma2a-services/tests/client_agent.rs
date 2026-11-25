@@ -10,8 +10,8 @@ use std::time::Duration;
 use ma2a_core::{
     EndpointId, RequestId,
     service::{
-        AgentAccept, AgentEvent, AgentEventBody, AgentId, AgentReply, AgentTaskId,
-        AgentTaskState, AgentTaskSummary, Channel, FrameKind, ServiceError,
+        AgentAccept, AgentEvent, AgentEventBody, AgentId, AgentReply, AgentTaskId, AgentTaskState,
+        AgentTaskSummary, Channel, FrameKind, ServiceError,
     },
 };
 use ma2a_services::client::{ClientError, agent};

@@ -213,6 +213,10 @@ fn send_replay_and_continue(adapter: &Adapter, lead: &str) -> TestResult {
         .and_then(Value::as_array)
         .map(Vec::len);
     assert!(history >= Some(3), "{answered}");
+    // The task has ended since, but another message under a used ID still conflicts.
+    let reused = continuing("m-blue", "green", &text(&asked, "/task/id"));
+    let reused = adapter.call(sending, &reused)?;
+    assert_eq!(error_code(&reused)?, -32_603, "{:?}", reused.json());
 
     // A streamed answer follows the task past its wait until it waits again or ends.
     let asked = adapter.result(sending, &message("m-ask-2", "ask shape?"))?;

@@ -6,7 +6,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use ma2a_core::service::{AgentId, AgentMessage, MessagePart};
-use ma2a_runtime::ipc::IpcPaths;
+use ma2a_runtime::{api::TASK_ENDED_REMEDIATION, ipc::IpcPaths};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
@@ -94,8 +94,8 @@ impl Backend {
         let response = crate::request((&self.state_dir, self.paths.clone()), request).await?;
         let document: Value =
             serde_json::from_slice(&response).map_err(|_| Refusal::named("internal"))?;
-        if let Some(error) = document.get("error").and_then(Value::as_str) {
-            return Err(Refusal::named(error));
+        if let Some(refusal) = refused(&document) {
+            return Err(refusal);
         }
         Ok(document
             .pointer("/result/payload")
@@ -256,10 +256,45 @@ impl Backend {
     }
 }
 
+/// The refusal a local API error envelope carries, if it is one. A message to a task that
+/// has ended or is being cancelled and a reused request ID both answer `conflict`; only the
+/// first carries the task-ended remediation, so it becomes `task_ended`.
+fn refused(document: &Value) -> Option<Refusal> {
+    let error = document.get("error").and_then(Value::as_str)?;
+    let remediation = document.get("remediation").and_then(Value::as_str);
+    if error == "conflict" && remediation == Some(TASK_ENDED_REMEDIATION) {
+        return Some(Refusal::named("task_ended"));
+    }
+    Some(Refusal::named(error))
+}
+
 /// Builds one local API field map.
 pub(super) fn fields<const N: usize>(entries: [(&str, Value); N]) -> Map<String, Value> {
     entries
         .into_iter()
         .map(|(name, value)| (name.to_owned(), value))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_runtime::api::TASK_ENDED_REMEDIATION;
+    use serde_json::json;
+
+    use super::{Refusal, refused};
+
+    #[test]
+    fn a_message_to_an_ended_task_is_told_apart_from_a_reused_request() {
+        let error =
+            |remediation| json!({"version": 1, "error": "conflict", "remediation": remediation});
+        assert_eq!(
+            refused(&error(json!(TASK_ENDED_REMEDIATION))),
+            Some(Refusal::named("task_ended"))
+        );
+        assert_eq!(
+            refused(&error(json!(null))),
+            Some(Refusal::named("conflict"))
+        );
+        assert_eq!(refused(&json!({"version": 1, "result": {}})), None);
+    }
 }
