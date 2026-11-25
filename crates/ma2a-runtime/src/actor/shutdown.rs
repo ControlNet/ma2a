@@ -10,6 +10,18 @@ pub(crate) struct ShutdownAck {
 impl Actor {
     pub(crate) async fn finish(mut self, clean: bool) -> Result<ShutdownAck, RuntimeError> {
         self.state.ready = false;
+        // Dropping a receiver drains it only once: a caller between `reserve` and `send` would
+        // land its request after that and wait for a reply forever. Closing first and draining
+        // until no slot is reserved drops every late request, so its caller is refused. It
+        // also releases the connections waiting for an admission before the endpoint closes.
+        self.commands.close();
+        while self.commands.recv().await.is_some() {}
+        self.enrollment_calls.close();
+        while self.enrollment_calls.recv().await.is_some() {}
+        self.control_calls.close();
+        while self.control_calls.recv().await.is_some() {}
+        self.echo_calls.close();
+        while self.echo_calls.recv().await.is_some() {}
         let _receiver_count = self
             .events
             .send(RuntimeEvent::shutting_down(self.state.revision));

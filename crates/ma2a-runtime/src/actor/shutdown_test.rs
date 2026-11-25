@@ -2,18 +2,20 @@ use std::{sync::Arc, time::Duration};
 
 use ma2a_net::{EndpointBindOptions, RuntimeEndpoint, SpaceAddressLookup};
 use ma2a_store::{Repository, StoreConfig};
-use tokio::sync::mpsc;
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 
-use super::{FixedClock, NOW_MS, TempState, TestResult};
+use super::{FixedClock, NOW_MS, TempState, TestError, TestResult};
 use crate::{
-    actor::Actor,
+    actor::{Actor, Command, RuntimeHandle},
     state::{Connectivity, RuntimeStatus},
     store::{STORE_CAPACITY, StoreBackend, StoreClient},
 };
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn finish_completes_while_relay_observer_waits_on_a_full_channel() -> TestResult {
-    // Given
+/// An actor over a live store and a bound endpoint, as the Runtime starts one.
+async fn started() -> Result<(Actor, RuntimeHandle, JoinHandle<()>, TempState), TestError> {
     let state_dir = TempState::new()?;
     let config = StoreConfig::new(state_dir.path());
     let backend = StoreBackend::open(&config)?;
@@ -51,7 +53,7 @@ async fn finish_completes_while_relay_observer_waits_on_a_full_channel() -> Test
         relay: crate::reachability::RelayReachabilityState::new(relay_map),
     };
     let echo_metrics = endpoint.echo_metrics();
-    let (mut actor, _handle, _cancellation) = Actor::new(
+    let (actor, handle, _cancellation) = Actor::new(
         status,
         endpoint,
         store,
@@ -63,6 +65,13 @@ async fn finish_completes_while_relay_observer_waits_on_a_full_channel() -> Test
         Arc::new(FixedClock),
         None,
     );
+    Ok((actor, handle, store_task, state_dir))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finish_completes_while_relay_observer_waits_on_a_full_channel() -> TestResult {
+    // Given
+    let (mut actor, _handle, store_task, _state_dir) = started().await?;
     // The observer has filled the channel and waits to send one more snapshot,
     // which no endpoint closure can interrupt.
     let observation = tokio::time::timeout(Duration::from_secs(2), actor.relay_observations.recv())
@@ -87,6 +96,30 @@ async fn finish_completes_while_relay_observer_waits_on_a_full_channel() -> Test
     );
     finished??;
     previous.await?;
+    store_task.await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_that_won_queue_room_before_finish_is_refused_not_stranded() -> TestResult {
+    // Given: a caller that has room in the command queue but has not handed its command
+    // over yet, as `Sender::send` does between its two steps.
+    let (actor, handle, store_task, _state_dir) = started().await?;
+    let permit = handle.commands.reserve().await?;
+
+    // When: the actor finishes, and only then the command lands.
+    let mut finishing = tokio::spawn(actor.finish(true));
+    let _finished = tokio::time::timeout(Duration::from_secs(2), &mut finishing).await;
+    let (reply, response) = oneshot::channel();
+    permit.send(Command::Status(reply));
+
+    // Then: the caller learns the actor is gone instead of waiting forever.
+    let answered = tokio::time::timeout(Duration::from_secs(5), response).await;
+    assert!(
+        matches!(answered, Ok(Err(_))),
+        "a command that reached a finished actor must be refused, not left unanswered"
+    );
+    tokio::time::timeout(Duration::from_secs(5), finishing).await???;
     store_task.await?;
     Ok(())
 }
