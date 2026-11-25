@@ -591,3 +591,45 @@ async fn a_failed_local_read_ends_a_stdin_write_at_once() -> TestResult {
     assert!(matches!(written, Err(ClientError::Local(_))), "{written:?}");
     Ok(())
 }
+
+/// Writes `abcde` as stdin, closing it when `close`, against a target that answers with
+/// `reply` alone, as a replay of a completed write does.
+async fn stdin_replayed(
+    reply: ProcessReply,
+    close: bool,
+) -> TestResult<Result<(u64, bool), ClientError>> {
+    let ((mut reader, mut writer), (_service_reader, mut service_writer)) = pipe();
+    let outcome = ProcessReply::encode_outcome(&Ok(reply))?;
+    service_writer.frame(FrameKind::Outcome, &outcome).await?;
+    service_writer.flush().await?;
+    within(hosted::stdin(
+        (&mut reader, &mut writer),
+        (&b"abcde"[..], close),
+    ))
+    .await
+}
+
+#[tokio::test]
+async fn a_replayed_stdin_answer_must_close_stdin_when_closing_was_asked_for() -> TestResult {
+    // Given / When: replayed answers, whose byte count cannot be checked against this run.
+    for (reply, close) in [
+        (ProcessReply::Written(5, true), true),
+        (ProcessReply::Written(3, false), false),
+        (ProcessReply::Written(3, true), false),
+    ] {
+        // Then
+        let written = stdin_replayed(reply.clone(), close).await?;
+        assert!(written.is_ok(), "{reply:?}, close {close}: {written:?}");
+    }
+
+    // Then: a write that asked to close stdin never left it open.
+    let written = stdin_replayed(ProcessReply::Written(0, false), true).await?;
+    assert!(
+        matches!(
+            written,
+            Err(ClientError::Stream(ServiceError::InvalidInput))
+        ),
+        "{written:?}"
+    );
+    Ok(())
+}

@@ -94,9 +94,10 @@ where
     writer.flush().await.map_err(ClientError::Stream)
 }
 
-/// Checks that an outcome counts no more than was sent, and leaves stdin open only after `end`
-/// without `close` and with every byte taken, since a Process that stopped taking input closed
-/// its stdin; a replayed one, without `progress`, was checked when it ran.
+/// Checks that an outcome leaves stdin open only without `close`, and, when `progress` is
+/// known, counts no more than was sent and leaves stdin open only after `end` and with every
+/// byte taken, since a Process that stopped taking input closed its stdin. A replayed one has
+/// no `progress`; the `close` it was asked for still holds.
 fn written(
     frame: &Frame,
     (progress, close): (Option<Progress>, bool),
@@ -108,12 +109,13 @@ fn written(
         if closed {
             bytes <= sent
         } else {
-            ended && !close && bytes == sent
+            ended && bytes == sent
         }
     };
     match reply(frame)? {
         ProcessReply::Written(bytes, closed)
-            if progress.is_none_or(|progress| answers((bytes, closed), progress)) =>
+            if (closed || !close)
+                && progress.is_none_or(|progress| answers((bytes, closed), progress)) =>
         {
             Ok((bytes, closed))
         }
