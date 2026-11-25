@@ -213,16 +213,44 @@ fn protecting_a_directory_never_changes_what_a_symlink_points_at() -> TestResult
     fs::set_permissions(&target, fs::Permissions::from_mode(0o755))?;
     let link = state.path().join("link");
     std::os::unix::fs::symlink(&target, &link)?;
+    let trailing_slash = std::path::PathBuf::from(format!("{}/", link.display()));
+    let trailing_dot = link.join(".");
 
-    // When
-    let result = ma2a_store::protect_private_directory(&link, "test directory");
+    // When / Then: bare link, trailing separator, and trailing `.` all refuse without chmod.
+    for spelling in [&link, &trailing_slash, &trailing_dot] {
+        let result = ma2a_store::protect_private_directory(spelling, "test directory");
+        assert!(
+            matches!(
+                result,
+                Err(StoreError::InsecurePermissions { .. } | StoreError::InvalidStateDirectory)
+            ),
+            "{}: {result:?}",
+            spelling.display()
+        );
+        assert_eq!(fs::metadata(&target)?.permissions().mode() & 0o777, 0o755);
+    }
 
-    // Then
-    assert!(matches!(
-        result,
-        Err(StoreError::InsecurePermissions { .. })
-    ));
-    assert_eq!(fs::metadata(&target)?.permissions().mode() & 0o777, 0o755);
+    // Even when the symlink target is already 0700, Repository::open refuses every spelling.
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700))?;
+    let parent_traversal = link.join("..");
+    for spelling in [&link, &trailing_slash, &trailing_dot, &parent_traversal] {
+        let result = ma2a_store::Repository::open(&ma2a_store::StoreConfig::new(spelling));
+        assert!(
+            matches!(
+                result,
+                Err(StoreError::InsecurePermissions { .. } | StoreError::InvalidStateDirectory)
+            ),
+            "{}: {:?}",
+            spelling.display(),
+            result.err()
+        );
+    }
+
+    // A real 0700 directory with a trailing separator remains accepted.
+    let real_trailing = std::path::PathBuf::from(format!("{}/", target.display()));
+    drop(ma2a_store::Repository::open(
+        &ma2a_store::StoreConfig::new(&real_trailing),
+    )?);
     Ok(())
 }
 

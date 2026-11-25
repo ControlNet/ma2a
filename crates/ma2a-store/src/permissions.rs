@@ -4,8 +4,16 @@ use crate::StoreError;
 
 pub(crate) fn ensure_private_dir(path: &Path, target: &'static str) -> Result<(), StoreError> {
     validate_local_absolute(path)?;
-    if !path.exists() {
-        create_private_dir(path, target)?;
+    #[cfg(unix)]
+    let cleaned = clean_unix_path(path);
+    #[cfg(unix)]
+    let path = cleaned.as_path();
+    match fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            create_private_dir(path, target)?;
+        }
+        Err(error) => return Err(error.into()),
     }
     validate_private_path(path, target, PathKind::Directory)
 }
@@ -26,6 +34,10 @@ pub fn ensure_private_directory(path: &Path, target: &'static str) -> Result<(),
 /// Returns [`StoreError`] when the permissions cannot be applied or confirmed.
 pub fn protect_private_directory(path: &Path, target: &'static str) -> Result<(), StoreError> {
     validate_local_absolute(path)?;
+    #[cfg(unix)]
+    let cleaned = clean_unix_path(path);
+    #[cfg(unix)]
+    let path = cleaned.as_path();
     refuse_symlink(path, target)?;
     #[cfg(unix)]
     {
@@ -77,6 +89,10 @@ pub(crate) fn protect_new_file(path: &Path, target: &'static str) -> Result<(), 
 
 /// Changing permissions follows a symlink, so a link is refused before anything is changed.
 fn refuse_symlink(path: &Path, target: &'static str) -> Result<(), StoreError> {
+    #[cfg(unix)]
+    let cleaned = clean_unix_path(path);
+    #[cfg(unix)]
+    let path = cleaned.as_path();
     if fs::symlink_metadata(path)?.file_type().is_symlink() {
         return Err(StoreError::InsecurePermissions {
             target,
@@ -84,6 +100,13 @@ fn refuse_symlink(path: &Path, target: &'static str) -> Result<(), StoreError> {
         });
     }
     Ok(())
+}
+
+/// Removes trailing separators and `.` components on Unix so `lstat` inspects the path entry
+/// itself rather than following a final symlink.
+#[cfg(unix)]
+fn clean_unix_path(path: &Path) -> std::path::PathBuf {
+    path.components().collect()
 }
 
 pub(crate) fn validate_private_file(path: &Path, target: &'static str) -> Result<(), StoreError> {
@@ -100,7 +123,11 @@ fn validate_local_absolute(path: &Path) -> Result<(), StoreError> {
 /// Whether `path` is absolute and names a local volume, the only state path the Store accepts.
 #[must_use]
 pub fn is_local_absolute(path: &Path) -> bool {
-    path.is_absolute() && !is_remote(path)
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        && !is_remote(path)
 }
 
 #[cfg(unix)]
@@ -139,7 +166,8 @@ fn validate_private_path(
 ) -> Result<(), StoreError> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-    let metadata = fs::symlink_metadata(path)?;
+    let cleaned = clean_unix_path(path);
+    let metadata = fs::symlink_metadata(&cleaned)?;
     check_type(&metadata, target, kind)?;
     if metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(StoreError::InsecurePermissions {
