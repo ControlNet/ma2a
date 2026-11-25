@@ -35,7 +35,8 @@ The client rejects a responder identity different from the requested target and 
 - Per authenticated peer: at most 16 concurrent streams.
 - Across the Runtime: at most 128 concurrent streams.
 - Aggregate client exchange deadline: 10 seconds.
-- Aggregate server stream deadline: 10 seconds. Processing owns at most 9.9 seconds, reserving the final 100 milliseconds for bounded response-frame writing.
+- Aggregate server stream deadline: 10 seconds. Processing owns at most 9.9 seconds, reserving the final 100 milliseconds for bounded response-frame writing. A response frame the peer does not take within 100 milliseconds is abandoned and the stream reset.
+- Refusals over the concurrency bounds: at most 128 concurrency-exceeded frames are written at once across the Runtime; a stream refused beyond that is reset with no reply.
 - Duration metadata: saturated at 10,000 milliseconds.
 - Semantic retries: none.
 

@@ -11,9 +11,15 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use ma2a_core::{EchoError, EndpointId, MAX_WIRE_LEN};
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::{
+    sync::{Semaphore, mpsc},
+    task::JoinSet,
+};
 
-use super::{ECHO_DEADLINE, EchoCall, EchoServiceResponse, frame, limit::EchoLimiter};
+use super::{
+    ECHO_DEADLINE, ECHO_GLOBAL_LIMIT, EchoCall, EchoServiceResponse, frame,
+    limit::{EchoLimiter, EchoPermit},
+};
 
 const ECHO_RESPONSE_WRITE_BUDGET: Duration = Duration::from_millis(100);
 const ECHO_PROCESS_DEADLINE: Duration = ECHO_DEADLINE.saturating_sub(ECHO_RESPONSE_WRITE_BUDGET);
@@ -78,6 +84,8 @@ pub(crate) struct EchoHandler {
     calls: Option<mpsc::Sender<EchoCall>>,
     limiter: EchoLimiter,
     metrics: EchoMetrics,
+    /// Bounds the refusals over the concurrency bound being written across all connections.
+    refusals: Arc<Semaphore>,
 }
 
 impl EchoHandler {
@@ -91,6 +99,7 @@ impl EchoHandler {
             calls,
             limiter: EchoLimiter::default(),
             metrics,
+            refusals: Arc::new(Semaphore::new(ECHO_GLOBAL_LIMIT)),
         }
     }
 }
@@ -103,10 +112,15 @@ impl ProtocolHandler for EchoHandler {
             tokio::select! {
                 _ = connection.closed() => break,
                 stream = connection.accept_bi() => match stream {
-                    Ok((send, receive)) => {
-                        let handler = self.clone();
-                        streams.spawn(async move { handler.handle_stream(peer, send, receive).await });
-                    }
+                    Ok((send, receive)) => match self.limiter.try_acquire(peer) {
+                        Some(permit) => {
+                            let handler = self.clone();
+                            streams.spawn(async move {
+                                handler.handle_stream((peer, permit), send, receive).await;
+                            });
+                        }
+                        None => self.refuse(&mut streams, (send, receive)),
+                    },
                     Err(_) => break,
                 },
                 joined = streams.join_next(), if !streams.is_empty() => {
@@ -126,12 +140,11 @@ impl EchoHandler {
     )]
     async fn handle_stream(
         self,
-        peer: EndpointId,
+        (peer, _permit): (EndpointId, EchoPermit),
         mut send: iroh::endpoint::SendStream,
         receive: iroh::endpoint::RecvStream,
     ) {
-        let local_endpoint_id = self.local_endpoint_id;
-        let stream_deadline = tokio::time::Instant::now() + ECHO_DEADLINE;
+        let _active_stream = ActiveEchoStream::new(&self.metrics);
         let (duration_ms, response) =
             match tokio::time::timeout(ECHO_PROCESS_DEADLINE, self.process(peer, receive)).await {
                 Ok(Ok(response)) => {
@@ -141,11 +154,29 @@ impl EchoHandler {
                 Ok(Err(error)) => (0, Err(error)),
                 Err(_) => (ma2a_core::MAX_ECHO_DURATION_MS, Err(EchoError::TimedOut)),
             };
-        let _completed = tokio::time::timeout_at(
-            stream_deadline,
-            frame::write(&mut send, local_endpoint_id, duration_ms, response),
-        )
-        .await;
+        // The permit is held until the reply is written, so refused admitted streams count
+        // against the concurrency bound too.
+        write_reply(&mut send, self.local_endpoint_id, (duration_ms, response)).await;
+    }
+
+    /// Answers a stream over the concurrency bound while fewer such refusals than the
+    /// Runtime-wide bound are being written, and otherwise resets it with no reply.
+    fn refuse(
+        &self,
+        streams: &mut JoinSet<()>,
+        (mut send, mut receive): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream),
+    ) {
+        let Ok(permit) = Arc::clone(&self.refusals).try_acquire_owned() else {
+            let _reset = send.reset(0_u8.into());
+            let _stopped = receive.stop(0_u8.into());
+            return;
+        };
+        let local_endpoint_id = self.local_endpoint_id;
+        streams.spawn(async move {
+            let refused = Err(EchoError::ConcurrencyExceeded);
+            write_reply(&mut send, local_endpoint_id, (0, refused)).await;
+            drop(permit);
+        });
     }
 
     async fn process(
@@ -153,11 +184,6 @@ impl EchoHandler {
         peer: EndpointId,
         mut receive: iroh::endpoint::RecvStream,
     ) -> Result<EchoServiceResponse, EchoError> {
-        let _permit = self
-            .limiter
-            .try_acquire(peer)
-            .ok_or(EchoError::ConcurrencyExceeded)?;
-        let _active_stream = ActiveEchoStream::new(&self.metrics);
         let calls = self.calls.as_ref().ok_or(EchoError::Unavailable)?;
         let (call, admission, request, response) = EchoCall::channel(peer);
         calls.send(call).await.map_err(|_| EchoError::Unavailable)?;
@@ -166,6 +192,23 @@ impl EchoHandler {
         self.metrics.0.body_reads.fetch_add(1, Ordering::Relaxed);
         request.send(body).map_err(|_| EchoError::Cancelled)?;
         response.await.map_err(|_| EchoError::Cancelled)?
+    }
+}
+
+/// Writes one reply frame within the response write budget, and resets the stream when the
+/// peer did not take it in time.
+async fn write_reply(
+    send: &mut iroh::endpoint::SendStream,
+    local_endpoint_id: EndpointId,
+    (duration_ms, response): (u16, Result<Vec<u8>, EchoError>),
+) {
+    let written = tokio::time::timeout(
+        ECHO_RESPONSE_WRITE_BUDGET,
+        frame::write(send, local_endpoint_id, duration_ms, response),
+    )
+    .await;
+    if !matches!(written, Ok(Ok(()))) {
+        let _reset = send.reset(0_u8.into());
     }
 }
 
