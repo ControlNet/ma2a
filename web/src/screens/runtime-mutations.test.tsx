@@ -80,8 +80,10 @@ test("external termination hides the TLS path fields instead of ignoring them si
 })
 
 // A lost answer is not a rejection: the Space may exist, and the same name retries safely.
+// A bare `unavailable` from the Runtime (as when the prior attempt is still pending) stays unsettled.
 test.each([
   [new TypeError("Failed to fetch"), /may already exist.*same name/],
+  [new RuntimeMutationRejectedError("unavailable"), /may already exist.*same name/],
   [new RuntimeMutationRejectedError("conflict"), /^The Runtime rejected the request\.$/],
 ])("a failed Space creation says whether the Runtime answered: %s", async (error, status) => {
   const user = userEvent.setup()

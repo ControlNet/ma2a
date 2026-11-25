@@ -4,6 +4,7 @@ import {
   createRuntimeMutationClient,
   mutationFailureText,
   mutationOutcomeUnknown,
+  RuntimeMutationRejectedError,
 } from "./mutations"
 
 afterEach(() => {
@@ -37,4 +38,16 @@ test("client-side validation errors never report an unknown outcome or call fetc
   }
 
   expect(fetchSpy).not.toHaveBeenCalled()
+})
+
+// A bare Runtime `unavailable` (no remediation) is also what a pending replay answers, so the
+// outcome remains unsettled; an explicit remediation from the Runtime is still shown verbatim.
+test("bare unavailable keeps the outcome unsettled while preserving explicit remediations", () => {
+  const bare = new RuntimeMutationRejectedError("unavailable")
+  const advised = new RuntimeMutationRejectedError("unavailable", "Try later.")
+
+  expect(mutationOutcomeUnknown(bare)).toBe(true)
+  expect(mutationFailureText(bare, "Outcome unsettled.", "Rejected.")).toBe("Outcome unsettled.")
+  expect(mutationOutcomeUnknown(advised)).toBe(false)
+  expect(mutationFailureText(advised, "Outcome unsettled.", "Rejected.")).toBe("Try later.")
 })

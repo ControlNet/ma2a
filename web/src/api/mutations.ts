@@ -47,13 +47,18 @@ export class RuntimeMutationRejectedError extends Error {
  * Whether a failed mutation may still have taken effect: no answer came back, or none that says
  * it was refused. Client-side input validation fails before any request leaves the browser; a
  * rejection, or an HTTP refusal before the command ran, is definite; a request timeout is not,
- * since the server can time out after it passed the command on.
+ * since the server can time out after it passed the command on, and a bare `unavailable` from
+ * the Runtime is also what a pending replay answers.
  */
 export function mutationOutcomeUnknown(error: unknown): boolean {
+  if (error instanceof z.ZodError) return false
+  if (error instanceof RuntimeMutationRejectedError) {
+    return error.code === "unavailable" && error.remediation === undefined
+  }
   return !(
-    error instanceof z.ZodError ||
-    error instanceof RuntimeMutationRejectedError ||
-    (error instanceof HTTPError && error.response.status < 500 && error.response.status !== 408)
+    error instanceof HTTPError &&
+    error.response.status < 500 &&
+    error.response.status !== 408
   )
 }
 
