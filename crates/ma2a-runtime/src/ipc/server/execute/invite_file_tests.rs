@@ -113,6 +113,42 @@ fn a_replaced_staging_entry_is_never_published_or_removed() -> Result<(), Box<dy
     Ok(())
 }
 
+/// An empty directory another process puts at the staging name, after moving the staging
+/// directory away, is left alone, whether the ticket is then published or never written.
+#[cfg(unix)]
+#[test]
+fn an_empty_replacement_of_the_staging_directory_is_never_removed()
+-> Result<(), Box<dyn std::error::Error>> {
+    for publish in [true, false] {
+        // Given: the ticket is staged, then its directory is moved away and an empty one
+        // takes its name.
+        let base = std::env::temp_dir().join(format!(
+            "ma2a-invite-empty-{}-{publish}",
+            std::process::id()
+        ));
+        let _stale = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base)?;
+        let output = base.join("ticket");
+        let destination = super::Destination::open(output.to_str().ok_or("path")?)?;
+        let stage = base.join(names(&base)?.first().ok_or("no staging")?);
+        std::fs::rename(&stage, base.join("moved"))?;
+        std::fs::create_dir(&stage)?;
+
+        // When
+        if publish {
+            destination.write(b"secret")?;
+        } else {
+            drop(destination);
+        }
+
+        // Then
+        let kept = stage.is_dir();
+        std::fs::remove_dir_all(&base)?;
+        assert!(kept, "publish: {publish}");
+    }
+    Ok(())
+}
+
 /// Windows: once the ticket file is closed, as `write` closes it before it publishes the ticket,
 /// its staging directory is still held, so it cannot be moved away and replaced by another.
 #[cfg(windows)]

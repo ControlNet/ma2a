@@ -164,10 +164,19 @@ pub(super) fn publish_staged(
 }
 
 /// Removes the ticket from the staging directory, then the staging directory if it is still
-/// at its name and empty: removing a directory never removes anything in it.
+/// at its name and empty: removing a directory never removes anything in it, and whatever else
+/// took the name, such as an empty directory another process made there after moving the
+/// staging away, is left alone. Nothing removes a directory only if it is a given one, so the
+/// check before the removal narrows that race to the two calls but cannot close it.
 fn remove_staging(directory: &OwnedFd, staged: &Staged) {
     let _removed = rustix::fs::unlinkat(&staged.directory, TICKET, AtFlags::empty());
-    let _removed = rustix::fs::unlinkat(directory, staged.name.as_str(), AtFlags::REMOVEDIR);
+    let held = rustix::fs::fstat(&staged.directory);
+    let at_name = rustix::fs::statat(directory, staged.name.as_str(), AtFlags::SYMLINK_NOFOLLOW);
+    if let (Ok(held), Ok(at_name)) = (held, at_name)
+        && (held.st_dev, held.st_ino) == (at_name.st_dev, at_name.st_ino)
+    {
+        let _removed = rustix::fs::unlinkat(directory, staged.name.as_str(), AtFlags::REMOVEDIR);
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
