@@ -69,6 +69,11 @@ user, is left out of the lookup and of control pages like an expired record, so 
 the Runtime nor makes a peer refuse a page. An Endpoint replaces its own such record with the next
 sequence when it next publishes.
 
+A publisher never issues a record earlier than its newest stored one. When the clock steps back
+below that issue time, publishing fails and the Runtime keeps running: a local API request that
+needed the publication fails, and maintenance publishes again once the clock has passed that time,
+including after a restart.
+
 SQLite retains one high-water record per `(space_id, endpoint_id)`. A higher sequence replaces the
 current record. Exact same-sequence replay is idempotent. A lower sequence is rollback, and different
 hash or bytes at the same sequence is a fork. Rejected records do not change state or revision, and

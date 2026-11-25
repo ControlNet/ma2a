@@ -52,6 +52,8 @@ pub(crate) enum RuntimeErrorKind {
     Task(tokio::task::JoinError),
     Random,
     Clock,
+    /// The clock is behind the newest issue time already published.
+    ClockBehind,
     ObservationOverflow,
     AddressObservationUnavailable,
     Shutdown,
@@ -77,7 +79,8 @@ impl RuntimeError {
     pub(crate) fn is_retryable_background(&self) -> bool {
         match &self.0 {
             RuntimeErrorKind::Store(error) => error.is_retryable_maintenance(),
-            RuntimeErrorKind::AddressObservationUnavailable => true,
+            // A clock stepped back below the newest issue time catches up again.
+            RuntimeErrorKind::AddressObservationUnavailable | RuntimeErrorKind::ClockBehind => true,
             RuntimeErrorKind::PrivateRelay(error) => error.is_retryable_configuration(),
             _ => false,
         }
@@ -127,7 +130,7 @@ impl RuntimeError {
             RuntimeErrorKind::Channel => ErrorCodeKind::Channel,
             RuntimeErrorKind::Task(_) => ErrorCodeKind::Task,
             RuntimeErrorKind::Random => ErrorCodeKind::Random,
-            RuntimeErrorKind::Clock => ErrorCodeKind::Clock,
+            RuntimeErrorKind::Clock | RuntimeErrorKind::ClockBehind => ErrorCodeKind::Clock,
             RuntimeErrorKind::ObservationOverflow => ErrorCodeKind::ObservationOverflow,
             RuntimeErrorKind::Shutdown => ErrorCodeKind::Shutdown,
             RuntimeErrorKind::AddressObservationUnavailable | RuntimeErrorKind::Control => {
@@ -166,6 +169,9 @@ impl fmt::Display for RuntimeError {
                 formatter.write_str("operating-system random source failed")
             }
             RuntimeErrorKind::Clock => formatter.write_str("system clock precedes Unix epoch"),
+            RuntimeErrorKind::ClockBehind => {
+                formatter.write_str("system clock is behind the newest published issue time")
+            }
             RuntimeErrorKind::ObservationOverflow => {
                 formatter.write_str("Runtime observation count exceeded u64")
             }
@@ -195,6 +201,7 @@ impl Error for RuntimeError {
             | RuntimeErrorKind::Channel
             | RuntimeErrorKind::Random
             | RuntimeErrorKind::Clock
+            | RuntimeErrorKind::ClockBehind
             | RuntimeErrorKind::ObservationOverflow
             | RuntimeErrorKind::AddressObservationUnavailable
             | RuntimeErrorKind::Shutdown
@@ -221,6 +228,9 @@ impl From<ma2a_net::AddressPublisherError> for RuntimeError {
             ma2a_net::AddressPublisherError::ObservationUnavailable
             | ma2a_net::AddressPublisherError::ObservationInvalid(_) => {
                 Self::new(RuntimeErrorKind::AddressObservationUnavailable)
+            }
+            ma2a_net::AddressPublisherError::ClockRollback => {
+                Self::new(RuntimeErrorKind::ClockBehind)
             }
             _ => Self::new(RuntimeErrorKind::Control),
         }
@@ -255,43 +265,4 @@ impl From<tokio::task::JoinError> for RuntimeError {
 }
 
 #[cfg(test)]
-mod background_policy_test {
-    use super::RuntimeError;
-
-    #[test]
-    fn only_an_unavailable_or_unpublishable_address_observation_is_retryable() {
-        assert!(
-            RuntimeError::from(ma2a_net::AddressPublisherError::ObservationUnavailable)
-                .is_retryable_background()
-        );
-        // A host can briefly hold more addresses than a record carries; the next valid
-        // observation publishes again, so the Runtime keeps running meanwhile.
-        let invalid = RuntimeError::from(ma2a_net::AddressPublisherError::ObservationInvalid(
-            ma2a_core::ProtocolError::INVALID_INPUT,
-        ));
-        assert!(
-            crate::actor::Actor::absorb_background("control publication refresh", Err(invalid))
-                .is_ok()
-        );
-        assert!(
-            !RuntimeError::from(ma2a_net::AddressPublisherError::ObservationPoisoned)
-                .is_retryable_background()
-        );
-    }
-
-    #[test]
-    fn a_refused_remote_request_does_not_stop_the_runtime() {
-        // A full Space history refuses an enrollment or departure; only that request fails.
-        let refused = RuntimeError::from(ma2a_store::StoreError::SpaceHistoryFull);
-        assert!(refused.is_request_refusal());
-        assert!(crate::actor::Actor::absorb_background("owner redemption", Err(refused)).is_ok());
-        // So does a Space that has no member slot left for the candidate.
-        let full = RuntimeError::from(ma2a_store::StoreError::SpaceMembersFull);
-        assert!(crate::actor::Actor::absorb_background("owner redemption", Err(full)).is_ok());
-        // And a departure past the receipts kept for one removal.
-        let full = RuntimeError::from(ma2a_store::StoreError::DepartureReceiptsFull);
-        assert!(crate::actor::Actor::absorb_background("owner departure", Err(full)).is_ok());
-        let broken = RuntimeError::from(ma2a_store::StoreError::SpaceNotFound);
-        assert!(crate::actor::Actor::absorb_background("owner redemption", Err(broken)).is_err());
-    }
-}
+mod background_policy_test;

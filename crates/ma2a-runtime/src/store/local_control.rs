@@ -21,7 +21,7 @@ impl PendingRelayPublication {
         let (config, authorizations) = desired;
         let (issued_at_ms, expires_at_ms) = self.effective_window()?;
         if now_ms < issued_at_ms {
-            return Err(RuntimeError::new(RuntimeErrorKind::Clock));
+            return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
         }
         Ok(self.config == *config
             && self.authorizations == authorizations

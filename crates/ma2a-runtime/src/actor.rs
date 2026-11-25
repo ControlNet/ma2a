@@ -133,7 +133,10 @@ impl Actor {
     pub(crate) async fn initialize(&mut self) -> Result<(), RuntimeError> {
         let configured = self.reconcile_relay_configuration().await;
         Self::absorb_background("initial private relay role", configured)?;
-        self.refresh_local_control_publications().await?;
+        // A clock behind the stored issue times, as after a restart that corrected it, only
+        // delays publication: periodic maintenance publishes once it catches up.
+        let published = self.refresh_local_control_publications().await;
+        Self::absorb_background("initial control publication", published)?;
         self.state.revision = self
             .store
             .observe(&self.state)

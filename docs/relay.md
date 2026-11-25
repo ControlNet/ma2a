@@ -64,6 +64,9 @@ effective served Space. Before signing, Store atomically reserves the next provi
 so restart cannot reuse an earlier value. Each advertisement contains only its exact `space_id`,
 provider Endpoint ID, HTTPS relay URL, monotonic sequence, issue time, and expiry. It never lists the
 provider's other Spaces.
+A renewal is never issued earlier than the advertisement it replaces: while the clock is behind
+that issue time, renewal waits for Runtime maintenance to find the clock past it, as address
+records do ([address-record-v1](protocol/address-record-v1.md#validity-and-sequence)).
 
 Consumers accept an advertisement only when canonical encoding, provider signature, exact-Space
 membership, a Space policy that allows private relay providers, validity window, and persistent

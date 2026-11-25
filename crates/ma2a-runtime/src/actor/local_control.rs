@@ -38,7 +38,7 @@ impl Actor {
                 .as_ref()
                 .is_some_and(|published| issued_at_ms < published.issued_at_ms)
             {
-                return Err(RuntimeError::new(RuntimeErrorKind::Clock));
+                return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
             }
             let current = self
                 .maintenance

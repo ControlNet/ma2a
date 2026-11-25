@@ -69,3 +69,55 @@ async fn a_relay_renewal_survives_a_suspension_between_clock_reads() -> TestResu
     runtime.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_clock_step_back_below_the_newest_issue_time_is_retried_later() -> TestResult {
+    // Given: a provider whose advertisement and address record were issued at NOW_MS.
+    let state = TempState::new("clock-back")?;
+    let config = StoreConfig::new(&state.0);
+    let clock = Arc::new(SteppingClock {
+        now: AtomicI64::new(NOW_MS),
+        step: AtomicI64::new(0),
+    });
+    let runtime =
+        Runtime::start_with_clock(config.clone(), Arc::<SteppingClock>::clone(&clock)).await?;
+    let handle = runtime.handle();
+    let space_id = handle.create_owned_space("clock".to_owned()).await?;
+    handle
+        .set_relay_configuration(enabled_configuration(vec![space_id]))
+        .await?;
+    let endpoint_id = handle.status().await?.endpoint_id();
+    let initial = Repository::open(&config)?
+        .relay_advertisement(space_id, endpoint_id)?
+        .ok_or("initial advertisement missing")?
+        .sequence();
+    let period = crate::control_actor::control_period(endpoint_id);
+
+    // When: the clock steps back below that issue time and maintenance runs.
+    clock.now.store(NOW_MS - 60_000, Ordering::Relaxed);
+    tokio::time::advance(period).await;
+    tokio::task::yield_now().await;
+
+    // Then: the Runtime still answers; publishing now fails without stopping it.
+    let _status = handle.status().await?;
+    assert!(handle.publish_address().await.is_err());
+    let _status = handle.status().await?;
+
+    // And once the clock is past that issue time again, the renewal goes through.
+    clock.now.store(NOW_MS + 300_100, Ordering::Relaxed);
+    tokio::time::advance(period).await;
+    tokio::task::yield_now().await;
+    let _status = handle.status().await?;
+    let renewed = Repository::open(&config)?
+        .relay_advertisement(space_id, endpoint_id)?
+        .ok_or("renewed advertisement missing")?;
+    assert!(renewed.sequence() > initial, "not renewed");
+    runtime.shutdown().await?;
+
+    // And a Runtime started while the clock is behind its stored records starts.
+    clock.now.store(NOW_MS - 60_000, Ordering::Relaxed);
+    let runtime = Runtime::start_with_clock(config, clock).await?;
+    let _status = runtime.handle().status().await?;
+    runtime.shutdown().await?;
+    Ok(())
+}
