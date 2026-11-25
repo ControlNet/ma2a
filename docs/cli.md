@@ -222,6 +222,9 @@ twice, and `service call` then also needs `--version`. Commands that forward std
 `service call --stdin`) exit on every outcome, even while stdin is still open.
 `process attach` and `process logs --follow` exit with the Process's status once they see it end,
 as `exec` does, with 255 when it ended without one, and with `0` after a detach.
+`proxy connect` exits `0` when the relay completes, and like `exec` when it is cut short: 124
+after the idle timeout or lifetime, 130 after a cancel, and 255 when the target Runtime shut
+down, each with a short message on standard error.
 
 ## Output and Errors
 

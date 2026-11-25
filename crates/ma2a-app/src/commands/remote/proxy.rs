@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use ma2a_core::service::{MAX_PROXY_IDLE_MS, OpenBody, ProxyHost, ProxyRequest};
+use ma2a_core::service::{
+    EndReason, MAX_PROXY_IDLE_MS, OpenBody, ProxyHost, ProxyRequest, ProxyResult,
+};
 use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client;
 use tokio::net::TcpListener;
@@ -21,13 +23,35 @@ pub(crate) async fn run(paths: IpcPaths, command: ProxyCommand) -> Result<(), Ap
                 open(&paths, &destination.endpoint, OpenBody::Proxy(request)).await?;
             let local = (tokio::io::stdin(), tokio::io::stdout());
             let relayed = client::proxy::run((&mut reader, &mut writer), local).await;
-            super::exit_with(relayed.map(drop).map_err(AppError::from))
+            exit_with(relayed.map_err(AppError::from))
         }
         ProxyCommand::Forward {
             listen,
             destination,
         } => forward(paths, &listen, destination).await,
     }
+}
+
+/// Exits as `exec` does: 124 after a timeout, 130 after a cancel, and 255 after the target
+/// Runtime shut down, so a script can tell a relay cut short from one that completed.
+fn exit_with(relayed: Result<ProxyResult, AppError>) -> ! {
+    let reason = relayed.as_ref().map(|result| result.reason);
+    let code = match reason {
+        Ok(EndReason::TimedOut) => {
+            eprintln!("proxy connection timed out");
+            124
+        }
+        Ok(EndReason::Cancelled) => {
+            eprintln!("proxy connection cancelled");
+            130
+        }
+        Ok(EndReason::Shutdown) => {
+            eprintln!("target Runtime shut down");
+            255
+        }
+        Ok(EndReason::Completed) | Err(_) => super::exit_with(relayed.map(drop)),
+    };
+    super::exit(code)
 }
 
 fn request(destination: &ProxyDestination) -> Result<ProxyRequest, AppError> {

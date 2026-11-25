@@ -184,6 +184,11 @@ pub(crate) fn exit_with(outcome: Result<(), AppError>) -> ! {
             i32::from(error.exit_code())
         }
     };
+    exit(code)
+}
+
+/// Flushes standard output and error, then ends the process with `code`.
+pub(crate) fn exit(code: i32) -> ! {
     let _flushed = io::Write::flush(&mut io::stdout().lock());
     let _flushed = io::Write::flush(&mut io::stderr().lock());
     std::process::exit(code)

@@ -101,3 +101,29 @@ fn proxied_connections_are_byte_exact_and_bounded_by_the_rule() -> TestResult {
     drop(outside);
     lab.shutdown()
 }
+
+#[test]
+fn a_proxied_connection_that_times_out_exits_124() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let lab = Lab::start("proxy-idle", &port.to_string())?;
+    // Accepts and stays silent; the socket lives until the thread is joined.
+    let silent = std::thread::spawn(move || listener.accept().map(|(socket, _)| socket));
+    let timed = lab.member.piped(
+        &[
+            "proxy",
+            "connect",
+            "--endpoint",
+            lab.owner.id(),
+            "--idle",
+            "300ms",
+            "127.0.0.1",
+            &port.to_string(),
+        ],
+        b"",
+    )?;
+    assert_eq!(timed.status.code(), Some(124));
+    assert!(String::from_utf8(timed.stderr)?.contains("timed out"));
+    drop(silent.join().map_err(|_| "silent destination panicked")??);
+    lab.shutdown()
+}
