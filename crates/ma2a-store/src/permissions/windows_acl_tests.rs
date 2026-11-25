@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use super::{PathKind, apply_windows_acl, run_powershell, validate_windows_acl};
+use super::{
+    PathKind, apply_windows_acl, run_powershell, validate_local_absolute, validate_windows_acl,
+};
 use crate::StoreError;
 
 /// Replaces the file's DACL with protected rules: the current user with `rights`, and
@@ -36,4 +38,24 @@ fn only_full_control_for_the_user_and_system_counts_as_private()
     assert!(validate_windows_acl(&path).is_ok());
     std::fs::remove_file(&path)?;
     Ok(())
+}
+
+#[test]
+fn only_a_path_on_a_drive_letter_counts_as_local() {
+    assert!(validate_local_absolute(Path::new(r"C:\state")).is_ok());
+    assert!(validate_local_absolute(Path::new(r"\\?\C:\state")).is_ok());
+    for remote in [
+        r"\\server\share\state",
+        r"\\?\UNC\server\share\state",
+        r"\\?\GLOBALROOT\Device\Mup\server\share\state",
+        r"\\.\pipe\state",
+    ] {
+        assert!(
+            matches!(
+                validate_local_absolute(Path::new(remote)),
+                Err(StoreError::InvalidStateDirectory)
+            ),
+            "{remote}"
+        );
+    }
 }

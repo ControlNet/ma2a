@@ -257,17 +257,16 @@ const fn is_remote(_path: &Path) -> bool {
     false
 }
 
+/// Only a drive letter names a local volume for certain: `\\?\GLOBALROOT\Device\Mup\…` and
+/// other verbatim or device paths can reach a network share as well as a UNC path can.
 #[cfg(windows)]
 fn is_remote(path: &Path) -> bool {
     use std::path::{Component, Prefix};
 
-    matches!(
+    !matches!(
         path.components().next(),
         Some(Component::Prefix(prefix))
-            if matches!(
-                prefix.kind(),
-                Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _) | Prefix::DeviceNS(_)
-            )
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
     )
 }
 

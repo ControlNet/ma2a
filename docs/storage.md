@@ -9,7 +9,8 @@ filesystem work directly on an async worker.
 
 `Repository::open` performs these checks before state is available:
 
-1. Require an absolute local state path. Windows UNC, verbatim UNC, and device paths are rejected.
+1. Require an absolute local state path. On Windows only drive-letter paths (`C:\…` or
+   `\\?\C:\…`) are accepted; UNC, `\\?\GLOBALROOT\…`, and other verbatim or device paths are rejected.
 2. Require current-user ownership and exact `0700` directory modes and `0600` database/key-file
    modes on Unix. Symlinks and unexpected file types are rejected.
 3. Require protected Windows DACLs with exactly the current user and SYSTEM holding explicit full
