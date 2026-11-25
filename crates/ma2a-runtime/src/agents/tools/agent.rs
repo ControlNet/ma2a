@@ -164,9 +164,13 @@ impl Call<'_> {
                     .open_read(&args.endpoint, OpenBody::Agent(request))
                     .await?;
                 let caller = self.manager.local();
-                client::agent::watch(&mut reader, ((&caller, &agent, task), after), |event| {
-                    after = event.seq;
-                })
+                client::agent::watch(
+                    &mut reader,
+                    ((&caller, &agent, task), (after, None)),
+                    |event| {
+                        after = event.seq;
+                    },
+                )
                 .await
                 .map_err(|error| failed(&error))
             })

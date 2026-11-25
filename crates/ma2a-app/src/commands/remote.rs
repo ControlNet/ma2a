@@ -20,6 +20,7 @@ use crate::{
 };
 
 pub(crate) mod agent;
+mod agent_follow;
 mod agent_view;
 #[cfg(all(test, unix))]
 mod deadline_tests;

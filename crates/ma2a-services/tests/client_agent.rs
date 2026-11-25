@@ -78,6 +78,16 @@ async fn watched_events(
     events: &[(u32, AgentEventBody)],
     outcome: &AgentReply,
 ) -> TestResult<(Result<(), ClientError>, Vec<u32>)> {
+    watched_after(((after, None), accept), events, outcome).await
+}
+
+/// Runs `watch` as [`watched_events`] does, by a caller that already took the end `ended` as
+/// event `after`, when there is one.
+async fn watched_after(
+    ((after, ended), accept): ((u32, Option<agent::End>), AgentAccept),
+    events: &[(u32, AgentEventBody)],
+    outcome: &AgentReply,
+) -> TestResult<(Result<(), ClientError>, Vec<u32>)> {
     let ((mut reader, _writer), (_target_reader, mut target)) = pipe();
     target.frame(FrameKind::Accept, &accept.encode()?).await?;
     for (seq, body) in events {
@@ -89,9 +99,13 @@ async fn watched_events(
     target.flush().await?;
     let mut seen = Vec::new();
     let (caller, worker) = (caller()?, AgentId::new("worker")?);
-    let watching = agent::watch(&mut reader, ((&caller, &worker, TASK), after), |event| {
-        seen.push(event.seq);
-    });
+    let watching = agent::watch(
+        &mut reader,
+        ((&caller, &worker, TASK), (after, ended)),
+        |event| {
+            seen.push(event.seq);
+        },
+    );
     let result = tokio::time::timeout(Duration::from_secs(30), watching).await?;
     Ok((result.map(|_| ()), seen))
 }
@@ -247,4 +261,47 @@ async fn a_watch_ends_with_a_task_its_caller_created() -> TestResult {
     // Then: it is not the end of the caller's own task.
     assert!(malformed(&result), "{result:?}");
     Ok(())
+}
+
+#[tokio::test]
+async fn nothing_follows_the_end_of_a_task() -> TestResult {
+    // Given: a task that completed at event 2 and then failed at event 3, which the Summary
+    // reports.
+    let watching = (0, AgentAccept::Watching(AgentTaskState::Running, 1));
+    let completed = AgentEventBody::State(AgentTaskState::Completed, None);
+    let failed = AgentEventBody::State(AgentTaskState::Failed, None);
+    let sent = [(1, completed.clone()), (2, failed)];
+    let mut ended = summary(AgentTaskState::Failed)?;
+    ended.last_seq = 2;
+
+    // When
+    let (result, seen) = watched_events(watching, &sent, &AgentReply::Summary(ended)).await?;
+
+    // Then: the second end is never handed on, and the watch is malformed.
+    assert!(malformed(&result), "{result:?}");
+    assert_eq!(seen, [1]);
+
+    // Given: a caller reconnecting after it took the task's end, completed, as event 2.
+    let after_end = (
+        (2, Some((AgentTaskState::Completed, None))),
+        watching_from(2),
+    );
+    let mut failed_at_two = summary(AgentTaskState::Failed)?;
+    failed_at_two.last_seq = 2;
+
+    // Then: a Summary of another end, or any event after it, is malformed.
+    let (result, _) = watched_after(after_end, &[], &AgentReply::Summary(failed_at_two)).await?;
+    assert!(malformed(&result), "{result:?}");
+    let (result, seen) = watched_after(after_end, &[(3, completed)], &ended_at(3)?).await?;
+    assert!(malformed(&result), "{result:?}");
+    assert!(seen.is_empty(), "{seen:?}");
+    // The Summary of the end it already took ends the watch.
+    let (result, _) = watched_after(after_end, &[], &ended_at(2)?).await?;
+    assert!(result.is_ok(), "{result:?}");
+    Ok(())
+}
+
+/// A watch accepted after event `after`.
+const fn watching_from(after: u32) -> AgentAccept {
+    AgentAccept::Watching(AgentTaskState::Running, after + 1)
 }

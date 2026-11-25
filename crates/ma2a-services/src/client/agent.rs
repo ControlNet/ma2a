@@ -6,8 +6,8 @@
 use ma2a_core::{
     EndpointId,
     service::{
-        AgentAccept, AgentEvent, AgentEventBody, AgentId, AgentReply, AgentTaskId, Channel,
-        FrameKind, ServiceError,
+        AgentAccept, AgentEvent, AgentEventBody, AgentId, AgentReply, AgentTaskId, AgentTaskReason,
+        AgentTaskState, Channel, FrameKind, ServiceError,
     },
 };
 use tokio::io::AsyncRead;
@@ -35,24 +35,44 @@ pub async fn call<R: AsyncRead + Unpin>(
     Ok((Some(accept), reply(&frame)?))
 }
 
+/// A task's end: its terminal state and the reason for it.
+pub type End = (AgentTaskState, Option<AgentTaskReason>);
+
+/// The end `event` reports, when it is the `state` event of a terminal state.
+#[must_use]
+pub const fn end_of(event: &AgentEvent) -> Option<End> {
+    match event.body {
+        AgentEventBody::State(state, reason) if state.is_terminal() => Some((state, reason)),
+        _ => None,
+    }
+}
+
 /// Follows one `watch` by the Endpoint `caller` of `agent`'s `task` after the cursor `after`,
 /// handing every event to `on_event` in order, until the outcome: the task's summary once it
 /// ended.
 ///
+/// A caller that reconnects after it already took the task's end as event `after` passes that
+/// end as `ended`.
+///
 /// A target that accepts the watch as anything but `Watching` with `next = after + 1`
-/// (saturating), sends an event at or before `after` or one it already sent, or ends the
-/// watch with anything but the summary of that Agent's `task`, created by `caller`, once ended
-/// is malformed: a caller would otherwise replay events, move its cursor backwards, take a
-/// live task for an ended one, or another creator's task for its own. So is a summary whose newest event is not the last one sent, or that last
-/// event is not the `state` event of the end the summary reports, or, when none was sent, a
-/// summary whose newest event is not in `1..=after`: the terminal event is never pruned, and
-/// a caller would miss the task's end.
+/// (saturating), sends an event at or before `after` or one it already sent, sends any event
+/// after the task's end, or ends the watch with anything but the summary of that Agent's
+/// `task`, created by `caller`, once ended is malformed: a caller would otherwise replay
+/// events, move its cursor backwards, take a live task for an ended one, take one end and then
+/// another, or take another creator's task for its own. So is a summary whose newest event is
+/// not the last one sent, or that last event is not the `state` event of the end the summary
+/// reports, or, when none was sent, a summary that is not the end `ended` at `after`, or
+/// without one, whose newest event is not in `1..=after`: the terminal event is never pruned,
+/// and a caller would miss the task's end.
 ///
 /// # Errors
 /// Returns the refusal, the failed outcome, or the stream or protocol failure.
 pub async fn watch<R, F>(
     reader: &mut FrameReader<R>,
-    ((caller, agent, task), after): ((&EndpointId, &AgentId, AgentTaskId), u32),
+    ((caller, agent, task), (after, ended)): (
+        (&EndpointId, &AgentId, AgentTaskId),
+        (u32, Option<End>),
+    ),
     mut on_event: F,
 ) -> Result<(AgentAccept, AgentReply), ClientError>
 where
@@ -71,8 +91,9 @@ where
     }
     // The lowest sequence number the next event may carry, past `after` even at its maximum.
     let mut floor = u64::from(after) + 1;
-    // The newest event sent so far, if any, and the end it reports when it is a `state` one.
-    let mut last = None;
+    // The newest event sent so far, if any, and the state it reports when it is a `state` one;
+    // a reconnecting caller already took the end at `after`.
+    let mut last = ended.map(|end| (after, Some(end)));
     loop {
         let frame = next(reader).await?;
         match frame.kind() {
@@ -80,7 +101,9 @@ where
                 (Channel::Output, bytes) => {
                     let event = AgentEvent::from_bytes(bytes)
                         .map_err(|error| ClientError::Stream(ServiceError::from_protocol(error)))?;
-                    if u64::from(event.seq) < floor {
+                    // Nothing follows a task's end.
+                    let over = matches!(last, Some((_, Some((state, _)))) if state.is_terminal());
+                    if over || u64::from(event.seq) < floor {
                         return Err(malformed());
                     }
                     floor = u64::from(event.seq) + 1;

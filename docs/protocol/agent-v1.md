@@ -367,11 +367,14 @@ while it restarts. Any other failure, or a failure of the first watch to open, e
 
 A caller treats a `watch` as malformed (`invalid_input`) when it is accepted as anything other
 than Watching with `next = after + 1` (saturating at the maximum `seq`), when an event's `seq` is
-not above `after` or not above the event before it, or when its outcome is anything other than the
-Summary of the watched Agent's task, created by the caller's own Endpoint, once ended. That Summary's `last_seq` must be the `seq` of the
-last event delivered, and that event the `state` event of the state and reason the Summary reports.
-When no event was delivered, `last_seq` must be between 1 and `after`. The terminal `state` event
-is never pruned, so a watch that did not deliver it is missing the task's end.
+not above `after` or not above the event before it, when any event follows the task's terminal
+`state` event, or when its outcome is anything other than the Summary of the watched Agent's task,
+created by the caller's own Endpoint, once ended. That Summary's `last_seq` must be the `seq` of
+the last event delivered, and that event the `state` event of the state and reason the Summary
+reports. When no event was delivered, `last_seq` must be between 1 and `after`. The terminal
+`state` event is never pruned, so a watch that did not deliver it is missing the task's end. A
+caller that reconnects after it already received that terminal event at `after` takes no event at
+all, and only the Summary of that same end.
 
 ## Artifacts
 

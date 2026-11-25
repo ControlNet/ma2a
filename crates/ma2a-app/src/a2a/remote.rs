@@ -265,16 +265,21 @@ pub(super) async fn follow(
     let (endpoint, agent) = parts(route)?;
     let task = task_id(task)?;
     let caller = own_endpoint(&backend.paths).await?;
+    // The task's end once taken, which a reconnected watch must end with and nothing follow.
+    let mut ended = None;
     let mut reconnecting = false;
     loop {
         let request = OpenBody::Agent(AgentRequest::Watch(agent.clone(), task, after));
         let refused = match open_as(&backend.paths, (endpoint, None), request).await {
             Ok((mut reader, _writer)) => {
-                let watching =
-                    client::agent::watch(&mut reader, ((&caller, agent, task), after), |event| {
-                        after = event.seq;
+                let watching = client::agent::watch(
+                    &mut reader,
+                    ((&caller, agent, task), (after, ended)),
+                    |event| {
+                        (after, ended) = (event.seq, client::agent::end_of(&event));
                         let _sent = events.send(agent_event_value(&event));
-                    });
+                    },
+                );
                 let watched = tokio::select! {
                     watched = watching => watched,
                     () = events.closed() => return Ok(()),

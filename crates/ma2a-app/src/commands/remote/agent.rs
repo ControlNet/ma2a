@@ -1,16 +1,19 @@
 //! `ma2a agent --endpoint`: another Endpoint's Agents, used as this Endpoint.
 
-use std::{fmt::Write as _, io::Write as _, path::Path, time::Duration};
+use std::{fmt::Write as _, io::Write as _, path::Path};
 
 use ma2a_core::service::{
     AgentAccept, AgentId, AgentMessage, AgentReply, AgentRequest, AgentSubmit, AgentTaskId,
-    MessagePart, MessageRole, OpenBody, ServiceError,
+    MessagePart, MessageRole, OpenBody,
 };
-use ma2a_runtime::{api::agent_event_value, ipc::IpcPaths};
+use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client;
 use serde_json::{Value, json};
 
-use super::{READ_DEADLINE, agent_view::view, bounded, open, open_bound, own_endpoint};
+pub(crate) use super::agent_follow::passes;
+use super::{
+    READ_DEADLINE, agent_follow::follow, agent_view::view, bounded, open, open_bound, own_endpoint,
+};
 use crate::{
     AppError,
     cli::agents::{AgentCommand, MessageArgs, SubmitArgs, TaskTarget},
@@ -18,9 +21,6 @@ use crate::{
 
 /// One remote target: the local stream plane and the hosting Endpoint.
 pub(crate) type Target<'a> = (&'a IpcPaths, &'a str);
-
-/// Pause before reaching a target again that is restarting or unreachable.
-const RETRY: Duration = Duration::from_secs(1);
 
 /// Builds one `user` message from text parts, then data parts.
 pub(crate) fn message(arguments: &MessageArgs) -> Result<AgentMessage, AppError> {
@@ -167,74 +167,6 @@ async fn submit(target: Target<'_>, arguments: SubmitArgs) -> Result<(), AppErro
     Ok(())
 }
 
-/// Returns whether the status `name` only means the target cannot answer right now: it is
-/// restarting or out of reach.
-pub(crate) fn passes(name: &str) -> bool {
-    [
-        ServiceError::Unavailable,
-        ServiceError::Unreachable,
-        ServiceError::TimedOut,
-        ServiceError::OutcomeUnknown,
-        ServiceError::Cancelled,
-    ]
-    .iter()
-    .any(|status| status.name() == name)
-}
-
-/// Returns whether reopening an interrupted watch failed in a way that passes: the Runtime
-/// keeps the meaning of its own refusals, and any other local failure is this Runtime being
-/// away for now, as while it restarts.
-fn reopening_passes(error: &AppError) -> bool {
-    match error {
-        AppError::Rejected(name, _) => passes(name),
-        _ => true,
-    }
-}
-
-/// Follows a task until it ended, printing its events after `after` when given, and
-/// reconnecting while the target restarts or is unreachable. Once a watch was interrupted,
-/// reopening it can fail the same passing way, so that is retried too.
-async fn follow(
-    target: Target<'_>,
-    (agent, task): (AgentId, AgentTaskId),
-    after: Option<u32>,
-) -> Result<AgentReply, AppError> {
-    let (print_events, mut seen) = (after.is_some(), after.unwrap_or(0));
-    let caller = own_endpoint(target.0).await?;
-    let mut reconnecting = false;
-    loop {
-        let request = AgentRequest::Watch(agent.clone(), task, seen);
-        let watched = match open(target.0, target.1, OpenBody::Agent(request)).await {
-            Ok((mut reader, _writer)) => {
-                let mut printed = Ok(());
-                let outcome =
-                    client::agent::watch(&mut reader, ((&caller, &agent, task), seen), |event| {
-                        seen = event.seq;
-                        if print_events && printed.is_ok() {
-                            printed = print(&agent_event_value(&event));
-                        }
-                    })
-                    .await;
-                printed?;
-                outcome
-            }
-            Err(error) if reconnecting && reopening_passes(&error) => {
-                tokio::time::sleep(RETRY).await;
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        match watched {
-            Ok((_, reply)) => return Ok(reply),
-            Err(error) if error.status().is_some_and(|status| passes(status.name())) => {
-                reconnecting = true;
-                tokio::time::sleep(RETRY).await;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
 /// Downloads one artifact into a new local file, verified against its hash.
 async fn artifact(
     target: Target<'_>,
@@ -280,7 +212,7 @@ async fn artifact(
     }))
 }
 
-fn print(value: &Value) -> Result<(), AppError> {
+pub(super) fn print(value: &Value) -> Result<(), AppError> {
     writeln!(std::io::stdout().lock(), "{value}")?;
     Ok(())
 }
