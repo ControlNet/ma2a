@@ -163,3 +163,62 @@ async fn a_stream_shows_an_agent_message_however_long_it_escapes() -> TestResult
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn streamed_progress_and_messages_keep_the_last_state_change_timestamp() -> TestResult {
+    // Given: a task whose state last changed at 1_000 ms, followed by progress, an Agent
+    // message, a move to waiting at 4_000 ms, more progress, and completion at 6_000 ms.
+    let frame = |seq, at_ms, body| -> TestResult<(FrameKind, Vec<u8>)> {
+        let mut data = vec![1];
+        data.extend(AgentEvent::new(seq, at_ms, body).to_bytes()?);
+        Ok((FrameKind::Data, data))
+    };
+    let note = AgentMessage::new(MessageRole::Agent, vec![MessagePart::Text("note".into())])?;
+    let events = vec![
+        frame(2, 2_000, AgentEventBody::progress("halfway")?)?,
+        frame(3, 3_000, AgentEventBody::Message(note))?,
+        frame(
+            4,
+            4_000,
+            AgentEventBody::State(AgentTaskState::Waiting, None),
+        )?,
+        frame(5, 5_000, AgentEventBody::progress("waiting")?)?,
+        frame(
+            6,
+            6_000,
+            AgentEventBody::State(AgentTaskState::Completed, None),
+        )?,
+    ];
+
+    // When
+    let text = streamed(vec![watch(1, events, (AgentTaskState::Completed, 6))?]).await?;
+
+    // Then: every status timestamp matches the last state transition, not progress/message times.
+    let stamps: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+        .filter_map(|response| {
+            let status = response
+                .pointer("/result/task/status")
+                .or_else(|| response.pointer("/result/statusUpdate/status"))?;
+            Some((
+                status.get("state")?.as_str()?.to_owned(),
+                status.get("timestamp")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    let at = crate::a2a::time::format;
+    assert_eq!(
+        stamps,
+        [
+            ("TASK_STATE_WORKING".to_owned(), at(1_000)),
+            ("TASK_STATE_WORKING".to_owned(), at(1_000)),
+            ("TASK_STATE_WORKING".to_owned(), at(1_000)),
+            ("TASK_STATE_INPUT_REQUIRED".to_owned(), at(4_000)),
+            ("TASK_STATE_INPUT_REQUIRED".to_owned(), at(4_000)),
+            ("TASK_STATE_COMPLETED".to_owned(), at(6_000)),
+        ]
+    );
+    Ok(())
+}
