@@ -157,12 +157,12 @@ while [[ ${#asset_queue[@]} -gt 0 ]]; do
     fi
     case "$reference" in
       /*) referenced_asset=${reference#/} ;;
-      ./*) referenced_asset="$(dirname "$current")/${reference#./}" ;;
+      ./*) referenced_asset="$(dirname -- "$current")/${reference#./}" ;;
       *:*)
         printf 'unsupported runtime asset scheme rejected in %s: %s\n' "$current" "$reference" >&2
         exit 1
         ;;
-      *) referenced_asset="$(dirname "$current")/$reference" ;;
+      *) referenced_asset="$(dirname -- "$current")/$reference" ;;
     esac
     referenced_asset=${referenced_asset#./}
     [[ "$referenced_asset" != *../* && "$referenced_asset" != .. && "$referenced_asset" != */.. ]] || {
