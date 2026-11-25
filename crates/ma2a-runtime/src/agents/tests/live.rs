@@ -460,3 +460,75 @@ async fn a_message_that_fails_its_task_at_the_event_bound_is_a_committed_send() 
     assert_eq!(state.reason, Some(AgentTaskReason::Limit));
     Ok(())
 }
+
+/// Watches `live`'s task from the start until the watch ends, the caller having sent `data`
+/// on it; the kinds of the frames the caller read after `accept`, and the outcome among them.
+async fn watched(
+    live: &Live,
+    stop: &CancellationToken,
+    data: Option<&[u8]>,
+) -> TestResult<(Vec<FrameKind>, Option<Result<AgentReply, ServiceError>>)> {
+    let (caller, host) = tokio::io::duplex(1 << 16);
+    let (caller_read, caller_write) = tokio::io::split(caller);
+    let (mut caller_reader, mut caller_writer) = (
+        FrameReader::new(caller_read),
+        FrameWriter::new(caller_write),
+    );
+    let (host_read, host_write) = tokio::io::split(host);
+    let (mut host_reader, mut host_writer) =
+        (FrameReader::new(host_read), FrameWriter::new(host_write));
+    if let Some(data) = data {
+        caller_writer
+            .data(ma2a_core::service::Channel::Input, data)
+            .await?;
+        caller_writer.flush().await?;
+    }
+    let watch = live.manager.watch(
+        ((None, None), stop, (live.task, 0)),
+        (&mut host_reader, &mut host_writer),
+    );
+    tokio::time::timeout(Duration::from_secs(10), watch).await?;
+    drop((host_reader, host_writer));
+    let accept = caller_reader.next().await?.ok_or("no accept")?;
+    assert_eq!(accept.kind(), FrameKind::Accept);
+    let (mut kinds, mut outcome) = (Vec::new(), None);
+    while let Some(frame) = caller_reader.next().await? {
+        kinds.push(frame.kind());
+        if frame.kind() == FrameKind::Outcome {
+            outcome = Some(AgentReply::decode_outcome(frame.payload())?);
+        }
+    }
+    Ok((kinds, outcome))
+}
+
+#[tokio::test]
+async fn a_watch_the_runtime_stops_ends_unavailable() -> TestResult {
+    // Given: a running task with an event to send, and a Runtime that is stopping.
+    let live = Live::new().await?;
+    let stop = CancellationToken::new();
+    stop.cancel();
+
+    // When
+    let (kinds, outcome) = watched(&live, &stop, None).await?;
+
+    // Then: the caller is told the watch ended unavailable, not left with a broken stream.
+    live.finish().await?;
+    assert_eq!(kinds.last(), Some(&FrameKind::Outcome));
+    assert_eq!(outcome, Some(Err(ServiceError::Unavailable)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_given_anything_but_cancel_ends_invalid_input() -> TestResult {
+    // Given: a running task, whose watcher sends data on its watch.
+    let live = Live::new().await?;
+    let stop = CancellationToken::new();
+
+    // When
+    let (_, outcome) = watched(&live, &stop, Some(b"more")).await?;
+
+    // Then
+    live.finish().await?;
+    assert_eq!(outcome, Some(Err(ServiceError::InvalidInput)));
+    Ok(())
+}

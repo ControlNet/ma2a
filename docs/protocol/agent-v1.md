@@ -350,8 +350,9 @@ is recorded as its own `message` event, immediately before the `state` event.
 4. The outcome is Summary once the task is terminal and every event was delivered. The task is
    read before its events, so no event recorded before the end is missed.
 
-A `cancel` frame, or the end of the caller's stream, ends the watch with outcome `cancelled`.
-Runtime shutdown or withdrawn authorization ends it with outcome `unavailable`. A task removed by
+A `cancel` frame, or the end of the caller's stream, ends the watch with outcome `cancelled`; any
+other frame from the caller ends it with outcome `invalid_input`. Runtime shutdown or withdrawn
+authorization ends it with outcome `unavailable`, also while history is still being sent. A task removed by
 retention while it is watched ends it with outcome `unknown_task`.
 
 **Reconnect.** A watcher that reconnects with `after` set to the last `seq` it received gets every

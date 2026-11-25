@@ -32,22 +32,40 @@ where
     }
 }
 
-/// Whether `caller_gone` already ended, without waiting for it.
-async fn heard(caller_gone: std::pin::Pin<&mut impl std::future::Future<Output = ()>>) -> bool {
+/// How `caller_gone` already ended, without waiting for it.
+async fn heard(
+    caller_gone: std::pin::Pin<&mut impl std::future::Future<Output = ServiceError>>,
+) -> Option<ServiceError> {
     tokio::select! {
         biased;
-        () = caller_gone => true,
-        () = std::future::ready(()) => false,
+        error = caller_gone => Some(error),
+        () = std::future::ready(()) => None,
     }
 }
 
-/// Ends a watch its caller cancelled, after `sent` event bytes.
-async fn cancelled<W: AsyncWrite + Unpin + Send>(
+/// Ends a watch with `error` after `sent` event bytes: as its outcome while the stream can
+/// still carry one, and in the report either way.
+async fn ended<W: AsyncWrite + Unpin + Send>(
     writer: &mut FrameWriter<W>,
     sent: u64,
+    error: ServiceError,
 ) -> OperationReport {
-    let _ended = finish(writer, Err(ServiceError::Cancelled)).await;
-    OperationReport::new(OperationEnd::Failed(ServiceError::Cancelled)).with_bytes(0, sent)
+    if !writer.is_torn() {
+        let _ended = finish(writer, Err(error)).await;
+    }
+    OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent)
+}
+
+/// Ends a watch whose event write failed: a Runtime stop still answers `unavailable`.
+async fn unwritten<W: AsyncWrite + Unpin + Send>(
+    writer: &mut FrameWriter<W>,
+    sent: u64,
+    error: ServiceError,
+) -> OperationReport {
+    if error == ServiceError::Unavailable {
+        return ended(writer, sent, error).await;
+    }
+    OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent)
 }
 
 impl AgentManager {
@@ -71,12 +89,13 @@ impl AgentManager {
         if let Err(error) = super::host::write_accept(writer, &accept).await {
             return OperationReport::new(OperationEnd::Failed(error));
         }
-        // Only `cancel` or the end of the caller's stream can come from the caller now.
+        // Only `cancel` or the end of the caller's stream can come from the caller now; any
+        // other frame breaks the frame contract.
         let caller_gone = async {
-            while let Ok(Some(frame)) = reader.next().await {
-                if frame.kind() == FrameKind::Cancel {
-                    break;
-                }
+            match reader.next().await {
+                Ok(Some(frame)) if frame.kind() != FrameKind::Cancel => ServiceError::InvalidInput,
+                Ok(_) => ServiceError::Cancelled,
+                Err(error) => error,
             }
         };
         tokio::pin!(caller_gone);
@@ -85,8 +104,11 @@ impl AgentManager {
         loop {
             // A cancellation is heard between batches too, so a long history or a busy task
             // never holds it back until every event was sent.
-            if heard(caller_gone.as_mut()).await {
-                return cancelled(writer, sent).await;
+            if let Some(error) = heard(caller_gone.as_mut()).await {
+                return ended(writer, sent, error).await;
+            }
+            if stop.is_cancelled() {
+                return ended(writer, sent, ServiceError::Unavailable).await;
             }
             changes.mark_unchanged();
             // The task is read before its events, so an ended task has no event left after
@@ -112,7 +134,7 @@ impl AgentManager {
                 };
                 if let Err(error) = write_bounded(stop, writer.data(Channel::Output, &bytes)).await
                 {
-                    return OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent);
+                    return unwritten(writer, sent, error).await;
                 }
                 sent += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                 after = event.seq;
@@ -125,7 +147,7 @@ impl AgentManager {
                 return ended.with_bytes(0, sent);
             }
             if let Err(error) = write_bounded(stop, writer.flush()).await {
-                return OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent);
+                return unwritten(writer, sent, error).await;
             }
             tokio::select! {
                 biased;
@@ -134,7 +156,7 @@ impl AgentManager {
                         .await
                         .with_bytes(0, sent);
                 }
-                () = &mut caller_gone => return cancelled(writer, sent).await,
+                error = &mut caller_gone => return ended(writer, sent, error).await,
                 woke = changes.changed() => if woke.is_err() {
                     return finish(writer, Err(ServiceError::Unavailable))
                         .await
