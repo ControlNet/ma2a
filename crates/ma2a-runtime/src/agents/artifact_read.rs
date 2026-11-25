@@ -35,9 +35,9 @@ impl AgentManager {
         let path = self.blobs().join(hex(artifact.blake3()));
         let size = artifact.size();
         let read = tokio::task::spawn_blocking(move || -> io::Result<Vec<u8>> {
-            // As a remote read does: only a regular file of the recorded size, and never a
-            // wait on a FIFO.
-            let mut file = super::artifacts::open_regular(&path)?;
+            // As a remote read does: only a regular file of the recorded size, never through
+            // a link, and never a wait on a FIFO.
+            let mut file = super::artifacts::open_blob(&path)?;
             if file.metadata()?.len() != size {
                 return Err(io::ErrorKind::InvalidData.into());
             }

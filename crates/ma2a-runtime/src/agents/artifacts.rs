@@ -42,7 +42,39 @@ pub(super) fn open_regular(path: &Path) -> io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits().cast_signed());
     }
+    regular(options.open(path)?)
+}
+
+/// Opens a blob as [`open_regular`] does, but never through a link: the store only ever
+/// places a regular file there, so anything else in its place is a broken store.
+pub(super) fn open_blob(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let flags = rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::NOFOLLOW;
+        options.custom_flags(flags.bits().cast_signed());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let flag = windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(flag);
+    }
     let file = options.open(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        let link = windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if file.metadata()?.file_attributes() & link != 0 {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+    }
+    regular(file)
+}
+
+fn regular(file: std::fs::File) -> io::Result<std::fs::File> {
     if file.metadata()?.is_file() {
         Ok(file)
     } else {
@@ -89,7 +121,7 @@ fn stage_blob(mut input: std::fs::File, blobs: &Path) -> io::Result<(u64, [u8; 3
 
 /// Whether `blob` still holds exactly the content of `size` bytes named `hash`.
 fn holds(blob: &Path, (size, hash): (u64, &[u8; 32])) -> io::Result<bool> {
-    let mut file = open_regular(blob)?;
+    let mut file = open_blob(blob)?;
     if file.metadata()?.len() != size {
         return Ok(false);
     }

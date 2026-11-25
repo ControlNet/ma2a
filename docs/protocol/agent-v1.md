@@ -393,7 +393,9 @@ and one whose content hashes to anything but the recorded BLAKE3 ends with a fai
 **Local reads.** The local operator reads an artifact of any task in chunks through the local API:
 `agent_task_artifact_read {task_id, name, offset}` returns at most 32,768 bytes from `offset` as
 standard base64, with the reference and `eof`. A reader verifies the whole content against the
-returned hash. The local API reports an unknown task or artifact as `not_found`.
+returned hash. The local API reports an unknown task or artifact as `not_found`. Like the
+`artifact` operation, a local read takes only a regular blob file of the recorded size and never
+follows a link in its place; anything else is `internal`.
 `ma2a agent artifact … --output FILE` uses these chunks for a local task and the `artifact`
 operation for a remote one. Like `transfer get`, it writes a partial file in the private
 `.ma2a-downloads` directory beside `FILE`, holding that directory and `FILE`'s from the start,

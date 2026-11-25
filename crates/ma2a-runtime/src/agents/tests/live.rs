@@ -286,6 +286,35 @@ async fn an_artifact_blob_that_is_no_regular_file_is_refused_without_waiting() -
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_artifact_blob_that_is_a_link_is_refused_even_to_content_of_its_size() -> TestResult {
+    // Given: a published artifact whose blob path is a link to an unrelated file of its size.
+    let live = Live::new().await?;
+    let artifact =
+        ma2a_core::service::ArtifactRef::new(("report.txt", "text/plain"), (16, [6; 32]))?;
+    Repository::open(&live.config)?.add_agent_artifact(live.task, (&artifact, 10))?;
+    let blobs = live.dir.join("agents-v1").join("blobs");
+    std::fs::create_dir_all(&blobs)?;
+    let unrelated = live.dir.join("unrelated");
+    std::fs::write(&unrelated, b"unrelated secret")?;
+    std::os::unix::fs::symlink(
+        &unrelated,
+        blobs.join(crate::agents::convert::hex(&[6; 32])),
+    )?;
+
+    // When
+    let read = live
+        .manager
+        .read_artifact((None, None), ((live.task, "report.txt"), 0))
+        .await;
+
+    // Then: no byte of the linked file is answered as the artifact.
+    live.finish().await?;
+    assert_eq!(read.err(), Some(ServiceError::Internal));
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_staging_file_that_vanishes_during_a_sweep_leaves_the_rest_swept() -> TestResult {
     // Given: old orphan blobs, and staging files that appear and vanish meanwhile, as
