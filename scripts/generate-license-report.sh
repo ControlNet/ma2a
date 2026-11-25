@@ -15,15 +15,18 @@ cargo deny list --format json --layout crate > "$temporary/rust.json"
 # installed packages, resolving each dependency the way Node does, and grouped by license. An
 # optional dependency counts when it is installed, since it then ships like any other. The script
 # is a module: the pinned Bun exits 0 without a word when a CommonJS script given to --eval throws.
+# A package is resolved from where it really is, past any link to it, as Node does: Bun's isolated
+# layout links each package into node_modules and installs its dependencies beside the real one.
 (cd web && bun --eval "$(cat <<'JS'
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 const manifest = (dir) => JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+const root = realpathSync(process.cwd());
 const resolve = (from, name, optional) => {
   for (let dir = from; ; dir = dirname(dir)) {
     const candidate = join(dir, "node_modules", name);
-    if (existsSync(join(candidate, "package.json"))) return candidate;
-    if (dir === process.cwd()) {
+    if (existsSync(join(candidate, "package.json"))) return realpathSync(candidate);
+    if (dir === root || dir === dirname(dir)) {
       if (optional) return undefined;
       throw new Error(`${name} is not installed`);
     }
@@ -58,7 +61,7 @@ const dependencies = (dir, pkg) => {
     visit(dir, dep, peers[dep]?.optional === true);
   }
 };
-dependencies(process.cwd(), manifest("."));
+dependencies(root, manifest("."));
 const report = {};
 for (const pkg of seen.values()) {
   const group = (report[license(pkg)] ??= []);

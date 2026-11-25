@@ -11,9 +11,11 @@ temporary=$(mktemp -d)
 checkout="$temporary/spaced checkout"
 # A checkout whose path ends with the whole path of a symlink to it.
 nested="$temporary/outer$temporary/suffix"
+isolated="$temporary/isolated"
 cleanup() {
   git worktree remove --force "$checkout" 2>/dev/null || true
   git worktree remove --force "$nested" 2>/dev/null || true
+  git worktree remove --force "$isolated" 2>/dev/null || true
   rm -rf "$temporary"
 }
 trap cleanup EXIT
@@ -35,7 +37,17 @@ git worktree add --quiet --detach "$nested" HEAD
 ln -s "$nested" "$temporary/suffix"
 (cd "$temporary/suffix" && "$repo/scripts/generate-license-report.sh" "$temporary/suffix.json")
 
-for report in linked spaced suffix; do
+# Bun's isolated layout links each package into node_modules and installs its dependencies
+# beside the real package, where react-dom finds scheduler.
+git worktree add --quiet --detach "$isolated" HEAD
+(cd "$isolated/web" && bun install --frozen-lockfile --silent --linker isolated)
+(cd "$isolated" && "$repo/scripts/generate-license-report.sh" "$temporary/isolated.json")
+if ! jq -e '[.frontend[][].name] | index("scheduler")' "$temporary/isolated.json" >/dev/null; then
+  printf 'the isolated report leaves out scheduler\n' >&2
+  exit 1
+fi
+
+for report in linked spaced suffix isolated; do
   if grep -qF -e "$temporary" -e "${temporary// /%20}" -e "$repo" "$temporary/$report.json"; then
     printf 'the %s report names its checkout\n' "$report" >&2
     exit 1
