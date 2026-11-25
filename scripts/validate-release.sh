@@ -57,7 +57,9 @@ fi
 strip_single_prefix() {
   local prefix
   prefix=$(awk -F/ 'NF >= 2 { print $1; exit }' "$all_entries")
-  if [[ -z "$prefix" || "$prefix" == "." || "$prefix" == ".." ]]; then
+  # A drive-like name or a backslash would unpack outside the destination on Windows; refusing a
+  # backslash also keeps awk -v below from reading the name as escapes.
+  if [[ -z "$prefix" || "$prefix" == "." || "$prefix" == ".." || "$prefix" == *[:\\]* ]]; then
     printf 'archive has no valid single top-level directory\n' >&2
     exit 1
   fi

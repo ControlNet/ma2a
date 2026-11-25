@@ -159,6 +159,23 @@ PY
   done
 fi
 
+# A top-level directory named like a drive would unpack outside the destination on Windows.
+if command -v python3 >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
+  drive="$temporary/drive-x86_64-pc-windows-msvc.zip"
+  python3 - "$drive" <<'PY'
+import sys, zipfile
+files = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "README.md", "ma2a.exe", "quickstart.md")
+with zipfile.ZipFile(sys.argv[1], "w") as zf:
+    for name in files:
+        zf.writestr(zipfile.ZipInfo("C:/" + name), "x")
+PY
+  printf '%s *%s\n' "$(hash_file "$drive")" "$(basename "$drive")" > "${drive}.sha256"
+  if ./scripts/validate-release.sh "$drive" x86_64-pc-windows-msvc >/dev/null 2>&1; then
+    printf 'zip under a drive-like top-level directory unexpectedly passed validation\n' >&2
+    exit 1
+  fi
+fi
+
 # A single top-level directory holds only the release files, not even an empty directory.
 for layout in rooted rooted-dir; do
   mkdir -p "$temporary/$layout/ma2a-0.1.0"
