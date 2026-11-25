@@ -205,16 +205,12 @@ async fn a_continuous_stdin_flood_never_starves_attached_output() -> TestResult 
     let stop_flood = stop.clone();
     let flood = tokio::spawn(async move {
         let chunk = [b'x'; 64];
-        loop {
-            tokio::select! {
-                () = stop_flood.cancelled() => return writer,
-                sent = writer.data(Channel::Input, &chunk) => {
-                    if sent.is_err() {
-                        return writer;
-                    }
-                }
+        while !stop_flood.is_cancelled() {
+            if writer.data(Channel::Input, &chunk).await.is_err() {
+                break;
             }
         }
+        writer
     });
     let attached = super::attach(
         (&mut host_reader, &mut host_writer),
