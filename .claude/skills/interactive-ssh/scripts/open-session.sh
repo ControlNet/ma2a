@@ -51,16 +51,21 @@ printf '%s\n' \
   > "$out/known_hosts"
 : > "$out/ssh_config"
 
-# Adds the ssh config entry for a runner whose handoff artifact was downloaded.
+# Adds the ssh config entry for a runner whose handoff artifact was downloaded into a new
+# directory, and only then puts that directory in place of the runner's, so a file left from an
+# earlier run in a reused --out never stands in for one the artifact lacks.
 hand_off() {
-  local runner=$1 target=''
-  if [ -r "$out/$runner/ssh-command.txt" ] && [ -r "$out/$runner/workspace.txt" ]; then
-    target=$(awk 'NR == 1 { print $2 }' "$out/$runner/ssh-command.txt")
+  local runner=$1 download=$2 target=''
+  if [ -r "$download/ssh-command.txt" ] && [ -r "$download/workspace.txt" ]; then
+    target=$(awk 'NR == 1 { print $2 }' "$download/ssh-command.txt")
   fi
   [[ "$target" =~ ^[^[:space:]@\"]+@[^[:space:]@\"]+$ ]] || {
     echo "$runner: unexpected connection command" >&2
+    rm -rf "$download"
     return 1
   }
+  rm -rf "${out:?}/$runner"
+  mv "$download" "$out/$runner"
   cat >> "$out/ssh_config" <<EOF
 Host $runner
   HostName ${target#*@}
@@ -89,13 +94,17 @@ while [ "${#pending[@]}" -gt 0 ]; do
     # not mistaken for one that never handed off.
     status=$(gh run view "$run" -R "$repo" --json status,jobs --jq "if .status == \"completed\"
       then .status else .jobs[] | select(.name == \"session ($runner)\") | .status end")
-    if gh run download "$run" -R "$repo" -n "ssh-$runner" -D "$out/$runner" > /dev/null 2>&1; then
-      hand_off "$runner" || failed=1
-    elif [ "$status" = completed ]; then
-      echo "$runner: its job ended before it handed off a session" >&2
-      failed=1
+    download=$(mktemp -d "$out/.$runner.XXXXXX")
+    if gh run download "$run" -R "$repo" -n "ssh-$runner" -D "$download" > /dev/null 2>&1; then
+      hand_off "$runner" "$download" || failed=1
     else
-      waiting+=("$runner")
+      rm -rf "$download"
+      if [ "$status" = completed ]; then
+        echo "$runner: its job ended before it handed off a session" >&2
+        failed=1
+      else
+        waiting+=("$runner")
+      fi
     fi
   done
   pending=(${waiting[@]+"${waiting[@]}"})
