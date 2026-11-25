@@ -164,7 +164,9 @@ pub(super) async fn inbound<W, I, C>(
                     Some(length) => writer.data(Channel::Input, bytes_of(&buffer, length)).await,
                     None => writer.end(Channel::Input).await,
                 };
-                if read.is_none() || forwarded.and(writer.flush().await).is_err() {
+                // Flushed after the `end` too, which a buffered stream would keep.
+                let flushed = forwarded.and(writer.flush().await);
+                if read.is_none() || flushed.is_err() {
                     input = None;
                 }
                 false

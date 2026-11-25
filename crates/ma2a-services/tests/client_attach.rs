@@ -268,6 +268,19 @@ async fn the_end_of_local_input_closes_the_process_stdin() -> TestResult {
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn the_end_of_local_input_reaches_the_target_through_a_buffered_stream() -> TestResult {
+    // Given: a caller stream that holds writes until flushed.
+    // When: local input ends after one chunk.
+    let (attached, kinds) =
+        attach_writing_through(&b"ab"[..], tokio::io::BufWriter::new, EndReason::Completed).await?;
+
+    // Then: the target receives the `end` without anything else being sent after it.
+    assert_eq!(kinds, [FrameKind::Data, FrameKind::End]);
+    assert_eq!(attached?.reason, EndReason::Completed);
+    Ok(())
+}
+
 /// A pipe that fails on every write.
 struct Broken;
 

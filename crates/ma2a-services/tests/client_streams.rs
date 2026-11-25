@@ -83,7 +83,12 @@ async fn a_caller_cancel_ends_the_process_and_an_unstartable_one_is_refused() ->
         resizes: None,
         cancel: tokio::time::sleep(Duration::from_millis(200)),
     };
-    let caller = client::process::run((&mut reader, &mut writer), local, control);
+    // Boxed: with its timer, the caller and the host together make a large future.
+    let caller = Box::pin(client::process::run(
+        (&mut reader, &mut writer),
+        local,
+        control,
+    ));
     let (result, _report) = within(async { tokio::join!(caller, host) }).await?;
     assert_eq!(result?.reason, EndReason::Cancelled);
 
@@ -277,5 +282,66 @@ async fn a_replayed_outcome_is_told_apart_from_a_run_that_streamed() -> TestResu
     assert!(replayed.replayed);
     assert!(replayed_output.is_empty());
     assert_eq!(replayed.result, ran.result);
+    Ok(())
+}
+
+/// Runs an Exec whose local input is `input`, sent through `wrap` around the caller's stream,
+/// against a scripted target that takes the input `ab` and the frame after it, then reports
+/// the process ended with `reason`; returns the answer and that last frame's kind.
+async fn exec_scripted<I, W>(
+    input: I,
+    wrap: impl FnOnce(tokio::io::WriteHalf<tokio::io::DuplexStream>) -> W,
+    reason: EndReason,
+) -> TestResult<(
+    Result<ma2a_core::service::ProcessResult, ClientError>,
+    FrameKind,
+)>
+where
+    I: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let ((mut reader, writer), (mut target_reader, mut target_writer)) = pipe_with(1 << 16);
+    let mut writer = ma2a_services::FrameWriter::new(wrap(writer.into_inner()));
+    let target = async {
+        target_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        target_writer.flush().await?;
+        let first = target_reader.expect().await?;
+        assert_eq!(
+            first.data()?,
+            (ma2a_core::service::Channel::Input, &b"ab"[..])
+        );
+        let second = target_reader.expect().await?;
+        let result = ma2a_core::service::ProcessResult::new(Termination::Exited(0), reason, 1);
+        let outcome = ma2a_core::service::ProcessResult::encode_outcome(&Ok(result))?;
+        target_writer.frame(FrameKind::Outcome, &outcome).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(second.kind())
+    };
+    let local = ProcessIo {
+        input: Some(input),
+        output: Vec::new(),
+        error: Some(Vec::new()),
+    };
+    let control = ProcessControl {
+        resizes: None,
+        cancel: std::future::pending(),
+    };
+    let caller = client::process::run((&mut reader, &mut writer), local, control);
+    let (result, seen) = within(async { tokio::join!(caller, target) }).await?;
+    Ok((result, seen?))
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_end_of_input_reaches_the_target_through_a_buffered_stream() -> TestResult {
+    // Given: a caller stream that holds writes until flushed.
+    // When: local input ends after one chunk.
+    let (result, last) =
+        exec_scripted(&b"ab"[..], tokio::io::BufWriter::new, EndReason::Completed).await?;
+
+    // Then: the target receives the `end`, so a process waiting for it finishes.
+    assert_eq!(last, FrameKind::End);
+    assert_eq!(result?.reason, EndReason::Completed);
     Ok(())
 }

@@ -131,7 +131,9 @@ where
                     Some(chunk) => writer.data(Channel::Input, chunk).await,
                     None => writer.end(Channel::Input).await,
                 };
-                if read.is_none() || forwarded.and(writer.flush().await).is_err() {
+                // Flushed after the `end` too, which a buffered stream would keep.
+                let flushed = forwarded.and(writer.flush().await);
+                if read.is_none() || flushed.is_err() {
                     input = None;
                 }
             }
