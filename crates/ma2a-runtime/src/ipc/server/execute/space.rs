@@ -155,7 +155,9 @@ pub(super) async fn redeem(
         .await
         .map_err(|error| {
             let api = ApiError::new(enrollment_protocol_error(&error));
-            if error.code() == crate::EnrollmentErrorCode::BUSY {
+            if error.code() == crate::EnrollmentErrorCode::BUSY
+                || error.code() == crate::EnrollmentErrorCode::SPACE_FULL
+            {
                 return api.without_effects();
             }
             error
@@ -203,7 +205,9 @@ fn enrollment_protocol_error(error: &crate::EnrollmentError) -> ProtocolError {
         ProtocolError::EXPIRED
     } else if error.code() == crate::EnrollmentErrorCode::CANCELLED {
         ProtocolError::NOT_FOUND
-    } else if error.code() == crate::EnrollmentErrorCode::CONFLICT {
+    } else if error.code() == crate::EnrollmentErrorCode::CONFLICT
+        || error.code() == crate::EnrollmentErrorCode::SPACE_FULL
+    {
         ProtocolError::CONFLICT
     } else if error.code() == crate::EnrollmentErrorCode::BUSY {
         ProtocolError::UNAVAILABLE

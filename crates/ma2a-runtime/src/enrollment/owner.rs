@@ -57,6 +57,7 @@ impl Actor {
             Ok(EnrollmentOutcome::Cancelled) => call.respond(3, Vec::new()),
             Ok(EnrollmentOutcome::Conflict) => call.respond(4, Vec::new()),
             Ok(EnrollmentOutcome::NotFound) => call.respond(1, Vec::new()),
+            Err(error) if error.is_space_members_full() => call.respond(5, Vec::new()),
             Err(error) => {
                 eprintln!("enrollment failed at owner_redemption_transaction: {error}");
                 call.respond(255, Vec::new());

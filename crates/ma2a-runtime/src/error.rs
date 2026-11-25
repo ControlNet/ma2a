@@ -122,6 +122,14 @@ impl RuntimeError {
         )
     }
 
+    /// The named Space already has as many members as its policy allows.
+    pub(crate) const fn is_space_members_full(&self) -> bool {
+        matches!(
+            self.0,
+            RuntimeErrorKind::Store(StoreError::SpaceMembersFull)
+        )
+    }
+
     /// Returns a stable non-secret error classification.
     pub const fn code(&self) -> RuntimeErrorCode {
         let kind = match &self.0 {

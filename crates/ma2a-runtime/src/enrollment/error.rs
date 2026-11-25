@@ -28,6 +28,7 @@ enum EnrollmentErrorKind {
     Expired,
     Cancelled,
     Conflict,
+    SpaceFull,
     Busy,
     Internal,
 }
@@ -45,6 +46,9 @@ impl EnrollmentErrorCode {
     pub const CANCELLED: Self = Self(EnrollmentErrorKind::Cancelled);
     /// Another candidate or request already consumed the invitation.
     pub const CONFLICT: Self = Self(EnrollmentErrorKind::Conflict);
+    /// The Space already has as many members as its policy allows; the invitation stayed unused
+    /// and the same redemption can be retried once a member leaves.
+    pub const SPACE_FULL: Self = Self(EnrollmentErrorKind::SpaceFull);
     /// Too many redemptions are already waiting on their Space owners, or the owner was serving
     /// as many enrollments as it allows; nothing was done, so the same redemption can be retried
     /// once one of them ends.
@@ -73,6 +77,7 @@ impl EnrollmentError {
                 2 => EnrollmentErrorKind::Expired,
                 3 => EnrollmentErrorKind::Cancelled,
                 4 => EnrollmentErrorKind::Conflict,
+                5 => EnrollmentErrorKind::SpaceFull,
                 _ => EnrollmentErrorKind::Internal,
             },
             None,
@@ -120,6 +125,9 @@ impl fmt::Display for EnrollmentError {
             EnrollmentErrorKind::Cancelled => "enrollment invitation was cancelled",
             EnrollmentErrorKind::Conflict => {
                 "enrollment invitation was consumed by another candidate"
+            }
+            EnrollmentErrorKind::SpaceFull => {
+                "Space already has as many members as its policy allows"
             }
             EnrollmentErrorKind::Busy => {
                 "too many invitation redemptions are pending; retry once one ends"
