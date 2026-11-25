@@ -136,3 +136,43 @@ test("signing in again forgets the last session's peer and its sync answer", asy
   expect(screen.getByRole("button", { name: "Sync now" })).toBeVisible()
   expect(screen.queryByText(/control round|rejected the request/)).not.toBeInTheDocument()
 })
+
+test("the sign-in screen loads nothing for a session that may be gone", () => {
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+  holdControllers()
+  window.history.replaceState(null, "", "/login")
+
+  render(<App />)
+
+  expect(screen.getByRole("heading", { name: "Sign in to this Runtime" })).toBeVisible()
+  expect(controllers).toHaveLength(0)
+})
+
+test("signing in again after going back does not show the last load failure", async () => {
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+    const path = new URL(new Request(input, init).url).pathname
+    return path === "/api/v1/web/auth/login"
+      ? Response.json({ csrf_token: "ef".repeat(32) })
+      : new Response(null, { status: 204 })
+  })
+  holdControllers()
+  const user = userEvent.setup()
+  render(<App />)
+  act(() => controllers[0]?.onError(new Error("snapshot failed")))
+  expect(screen.getByText("Runtime snapshot is unavailable")).toBeVisible()
+  window.history.replaceState(null, "", "/login")
+  act(() => window.dispatchEvent(new window.PopStateEvent("popstate")))
+
+  await user.type(screen.getByLabelText("Password"), "browser-login-password-9!")
+  await user.click(screen.getByRole("button", { name: "Sign in" }))
+
+  await screen.findByRole("main", { name: "Runtime content" })
+  expect(screen.queryByText("Runtime snapshot is unavailable")).not.toBeInTheDocument()
+})

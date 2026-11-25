@@ -41,6 +41,8 @@ export function App({
     { readonly endpointId: string; readonly text: string } | undefined
   >()
   const controlled = initialPath !== undefined
+  // The sign-in and setup screens show nothing of the Runtime, so nothing is loaded for them.
+  const consoleShown = path !== ROUTE_PATHS.login && path !== ROUTE_PATHS.setup
   const displayedRuntime = controlled ? runtime : liveRuntime
   const liveServices = useServices(
     !controlled && session !== undefined && path === ROUTE_PATHS.services,
@@ -78,19 +80,25 @@ export function App({
     [controlled],
   )
 
+  // What one session loaded and chose. Clearing the sync request also stops a late answer to
+  // it from installing itself.
+  const forgetSession = useCallback((): void => {
+    setLiveRuntime(undefined)
+    setRuntimeLoadFailed(false)
+    setController(undefined)
+    setSelectedPeer(undefined)
+    setSyncStatus(undefined)
+  }, [])
+
   // Every way a session ends clears what the last one loaded, so the next sign-in starts clean.
   const signedOut = useCallback((): void => {
     setSession(undefined)
-    setLiveRuntime(undefined)
-    setRuntimeLoadFailed(false)
-    setSelectedPeer(undefined)
-    // Clearing the request also stops a late answer to it from installing itself.
-    setSyncStatus(undefined)
+    forgetSession()
     navigate(ROUTE_PATHS.login)
-  }, [navigate])
+  }, [forgetSession, navigate])
 
   useEffect(() => {
-    if (controlled || session === undefined) return
+    if (controlled || session === undefined || !consoleShown) return
     const active = new RuntimeController({
       onRuntime: (nextRuntime) => {
         setRuntimeLoadFailed(false)
@@ -102,15 +110,16 @@ export function App({
     setController(active)
     void active.start()
     return () => active.stop()
-  }, [controlled, session, signedOut])
+  }, [controlled, consoleShown, session, signedOut])
 
   const login = useCallback(
     async (password: string): Promise<void> => {
       const authenticatedSession = await loginAndTouchSession(password)
+      forgetSession()
       setSession(authenticatedSession)
       navigate(ROUTE_PATHS.overview)
     },
-    [navigate],
+    [forgetSession, navigate],
   )
 
   const logout =
