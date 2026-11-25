@@ -550,7 +550,7 @@ transaction is rolled back and only the cursor advances, so no Agent line can st
 | --- | --- | --- |
 | `task` | `seq`, `task`, `from: {endpoint, agent?}`, `message` | a newly assigned task; `endpoint` is the creator's Endpoint ID as 64 lowercase hexadecimal characters, and `agent` is the attribution-only `from_agent` |
 | `message` | `seq`, `task`, `message` | the creator's next message (from `send`) |
-| `cancel` | `seq`, `task` | a cancellation request |
+| `cancel` | `seq`, `task` | a cancellation request, or the end of a task the Runtime failed at a limit |
 | `tool_result` | `seq`, `task`, `call`, `ok` or `error: {code, message}` | the answer to one tool call |
 
 **At-least-once delivery.** Each delivery gets an instance-scoped `seq`, starting at 1 for every
@@ -705,10 +705,12 @@ larger one is replaced by the error `too_large`.
 That call never runs. Whenever a task fails with `limit`, at this bound or at the durable-event
 bound, every call of the task still open, this one included, is answered `task_ended` in the same
 transaction, so the Agent is never left waiting for a tool result; a result that arrives later for
-one of those calls is dropped. At most 8 calls of one task may be open
-at once; a call made while 8 are open is answered at once with `concurrency_exceeded`. A result is
-delivered only while the task is live and its instance still holds it. A call whose task ended
-before it ran is answered `task_ended`.
+one of those calls is dropped. The instance is then sent `cancel` for the task, so a handler
+waiting in `ask` returns. A tool call made after the task ended names a task the instance no longer
+holds, so it is ignored and never answered: a cancelled handler should end rather than call more
+tools. At most 8 calls of one task may be open at once; a call made while 8 are open is answered at
+once with `concurrency_exceeded`. A result is delivered only while the task is live and its
+instance still holds it. A call whose task ended before it ran is answered `task_ended`.
 
 **Errors.** `tool_result.error` is `{code, message}`. `code` is a Services v1 status name (from the
 target, from this Runtime's stream plane, or `task_ended`, `too_large`, `not_found`, `conflict`

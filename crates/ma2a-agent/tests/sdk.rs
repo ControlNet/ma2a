@@ -263,6 +263,23 @@ async fn cancellation_and_a_dropped_handle_both_end_the_task() -> TestResult {
     Ok(())
 }
 
+/// The Runtime cancels a task it failed itself, such as at a limit, so a handler waiting in
+/// `ask` for a message that will never come returns and its handle ends the task.
+#[tokio::test]
+async fn a_cancellation_ends_a_question_still_waiting_for_its_answer() -> TestResult {
+    let mut runtime = Runtime::start();
+    runtime.next().await?;
+    runtime.send(&task(1, "a", "ask")).await?;
+    runtime.until(ended("a", ReportedState::Waiting)).await?;
+    let cancel = RuntimeToAgent::Cancel {
+        seq: 2,
+        task: "a".to_owned(),
+    };
+    runtime.send(&cancel).await?;
+    runtime.until(ended("a", ReportedState::Cancelled)).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_tool_call_over_the_argument_bound_fails_at_once() -> TestResult {
     let mut runtime = Runtime::start();

@@ -308,7 +308,7 @@ fn the_call_past_the_limit_fails_the_task_and_answers_every_waiting_call() -> Te
             .complete_tool_call((task, "c0"), (b"{\"ok\":2}", 30))?
             .into_value()
     );
-    Ok(())
+    told_to_stop(&repository, (generation, task))
 }
 
 /// Asserts the call was answered as ended by its task's end, and that answer delivered.
@@ -323,6 +323,17 @@ fn answered_as_ended(
         .into_iter()
         .any(|entry| entry.delivery == AgentDelivery::ToolResult(task, call.to_owned()));
     assert!(delivered, "{call} was not delivered");
+    Ok(())
+}
+
+/// Asserts the instance holding the task was last sent its cancellation, so a handler waiting
+/// in `ask` for a message that will never come returns.
+fn told_to_stop(repository: &Repository, (generation, task): (u64, AgentTaskId)) -> TestResult {
+    let last = repository
+        .agent_outbox((&agent()?, generation))?
+        .pop()
+        .map(|entry| entry.delivery);
+    assert_eq!(last, Some(AgentDelivery::Cancel(task)));
     Ok(())
 }
 
@@ -475,9 +486,10 @@ fn a_message_sent_past_the_durable_event_bound_reports_the_task_ended() -> TestR
         .send_agent_message(task, (&text(MessageRole::User, "more")?, 900))?
         .into_value();
 
-    // Then: the sender learns the task ended instead of that its message went through.
+    // Then: the sender learns the task ended instead of that its message went through, and
+    // the Agent waiting for that message is told to stop.
     assert!(matches!(sent, AgentTaskChange::Ended(_)), "{sent:?}");
-    Ok(())
+    told_to_stop(&repository, (generation, task))
 }
 
 #[test]
@@ -498,7 +510,8 @@ fn state_changes_count_toward_the_durable_event_bound() -> TestResult {
     assert_eq!(record.summary.reason, Some(AgentTaskReason::Limit));
     assert!(record.summary.last_seq <= ma2a_store::MAX_DURABLE_EVENTS + 1);
     // The call still open when the task failed is answered, not left waiting.
-    answered_as_ended(&repository, (generation, task, "open"))
+    answered_as_ended(&repository, (generation, task, "open"))?;
+    told_to_stop(&repository, (generation, task))
 }
 
 #[test]
@@ -606,7 +619,8 @@ fn an_artifact_over_the_event_bound_is_not_published() -> TestResult {
     );
     assert!(repository.agent_artifacts(task)?.is_empty());
     // The publishing call itself is answered: its task ended, so no later result reaches it.
-    answered_as_ended(&repository, (generation, task, "publish"))
+    answered_as_ended(&repository, (generation, task, "publish"))?;
+    told_to_stop(&repository, (generation, task))
 }
 
 /// A publication and the tool call's answer commit together, so a crash between them can

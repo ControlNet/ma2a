@@ -127,7 +127,8 @@ pub(crate) fn record_tool_call(
 /// No result is delivered once a task ended, so every call of it still open is answered with
 /// [`TASK_ENDED_ANSWER`] here, oldest first, and that answer is delivered to the instance
 /// holding the task: it would otherwise wait for those calls forever. A result that arrives
-/// later for one of them finds it answered and is dropped.
+/// later for one of them finds it answered and is dropped. The instance is then sent the
+/// task's cancellation, so a handler waiting for a message that will never come stops too.
 pub(crate) fn fail_at_limit(
     transaction: &Transaction<'_>,
     (task, at_ms): (AgentTaskId, u64),
@@ -148,6 +149,7 @@ pub(crate) fn fail_at_limit(
         for call in open {
             deliver_to_holder(transaction, &record, &AgentDelivery::ToolResult(task, call))?;
         }
+        deliver_to_holder(transaction, &record, &AgentDelivery::Cancel(task))?;
     }
     let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
     set_state(transaction, (task, at_ms), limit)
