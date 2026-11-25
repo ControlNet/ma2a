@@ -61,13 +61,15 @@ pub(super) async fn expose(
         .service_exposures()
         .await
         .map_err(|_| ApiError::new(ProtocolError::UNAVAILABLE).without_effects())?;
-    // Every exposure kept beside this one; the one it replaces, if any, is left out.
+    // Every exposure kept beside this one; the one it replaces, if any, is left out. Nothing
+    // is committed yet, so a view that cannot be built refuses the request without effect.
     let mut views = existing
         .value()
         .iter()
         .filter(|record| !(record.space_id == space_id && same_exposure(&record.exposure, spec)))
         .map(|record| exposure_view(record.space_id, &record.exposure))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::without_effects)?;
     if views.len() >= MAX_EXPOSURES {
         return Err(ApiError::with_remediation(
             ProtocolError::INVALID_INPUT,
@@ -75,7 +77,8 @@ pub(super) async fn expose(
         )
         .without_effects());
     }
-    views.push(exposure_view(space_id, &exposure)?);
+    // A canonical path can be longer than the one requested, as a Windows `\\?\` prefix is.
+    views.push(exposure_view(space_id, &exposure).map_err(ApiError::without_effects)?);
     super::exposure_bound::ensure_listable(views)?;
     let committed = context
         .handle
