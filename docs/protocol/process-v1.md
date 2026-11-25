@@ -432,7 +432,7 @@ Process adds five codes to the Services v1 status set:
 | Code | Name | Meaning | Produced by |
 | --- | --- | --- | --- |
 | 80 | `unknown_process` | not found, or not created by the caller | every operation that names an `id` |
-| 81 | `not_running` | the operation needs a live Process | `attach`, `stdin` (not `starting`/`running`); `attach` with `stdin` and `stdin` before the child exists; `signal` (not `running`); `terminate` (`created`) |
+| 81 | `not_running` | the operation needs a live Process | `attach`, `stdin` (not `starting`/`running`); `attach` with `stdin` and `stdin` while the child is not running, before it exists or once it ended; `signal` (not `running`); `terminate` (`created`) |
 | 82 | `writer_busy` | another attachment holds the stdin writer lease | `attach` with `stdin`, `stdin` |
 | 83 | `stdin_closed` | the Process was started with `stdin = false`, or its stdin was ended | `attach` with `stdin`, `stdin` |
 | 84 | `process_active` | the Process must be terminal first | `delete` |

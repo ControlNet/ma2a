@@ -21,13 +21,14 @@ struct Lease<'a>(&'a Shared);
 impl<'a> Lease<'a> {
     /// Takes the lease of a Process whose stdin is still open.
     ///
-    /// A child not spawned yet has no stdin to write: that is `NotRunning`, while a Process
-    /// started without stdin, or whose stdin was ended, is `StdinClosed`.
+    /// A child not running, because it was not spawned yet, never started, or already ended,
+    /// has no stdin to write: that is `NotRunning`, while a Process started without stdin, or
+    /// whose stdin was ended, is `StdinClosed`.
     async fn take(shared: &'a Shared) -> Result<Self, ServiceError> {
         if !shared.start.stdin() {
             return Err(ServiceError::StdinClosed);
         }
-        if matches!(*shared.status.borrow(), SupervisorStatus::Awaiting) {
+        if !matches!(*shared.status.borrow(), SupervisorStatus::Running(..)) {
             return Err(ServiceError::NotRunning);
         }
         // The lease is decided first: the stdin lock may be held by the current writer for as

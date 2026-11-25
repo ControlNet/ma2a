@@ -347,6 +347,61 @@ async fn stdin_before_the_child_exists_is_not_running_and_without_stdin_is_close
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdin_after_the_child_ended_is_not_running() -> TestResult {
+    // Given: a child with stdin that ended while a watcher keeps the supervisor reachable.
+    let harness = host("sup-stdin-ended", start("exit 0", true)?)?;
+    let mut watch = harness.open(SupervisorRequest::Watch).await?;
+    assert_eq!(watch.0.expect().await?.kind(), FrameKind::Accept);
+    harness.ask(SupervisorRequest::Go).await?;
+    let (_, _, frames) = follow(&mut watch).await?;
+    assert!(matches!(last_status(&frames)?, SupervisorStatus::Ended(..)));
+
+    // When / Then: no write or writing attachment is taken any more.
+    for request in [
+        SupervisorRequest::Stdin(false),
+        SupervisorRequest::Attach(LogFrom::Now, true),
+    ] {
+        let (mut reader, _writer) = harness.open(request).await?;
+        let answer = reader.expect().await?;
+        assert_eq!(answer.kind(), FrameKind::Reject, "{answer:?}");
+        assert_eq!(answer.rejection()?, ServiceError::NotRunning);
+    }
+    drop(watch);
+    harness.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdin_of_a_program_that_never_started_is_not_running() -> TestResult {
+    // Given: a Process with stdin whose program cannot start.
+    let spec = ProcessSpec::new(
+        Some("/nonexistent/ma2a-test-program".to_owned()),
+        Vec::new(),
+        Some("/".to_owned()),
+    )?;
+    let harness = host("sup-stdin-failed", ProcessStart::new(spec, true, MIB)?)?;
+    let mut watch = harness.open(SupervisorRequest::Watch).await?;
+    assert_eq!(watch.0.expect().await?.kind(), FrameKind::Accept);
+    let failed = harness.ask(SupervisorRequest::Go).await?;
+    assert!(
+        matches!(failed, SupervisorStatus::SpawnFailed(_)),
+        "{failed:?}"
+    );
+
+    // When
+    let (mut reader, _writer) = harness.open(SupervisorRequest::Stdin(false)).await?;
+
+    // Then: it never ran, so its stdin was never closed either.
+    assert_eq!(
+        reader.expect().await?.rejection()?,
+        ServiceError::NotRunning
+    );
+    drop(watch);
+    harness.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_program_that_cannot_start_is_recorded() -> TestResult {
     let spec = ProcessSpec::new(
         Some("/nonexistent/ma2a-test-program".to_owned()),
