@@ -210,3 +210,43 @@ async fn a_definition_whose_instances_could_never_start_is_refused() -> TestResu
     assert!(fitting.is_ok(), "{fitting:?}");
     Ok(())
 }
+
+/// Three arguments of the longest allowed length, and a last one of `len` bytes.
+fn spec_with_arg(len: usize) -> Result<super::AgentSpec, Box<dyn std::error::Error + Send + Sync>> {
+    let mut args = vec!["x".repeat(ma2a_core::service::MAX_PROCESS_TEXT_LEN); 3];
+    args.push("x".repeat(len));
+    Ok(super::AgentSpec {
+        id: AgentId::new("lengthy")?,
+        description: String::new(),
+        command: ("/bin/true".to_owned(), args),
+        cwd: None,
+        env: Vec::new(),
+        tools: 0,
+        max_tasks: 1,
+    })
+}
+
+#[tokio::test]
+async fn a_definition_whose_instance_start_outgrows_a_header_frame_is_refused() -> TestResult {
+    // Given: the longest last argument the defined start itself still encodes within a
+    // frame. A text of 256 bytes or more has a 3-byte header, so the start grows byte for
+    // byte.
+    let reserved = Reserved::new().await?;
+    let overhead = spec_with_arg(256)?.definition()?.start.len() - 256;
+    let longest = ma2a_core::service::MAX_HEADER_FRAME_LEN - overhead;
+    assert!(spec_with_arg(longest)?.definition().is_ok());
+    assert!(spec_with_arg(longest + 1)?.definition().is_err());
+
+    // When: every instance adds its working directory, the adapter environment, and a label.
+    let crowded = reserved.manager.define(spec_with_arg(longest)?).await;
+    let fitting = reserved
+        .manager
+        .define(spec_with_arg(longest - 1_024)?)
+        .await;
+
+    // Then
+    reserved.finish().await?;
+    assert_eq!(crowded.err(), Some(ServiceError::InvalidInput));
+    assert!(fitting.is_ok(), "{fitting:?}");
+    Ok(())
+}

@@ -222,9 +222,12 @@ pub(super) fn instance_start(
             .with_env(name.to_owned(), value.to_owned())
             .map_err(invalid)?;
     }
-    ProcessStart::new(spec, true, defined.log_limit())
+    let start = ProcessStart::new(spec, true, defined.log_limit())
         .and_then(|start| start.with_label("ma2a.agent".to_owned(), definition.id.to_string()))
-        .map_err(invalid)
+        .map_err(invalid)?;
+    // The additions can outgrow the header frame the defined start still fit in.
+    start.to_bytes().map_err(invalid)?;
+    Ok(start)
 }
 
 #[cfg(test)]
