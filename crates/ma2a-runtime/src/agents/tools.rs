@@ -28,6 +28,7 @@ use ma2a_core::{
 use ma2a_services::client::ClientError;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use super::{AgentManager, fault};
 
@@ -114,6 +115,24 @@ pub(super) fn rejection() -> Vec<u8> {
     stored(&Err(status(ServiceError::ConcurrencyExceeded)))
 }
 
+/// Runs `work` unless `shutdown` comes first; `None` when it does.
+///
+/// A call the daemon's shutdown cuts short records nothing and runs again after the restart,
+/// as after a crash. The shutdown is checked again once `work` ends: on another thread it can
+/// start, and close the call's stream, while `work` is being polled, so a call that failed
+/// because of it would otherwise win the race and record that failure as its answer.
+async fn unless_shut_down<T>(
+    shutdown: &CancellationToken,
+    work: impl Future<Output = Option<T>>,
+) -> Option<T> {
+    let done = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => None,
+        done = work => done,
+    };
+    done.filter(|_| !shutdown.is_cancelled())
+}
+
 /// Derives the `RequestId` of one call from its task and call identifier.
 fn call_request(task: AgentTaskId, call: &str) -> Result<RequestId, ServiceError> {
     let mut hasher = blake3::Hasher::new_derive_key("ma2a agent tool call v1");
@@ -131,14 +150,8 @@ impl AgentManager {
         }
         let manager = self.clone();
         self.0.tasks.spawn(async move {
-            // A call the daemon's shutdown cuts short records nothing and runs again after
-            // the restart, as after a crash.
-            let executed = tokio::select! {
-                biased;
-                () = manager.0.shutdown.cancelled() => None,
-                executed = Box::pin(manager.execute((task, &call))) => executed,
-            };
-            if let Some(outcome) = executed {
+            let executed = Box::pin(manager.execute((task, &call)));
+            if let Some(outcome) = unless_shut_down(&manager.0.shutdown, executed).await {
                 fault("before_tool_result");
                 let (bytes, at_ms) = (answer(&outcome), manager.now_ms());
                 let id = call.clone();
@@ -236,6 +249,21 @@ mod tests {
         assert!(huge.len() <= MAX_TOOL_RESULT_LEN);
         let decoded: serde_json::Value = serde_json::from_slice(&huge).unwrap_or_default();
         assert_eq!(decoded.pointer("/error/code"), Some(&json!("too_large")));
+    }
+
+    #[tokio::test]
+    async fn a_call_that_ends_as_the_shutdown_starts_records_nothing() {
+        // On a multi-threaded runtime the shutdown can start, and close the call's stream,
+        // after this poll checked for it and while the call itself is being polled.
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let closed = async {
+            shutdown.cancel();
+            Some("outcome_unknown")
+        };
+        assert_eq!(super::unless_shut_down(&shutdown, closed).await, None);
+        let token = tokio_util::sync::CancellationToken::new();
+        let done = super::unless_shut_down(&token, async { Some("done") }).await;
+        assert_eq!(done, Some("done"));
     }
 
     #[test]
