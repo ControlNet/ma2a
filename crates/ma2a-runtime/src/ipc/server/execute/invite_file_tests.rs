@@ -59,21 +59,14 @@ fn a_ticket_stays_in_its_directory_when_the_directory_is_renamed()
     let (output, retired) = (base.join("output"), base.join("retired"));
     std::fs::create_dir_all(&output)?;
     let path = output.join("ticket");
-    let path = path.to_str().ok_or("path")?;
-    let (directory, name) = super::destination_directory(path)?;
-    let staged = super::fill(&directory, super::create_staging(&directory)?, b"secret")?;
+    let destination = super::Destination::open(path.to_str().ok_or("path")?)?;
 
     // When: the directory is rotated away and an empty one takes its name before publication.
     std::fs::rename(&output, &retired)?;
     std::fs::create_dir(&output)?;
-    let published = super::publish_staged(&directory, &staged, name);
+    let published = destination.write(b"secret");
 
     // Then: the ticket is published in the directory it was staged in, with no staging left.
-    let names = |directory: &std::path::Path| {
-        std::fs::read_dir(directory)?
-            .map(|entry| Ok(entry?.file_name()))
-            .collect::<std::io::Result<Vec<_>>>()
-    };
     let (moved, replacement) = (names(&retired)?, names(&output)?);
     let ticket = std::fs::read(retired.join("ticket"));
     std::fs::remove_dir_all(&base)?;
@@ -82,6 +75,50 @@ fn a_ticket_stays_in_its_directory_when_the_directory_is_renamed()
     assert!(replacement.is_empty(), "{replacement:?}");
     assert_eq!(ticket?, b"secret\n");
     Ok(())
+}
+
+/// Another process may move the staging entry away and put its own at that name while the
+/// invitation is being committed; only the ticket written through the original handle is
+/// published, and the other entry is left alone.
+#[cfg(unix)]
+#[test]
+fn a_replaced_staging_entry_is_never_published_or_removed() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Given: the ticket is staged.
+    let base = std::env::temp_dir().join(format!("ma2a-invite-swap-{}", std::process::id()));
+    let _stale = std::fs::remove_dir_all(&base);
+    std::fs::create_dir(&base)?;
+    let output = base.join("ticket");
+    let destination = super::Destination::open(output.to_str().ok_or("path")?)?;
+    let stage = base.join(names(&base)?.first().ok_or("no staging")?);
+
+    // When: the staging entry is moved away and an impostor of the same kind takes its name.
+    let is_directory = std::fs::symlink_metadata(&stage)?.is_dir();
+    std::fs::rename(&stage, base.join("moved"))?;
+    let impostor = if is_directory {
+        std::fs::create_dir(&stage)?;
+        stage.join("ticket")
+    } else {
+        stage
+    };
+    std::fs::write(&impostor, b"impostor")?;
+    let written = destination.write(b"secret");
+
+    // Then
+    let (published, kept) = (std::fs::read(&output), std::fs::read(&impostor));
+    std::fs::remove_dir_all(&base)?;
+    assert!(written.is_ok(), "{written:?}");
+    assert_eq!(published?, b"secret\n");
+    assert_eq!(kept?, b"impostor");
+    Ok(())
+}
+
+/// The names of the entries in `directory`.
+#[cfg(unix)]
+fn names(directory: &std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>> {
+    std::fs::read_dir(directory)?
+        .map(|entry| Ok(entry?.file_name()))
+        .collect()
 }
 
 /// An owner may create a named file in a directory it can write and search but not list.
@@ -111,22 +148,25 @@ fn a_ticket_is_published_into_a_write_and_search_only_directory()
 #[test]
 fn publishing_claims_a_free_name_and_never_replaces_a_file()
 -> Result<(), Box<dyn std::error::Error>> {
+    use super::unix::{create_staging, destination_directory, fill, publish_staged};
     let base = std::env::temp_dir().join(format!("ma2a-invite-publish-{}", std::process::id()));
     let _stale = std::fs::remove_dir_all(&base);
     std::fs::create_dir(&base)?;
     let destination = base.join("ticket");
     let path = destination.to_str().ok_or("path")?;
-    let (directory, name) = super::destination_directory(path)?;
-    let staged = super::fill(&directory, super::create_staging(&directory)?, b"secret")?;
-    super::publish_staged(&directory, &staged, name)?;
+    let (directory, name) = destination_directory(path)?;
+    let mut staged = create_staging(&directory)?;
+    fill(&mut staged, b"secret")?;
+    publish_staged(&directory, &staged, name)?;
     assert_eq!(std::fs::read(&destination)?, b"secret\n");
 
     // A file someone else put at the name stays, whether linked or renamed over.
     std::fs::remove_file(&destination)?;
     std::fs::write(&destination, b"theirs")?;
-    let staged = super::fill(&directory, super::create_staging(&directory)?, b"secret")?;
-    assert!(super::rename_no_clobber(&directory, (&staged, name)).is_err());
-    assert!(super::publish_staged(&directory, &staged, name).is_err());
+    let mut staged = create_staging(&directory)?;
+    fill(&mut staged, b"secret")?;
+    assert!(super::unix::rename_no_clobber((&staged.directory, &directory), name).is_err());
+    assert!(publish_staged(&directory, &staged, name).is_err());
     assert_eq!(std::fs::read(&destination)?, b"theirs");
     std::fs::remove_dir_all(&base)?;
     Ok(())
