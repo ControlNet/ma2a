@@ -12,6 +12,7 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 - A2A callers have no Endpoint identity.
   - For this Runtime's own Agents, the adapter acts as the local operator.
   - For another Endpoint's Agents, it acts as this Endpoint. Every remote operation goes through the stream plane under this Endpoint's identity, so it needs one complete Space path to that Agent, exactly as the CLI does.
+- **Remote answers.** A remote `submit` must be accepted as Submitted, and any other Agent v1 operation as Admitted. A `submit`, `send`, or `cancel` may also be answered from the caller's replay table with no accept. Any other answer fails the call: a method answers `-32603` with reason `INTERNAL`, and the card route answers `404`.
 - **Remote deadline.** A remote Agent v1 `agents`, `submit`, `send`, `get`, or `tasks` that the target does not answer within 30 s fails, and the method answers `-32603` with reason `TIMED_OUT`. A remote `cancel` is bounded by the wait of `CancelTask` instead, and a stream or an artifact download lasts while its client stays connected.
 - **Listener.** `--listen` must be a loopback address; any other address is a usage error. The default is `127.0.0.1:41241`, and port `0` picks a free port.
 - **Connections.** At most 64 connections are served at once. A request has 10 seconds to send its headers and, once authenticated, 10 more for its body (`408` otherwise).
@@ -44,7 +45,7 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 
 ## Agent Card
 
-A card is served for a defined local Agent, found through `agent_list`, even while it is stopped. For a remote Agent, the card is served only if Agent v1 `agents` lists it for this Endpoint. The adapter reads at most 64 pages of that list and stops at a page that does not move past the cursor sent. Otherwise the card route answers `404`.
+A card is served for a defined local Agent, found through `agent_list`, even while it is stopped. For a remote Agent, the card is served only if Agent v1 `agents` lists it for this Endpoint. The adapter reads at most 64 pages of that list. A page must list Agents in name order after the cursor sent, and a next cursor must be the page's last Agent; the adapter stops at any other page, or once 64 pages still name a next cursor. Otherwise the card route answers `404`.
 
 | Field | Value |
 | --- | --- |
@@ -164,7 +165,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 `ListTasks` answers `{tasks, nextPageToken, pageSize, totalSize}`.
 
 - **Source.** It reads every page of the route's tasks: `agent_task_list` locally, Agent v1 `tasks` remotely.
-  It stops after 41 pages, enough for every task a Runtime retains. A remote page must list task IDs in ascending order after the cursor sent, and a next cursor must be the page's last ID; any other page fails the call, so a target cannot keep the listing going or hide a task from the page tokens.
+  It stops after 41 pages, enough for every task a Runtime retains. A remote page must list only tasks of the route's Agent, with task IDs in ascending order after the cursor sent, and a next cursor must be the page's last ID; any other page fails the call, so a target cannot keep the listing going, hide a task from the page tokens, or pass another Agent's task off as this one's.
 - **Filters**, all optional:
   - `contextId`: the task;
   - `status`: an A2A `TaskState`;

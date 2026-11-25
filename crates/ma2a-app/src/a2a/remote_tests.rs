@@ -1,8 +1,8 @@
-//! Remote task paging, artifact references, and the deadline of one remote operation.
+//! Remote answers and paging, and the deadline of one remote operation.
 
 use ma2a_core::service::AgentTaskId;
 
-use super::{matches_reference, moves_past};
+use super::moves_past;
 
 const fn id(byte: u8) -> AgentTaskId {
     AgentTaskId::from_bytes([byte; 16])
@@ -11,7 +11,7 @@ const fn id(byte: u8) -> AgentTaskId {
 /// Whether a page listing `listed` and naming `next` moves past `after`.
 fn moves(after: Option<u8>, listed: &[u8], next: Option<u8>) -> bool {
     let listed = listed.iter().map(|byte| id(*byte));
-    moves_past(after.map(id), (listed, next.map(id)))
+    moves_past(after.map(id).as_ref(), (listed, next.map(id)))
 }
 
 #[test]
@@ -34,23 +34,11 @@ fn a_page_must_move_past_the_cursor_sent() {
     assert!(!moves(Some(1), &[], Some(2)));
 }
 
-#[test]
-fn content_must_be_what_the_artifact_reference_names() {
-    let hash = *blake3::hash(b"result").as_bytes();
-    let hex = blake3::hash(b"result").to_hex();
-    assert!(matches_reference((6, &hex), (6, &hash)));
-    // Another size, another hash, or a reference that names no hash.
-    assert!(!matches_reference((7, &hex), (6, &hash)));
-    let other = blake3::hash(b"forged").to_hex();
-    assert!(!matches_reference((6, &other), (6, &hash)));
-    assert!(!matches_reference((6, ""), (6, &hash)));
-}
-
 #[cfg(unix)]
 mod through_the_daemon {
     use ma2a_core::service::{
-        AgentAccept, AgentMessage, AgentReply, AgentTaskDetails, MessagePart, MessageRole,
-        ServiceError,
+        AgentAccept, AgentCard, AgentId, AgentMessage, AgentReply, AgentTaskDetails,
+        AgentTaskState, FrameKind, MessagePart, MessageRole, ServiceError,
     };
     use tokio::time::Instant;
 
@@ -59,6 +47,19 @@ mod through_the_daemon {
         a2a::backend::{Backend, Refusal},
         test_daemon::{Daemon, Script, TestResult, answering, summary},
     };
+
+    fn message() -> TestResult<AgentMessage> {
+        Ok(AgentMessage::new(
+            MessageRole::User,
+            vec![MessagePart::Text("hi".into())],
+        )?)
+    }
+
+    /// A target that answers `reply` from caller-side replay, with no accept.
+    fn replayed(reply: &AgentReply) -> TestResult<Script> {
+        let outcome = AgentReply::encode_outcome(&Ok(reply.clone()))?;
+        Ok(vec![(FrameKind::Outcome, outcome)])
+    }
 
     fn details(task: u8, agent: &str) -> TestResult<AgentReply> {
         let input = AgentMessage::new(MessageRole::User, vec![MessagePart::Text("hi".into())])?;
@@ -109,6 +110,113 @@ mod through_the_daemon {
         assert!(!submitted(bound(details(1, "worker"))?).await?);
         assert!(!submitted(bound(brief(2, "worker"))?).await?);
         assert!(!submitted(answering(AgentAccept::Admitted, &brief(1, "worker")?)?).await?);
+        Ok(())
+    }
+
+    /// Whether a remote Send to task 1 through a target answering `script` succeeds.
+    async fn sent(script: Script) -> TestResult<bool> {
+        let daemon = Daemon::start("send", script)?;
+        let (backend, route) = Backend::standing_in(&daemon)?;
+        let (task, request_id) = (id(1).to_string(), "0a".repeat(16));
+        let sent = (task.as_str(), &message()?, request_id.as_str());
+        Ok(super::super::send(&backend, &route, sent).await.is_ok())
+    }
+
+    #[tokio::test]
+    async fn an_operation_takes_only_the_accept_it_is_answered_with() -> TestResult {
+        let (get, send) = (details(1, "worker")?, brief(1, "worker")?);
+        // A read is admitted; it never reserves a RequestId, so it is never answered from replay.
+        assert!(got(answering(AgentAccept::Admitted, &get)?).await?);
+        assert!(!got(replayed(&get)?).await?);
+        assert!(!got(answering(AgentAccept::Submitted(id(1), false), &get)?).await?);
+        let watching = AgentAccept::Watching(AgentTaskState::Queued, 1);
+        assert!(!got(answering(watching, &get)?).await?);
+        // A send is admitted, or answered from replay; it is never bound like a submit.
+        assert!(sent(answering(AgentAccept::Admitted, &send)?).await?);
+        assert!(sent(replayed(&send)?).await?);
+        assert!(!sent(answering(AgentAccept::Submitted(id(1), false), &send)?).await?);
+        Ok(())
+    }
+
+    /// What a remote Tasks through a target answering `script` lists.
+    async fn listed(script: Script) -> TestResult<Result<usize, Refusal>> {
+        let daemon = Daemon::start("tasks", script)?;
+        let (backend, route) = Backend::standing_in(&daemon)?;
+        let listed = super::super::tasks(&backend, &route, None).await;
+        Ok(listed.map(|(tasks, _)| tasks.len()))
+    }
+
+    #[tokio::test]
+    async fn a_task_page_lists_only_the_routes_agent() -> TestResult {
+        let page = |agent: &str| -> TestResult<Script> {
+            let page = AgentReply::Page(vec![summary(id(1), agent)?], None);
+            answering(AgentAccept::Admitted, &page)
+        };
+        assert_eq!(listed(page("worker")?).await?, Ok(1));
+        // Another Agent's task, which this route would otherwise show as its own.
+        assert_eq!(
+            listed(page("helper")?).await?,
+            Err(Refusal::named("internal"))
+        );
+        assert_eq!(
+            listed(replayed(&AgentReply::Page(Vec::new(), None))?).await?,
+            Err(Refusal::named("internal"))
+        );
+        Ok(())
+    }
+
+    /// One page of cards for Agents `names`, naming `next`.
+    fn cards(names: &[&str], next: Option<&str>) -> TestResult<Script> {
+        let card = |name: &str| -> TestResult<AgentCard> {
+            Ok(AgentCard::new(AgentId::new(name)?, "", (true, 1))?)
+        };
+        let cards = names
+            .iter()
+            .map(|name| card(name))
+            .collect::<TestResult<_>>()?;
+        let next = next.map(AgentId::new).transpose()?;
+        answering(AgentAccept::Admitted, &AgentReply::Cards(cards, next))
+    }
+
+    /// What a remote card lookup through a target answering `pages` in turn makes of it.
+    async fn carded(pages: Vec<Script>) -> TestResult<Result<bool, Refusal>> {
+        let daemon = Daemon::paging("card", pages)?;
+        let (backend, route) = Backend::standing_in(&daemon)?;
+        let card = super::super::card(&backend, &route).await;
+        Ok(card.map(|(_, available)| available))
+    }
+
+    #[tokio::test]
+    async fn a_card_page_must_move_past_the_cursor_sent() -> TestResult {
+        let internal = Err(Refusal::named("internal"));
+        let first = cards(&["alpha"], Some("alpha"))?;
+        assert_eq!(
+            carded(vec![first.clone(), cards(&["worker"], None)?]).await?,
+            Ok(true)
+        );
+        assert_eq!(
+            carded(vec![cards(&["alpha"], None)?]).await?,
+            Err(Refusal::named("unknown_agent"))
+        );
+        // Out of order, or a cursor that is not the page's last card, skips Agents.
+        assert_eq!(
+            carded(vec![cards(&["worker", "alpha"], None)?]).await?,
+            internal
+        );
+        let skipping = cards(&["alpha"], Some("zulu"))?;
+        assert_eq!(
+            carded(vec![skipping, cards(&["worker"], None)?]).await?,
+            internal
+        );
+        // A target still paging after the most pages read is not believed.
+        let names: Vec<String> = (0..super::super::MAX_CARD_PAGES)
+            .map(|page| format!("a{page:03}"))
+            .collect();
+        let pages = names
+            .iter()
+            .map(|name| cards(&[name.as_str()], Some(name.as_str())))
+            .collect::<TestResult<Vec<_>>>()?;
+        assert_eq!(carded(pages).await?, internal);
         Ok(())
     }
 

@@ -64,6 +64,12 @@ pub(crate) struct Daemon {
 impl Daemon {
     /// Serves a fresh state directory; must be called inside the test's runtime.
     pub(crate) fn start(label: &str, script: Script) -> TestResult<Self> {
+        Self::paging(label, vec![script])
+    }
+
+    /// Like [`Self::start`], with the `n`th stream answered by the `n`th script, and every
+    /// stream after the last by the last.
+    pub(crate) fn paging(label: &str, scripts: Vec<Script>) -> TestResult<Self> {
         let mut nonce = [0_u8; 8];
         getrandom::fill(&mut nonce)?;
         let state_dir = std::env::temp_dir().join(format!(
@@ -81,7 +87,7 @@ impl Daemon {
             .open(paths.lock_path())?;
         lock.lock()?;
         let listener = UnixListener::bind(paths.socket_path())?;
-        let serving = tokio::spawn(serve(listener, script));
+        let serving = tokio::spawn(serve(listener, scripts));
         let endpoint = iroh::SecretKey::generate().public();
         let endpoint = endpoint.as_bytes().iter().map(|byte| format!("{byte:02x}"));
         Ok(Self {
@@ -101,7 +107,8 @@ impl Drop for Daemon {
     }
 }
 
-async fn serve(listener: UnixListener, script: Script) {
+async fn serve(listener: UnixListener, scripts: Vec<Script>) {
+    let mut opened = 0;
     while let Ok((mut stream, _)) = listener.accept().await {
         let Ok((correlation, request)) = read(&mut stream).await else {
             continue;
@@ -125,7 +132,9 @@ async fn serve(listener: UnixListener, script: Script) {
             continue;
         }
         if answer.pointer("/result/type") == Some(&json!("stream_opened")) {
-            tokio::spawn(target(stream, script.clone()));
+            let script = scripts.get(opened).or_else(|| scripts.last()).cloned();
+            opened += 1;
+            tokio::spawn(target(stream, script.unwrap_or_default()));
         }
     }
 }

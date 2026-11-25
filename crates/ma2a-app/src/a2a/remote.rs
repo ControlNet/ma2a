@@ -9,7 +9,7 @@ use ma2a_core::service::{
 use ma2a_runtime::api::{agent_event_value, agent_task_details_value, agent_task_value};
 use ma2a_services::client::{self, ClientError};
 use serde_json::Value;
-use tokio::{io::AsyncWrite, sync::mpsc};
+use tokio::sync::mpsc;
 
 use super::backend::{Backend, Refusal, Route};
 use crate::commands::remote::open_as;
@@ -17,18 +17,18 @@ use crate::commands::remote::open_as;
 /// Pause before reaching a target again that is restarting or unreachable.
 const RETRY: Duration = Duration::from_secs(1);
 
-fn refusal(error: &ClientError) -> Refusal {
+pub(super) fn refusal(error: &ClientError) -> Refusal {
     Refusal::named(error.status().map_or("unavailable", ServiceError::name))
 }
 
-fn parts(route: &Route) -> Result<(&str, &AgentId), Refusal> {
+pub(super) fn parts(route: &Route) -> Result<(&str, &AgentId), Refusal> {
     match route {
         Route::Remote(endpoint, agent) => Ok((endpoint, agent)),
         Route::Local(_) => Err(Refusal::named("internal")),
     }
 }
 
-fn task_id(task: &str) -> Result<AgentTaskId, Refusal> {
+pub(super) fn task_id(task: &str) -> Result<AgentTaskId, Refusal> {
     AgentTaskId::parse(task).map_err(|_| Refusal::named("unknown_task"))
 }
 
@@ -66,6 +66,13 @@ async fn answer(
     (endpoint, request_id): (&str, Option<&str>),
     request: AgentRequest,
 ) -> Result<Answer, Refusal> {
+    let (submit, mutation) = (
+        matches!(request, AgentRequest::Submit(_)),
+        matches!(
+            request,
+            AgentRequest::Submit(_) | AgentRequest::Send(..) | AgentRequest::Cancel(..)
+        ),
+    );
     let (mut reader, writer) = open_as(
         &backend.paths,
         (endpoint, request_id),
@@ -74,7 +81,19 @@ async fn answer(
     .await?;
     let answer = client::agent::call(&mut reader).await;
     drop(writer);
-    answer.map_err(|error| refusal(&error))
+    let (accept, reply) = answer.map_err(|error| refusal(&error))?;
+    // `submit` is accepted as Submitted and any other operation as Admitted; only a mutation,
+    // whose RequestId is reserved, can be answered from caller-side replay with no accept.
+    let fits = match accept {
+        None => mutation,
+        Some(AgentAccept::Submitted(..)) => submit,
+        Some(AgentAccept::Admitted) => !submit,
+        Some(AgentAccept::Watching(..)) => false,
+    };
+    if !fits {
+        return Err(Refusal::named("internal"));
+    }
+    Ok((accept, reply))
 }
 
 /// The task one operation answered, which must be what it asked for: the Details of `get`,
@@ -107,9 +126,8 @@ pub(super) async fn submit(
     let (accept, reply) = call(backend, (endpoint, Some(request_id)), request).await?;
     // A replayed outcome has no accept; a fresh one names the task it was bound to.
     let task = match accept {
-        None => None,
         Some(AgentAccept::Submitted(task, _)) => Some(task),
-        Some(_) => return Err(Refusal::named("internal")),
+        _ => None,
     };
     outcome(&reply, (agent, task), false)
 }
@@ -142,19 +160,19 @@ pub(super) async fn details(
     outcome(&reply, (agent, Some(task)), true)
 }
 
-/// Whether a page lists tasks in ascending ID order strictly after the cursor sent, and names
-/// its own last task as the cursor when more exist. A target answering otherwise would keep a
-/// listing going forever, or put a task where no page token reaches it.
-fn moves_past(
-    after: Option<AgentTaskId>,
-    (listed, next): (impl Iterator<Item = AgentTaskId>, Option<AgentTaskId>),
+/// Whether a page lists tasks or Agents in ascending order strictly after the cursor sent, and
+/// names its own last one as the cursor when more exist. A target answering otherwise would
+/// keep a listing going forever, or put an entry where no cursor reaches it.
+fn moves_past<T: Ord>(
+    after: Option<&T>,
+    (listed, next): (impl Iterator<Item = T>, Option<T>),
 ) -> bool {
-    let (mut floor, mut last) = (after, None);
-    for task in listed {
-        if floor.is_some_and(|floor| task <= floor) {
+    let mut last = None;
+    for entry in listed {
+        if last.as_ref().or(after).is_some_and(|floor| entry <= *floor) {
             return false;
         }
-        (floor, last) = (Some(task), Some(task));
+        last = Some(entry);
     }
     next.is_none_or(|next| last == Some(next))
 }
@@ -174,8 +192,10 @@ pub(super) async fn tasks(
     .await?
     .1
     {
+        // A page names only the route's Agent's tasks, so no other is listed as its own.
         AgentReply::Page(tasks, next)
-            if moves_past(after, (tasks.iter().map(|task| task.id), next)) =>
+            if moves_past(after.as_ref(), (tasks.iter().map(|task| task.id), next))
+                && tasks.iter().all(|task| task.agent == *agent) =>
         {
             Ok((
                 tasks.iter().map(agent_task_value).collect(),
@@ -206,17 +226,20 @@ pub(super) async fn card(backend: &Backend, route: &Route) -> Result<(String, bo
         else {
             return Err(Refusal::named("internal"));
         };
+        // A target that does not move past the cursor sent is not followed.
+        if !moves_past(
+            after.as_ref(),
+            (cards.iter().map(|card| card.id.clone()), next.clone()),
+        ) {
+            return Err(Refusal::named("internal"));
+        }
         if let Some(card) = cards.iter().find(|card| card.id == *agent) {
             return Ok((card.description.clone(), card.available));
         }
-        let next = next.ok_or_else(|| Refusal::named("unknown_agent"))?;
-        // A target that does not move past the cursor sent is not followed.
-        if after.as_ref().is_some_and(|after| &next <= after) {
-            return Err(Refusal::named("internal"));
-        }
-        after = Some(next);
+        after = Some(next.ok_or_else(|| Refusal::named("unknown_agent"))?);
     }
-    Err(Refusal::named("unknown_agent"))
+    // A target still paging after that many pages is not believed.
+    Err(Refusal::named("internal"))
 }
 
 /// Most Agent card pages read to find one Agent: 1,024 Agents, more than a Runtime is expected
@@ -262,42 +285,6 @@ const fn is_transient(error: &ClientError) -> bool {
                 | ServiceError::Cancelled
         )
     )
-}
-
-/// Streams one artifact's verified content into `sink`. Content that is not what `reference`
-/// names, the size and BLAKE3 hex of the task's artifact reference, is refused: a wrong size
-/// before any byte, a wrong hash at the end.
-pub(super) async fn artifact<S: AsyncWrite + Unpin>(
-    backend: &Backend,
-    ((route, task, name), reference): ((&Route, &str, &str), (u64, &str)),
-    sink: &mut S,
-) -> Result<(), Refusal> {
-    let (endpoint, agent) = parts(route)?;
-    let request = AgentRequest::Artifact(agent.clone(), task_id(task)?, name.to_owned(), 0, None);
-    let (mut reader, _writer) =
-        open_as(&backend.paths, (endpoint, None), OpenBody::Agent(request)).await?;
-    let identity = client::transfer::download_accepted(&mut reader)
-        .await
-        .map_err(|error| refusal(&error))?;
-    let mismatch = || Refusal::named(ServiceError::IntegrityMismatch.name());
-    if identity.size() != reference.0 {
-        return Err(mismatch());
-    }
-    let mut hasher = blake3::Hasher::new();
-    let result =
-        client::transfer::download_content(&mut reader, (sink, &mut hasher), (identity, 0))
-            .await
-            .map_err(|error| refusal(&error))?;
-    if !matches_reference(reference, (result.size, &result.hash)) {
-        return Err(mismatch());
-    }
-    Ok(())
-}
-
-/// Whether content of `size` and `hash` is the content `reference` names; a reference whose
-/// hash is not BLAKE3 hex names no content.
-fn matches_reference((size, blake3): (u64, &str), (got, hash): (u64, &[u8; 32])) -> bool {
-    size == got && blake3::Hash::from_hex(blake3).is_ok_and(|expected| expected == *hash)
 }
 
 #[cfg(test)]
