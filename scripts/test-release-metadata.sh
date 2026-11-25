@@ -76,6 +76,11 @@ for mutation in \
   'host-url|.rust["ma2a-app 0.1.0 path+file://localhost/tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
   'upper-url|.rust["ma2a-app 0.1.0 path+FILE:///tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
   'climbing-url|.rust["ma2a-app 0.1.0 path+file://crates/../../tmp/build"] = {licenses: ["MIT"]}' \
+  'climbing-fragment-url|.rust["ma2a-app 0.1.0 path+file://crates/..#0.1.0"] = {licenses: ["MIT"]}' \
+  'climbing-parenthesized-url|.rust["ma2a-app 0.1.0 (path+file://crates/..)"] = {licenses: ["MIT"]}' \
+  'climbing-backslash-url|.rust["ma2a-app 0.1.0 path+file://crates/..\\tmp\\build"] = {licenses: ["MIT"]}' \
+  'climbing-spaced-url|.rust["ma2a-app 0.1.0 path+file://crates/a b/../../tmp/build"] = {licenses: ["MIT"]}' \
+  'climbing-encoded-url|.rust["ma2a-app 0.1.0 path+file://crates/a/..%2f..%2ftmp"] = {licenses: ["MIT"]}' \
   'assigned-path|.rust["ma2a-app 0.1.0 path=/tmp/build/crates/ma2a-app"] = {licenses: ["MIT"]}' \
   'bracketed-path|.rust["ma2a-app 0.1.0 [D:\\a\\build\\crates\\ma2a-app]"] = {licenses: ["MIT"]}'
 do

@@ -40,10 +40,12 @@ jq -e '
 # about; this refuses any absolute path left over, in a Unix or Windows spelling, at the start of
 # a string or after a space, parenthesis, bracket or equals sign, and any file URL, in any case,
 # that does not continue with a workspace member's path relative to the checkout, as the
-# generator leaves them, or that climbs out of it. A slash with a space after it, as in
+# generator leaves them, or that climbs out of it: a "..", plain or percent-encoded, between path
+# separators or at the end of the URL, which may hold spaces. A slash with a space after it, as in
 # "MIT / Apache-2.0", starts no path.
 jq -e '[.. | strings, (.. | objects | keys[])]
-  | all((test("file://(?!crates/|xtask$)"; "i") or test("file://\\S*/\\.\\.(/|$)"; "i")
+  | all((test("file://(?!crates/|xtask$)"; "i")
+    or test("file://.*([/\\\\]|%2f|%5c)(\\.|%2e){2}([/\\\\#?)\\]\\s]|%2f|%5c|$)"; "i")
     or test("(^|[\\s(\\[=])([A-Za-z]:)?[/\\\\]+[^\\s/\\\\]")) | not)' \
   "$report" >/dev/null || {
   printf 'license report names a build directory\n' >&2
