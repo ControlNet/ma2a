@@ -61,26 +61,24 @@ pub(super) async fn execute(
             return Ok(CommandResult::agent_tasks(summaries).at_revision(revision));
         }
         AgentCommand::Inspect(task) => {
-            let details = manager.details(OPERATOR, *task).await.map_err(refusal)?;
-            return Ok(CommandResult::agent_task(&details));
+            let (revision, details) = manager.details_at(OPERATOR, *task).await.map_err(refusal)?;
+            return Ok(CommandResult::agent_task(&details).at_revision(revision));
         }
         AgentCommand::Events(task, after) => {
             let limit = u32::try_from(MAX_AGENT_EVENT_PAGE + 1).unwrap_or(u32::MAX);
-            let events = manager
+            let (revision, events) = manager
                 .events(OPERATOR, (*task, *after, limit))
                 .await
                 .map_err(refusal)?;
-            return Ok(CommandResult::agent_task_events(events));
+            return Ok(CommandResult::agent_task_events(events).at_revision(revision));
         }
         AgentCommand::Artifact(task, name, offset) => {
-            let (artifact, bytes) = manager
+            let (revision, (artifact, bytes)) = manager
                 .read_artifact(OPERATOR, ((*task, name), *offset))
                 .await
                 .map_err(refusal)?;
-            return Ok(CommandResult::agent_task_artifact(
-                &artifact,
-                (*offset, &bytes),
-            ));
+            let result = CommandResult::agent_task_artifact(&artifact, (*offset, &bytes));
+            return Ok(result.at_revision(revision));
         }
         AgentCommand::Submit(request_id, agent, message) => {
             let submit = AgentSubmit::new(agent.clone(), message.clone(), None);

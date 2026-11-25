@@ -61,7 +61,7 @@ async fn deleted_output_is_never_served_even_when_its_files_stay() -> TestResult
     // Then: the deletion holds although the files stayed; no byte of them is served.
     assert!(deleted.is_ok(), "{deleted:?}");
     assert!(std::fs::exists(&directory)?, "the files stayed");
-    let (_, details) = inspected?;
+    let (_, details) = inspected?.into_value();
     assert_eq!(details.log, LogWindow::default());
     assert_eq!(report.bytes_out, 0);
     let kinds: Vec<FrameKind> = frames.iter().map(ma2a_services::Frame::kind).collect();

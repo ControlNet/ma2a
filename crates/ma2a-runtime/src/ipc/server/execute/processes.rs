@@ -32,10 +32,12 @@ pub(super) async fn execute(
     match *command {
         ProcessCommand::List(after) => list(manager, after).await,
         ProcessCommand::Inspect(id) => {
-            let (record, details) = manager.details(None, id).await.map_err(refusal)?;
+            let read = manager.details(None, id).await.map_err(refusal)?;
+            let revision = read.revision();
+            let (record, details) = read.into_value();
             let view =
                 ProcessDetailsView::new(ProcessView::new(record), (details.start, details.log));
-            Ok(CommandResult::process_details(view))
+            Ok(CommandResult::process_details(view).at_revision(revision))
         }
         ProcessCommand::Terminate(_, id, grace_ms) => {
             // The record and revision of the termination's own commit, as for a deletion.
@@ -62,17 +64,19 @@ async fn list(
     manager: &ProcessManager,
     after: Option<ProcessId>,
 ) -> Result<CommandResult, ApiError> {
-    let mut records = manager
+    let read = manager
         .records(None, (after, MAX_PROCESS_LIST_PAGE + 1))
         .await
         .map_err(refusal)?;
+    let revision = read.revision();
+    let mut records = read.into_value();
     let more = records.len() > MAX_PROCESS_LIST_PAGE;
     records.truncate(MAX_PROCESS_LIST_PAGE);
     let next = more
         .then(|| records.last().map(|record| record.id))
         .flatten();
     let views = records.into_iter().map(ProcessView::new).collect();
-    CommandResult::processes(views, next)
+    Ok(CommandResult::processes(views, next)?.at_revision(revision))
 }
 
 /// Maps a Process refusal onto the local API error set.

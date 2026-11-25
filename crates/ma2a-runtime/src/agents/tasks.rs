@@ -102,11 +102,22 @@ impl AgentManager {
         viewer: Viewer<'_>,
         task: AgentTaskId,
     ) -> Result<AgentTaskDetails, ServiceError> {
-        let found = self
-            .store(move |repository| repository.agent_task_with_artifacts(task))
+        Ok(self.details_at(viewer, task).await?.1)
+    }
+
+    /// Returns one task with its artifacts, both from one read, with the revision of that read.
+    pub(crate) async fn details_at(
+        &self,
+        viewer: Viewer<'_>,
+        task: AgentTaskId,
+    ) -> Result<(u64, AgentTaskDetails), ServiceError> {
+        let read = self
+            .store(move |repository| repository.agent_task_details(task))
             .await?;
-        let (record, artifacts) = found.unzip();
-        Ok(visible(record, viewer)?.details(artifacts.unwrap_or_default()))
+        let (revision, read) = (read.revision(), read.into_value());
+        let (record, artifacts) = read.ok_or(ServiceError::UnknownTask)?;
+        let record = visible(Some(record), viewer)?;
+        Ok((revision, record.details(artifacts)))
     }
 
     /// Delivers the creator's next message to a live task.
@@ -229,14 +240,19 @@ impl AgentManager {
         Ok((listed.revision(), listed.into_value()))
     }
 
-    /// Returns at most `limit` retained events of a visible task after `after`.
+    /// Returns at most `limit` retained events of a visible task after `after`, from one read,
+    /// with the revision of that read.
     pub(crate) async fn events(
         &self,
         viewer: Viewer<'_>,
         (task, after, limit): (AgentTaskId, u32, u32),
-    ) -> Result<Vec<AgentEvent>, ServiceError> {
-        self.visible_task(viewer, task).await?;
-        self.store(move |repository| repository.agent_task_events(task, (after, limit)))
-            .await
+    ) -> Result<(u64, Vec<AgentEvent>), ServiceError> {
+        let read = self
+            .store(move |repository| repository.agent_task_events_at(task, (after, limit)))
+            .await?;
+        let (revision, read) = (read.revision(), read.into_value());
+        let (record, events) = read.ok_or(ServiceError::UnknownTask)?;
+        visible(Some(record), viewer)?;
+        Ok((revision, events))
     }
 }

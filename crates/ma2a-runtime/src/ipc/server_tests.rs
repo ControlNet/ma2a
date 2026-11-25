@@ -38,6 +38,8 @@ mod no_effect_refusals;
 mod pending_replay;
 #[path = "server_tests/process_delete.rs"]
 mod process_delete;
+#[path = "server_tests/read_revisions.rs"]
+mod read_revisions;
 #[path = "server_tests/services.rs"]
 mod services;
 #[path = "server_tests/space_leave.rs"]

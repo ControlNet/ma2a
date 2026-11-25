@@ -14,7 +14,7 @@ use ma2a_services::{
     FrameWriter, OperationEnd, OperationReport,
     supervisor::{log, log_directory},
 };
-use ma2a_store::{ProcessFilter, ProcessRecord};
+use ma2a_store::{Committed, ProcessFilter, ProcessRecord};
 use tokio::io::AsyncWrite;
 
 use super::{
@@ -26,24 +26,23 @@ use super::{
 const BATCH: usize = 262_144;
 
 impl ProcessManager {
-    /// Lists Processes in identifier order: a creator's own, or every one for the operator.
+    /// Lists Processes in identifier order: a creator's own, or every one for the operator,
+    /// with the revision of the read.
     pub(crate) async fn records(
         &self,
         viewer: Option<EndpointId>,
         (after, limit): (Option<ProcessId>, usize),
-    ) -> Result<Vec<ProcessRecord>, ServiceError> {
+    ) -> Result<Committed<Vec<ProcessRecord>>, ServiceError> {
         let filter = ProcessFilter {
             creator: viewer,
             after,
             limit: u32::try_from(limit).unwrap_or(u32::MAX),
             archived: viewer.is_none(),
         };
-        Ok(self
-            .store()
+        self.store()
             .processes(move |repository| repository.processes(filter))
             .await?
-            .map_err(|_| ServiceError::Unavailable)?
-            .into_value())
+            .map_err(|_| ServiceError::Unavailable)
     }
 
     pub(super) async fn list(
@@ -51,7 +50,10 @@ impl ProcessManager {
         viewer: Option<EndpointId>,
         after: Option<ProcessId>,
     ) -> Result<ProcessReply, ServiceError> {
-        let mut records = self.records(viewer, (after, MAX_PROCESS_PAGE + 1)).await?;
+        let mut records = self
+            .records(viewer, (after, MAX_PROCESS_PAGE + 1))
+            .await?
+            .into_value();
         let more = records.len() > MAX_PROCESS_PAGE;
         records.truncate(MAX_PROCESS_PAGE);
         let next = more
@@ -76,13 +78,16 @@ impl ProcessManager {
             .map_err(|_| ServiceError::Io)
     }
 
-    /// Returns one Process in full, with its start and retained output window.
+    /// Returns one Process in full, with its start and retained output window, and the revision
+    /// its record was read at.
     pub(crate) async fn details(
         &self,
         viewer: Option<EndpointId>,
         id: ProcessId,
-    ) -> Result<(ProcessRecord, ProcessDetails), ServiceError> {
-        let record = visible(self.record(id).await?, viewer)?;
+    ) -> Result<Committed<(ProcessRecord, ProcessDetails)>, ServiceError> {
+        let read = self.record_at(id).await?;
+        let revision = read.revision();
+        let record = visible(read.into_value(), viewer)?;
         let start = record
             .start
             .as_deref()
@@ -91,7 +96,7 @@ impl ProcessManager {
             .map_err(|_| ServiceError::Internal)?;
         let window = self.window(&record).await?;
         let details = ProcessDetails::new(record.summary(), start, window);
-        Ok((record, details))
+        Ok(Committed::new(revision, (record, details)))
     }
 
     pub(super) async fn inspect(
@@ -99,7 +104,7 @@ impl ProcessManager {
         viewer: Option<EndpointId>,
         id: ProcessId,
     ) -> Result<ProcessReply, ServiceError> {
-        let (_, details) = self.details(viewer, id).await?;
+        let (_, details) = self.details(viewer, id).await?.into_value();
         Ok(ProcessReply::Details(Box::new(details)))
     }
 

@@ -17,6 +17,9 @@ use crate::{
     service_exposures::current_revision,
 };
 
+/// One task, when it exists, with something more read about it, at the revision of that read.
+type TaskRead<T> = Result<Committed<Option<(AgentTaskRecord, T)>>, StoreError>;
+
 /// The number of unfinished tasks of `agent`.
 pub(crate) fn live_task_count(
     connection: &rusqlite::Connection,
@@ -134,6 +137,44 @@ impl Repository {
         Ok(Committed::new(revision, records))
     }
 
+    /// Returns one task with its artifacts in publication order, and the revision of the same
+    /// read.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when a row is malformed.
+    pub fn agent_task_details(&self, task: AgentTaskId) -> TaskRead<Vec<ArtifactRef>> {
+        self.task_read(task, |repository| repository.agent_artifacts(task))
+    }
+
+    /// Returns one task with at most `limit` of its retained events after `after`, and the
+    /// revision of the same read.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when a row is malformed.
+    pub fn agent_task_events_at(
+        &self,
+        task: AgentTaskId,
+        page: (u32, u32),
+    ) -> TaskRead<Vec<AgentEvent>> {
+        self.task_read(task, |repository| repository.agent_task_events(task, page))
+    }
+
+    /// Reads one task and `more` about it in one transaction, with its revision.
+    fn task_read<T>(
+        &self,
+        task: AgentTaskId,
+        more: impl FnOnce(&Self) -> Result<T, StoreError>,
+    ) -> TaskRead<T> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let revision = current_revision(&transaction)?;
+        let read = match load_task(&transaction, task)? {
+            Some(record) => Some((record, more(self)?)),
+            None => None,
+        };
+        transaction.commit()?;
+        Ok(Committed::new(revision, read))
+    }
+
     /// Returns every unfinished task, oldest first.
     ///
     /// # Errors
@@ -165,24 +206,6 @@ impl Repository {
                 row.get::<_, Vec<u8>>(0)
             })?;
         rows.map(|row| Ok(AgentEvent::from_bytes(&row?)?)).collect()
-    }
-
-    /// Returns one task with its artifacts, both read in one transaction: an artifact is listed
-    /// exactly when the task's newest event counts its publication.
-    ///
-    /// # Errors
-    /// Returns [`StoreError`] when a row is malformed.
-    pub fn agent_task_with_artifacts(
-        &self,
-        task: AgentTaskId,
-    ) -> Result<Option<(AgentTaskRecord, Vec<ArtifactRef>)>, StoreError> {
-        let transaction = self.connection.unchecked_transaction()?;
-        let found = match load_task(&transaction, task)? {
-            Some(record) => Some((record, self.agent_artifacts(task)?)),
-            None => None,
-        };
-        transaction.commit()?;
-        Ok(found)
     }
 
     /// Returns a task's artifacts in publication order.

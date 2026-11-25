@@ -10,7 +10,8 @@ use super::{AgentManager, convert::hex, tasks::Viewer};
 const MAX_ARTIFACT_READ: usize = 32_768;
 
 impl AgentManager {
-    /// Reads up to [`MAX_ARTIFACT_READ`] bytes of one artifact from `offset`.
+    /// Reads up to [`MAX_ARTIFACT_READ`] bytes of one artifact from `offset`, with the revision
+    /// the artifact was found at.
     ///
     /// Blobs are named by their BLAKE3, so successive reads of one artifact always observe
     /// the same content; a reader verifies the whole against the returned hash.
@@ -18,8 +19,8 @@ impl AgentManager {
         &self,
         viewer: Viewer<'_>,
         ((task, name), offset): ((AgentTaskId, &str), u64),
-    ) -> Result<(ArtifactRef, Vec<u8>), ServiceError> {
-        let details = self.details(viewer, task).await?;
+    ) -> Result<(u64, (ArtifactRef, Vec<u8>)), ServiceError> {
+        let (revision, details) = self.details_at(viewer, task).await?;
         let artifact = details
             .artifacts
             .into_iter()
@@ -50,6 +51,6 @@ impl AgentManager {
         .map_err(|_| ServiceError::Internal)?;
         // A referenced blob is never collected, so a missing one is a broken store.
         let bytes = read.map_err(|_| ServiceError::Internal)?;
-        Ok((artifact, bytes))
+        Ok((revision, (artifact, bytes)))
     }
 }
