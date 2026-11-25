@@ -9,7 +9,7 @@ use ma2a_agent::{
     tools::{ProxyListening, ProxyOpen},
 };
 use ma2a_core::{
-    RequestId,
+    RequestId, ServiceKind,
     service::{OpenBody, ProxyHost, ProxyRequest},
 };
 use ma2a_services::client;
@@ -29,6 +29,7 @@ impl Call<'_> {
         // Refused before anything listens, so an invalid destination is never answered.
         let request = ProxyRequest::new(host, args.port, IDLE_TIMEOUT_MS)
             .map_err(|_| ToolError::new("invalid_tool", "invalid port"))?;
+        self.check_target(&args.endpoint, ServiceKind::Proxy)?;
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .map_err(|error| super::workspace::local(&error))?;

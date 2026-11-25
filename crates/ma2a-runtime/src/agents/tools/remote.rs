@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use ma2a_agent::protocol::ToolError;
 use ma2a_core::{
-    RequestId,
+    RequestId, ServiceKind,
     service::{FrameKind, OpenBody, OpenHeader, ServiceError},
 };
 use ma2a_services::{FrameReader, FrameWriter};
@@ -53,16 +53,7 @@ impl Call<'_> {
             .loopback()
             .await
             .ok_or_else(|| status(ServiceError::Unavailable))?;
-        let request = json!({
-            "version": 1,
-            "operation": "stream_open",
-            "request_id": hex(request_id.as_bytes()),
-            "target_endpoint_id": endpoint,
-            "service": body.kind().name(),
-        });
-        let encoded = serde_json::to_vec(&request).map_err(|_| status(ServiceError::Internal))?;
-        let command = api::decode_command(&encoded)
-            .map_err(|_| ToolError::new("invalid_tool", "invalid target Endpoint"))?;
+        let command = stream_open((endpoint, request_id), body.kind())?;
         let (_, target, _) = command
             .stream_open()
             .ok_or_else(|| status(ServiceError::Internal))?;
@@ -89,6 +80,20 @@ impl Call<'_> {
 }
 
 impl Call<'_> {
+    /// Checks a target Endpoint as opening an operation on it would: an invalid one is
+    /// `invalid_tool`, and this Runtime itself is `invalid_input`, as the local API answers.
+    pub(super) fn check_target(&self, endpoint: &str, kind: ServiceKind) -> Result<(), ToolError> {
+        let request_id = RequestId::random().map_err(|_| status(ServiceError::Internal))?;
+        let command = stream_open((endpoint, request_id), kind)?;
+        match command.stream_open() {
+            Some((_, target, _)) if target == self.manager.local() => {
+                Err(status(ServiceError::InvalidInput))
+            }
+            Some(_) => Ok(()),
+            None => Err(status(ServiceError::Internal)),
+        }
+    }
+
     /// Returns this Runtime's own local API paths once its server is bound: a call
     /// re-run during recovery may start before it is.
     async fn loopback(&self) -> Option<crate::ipc::IpcPaths> {
@@ -103,6 +108,23 @@ impl Call<'_> {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+}
+
+/// Builds the local API `stream_open` of one operation; an invalid target is `invalid_tool`.
+fn stream_open(
+    (endpoint, request_id): (&str, RequestId),
+    kind: ServiceKind,
+) -> Result<api::Command, ToolError> {
+    let request = json!({
+        "version": 1,
+        "operation": "stream_open",
+        "request_id": hex(request_id.as_bytes()),
+        "target_endpoint_id": endpoint,
+        "service": kind.name(),
+    });
+    let encoded = serde_json::to_vec(&request).map_err(|_| status(ServiceError::Internal))?;
+    api::decode_command(&encoded)
+        .map_err(|_| ToolError::new("invalid_tool", "invalid target Endpoint"))
 }
 
 /// Turns a local API refusal into the call's error.

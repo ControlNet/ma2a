@@ -302,3 +302,32 @@ async fn ending_the_task_closes_a_proxy_listener_while_a_connection_is_opening()
     assert!(tokio::net::TcpStream::connect(listen).await.is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn proxy_open_to_an_invalid_or_own_endpoint_fails_before_listening() -> TestResult {
+    // Given
+    let fixture = Fixture::new("proxy-endpoint", true)?;
+    let call = fixture.call()?;
+    let own = crate::agents::convert::hex(fixture.manager.local().as_bytes());
+    let open = |endpoint: String| ProxyOpen {
+        endpoint,
+        host: "localhost".to_owned(),
+        port: 80,
+    };
+
+    // When
+    let invalid = call.proxy_open(open("not-an-endpoint".to_owned())).await;
+    let itself = call.proxy_open(open(own)).await;
+
+    // Then: neither is answered with a listener that drops every connection.
+    let invalid = invalid
+        .err()
+        .ok_or("a listener was answered for an invalid endpoint")?;
+    let itself = itself
+        .err()
+        .ok_or("a listener was answered for this Runtime")?;
+    assert_eq!(invalid.code, "invalid_tool");
+    assert_eq!(itself.code, "invalid_input");
+    assert!(fixture.manager.coordination().listeners.is_empty());
+    Ok(())
+}

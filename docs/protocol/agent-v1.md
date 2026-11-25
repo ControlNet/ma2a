@@ -650,8 +650,9 @@ An Agent asks for a tool with a `tool` line. The daemon:
 - **`process.start`** starts a Process with stdin set to null and the default 4 MiB log limit.
   `process.terminate`'s `grace_ms` defaults to 5,000.
 - **`proxy.open`** binds a listener on `127.0.0.1` at a free port and returns its address. Each
-  accepted connection opens one Proxy stream to `host:port` with a 10-minute idle timeout. The
-  listener lives in the daemon's memory; see [Known limitations](#known-limitations).
+  accepted connection opens one Proxy stream to `host:port` with a 10-minute idle timeout. An
+  invalid `host`, `port`, or `endpoint`, or this Runtime as `endpoint`, is refused before anything
+  listens. The listener lives in the daemon's memory; see [Known limitations](#known-limitations).
 - **`agent.*`** act as this Endpoint. `agent.submit` sends the calling Agent's `AgentId` as
   `from_agent`, and its message must have role `user`. `agent.wait` follows the task with `watch`
   until it ends or `timeout_ms` passes (default and maximum 300,000), then answers its full view,
