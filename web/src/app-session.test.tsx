@@ -6,6 +6,7 @@ import { afterEach, expect, test, vi } from "vitest"
 
 import { App } from "./app"
 import type { RuntimeControllerCallbacks } from "./runtime-controller"
+import { MANY_RUNTIME_FIXTURE } from "./test/fixtures"
 
 // Each controller the console starts reports through these callbacks; the test plays the Runtime.
 const controllers: RuntimeControllerCallbacks[] = []
@@ -64,4 +65,30 @@ test("signing in again does not show the last session's snapshot failure", async
   await screen.findByRole("main", { name: "Runtime content" })
   expect(controllers).toHaveLength(2)
   expect(screen.queryByText("Runtime snapshot is unavailable")).not.toBeInTheDocument()
+})
+
+test("a peer's inspector never shows another peer's sync status", async () => {
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: `ma2a_csrf=${"cd".repeat(32)}`,
+  })
+  let answer: (response: Response) => void = () => undefined
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    () => new Promise<Response>((resolve) => (answer = resolve)),
+  )
+  window.history.replaceState(null, "", "/endpoint")
+  const user = userEvent.setup()
+  const given = render(<App />)
+  act(() => controllers[0]?.onRuntime(MANY_RUNTIME_FIXTURE))
+  const [first, second] = Array.from(given.container.querySelectorAll<HTMLElement>(".peer"))
+  if (first === undefined || second === undefined) throw new Error("fixture has two peers")
+
+  await user.click(first)
+  await user.click(screen.getByRole("button", { name: "Sync now" }))
+  expect(screen.getByText(/Requesting a bounded control round/)).toBeVisible()
+  await user.click(second)
+  expect(screen.queryByText(/control round/)).not.toBeInTheDocument()
+  await act(async () => answer(new Response(null, { status: 500 })))
+
+  expect(screen.queryByText("The Runtime rejected the request.")).not.toBeInTheDocument()
 })

@@ -37,7 +37,9 @@ export function App({
   const [runtimeLoadFailed, setRuntimeLoadFailed] = useState(false)
   const [controller, setController] = useState<RuntimeController | undefined>()
   const [selectedPeer, setSelectedPeer] = useState<string | undefined>()
-  const [syncMessage, setSyncMessage] = useState<string | undefined>()
+  const [syncStatus, setSyncStatus] = useState<
+    { readonly endpointId: string; readonly text: string } | undefined
+  >()
   const controlled = initialPath !== undefined
   const displayedRuntime = controlled ? runtime : liveRuntime
   const liveServices = useServices(
@@ -136,10 +138,14 @@ export function App({
 
   const sync = (endpointId: string): void => {
     if (actions === undefined) return
-    setSyncMessage("Requesting a bounded control round\u2026")
+    const requested = { endpointId, text: "Requesting a bounded control round\u2026" }
+    setSyncStatus(requested)
+    // Only the latest request reports its answer, so a late answer never replaces a newer one.
+    const settle = (text: string): void =>
+      setSyncStatus((current) => (current === requested ? { endpointId, text } : current))
     void actions.triggerSync(endpointId).then(
-      () => setSyncMessage("Control round requested."),
-      () => setSyncMessage("The Runtime rejected the request."),
+      () => settle("Control round requested."),
+      () => settle("The Runtime rejected the request."),
     )
   }
 
@@ -149,7 +155,7 @@ export function App({
     services: displayedServices,
     actions,
     selectedPeer,
-    syncMessage,
+    syncMessage: syncStatus?.endpointId === selectedPeer ? syncStatus?.text : undefined,
     onSelectPeer: setSelectedPeer,
     onSync: sync,
     onNavigate: navigate,
