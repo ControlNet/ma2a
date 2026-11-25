@@ -45,7 +45,7 @@ ma2a a2a serve [--listen 127.0.0.1:41241] [--token-file PATH]
 
 ## Agent Card
 
-A card is served for a defined local Agent, found through `agent_list`, even while it is stopped. For a remote Agent, the card is served only if Agent v1 `agents` lists it for this Endpoint. The adapter reads at most 64 pages of that list. A page must list Agents in name order after the cursor sent, and a next cursor must be the page's last Agent; the adapter stops at any other page, or once 64 pages still name a next cursor. Otherwise the card route answers `404`.
+A card is served for a defined local Agent, found through `agent_list`, even while it is stopped. For a remote Agent, the card is served only if Agent v1 `agents` lists it for this Endpoint. The adapter reads at most 64 pages of that list. A page must list Agents in name order after the cursor sent, and a next cursor must be the page's last Agent; the adapter stops at any other page, or once 64 pages still name a next cursor. Otherwise the card route answers `404`. If the Runtime or the remote target cannot answer now (unavailable, unreachable, busy, timed out, or its answer was lost), the card route answers `503` instead, so a client can retry.
 
 | Field | Value |
 | --- | --- |

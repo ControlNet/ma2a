@@ -39,16 +39,6 @@ const PIPE: usize = 65_536;
 
 type Chunks = mpsc::Sender<Result<Bytes, io::Error>>;
 
-/// Refusals of a Runtime or target that cannot answer now.
-const TRANSIENT: [&str; 6] = [
-    "unavailable",
-    "concurrency_exceeded",
-    "unreachable",
-    "timed_out",
-    "outcome_unknown",
-    "cancelled",
-];
-
 /// Serves one artifact of a task of the route's Agent.
 pub(super) async fn serve(
     backend: Backend,
@@ -58,7 +48,7 @@ pub(super) async fn serve(
         Ok(details) => details,
         // A Runtime or target that cannot answer now may answer later; any other refusal,
         // one hiding a task this caller may not see included, names no artifact.
-        Err(Refusal(name)) if TRANSIENT.contains(&name.as_str()) => {
+        Err(refusal) if refusal.is_transient() => {
             return status(StatusCode::SERVICE_UNAVAILABLE);
         }
         Err(_) => return status(StatusCode::NOT_FOUND),
