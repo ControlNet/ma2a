@@ -31,14 +31,19 @@ fn now_ms() -> u64 {
 
 /// Runs the lifecycle to its final status.
 pub(super) async fn lifecycle(shared: Arc<Shared>, mut requests: mpsc::Receiver<Lifecycle>) {
-    let Some(go) = await_go(&shared, &mut requests).await else {
-        return;
-    };
-    let running = spawn(&shared).await;
-    let _sent = go.send(*shared.status.borrow());
-    if let Some(running) = running {
-        run(&shared, running, &mut requests).await;
+    if let Some(go) = await_go(&shared, &mut requests).await {
+        let running = spawn(&shared).await;
+        let _sent = go.send(*shared.status.borrow());
+        if let Some(running) = running {
+            run(&shared, running, &mut requests).await;
+        }
     }
+    // Connections keep a sender while the supervisor lingers. Dropping the receiver drains it
+    // only once, so a request sent between `reserve` and `send` would wait for a reply until
+    // the linger ends; closing first and draining until no slot is reserved drops it, and its
+    // connection answers from the final status.
+    requests.close();
+    while requests.recv().await.is_some() {}
 }
 
 /// Waits for `go`; every other request is answered as if no child exists yet.
@@ -256,3 +261,7 @@ fn signal_group(spawned: &mut Spawned, signal: ProcessSignal) -> Result<(), Serv
         _ => Err(ServiceError::InvalidInput),
     }
 }
+
+#[cfg(test)]
+#[path = "host_child_tests.rs"]
+mod tests;
