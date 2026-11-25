@@ -20,6 +20,8 @@ mod construction;
 #[cfg(test)]
 mod control_completion_test;
 #[cfg(test)]
+mod departure_authority_test;
+#[cfg(test)]
 mod departure_test;
 mod echo;
 #[cfg(test)]

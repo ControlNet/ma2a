@@ -86,8 +86,11 @@ impl Actor {
             .await;
         let removed = match removed {
             Ok(removed) => removed,
-            // Neither a member now nor removed by any earlier answer: nothing to say.
-            Err(error) if error.is_space_not_found() => return Ok(None),
+            // Neither a member now nor removed by any earlier answer, or this Endpoint created
+            // the Space but does not hold its authority key: nothing to say.
+            Err(error) if error.is_space_not_found() || error.is_not_space_owner() => {
+                return Ok(None);
+            }
             Err(error) => return Err(self.retain_membership_error(error)),
         };
         if removed.replayed {
