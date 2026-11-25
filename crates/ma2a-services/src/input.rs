@@ -90,6 +90,43 @@ impl<'a, R: AsyncRead + Unpin> Input<'a, R> {
             }
         }
     }
+
+    /// Runs one write within `bound` while still reading ahead for `cancel` or stream loss.
+    ///
+    /// Unlike [`Self::write`], a held frame does not shorten the wait: `bound` alone limits how
+    /// long the write may stall, returning `None` when it expires.
+    pub(crate) async fn write_within<F: Future>(
+        &mut self,
+        write: F,
+        bound: Duration,
+    ) -> Option<Result<F::Output, ServiceError>> {
+        tokio::pin!(write);
+        let deadline = tokio::time::sleep(bound);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                biased;
+                written = &mut write => return Some(Ok(written)),
+                () = &mut deadline => return None,
+                frame = self.reader.next(), if self.ahead.is_none() => match frame {
+                    Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => {
+                        return Some(Err(ServiceError::Cancelled));
+                    }
+                    Err(error) => return Some(Err(error)),
+                    Ok(Some(frame))
+                        if self.ended.is_none() && frame.end() == Ok(Channel::Input) =>
+                    {
+                        self.ended = Some(frame);
+                    }
+                    Ok(Some(_)) if self.ended.is_some() => {
+                        return Some(Err(ServiceError::InvalidInput));
+                    }
+                    Ok(Some(frame)) => self.ahead = Some(frame),
+                    Ok(None) => return Some(Err(ServiceError::Cancelled)),
+                },
+            }
+        }
+    }
 }
 
 #[cfg(test)]

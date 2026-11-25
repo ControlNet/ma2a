@@ -10,16 +10,13 @@ use ma2a_core::service::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
-    net::{
-        TcpStream,
-        tcp::{OwnedReadHalf, OwnedWriteHalf},
-    },
+    net::TcpStream,
     sync::Notify,
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{FrameReader, FrameWriter, report::len64};
+use crate::{FrameReader, FrameWriter, input::Input, report::len64};
 
 /// How one relay ended.
 #[derive(Debug)]
@@ -59,10 +56,25 @@ impl Counters {
 
 pub(super) async fn run<R, W>(
     stream: TcpStream,
+    caller: (&mut FrameReader<R>, &mut FrameWriter<W>),
+    limits: (Duration, &CancellationToken),
+) -> Relayed
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let (target_read, target_write) = stream.into_split();
+    relay_streams((target_read, target_write), caller, limits).await
+}
+
+pub(super) async fn relay_streams<TR, TW, R, W>(
+    (target_read, target_write): (TR, TW),
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     (idle, shutdown): (Duration, &CancellationToken),
 ) -> Relayed
 where
+    TR: AsyncRead + Unpin,
+    TW: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
@@ -74,7 +86,6 @@ where
         idle,
         delivered: Notify::new(),
     };
-    let (target_read, target_write) = stream.into_split();
     let lifetime = counters.started + Duration::from_millis(MAX_OPERATION_LIFETIME_MS);
     let both = async {
         tokio::try_join!(
@@ -116,13 +127,14 @@ async fn idle_expired(counters: &Counters) {
 }
 
 /// Caller → destination; `end` shuts down the TCP write side, and an early stream close cancels.
-async fn upstream<R: AsyncRead + Unpin>(
+async fn upstream<R: AsyncRead + Unpin, TW: AsyncWrite + Unpin>(
     reader: &mut FrameReader<R>,
-    mut target: OwnedWriteHalf,
+    mut target: TW,
     counters: &Counters,
 ) -> Result<(), Stop> {
+    let mut input = Input::new(reader);
     loop {
-        let frame = match reader.next().await {
+        let frame = match input.next().await {
             Ok(Some(frame)) => frame,
             // A caller keeps its side open until the outcome; closing it earlier cancels.
             Ok(None) => return Err(Stop::Caller(ServiceError::Cancelled)),
@@ -133,7 +145,7 @@ async fn upstream<R: AsyncRead + Unpin>(
                 let Ok((Channel::Input, bytes)) = frame.data() else {
                     return Err(Stop::Caller(ServiceError::InvalidInput));
                 };
-                write(&mut target, bytes, counters).await?;
+                write((&mut input, &mut target), bytes, counters).await?;
             }
             FrameKind::End if frame.end() == Ok(Channel::Input) => break,
             FrameKind::Cancel => return Err(Stop::Caller(ServiceError::Cancelled)),
@@ -146,7 +158,7 @@ async fn upstream<R: AsyncRead + Unpin>(
     let frame = tokio::select! {
         biased;
         () = counters.delivered.notified() => return Ok(()),
-        frame = reader.next() => frame,
+        frame = input.next() => frame,
     };
     match frame {
         Ok(Some(frame)) if frame.kind() == FrameKind::Cancel => {
@@ -158,14 +170,21 @@ async fn upstream<R: AsyncRead + Unpin>(
     }
 }
 
-/// Writes `bytes` to the destination. A write that stays blocked for the idle timeout ends
-/// the relay even while the destination keeps sending, so one that never reads cannot hold it.
-async fn write(target: &mut OwnedWriteHalf, bytes: &[u8], counters: &Counters) -> Result<(), Stop> {
+/// Writes `bytes` to the destination while still reading ahead for a caller `cancel` or close.
+/// A write that stays blocked for the idle timeout ends the relay even while the destination keeps
+/// sending, so one that never reads cannot hold it.
+async fn write<R: AsyncRead + Unpin, TW: AsyncWrite + Unpin>(
+    (input, target): (&mut Input<'_, R>, &mut TW),
+    bytes: &[u8],
+    counters: &Counters,
+) -> Result<(), Stop> {
     let mut rest = bytes;
     while !rest.is_empty() {
-        let written = tokio::time::timeout(counters.idle, target.write(rest))
+        let written = input
+            .write_within(target.write(rest), counters.idle)
             .await
-            .map_err(|_| Stop::Idle)?
+            .ok_or(Stop::Idle)?
+            .map_err(Stop::Caller)?
             .map_err(|_| Stop::Target)?;
         if written == 0 {
             return Err(Stop::Target);
@@ -180,8 +199,8 @@ async fn write(target: &mut OwnedWriteHalf, bytes: &[u8], counters: &Counters) -
 }
 
 /// Destination → caller; destination EOF becomes `end`.
-async fn downstream<W: AsyncWrite + Unpin>(
-    mut target: OwnedReadHalf,
+async fn downstream<TR: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    mut target: TR,
     writer: &mut FrameWriter<W>,
     counters: &Counters,
 ) -> Result<(), Stop> {
@@ -204,3 +223,7 @@ async fn downstream<W: AsyncWrite + Unpin>(
         counters.touch();
     }
 }
+
+#[cfg(test)]
+#[path = "relay_tests.rs"]
+mod tests;

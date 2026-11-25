@@ -254,8 +254,9 @@ restart.
 - **Blocked writes.** A write to the destination that makes no progress for the idle timeout ends
   the relay as `timed_out`, even while the destination keeps sending. A destination that never
   reads therefore cannot hold the stream open by trickling bytes back. While such a write is
-  blocked, the target does not read the caller's stream, so a `cancel` sent then takes effect
-  when the write moves again or the idle timeout ends it.
+  blocked, the target still reads the caller's next frame, so a `cancel`, close, or reset right
+  behind it (or after an `end` right behind it) ends the relay at once; another frame is held
+  until the write moves again, and a `cancel` further back waits for that or the idle timeout.
 - **Outcome.** `{reason, bytes_to_target, bytes_from_target, duration_ms}`. A failure of the
   destination socket after connect is an `unreachable` outcome.
 
