@@ -180,6 +180,37 @@ async fn an_invitation_retried_after_its_output_path_is_fixed_is_created_once() 
     served.stop().await
 }
 
+/// An owner-only directory the daemon can search but not write.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invitation_into_an_unwritable_directory_has_no_effect() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let served = Served::start().await?;
+    let space = served
+        .runtime
+        .handle()
+        .create_owned_space("unwritable".to_owned())
+        .await?;
+    let directory = served.state.0.join("read-only");
+    std::fs::create_dir(&directory)?;
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))?;
+    let revision = served.runtime.handle().status().await?.revision();
+    let request = serde_json::json!({
+        "version": 1, "operation": "space_invite", "request_id": "62".repeat(16),
+        "space_id": api::encode_hex(space.as_bytes()), "ttl_ms": 60_000,
+        "output_path": directory.join("ticket").to_str().ok_or("invalid path")?,
+    });
+
+    let refused = served.refused(&request, ProtocolError::INVALID_INPUT).await;
+
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    refused?;
+    assert_eq!(served.runtime.handle().status().await?.revision(), revision);
+    assert_eq!(invitations(&served)?, 0);
+    assert_eq!(std::fs::read_dir(&directory)?.count(), 0);
+    served.stop().await
+}
+
 fn invitations(served: &Served) -> TestResult<u64> {
     let config = StoreConfig::new(&served.state.0);
     let connection = rusqlite::Connection::open(config.database_path())?;

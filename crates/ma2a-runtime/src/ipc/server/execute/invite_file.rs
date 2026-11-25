@@ -43,37 +43,56 @@ fn staging_name() -> Result<String, ProtocolError> {
 
 /// Where one ticket is going to be written, checked before the invitation is committed.
 ///
-/// On Unix the destination's directory is already open, so a directory the ticket cannot be
-/// written through is refused before anything is committed rather than after.
+/// On Unix the destination's directory is already open and the ticket's staging file already
+/// created in it, so a directory no file can be created in is refused before anything is
+/// committed rather than after. A destination dropped unwritten removes its staging file.
 #[cfg(unix)]
 pub(super) struct Destination {
     directory: std::os::fd::OwnedFd,
     name: std::ffi::OsString,
+    staged: Option<Staged>,
 }
+
+/// An owner-only staging file and its name in the destination's directory.
+#[cfg(unix)]
+type Staged = (String, std::fs::File);
 
 #[cfg(unix)]
 impl Destination {
-    /// Checks `path` and opens the directory it names its file in.
+    /// Checks `path`, opens the directory it names its file in, and stages the file there.
     pub(super) fn open(path: &str) -> Result<Self, ProtocolError> {
         check_destination(path)?;
         let (directory, name) = destination_directory(path)?;
+        let staged = create_staging(&directory)?;
         Ok(Self {
             directory,
             name: name.to_owned(),
+            staged: Some(staged),
         })
     }
 
-    /// Writes the ticket into an owner-only staging file in the destination's directory and
-    /// links it into place without replacing anything. Until the link, the destination name is
-    /// never touched, so a failed or interrupted write leaves it unpublished and cleanup removes
-    /// only the staging file, never a file someone else put at the destination.
+    /// Writes the ticket into the staging file and links it into place without replacing
+    /// anything. Until the link, the destination name is never touched, so a failed or
+    /// interrupted write leaves it unpublished and cleanup removes only the staging file, never
+    /// a file someone else put at the destination.
     ///
     /// Every step runs relative to the directory opened before the commit, so all of them
     /// happen in the same directory: one renamed meanwhile receives the ticket under its new
     /// name, and no staging file is left behind in it.
-    pub(super) fn write(self, contents: &[u8]) -> Result<(), ProtocolError> {
-        let staged = stage(&self.directory, contents)?;
+    pub(super) fn write(mut self, contents: &[u8]) -> Result<(), ProtocolError> {
+        let staged = self.staged.take().ok_or(ProtocolError::INTERNAL)?;
+        let staged = fill(&self.directory, staged, contents)?;
         publish_staged(&self.directory, &staged, &self.name)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Destination {
+    fn drop(&mut self) {
+        if let Some((name, _file)) = self.staged.take() {
+            let _removed =
+                rustix::fs::unlinkat(&self.directory, name.as_str(), rustix::fs::AtFlags::empty());
+        }
     }
 }
 
@@ -105,17 +124,28 @@ fn destination_directory(
     Ok((directory, name))
 }
 
-/// Writes the ticket to a new owner-only staging file in `directory` and returns its name.
+/// Creates a new owner-only staging file in `directory`.
 #[cfg(unix)]
-fn stage(directory: &std::os::fd::OwnedFd, contents: &[u8]) -> Result<String, ProtocolError> {
-    use std::io::Write as _;
-
-    use rustix::fs::{AtFlags, Mode, OFlags};
+fn create_staging(directory: &std::os::fd::OwnedFd) -> Result<Staged, ProtocolError> {
+    use rustix::fs::{Mode, OFlags};
     let name = staging_name()?;
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let file = rustix::fs::openat(directory, name.as_str(), flags, Mode::RUSR | Mode::WUSR)
         .map_err(|_| ProtocolError::INVALID_INPUT)?;
-    let mut file = std::fs::File::from(file);
+    Ok((name, std::fs::File::from(file)))
+}
+
+/// Writes the ticket to its staging file and returns the file's name; a failed write removes
+/// the file.
+#[cfg(unix)]
+fn fill(
+    directory: &std::os::fd::OwnedFd,
+    (name, mut file): Staged,
+    contents: &[u8],
+) -> Result<String, ProtocolError> {
+    use std::io::Write as _;
+
+    use rustix::fs::AtFlags;
     let written = file
         .write_all(contents)
         .and_then(|()| file.write_all(b"\n"))

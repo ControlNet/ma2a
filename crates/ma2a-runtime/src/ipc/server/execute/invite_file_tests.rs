@@ -61,7 +61,7 @@ fn a_ticket_stays_in_its_directory_when_the_directory_is_renamed()
     let path = output.join("ticket");
     let path = path.to_str().ok_or("path")?;
     let (directory, name) = super::destination_directory(path)?;
-    let staged = super::stage(&directory, b"secret")?;
+    let staged = super::fill(&directory, super::create_staging(&directory)?, b"secret")?;
 
     // When: the directory is rotated away and an empty one takes its name before publication.
     std::fs::rename(&output, &retired)?;
@@ -117,17 +117,43 @@ fn publishing_claims_a_free_name_and_never_replaces_a_file()
     let destination = base.join("ticket");
     let path = destination.to_str().ok_or("path")?;
     let (directory, name) = super::destination_directory(path)?;
-    let staged = super::stage(&directory, b"secret")?;
+    let staged = super::fill(&directory, super::create_staging(&directory)?, b"secret")?;
     super::publish_staged(&directory, &staged, name)?;
     assert_eq!(std::fs::read(&destination)?, b"secret\n");
 
     // A file someone else put at the name stays, whether linked or renamed over.
     std::fs::remove_file(&destination)?;
     std::fs::write(&destination, b"theirs")?;
-    let staged = super::stage(&directory, b"secret")?;
+    let staged = super::fill(&directory, super::create_staging(&directory)?, b"secret")?;
     assert!(super::rename_no_clobber(&directory, (&staged, name)).is_err());
     assert!(super::publish_staged(&directory, &staged, name).is_err());
     assert_eq!(std::fs::read(&destination)?, b"theirs");
     std::fs::remove_dir_all(&base)?;
+    Ok(())
+}
+
+/// The staging file is made when the destination is opened, before the invitation is
+/// committed, so a directory no file can be created in is refused then; one never written is
+/// removed when the destination is dropped.
+#[cfg(unix)]
+#[test]
+fn a_destination_stages_its_file_when_opened_and_removes_it_unless_written()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let base = std::env::temp_dir().join(format!("ma2a-invite-open-{}", std::process::id()));
+    let _stale = std::fs::remove_dir_all(&base);
+    std::fs::create_dir(&base)?;
+    let output = base.join("ticket");
+    let path = output.to_str().ok_or("path")?;
+    let opened = super::Destination::open(path)?;
+    let staged = std::fs::read_dir(&base)?.count();
+    drop(opened);
+    let left = std::fs::read_dir(&base)?.count();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o500))?;
+    let unwritable = super::Destination::open(path);
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::remove_dir_all(&base)?;
+    assert_eq!((staged, left), (1, 0));
+    assert!(unwritable.is_err());
     Ok(())
 }
