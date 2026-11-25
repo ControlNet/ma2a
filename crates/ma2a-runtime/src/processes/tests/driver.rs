@@ -83,7 +83,7 @@ async fn start_retry_stdin_and_logs_run_through_the_driver() -> TestResult {
         &stop,
     );
     let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
-    let caller = hosted::stdin((&mut reader, &mut writer), &b"hello\n"[..]);
+    let caller = hosted::stdin((&mut reader, &mut writer), (&b"hello\n"[..], true));
     let (_report, written) = tokio::join!(host, caller);
     assert_eq!(written?, (6, true));
     reaches(&manager, id, ProcessState::Exited).await?;
@@ -250,7 +250,7 @@ async fn closed_stdin_archived_logs_relative_cwd_and_strangers_are_refused_exact
             &stop,
         );
         let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
-        let caller = hosted::stdin((&mut reader, &mut writer), &b"x"[..]);
+        let caller = hosted::stdin((&mut reader, &mut writer), (&b"x"[..], true));
         let (_report, written) = tokio::join!(host, caller);
         match (written, expected) {
             (Ok(written), Ok(expected)) => assert_eq!(written, expected),

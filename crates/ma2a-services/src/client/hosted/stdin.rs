@@ -16,17 +16,18 @@ type Progress = (u64, bool);
 
 /// Writes local input to the Process stdin until EOF, then reports what was delivered.
 ///
-/// Returns the bytes the Process received and whether its stdin is now closed. The target may
-/// answer before all input was sent, for example once the Process exited; a target that stopped
-/// reading still reports why. An answer counting more bytes than were sent, or an open stdin
-/// before `end` was sent, is a stream failure.
+/// `close` is what the `stdin` request asked for. Returns the bytes the Process received and
+/// whether its stdin is now closed. The target may answer before all input was sent, for example
+/// once the Process exited, which closes its stdin; a target that stopped reading still reports
+/// why. An answer counting more bytes than were sent is a stream failure, and so is one that
+/// leaves stdin open before `end` was sent, after `close` was asked for, or without every byte.
 ///
 /// # Errors
 /// Returns the refusal (`writer_busy`, `stdin_closed`, `not_running`), the failed outcome,
 /// or the stream failure.
 pub async fn stdin<R, W, I>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
-    input: I,
+    (input, close): (I, bool),
 ) -> Result<(u64, bool), ClientError>
 where
     R: AsyncRead + Unpin,
@@ -35,7 +36,7 @@ where
 {
     let frame = match first(reader).await? {
         // A replayed write was counted when it ran.
-        First::Finished(frame) => return written(&frame, None),
+        First::Finished(frame) => return written(&frame, (None, close)),
         First::Accepted(frame) => frame,
     };
     if accepted(&frame)? != ProcessAccept::Admitted {
@@ -60,7 +61,7 @@ where
         // Local input failed: the target still waits for more of it.
         Err(Err(error)) => return Err(error),
     };
-    written(&frame, Some(progress))
+    written(&frame, (Some(progress), close))
 }
 
 async fn send_all<W, I>(
@@ -88,20 +89,31 @@ where
         .end(Channel::Input)
         .await
         .map_err(ClientError::Stream)?;
-    writer.flush().await.map_err(ClientError::Stream)?;
+    // The target may answer the `end` before the flush returns, or fails.
     progress.1 = true;
-    Ok(())
+    writer.flush().await.map_err(ClientError::Stream)
 }
 
-/// Checks that an outcome counts no more than was sent, and leaves stdin open only after `end`;
-/// a replayed one, without `progress`, was checked when it ran.
-fn written(frame: &Frame, progress: Option<(u64, bool)>) -> Result<(u64, bool), ClientError> {
+/// Checks that an outcome counts no more than was sent, and leaves stdin open only after `end`
+/// without `close` and with every byte taken, since a Process that stopped taking input closed
+/// its stdin; a replayed one, without `progress`, was checked when it ran.
+fn written(
+    frame: &Frame,
+    (progress, close): (Option<Progress>, bool),
+) -> Result<(u64, bool), ClientError> {
     if frame.kind() != FrameKind::Outcome {
         return Err(unexpected(frame));
     }
+    let answers = |(bytes, closed): (u64, bool), (sent, ended): Progress| {
+        if closed {
+            bytes <= sent
+        } else {
+            ended && !close && bytes == sent
+        }
+    };
     match reply(frame)? {
         ProcessReply::Written(bytes, closed)
-            if progress.is_none_or(|(sent, ended)| bytes <= sent && (closed || ended)) =>
+            if progress.is_none_or(|progress| answers((bytes, closed), progress)) =>
         {
             Ok((bytes, closed))
         }

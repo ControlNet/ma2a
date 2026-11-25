@@ -153,7 +153,7 @@ pub(super) async fn stdin(
 ) -> Result<(), AppError> {
     let request = ProcessRequest::Stdin(id, close);
     let (mut reader, mut writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
-    let written = hosted::stdin((&mut reader, &mut writer), tokio::io::stdin()).await;
+    let written = hosted::stdin((&mut reader, &mut writer), (tokio::io::stdin(), close)).await;
     // The Process may end while stdin is still being read, so every outcome exits here.
     super::exit_with(
         written

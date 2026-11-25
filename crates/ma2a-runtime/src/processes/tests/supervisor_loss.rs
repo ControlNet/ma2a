@@ -62,9 +62,11 @@ async fn run(
     let host = serve(manager, scope, (&mut host_reader, &mut host_writer));
     let caller = async {
         match request {
-            ProcessRequest::Stdin(..) => hosted::stdin((&mut reader, &mut writer), &b"x"[..])
-                .await
-                .map(|_| ()),
+            ProcessRequest::Stdin(_, close) => {
+                hosted::stdin((&mut reader, &mut writer), (&b"x"[..], close))
+                    .await
+                    .map(|_| ())
+            }
             ProcessRequest::Attach(id, from, _) => {
                 let local = ProcessIo::<&[u8], Vec<u8>, Vec<u8>> {
                     input: None,
