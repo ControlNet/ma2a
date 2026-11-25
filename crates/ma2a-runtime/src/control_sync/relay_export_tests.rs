@@ -1,7 +1,8 @@
-//! A relay advertisement stored before the relay URL policy was tightened is not sent to peers,
-//! which would refuse the whole page that carries it.
+//! A relay advertisement or address record stored before the relay URL policy was tightened is
+//! not sent to peers, which would refuse the whole page that carries it.
 
 use iroh::SecretKey;
+use iroh_base::TransportAddr;
 use ma2a_core::{
     AddressEndpointDataV1, ControlArtifactKind, ControlCursorV1, ControlRequestV1,
     ControlResponseV1, EndpointId, PRIVATE_RELAY_ADVERTISEMENT_SIGNATURE_DOMAIN,
@@ -106,5 +107,71 @@ fn a_stored_advertisement_the_policy_now_refuses_is_not_exported() -> TestResult
         .map(ma2a_core::ControlArtifactV1::kind)
         .collect::<Vec<_>>();
     assert_eq!(kinds, vec![ControlArtifactKind::ADDRESS_RECORD]);
+    Ok(())
+}
+
+#[test]
+fn a_stored_address_record_the_policy_now_refuses_is_skipped_and_not_exported() -> TestResult {
+    // Given: a Space shared with a peer whose stored address record carries a relay URL that
+    // names a user, as an earlier version allowed.
+    let state = TempState::new("refused-address-record")?;
+    let config = StoreConfig::new(&state.0);
+    let mut repository = Repository::open(&config)?;
+    let local_id = EndpointId::from(SecretKey::from_bytes(&[0x11; 32]).public());
+    let peer = SecretKey::from_bytes(&[0x22; 32]);
+    share_space_with(
+        &mut repository,
+        (&member(local_id, "local")?, &peer),
+        AddressEndpointDataV1::new(vec![TransportAddr::Relay(ACCEPTED.parse()?)])?,
+    )?;
+    let shared = repository.control_spaces_for(local_id)?;
+    let shared = shared.first().ok_or("shared Space")?;
+    let cursor = ControlCursorV1::new(
+        shared.chain().space_id(),
+        shared.chain().latest_generation(),
+        shared.chain().latest_hash(),
+    );
+    let stored = shared
+        .address_records()
+        .first()
+        .ok_or("stored record")?
+        .signed_record()
+        .to_vec();
+    let at = stored
+        .windows(ACCEPTED.len())
+        .position(|window| window == ACCEPTED.as_bytes())
+        .ok_or("relay URL in the record")?;
+    let mut refused = stored;
+    refused
+        .get_mut(at..at + REFUSED.len())
+        .ok_or("URL range")?
+        .copy_from_slice(REFUSED.as_bytes());
+    drop(repository);
+    rusqlite::Connection::open(config.database_path())?
+        .execute("UPDATE address_state SET signed_record = ?1", [refused])?;
+    let mut repository = Repository::open(&config)?;
+
+    // When: the Runtime loads its lookup, as at startup, and answers the peer.
+    let lookup = super::load_lookup(&mut repository, local_id, 50);
+    let outcome = super::respond(
+        &mut repository,
+        &super::ControlExchangeInput {
+            local_endpoint_id: local_id,
+            remote_endpoint_id: EndpointId::from(peer.public()),
+            payload: ControlRequestV1::new(vec![cursor])?.encode()?,
+            now_ms: 50,
+        },
+    )
+    .map_err(|failure| failure.to_string())?;
+
+    // Then: the record is left out of both, and neither fails.
+    assert!(lookup.is_ok_and(|lookup| lookup.addresses.is_empty()));
+    let response = ControlResponseV1::decode(&outcome.response)?;
+    assert!(
+        response
+            .pages()
+            .iter()
+            .all(|page| page.artifacts().is_empty())
+    );
     Ok(())
 }

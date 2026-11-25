@@ -112,3 +112,45 @@ fn endpoint_data_enforces_custom_and_user_data_byte_bounds() {
     assert_eq!(oversized_user, Err(ProtocolError::INVALID_INPUT));
     assert_eq!(oversized_multibyte, Err(ProtocolError::INVALID_INPUT));
 }
+
+#[test]
+fn endpoint_data_carries_only_relay_urls_the_relay_policy_accepts() -> TestResult {
+    // Given: an HTTPS relay, and same-length ones over HTTP or naming a user.
+    let accepted = "https://relay-padding-xxx.invalid/";
+    let refused = [
+        "http://relay-padding-xxxx.invalid/",
+        "https://user:secret@relay.invalid/",
+    ];
+    let signer = SecretKey::from_bytes(&[0x92; 32]);
+    let record = SpaceAddressRecordV1::new(
+        AddressRecordScope::new(SpaceId::derive(b"relay-policy"), signer.public().into()),
+        AddressRecordValidity::new(1, 1_000, 601_000)?,
+        AddressEndpointDataV1::new(vec![TransportAddr::Relay(accepted.parse()?)])?,
+    )
+    .sign(&signer)?;
+    let at = record
+        .canonical_bytes()
+        .windows(accepted.len())
+        .position(|window| window == accepted.as_bytes())
+        .ok_or("relay URL in the record")?;
+
+    for url in refused {
+        assert_eq!(url.len(), accepted.len());
+        // When: a record carrying it is built, or received.
+        let built = AddressEndpointDataV1::new(vec![TransportAddr::Relay(url.parse()?)]);
+        let mut received = record.canonical_bytes().to_vec();
+        received
+            .get_mut(at..at + url.len())
+            .ok_or("URL range")?
+            .copy_from_slice(url.as_bytes());
+
+        // Then both are refused.
+        assert_eq!(built, Err(ProtocolError::INVALID_INPUT), "{url}");
+        assert_eq!(
+            SignedSpaceAddressRecordV1::parse_canonical_bytes(&received).map(|_| ()),
+            Err(ProtocolError::INVALID_INPUT),
+            "{url}"
+        );
+    }
+    Ok(())
+}

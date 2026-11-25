@@ -116,9 +116,11 @@ impl AddressPublisher {
         let current = repository
             .address_record(space_id, endpoint_id)
             .map_err(AddressPublisherError::Store)?;
-        if let Some(current) = &current {
-            let signed = SignedSpaceAddressRecordV1::parse_canonical_bytes(current.signed_record())
-                .map_err(AddressPublisherError::Protocol)?;
+        // A stored record an earlier version accepted, such as one carrying a relay URL that
+        // names a user, no longer decodes; it is replaced, as a changed one is.
+        if let Some(signed) = current.as_ref().and_then(|current| {
+            SignedSpaceAddressRecordV1::parse_canonical_bytes(current.signed_record()).ok()
+        }) {
             if request.now_ms < signed.record().issued_at_ms() {
                 return Err(AddressPublisherError::ClockRollback);
             }

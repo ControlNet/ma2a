@@ -121,9 +121,12 @@ pub(crate) fn load_lookup(
                 target.validation(&authorization, now_ms),
             ) {
                 Ok(validated) => addresses.push(validated),
+                // A record an earlier version accepted, such as one carrying a relay URL that
+                // names a user, no longer decodes; it is left out like an expired one.
                 Err(
                     AddressRecordValidationError::FutureRecord
-                    | AddressRecordValidationError::ExpiredRecord,
+                    | AddressRecordValidationError::ExpiredRecord
+                    | AddressRecordValidationError::InvalidEncoding,
                 ) => {}
                 Err(_) => return Err(RuntimeError::new(RuntimeErrorKind::Control)),
             }

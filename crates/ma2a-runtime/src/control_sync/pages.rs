@@ -26,6 +26,11 @@ fn is_exportable(advertisement: &ma2a_store::PersistedRelayAdvertisement) -> boo
     .is_ok()
 }
 
+/// Like [`is_exportable`], for a stored address record.
+fn is_exportable_record(record: &ma2a_store::PersistedAddressRecord) -> bool {
+    ma2a_core::SignedSpaceAddressRecordV1::parse_canonical_bytes(record.signed_record()).is_ok()
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct PushPageRequest {
     pub(super) local_endpoint_id: ma2a_core::EndpointId,
@@ -83,6 +88,7 @@ pub(super) fn push_page(
     }
     for record in state.address_records() {
         if record.endpoint_id() == request.local_endpoint_id
+            && is_exportable_record(record)
             && u64::try_from(record.issued_at_ms()).is_ok_and(|issued| issued <= request.now_ms)
             && u64::try_from(record.expires_at_ms()).is_ok_and(|expires| expires > request.now_ms)
         {

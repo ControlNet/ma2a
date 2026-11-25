@@ -6,7 +6,7 @@ use crate::address::{
     MAX_ADDRESS_RECORD_ADDRESSES, MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN,
     MAX_ADDRESS_RECORD_USER_DATA_LEN,
 };
-use crate::{MAX_RELAY_URL_LEN, ProtocolError};
+use crate::{ProtocolError, is_supported_relay_url};
 
 /// Bounded identity-free Iroh endpoint addressing data.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,7 +24,9 @@ impl AddressEndpointDataV1 {
         Self::from_parts(addresses, None)
     }
 
-    /// Builds complete bounded endpoint data while preserving address priority order.
+    /// Builds complete bounded endpoint data while preserving address priority order. A relay
+    /// address must be [supported](is_supported_relay_url), as a configured or advertised relay
+    /// must, so a signed record never carries one that names a user or skips TLS.
     ///
     /// # Errors
     /// Returns [`ProtocolError::INVALID_INPUT`] for duplicate, invalid, or oversized data.
@@ -45,7 +47,7 @@ impl AddressEndpointDataV1 {
                 return Err(ProtocolError::INVALID_INPUT);
             }
             match address {
-                TransportAddr::Relay(url) if url.as_str().len() <= MAX_RELAY_URL_LEN => {}
+                TransportAddr::Relay(url) if is_supported_relay_url(url) => {}
                 TransportAddr::Ip(socket) if socket.port() != 0 => {}
                 TransportAddr::Custom(custom)
                     if custom.data().len() <= MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN => {}

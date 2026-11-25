@@ -2,7 +2,7 @@ use iroh::address_lookup::{EndpointData, UserData};
 use iroh_base::TransportAddr;
 use ma2a_core::{
     AddressEndpointDataV1, MAX_ADDRESS_RECORD_ADDRESSES, MAX_ADDRESS_RECORD_CUSTOM_DATA_LEN,
-    MAX_ADDRESS_RECORD_USER_DATA_LEN, MAX_RELAY_URL_LEN, ProtocolError,
+    MAX_ADDRESS_RECORD_USER_DATA_LEN, ProtocolError,
 };
 
 /// Converts complete Iroh endpoint data into the bounded signed representation.
@@ -17,7 +17,7 @@ pub fn address_endpoint_data_from_iroh(
     }
     for address in data.addrs() {
         match address {
-            TransportAddr::Relay(url) if url.as_str().len() > MAX_RELAY_URL_LEN => {
+            TransportAddr::Relay(url) if !ma2a_core::is_supported_relay_url(url) => {
                 return Err(ProtocolError::INVALID_INPUT);
             }
             TransportAddr::Ip(socket) if socket.port() == 0 => {

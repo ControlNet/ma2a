@@ -94,6 +94,7 @@ pub(in crate::control_sync) fn pull_page(
     let authorization = state.authorization();
     for record in state.address_records() {
         if authorization.contains_member(record.endpoint_id())
+            && super::is_exportable_record(record)
             && is_unseen(
                 cursor.address_cursors(),
                 (record.endpoint_id(), record.sequence()),

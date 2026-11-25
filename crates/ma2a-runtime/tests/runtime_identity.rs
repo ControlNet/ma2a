@@ -285,6 +285,85 @@ async fn a_usable_relay_spelled_longer_than_the_bound_survives_repair_of_another
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_own_address_record_the_relay_policy_now_refuses_is_replaced_at_startup() -> TestResult {
+    // Given: an owned Space whose stored address record of this Endpoint carries a relay URL
+    // naming a user, as an earlier version allowed.
+    let (accepted, refused) = (
+        "https://relay-padding-xxx.invalid/",
+        "https://user:secret@relay.invalid/",
+    );
+    assert_eq!(accepted.len(), refused.len());
+    let state = TempState::new("refused-own-record")?;
+    let config = StoreConfig::new(state.path());
+    let secret = iroh_base::SecretKey::from_bytes(&[0x77; 32]);
+    let endpoint_id = EndpointId::from(secret.public());
+    KeyStore::open(state.path())?.write(ma2a_store::KeyMaterial::new(
+        KeyKind::Endpoint,
+        &ma2a_store::KeyReference::parse("endpoint-identity-v1")?,
+        &secret.to_bytes(),
+    ))?;
+    let mut repository = Repository::open(&config)?;
+    let local = ma2a_core::SpaceMemberV1::new(
+        endpoint_id,
+        "local".to_owned(),
+        ma2a_core::MemberCapabilities::new(true, false),
+    )?;
+    let created = repository.create_owned_space(&ma2a_store::SpaceCreation::new(
+        10,
+        local,
+        ma2a_core::SpacePolicyV1::phase_one_default(),
+    ))?;
+    let space_id = created.space_id();
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    let signed = ma2a_core::SpaceAddressRecordV1::new(
+        ma2a_core::AddressRecordScope::new(space_id, endpoint_id),
+        ma2a_core::AddressRecordValidity::new(0, now_ms - 1_000, now_ms + 60_000)?,
+        ma2a_core::AddressEndpointDataV1::new(vec![iroh_base::TransportAddr::Relay(
+            accepted.parse()?,
+        )])?,
+    )
+    .sign(&secret)?;
+    repository.advance_validated_address(&ma2a_store::ValidatedAddressRecord::parse(
+        signed.canonical_bytes(),
+        ma2a_store::AddressRecordValidation::new(
+            ma2a_store::AddressRecordTarget::new(space_id, endpoint_id),
+            &ma2a_core::SpaceAuthorizationView::from_chain(created.chain()),
+            now_ms,
+        ),
+    )?)?;
+    drop(repository);
+    let stored = signed.canonical_bytes();
+    let at = stored
+        .windows(accepted.len())
+        .position(|window| window == accepted.as_bytes())
+        .ok_or("relay URL in the record")?;
+    let mut patched = stored.to_vec();
+    patched
+        .get_mut(at..at + refused.len())
+        .ok_or("URL range")?
+        .copy_from_slice(refused.as_bytes());
+    Connection::open(config.database_path())?
+        .execute("UPDATE address_state SET signed_record = ?1", [patched])?;
+
+    // When
+    let runtime = Runtime::start(config.clone()).await?;
+    runtime.handle().status().await?;
+    runtime.shutdown().await?;
+
+    // Then: the Runtime started and published a record of its own that decodes.
+    let record = Repository::open(&config)?
+        .address_record(space_id, endpoint_id)?
+        .ok_or("own address record")?;
+    assert!(record.sequence() > 0);
+    ma2a_core::SignedSpaceAddressRecordV1::parse_canonical_bytes(record.signed_record())?;
+    Ok(())
+}
+
 async fn start_error(config: StoreConfig) -> TestResultValue<RuntimeErrorCode> {
     match Runtime::start(config).await {
         Ok(runtime) => {

@@ -28,12 +28,13 @@ absence. Each transport address is a two-element array:
 
 | Kind | Payload |
 | --- | --- |
-| `0` | relay URL as canonical text, at most 512 bytes |
+| `0` | HTTPS relay URL as canonical text, at most 512 bytes, naming no user or password |
 | `1` | IPv4 octets followed by big-endian port, exactly 6 bytes |
 | `2` | IPv6 octets followed by big-endian port, exactly 18 bytes |
 | `3` | custom transport array `[id, data]`, where `id` is the exact `u64` transport ID and `data` is at most 1,024 opaque bytes |
 
-Port zero, duplicate addresses, invalid relay URLs, malformed UTF-8, oversized custom or user data,
+Port zero, duplicate addresses, invalid relay URLs, relay URLs over HTTP or naming a user or
+password, malformed UTF-8, oversized custom or user data,
 unknown transport kinds, nested Endpoint identities, unknown map fields, non-shortest CBOR,
 indefinite values, and trailing bytes are invalid. Unknown future non-exhaustive Iroh transport
 variants fail closed at the conversion boundary. An older wire containing an inner
@@ -62,7 +63,11 @@ carry Iroh `UserData`; the signed endpoint-data value itself never contains an E
 `expires_at_ms` must be greater than `issued_at_ms` and no more than 600,000 milliseconds later.
 Publishers read actual current transport data from the running Iroh Endpoint. They publish sequence
 zero when no prior record exists, increment the persisted sequence on material Endpoint data or
-home-relay change, and refresh unchanged data after 300,000 milliseconds.
+home-relay change, and refresh unchanged data after 300,000 milliseconds. A stored record that an
+earlier version accepted but that no longer decodes, such as one carrying a relay URL that names a
+user, is left out of the lookup and of control pages like an expired record, so it neither stops
+the Runtime nor makes a peer refuse a page. An Endpoint replaces its own such record with the next
+sequence when it next publishes.
 
 SQLite retains one high-water record per `(space_id, endpoint_id)`. A higher sequence replaces the
 current record. Exact same-sequence replay is idempotent. A lower sequence is rollback, and different
