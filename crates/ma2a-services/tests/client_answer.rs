@@ -18,22 +18,28 @@ fn opened() -> Result<RequestId, Box<dyn std::error::Error + Send + Sync>> {
     Ok(RequestId::try_from([9; 16].as_slice())?)
 }
 
+/// The Endpoint every request here was sent from, which created every task.
+fn caller() -> Result<EndpointId, Box<dyn std::error::Error + Send + Sync>> {
+    // The identity point is a valid Ed25519 key.
+    let mut creator = [0_u8; 32];
+    creator[0] = 1;
+    Ok(EndpointId::try_from(creator.as_slice())?)
+}
+
 fn task(
     byte: u8,
     agent: &str,
 ) -> Result<AgentTaskSummary, Box<dyn std::error::Error + Send + Sync>> {
-    let mut creator = [0_u8; 32];
-    creator[0] = 1;
     Ok(AgentTaskSummary::new(
         (AgentTaskId::from_bytes([byte; 16]), AgentId::new(agent)?),
-        (EndpointId::try_from(creator.as_slice())?, opened()?),
+        (caller()?, opened()?),
         1_000,
     ))
 }
 
 #[test]
 fn a_task_page_moves_past_its_cursor_and_names_its_last_task() -> TestResult {
-    let opened = opened()?;
+    let (opened, caller) = (opened()?, caller()?);
     let worker = AgentId::new("worker")?;
     let after = AgentTaskId::from_bytes([1; 16]);
     let request = AgentRequest::Tasks(worker, Some(after));
@@ -51,11 +57,11 @@ fn a_task_page_moves_past_its_cursor_and_names_its_last_task() -> TestResult {
     };
     let admitted = Some(AgentAccept::Admitted);
     assert!(answer::agent(
-        (&request, &opened),
+        (&request, &opened, &caller),
         (admitted, &page(&[2, 3], Some(3))?)
     ));
     assert!(answer::agent(
-        (&request, &opened),
+        (&request, &opened, &caller),
         (admitted, &page(&[], None)?)
     ));
     for (bytes, next) in [
@@ -65,7 +71,10 @@ fn a_task_page_moves_past_its_cursor_and_names_its_last_task() -> TestResult {
         (&[], Some(4)),
     ] {
         assert!(
-            !answer::agent((&request, &opened), (admitted, &page(bytes, next)?)),
+            !answer::agent(
+                (&request, &opened, &caller),
+                (admitted, &page(bytes, next)?)
+            ),
             "{bytes:?} {next:?}"
         );
     }
@@ -74,7 +83,7 @@ fn a_task_page_moves_past_its_cursor_and_names_its_last_task() -> TestResult {
         false,
     ));
     assert!(!answer::agent(
-        (&request, &opened),
+        (&request, &opened, &caller),
         (submitted, &page(&[2], None)?)
     ));
     Ok(())
@@ -124,7 +133,7 @@ fn a_process_answer_names_the_process_its_request_named() -> TestResult {
 
 #[test]
 fn a_read_is_answered_only_after_its_admission() -> TestResult {
-    let opened = opened()?;
+    let (opened, caller) = (opened()?, caller()?);
     // A read reserves no RequestId, so no outcome of one is answered from replay.
     let worker = AgentId::new("worker")?;
     let task_a = AgentTaskId::from_bytes([1; 16]);
@@ -147,11 +156,11 @@ fn a_read_is_answered_only_after_its_admission() -> TestResult {
     for (request, reply) in &reads {
         let admitted = Some(AgentAccept::Admitted);
         assert!(
-            answer::agent((request, &opened), (admitted, reply)),
+            answer::agent((request, &opened, &caller), (admitted, reply)),
             "{request:?}"
         );
         assert!(
-            !answer::agent((request, &opened), (None, reply)),
+            !answer::agent((request, &opened, &caller), (None, reply)),
             "{request:?}"
         );
     }
@@ -188,7 +197,7 @@ fn a_read_is_answered_only_after_its_admission() -> TestResult {
 
 #[test]
 fn a_creation_is_answered_with_the_object_its_own_request_created() -> TestResult {
-    let opened = opened()?;
+    let (opened, caller) = (opened()?, caller()?);
     let worker = AgentId::new("worker")?;
     let message = AgentMessage::text(MessageRole::User, "hi")?;
     let submit = AgentRequest::Submit(AgentSubmit::new(worker, message, None));
@@ -198,9 +207,12 @@ fn a_creation_is_answered_with_the_object_its_own_request_created() -> TestResul
     let bound = |task: &AgentTaskSummary| Some(AgentAccept::Submitted(task.id, false));
     for accept in [bound(&created), None] {
         let reply = AgentReply::Summary(created.clone());
-        assert!(answer::agent((&submit, &opened), (accept, &reply)));
+        assert!(answer::agent((&submit, &opened, &caller), (accept, &reply)));
         let reply = AgentReply::Summary(another.clone());
-        assert!(!answer::agent((&submit, &opened), (accept, &reply)));
+        assert!(!answer::agent(
+            (&submit, &opened, &caller),
+            (accept, &reply)
+        ));
     }
 
     let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
@@ -220,7 +232,7 @@ fn a_creation_is_answered_with_the_object_its_own_request_created() -> TestResul
         AgentMessage::text(MessageRole::User, "more")?,
     );
     let summary = AgentReply::Summary(another_task(&created)?);
-    assert!(answer::agent((&send, &opened), (None, &summary)));
+    assert!(answer::agent((&send, &opened, &caller), (None, &summary)));
     Ok(())
 }
 
@@ -235,7 +247,7 @@ fn another_task(
 
 #[test]
 fn an_end_is_answered_only_once_the_object_ended() -> TestResult {
-    let opened = opened()?;
+    let (opened, caller) = (opened()?, caller()?);
     let worker = AgentId::new("worker")?;
     let mut summary = task(1, "worker")?;
     let cancel = AgentRequest::Cancel(worker.clone(), summary.id);
@@ -249,17 +261,20 @@ fn an_end_is_answered_only_once_the_object_ended() -> TestResult {
         summary.state = state;
         let reply = AgentReply::Summary(summary.clone());
         assert!(
-            !answer::agent((&cancel, &opened), (admitted, &reply)),
+            !answer::agent((&cancel, &opened, &caller), (admitted, &reply)),
             "{state:?}"
         );
         assert!(
-            answer::agent((&send, &opened), (admitted, &reply)),
+            answer::agent((&send, &opened, &caller), (admitted, &reply)),
             "{state:?}"
         );
     }
     summary.state = AgentTaskState::Cancelled;
     let reply = AgentReply::Summary(summary);
-    assert!(answer::agent((&cancel, &opened), (admitted, &reply)));
+    assert!(answer::agent(
+        (&cancel, &opened, &caller),
+        (admitted, &reply)
+    ));
 
     let id = ProcessId::from_bytes([1; 16]);
     let terminate = ProcessRequest::Terminate(id, 1_000);
@@ -274,4 +289,53 @@ fn an_end_is_answered_only_once_the_object_ended() -> TestResult {
     let reply = ProcessReply::Summary(summary);
     assert!(answer::process((&terminate, &opened), (admitted, &reply)));
     Ok(())
+}
+
+#[test]
+fn a_task_answer_names_a_task_the_caller_created() -> TestResult {
+    let (opened, caller) = (opened()?, caller()?);
+    let worker = AgentId::new("worker")?;
+    let mine = task(1, "worker")?;
+    // Another Endpoint that sent the same message to the same route derived the same
+    // RequestId, and its task is just as valid; it is still not this caller's.
+    let mut theirs = mine.clone();
+    theirs.creator = EndpointId::try_from(base_point().as_slice())?;
+    let message = AgentMessage::text(MessageRole::User, "hi")?;
+    let submit = AgentRequest::Submit(AgentSubmit::new(worker.clone(), message, None));
+    let fresh = Some(AgentAccept::Submitted(mine.id, false));
+    let listing = AgentRequest::Tasks(worker.clone(), None);
+    let get = AgentRequest::Get(worker, mine.id);
+    let input = AgentMessage::text(MessageRole::User, "hi")?;
+    let admitted = Some(AgentAccept::Admitted);
+    for (summary, taken) in [(&mine, true), (&theirs, false)] {
+        let reply = AgentReply::Summary(summary.clone());
+        // A fresh submit, and one answered from replay.
+        assert_eq!(
+            answer::agent((&submit, &opened, &caller), (fresh, &reply)),
+            taken
+        );
+        assert_eq!(
+            answer::agent((&submit, &opened, &caller), (None, &reply)),
+            taken
+        );
+        let page = AgentReply::Page(vec![summary.clone()], None);
+        assert_eq!(
+            answer::agent((&listing, &opened, &caller), (admitted, &page)),
+            taken
+        );
+        let details = AgentTaskDetails::new(summary.clone(), input.clone());
+        let details = AgentReply::Details(Box::new(details));
+        assert_eq!(
+            answer::agent((&get, &opened, &caller), (admitted, &details)),
+            taken
+        );
+    }
+    Ok(())
+}
+
+/// A second valid Ed25519 key: the standard base point.
+const fn base_point() -> [u8; 32] {
+    let mut key = [0x66_u8; 32];
+    key[0] = 0x58;
+    key
 }

@@ -6,7 +6,7 @@
 use std::io;
 
 use ma2a_core::{
-    RequestId,
+    EndpointId, RequestId,
     service::{FrameKind, OpenBody, OpenHeader, RemotePath, ServiceError},
 };
 use ma2a_runtime::ipc::{IpcPaths, LocalApiClient, LocalStream, StreamUpgrade};
@@ -16,7 +16,7 @@ use tokio::io::{ReadHalf, WriteHalf};
 
 use crate::{
     AppError,
-    commands::workflows::{command, request_fields},
+    commands::workflows::{command, request_fields, unit_command},
 };
 
 pub(crate) mod agent;
@@ -133,6 +133,39 @@ pub(crate) async fn open_bound(
     };
     sent.await.map_err(ClientError::Stream)?;
     Ok((request_id, (reader, writer)))
+}
+
+/// This Runtime's own Endpoint, which a target records as the creator of every task it
+/// submits there.
+pub(crate) async fn own_endpoint(paths: &IpcPaths) -> Result<EndpointId, AppError> {
+    crate::daemon_control::require(paths).await?;
+    let response = LocalApiClient::new(paths.clone())
+        .call(&unit_command("endpoint_info")?)
+        .await?;
+    let document: Value = serde_json::from_slice(&response).map_err(io::Error::other)?;
+    crate::output::reject_runtime_error(&document)?;
+    document
+        .pointer("/result/payload/endpoint_id")
+        .and_then(Value::as_str)
+        .and_then(endpoint_id)
+        .ok_or_else(|| io::Error::other("endpoint_info named no Endpoint").into())
+}
+
+/// The Endpoint written as 64 lowercase hexadecimal characters, if `hex` is one.
+pub(crate) fn endpoint_id(hex: &str) -> Option<EndpointId> {
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    };
+    let bytes: Option<Vec<u8>> = hex
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| Some((digit(*pair.first()?)? << 4) | digit(*pair.get(1)?)?))
+        .collect();
+    (hex.len() == 64)
+        .then_some(bytes?)
+        .and_then(|bytes| EndpointId::try_from(bytes.as_slice()).ok())
 }
 
 /// Ends the process with `outcome`, reported as `main` reports it.

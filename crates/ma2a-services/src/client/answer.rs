@@ -6,34 +6,36 @@
 //! before it reports anything as that request's result.
 
 use ma2a_core::{
-    RequestId,
+    EndpointId, RequestId,
     service::{
         AgentAccept, AgentId, AgentReply, AgentRequest, AgentTaskId, AgentTaskSummary,
         ProcessAccept, ProcessReply, ProcessRequest,
     },
 };
 
-/// Whether `accept` and `reply` answer the content-free Agent operation `request`, opened
-/// under the `RequestId` `opened`.
+/// Whether `accept` and `reply` answer the content-free Agent operation `request`, sent by the
+/// Endpoint `caller` and opened under the `RequestId` `opened`.
 ///
 /// The reply must be the operation's own form, of the Agent and task it named: Cards for
 /// `agents`, the Summary for `submit`, `send`, and `cancel`, Details for `get`, and a Page of
-/// the named Agent's tasks for `tasks`. The Summary of `submit` is of the task `opened`
-/// created, and that of `cancel` of an ended task. The accept is Submitted for `submit`,
-/// binding the task the Summary describes, and Admitted for the others; the outcome of a
-/// mutation answered from replay has no accept, but a read reserves no `RequestId` and is never
-/// answered that way. A page lists ascending IDs strictly after the cursor sent and names its
+/// the named Agent's tasks for `tasks`. Every task it names is one `caller` created, since a
+/// target binds a submission to its creator and request ID together and shows a caller only
+/// its own tasks. The Summary of `submit` is of the task `opened` created, and that of
+/// `cancel` of an ended task. The accept is Submitted for `submit`, binding the task the
+/// Summary describes, and Admitted for the others; the outcome of a mutation answered from
+/// replay has no accept, but a read reserves no `RequestId` and is never answered that way. A page lists ascending IDs strictly after the cursor sent and names its
 /// own last one as the next cursor. `watch` and `artifact` have no such answer.
 pub fn agent(
-    (request, opened): (&AgentRequest, &RequestId),
+    (request, opened, caller): (&AgentRequest, &RequestId, &EndpointId),
     (accept, reply): (Option<AgentAccept>, &AgentReply),
 ) -> bool {
     let admitted = accept.map_or_else(
         || request.is_mutation(),
         |accept| accept == AgentAccept::Admitted,
     );
+    let mine = |summary: &AgentTaskSummary| summary.creator == *caller;
     let names = |summary: &AgentTaskSummary, (agent, task): (&AgentId, &AgentTaskId)| {
-        summary.agent == *agent && summary.id == *task
+        mine(summary) && summary.agent == *agent && summary.id == *task
     };
     match (request, reply) {
         (AgentRequest::Agents(after), AgentReply::Cards(cards, next)) => {
@@ -42,6 +44,7 @@ pub fn agent(
         }
         (AgentRequest::Submit(_), AgentReply::Summary(summary)) => {
             request.agent() == Some(&summary.agent)
+                && mine(summary)
                 && summary.request_id == *opened
                 && match accept {
                     None => true,
@@ -61,7 +64,7 @@ pub fn agent(
         (AgentRequest::Tasks(agent, after), AgentReply::Page(tasks, next)) => {
             let listed = tasks.iter().map(|task| &task.id);
             admitted
-                && tasks.iter().all(|task| task.agent == *agent)
+                && tasks.iter().all(|task| mine(task) && task.agent == *agent)
                 && ascending(after.as_ref(), (listed, next.as_ref()))
         }
         _ => false,

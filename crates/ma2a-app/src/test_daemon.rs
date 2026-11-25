@@ -46,15 +46,27 @@ pub(crate) fn refusing(error: &str) -> Script {
     vec![(FrameKind::Open, error.as_bytes().to_vec())]
 }
 
+/// The stand-in Runtime's own Endpoint, which created every task the target answers with: the
+/// identity point, a valid Ed25519 key.
+const OWN: [u8; 32] = {
+    let mut own = [0_u8; 32];
+    own[0] = 1;
+    own
+};
+
+/// Another Endpoint than the stand-in's own: the Ed25519 base point.
+pub(crate) fn another_endpoint() -> TestResult<EndpointId> {
+    let mut key = [0x66_u8; 32];
+    key[0] = 0x58;
+    Ok(EndpointId::try_from(key.as_slice())?)
+}
+
 /// A queued task of `agent` on the target.
 pub(crate) fn summary(task: AgentTaskId, agent: &str) -> TestResult<AgentTaskSummary> {
-    // The identity point is a valid Ed25519 key.
-    let mut creator = [0_u8; 32];
-    creator[0] = 1;
     Ok(AgentTaskSummary::new(
         (task, AgentId::new(agent)?),
         (
-            EndpointId::try_from(creator.as_slice())?,
+            EndpointId::try_from(OWN.as_slice())?,
             RequestId::try_from([9; 16].as_slice())?,
         ),
         1_000,
@@ -135,14 +147,14 @@ impl Daemon {
             .open(paths.lock_path())?;
         lock.lock()?;
         let listener = UnixListener::bind(paths.socket_path())?;
-        let key = || {
-            let key = iroh::SecretKey::generate().public();
-            key.as_bytes().iter().fold(String::new(), |mut hex, byte| {
+        let hex = |key: &[u8]| {
+            key.iter().fold(String::new(), |mut hex, byte| {
                 let _written = write!(hex, "{byte:02x}");
                 hex
             })
         };
-        let (endpoint, own) = (key(), key());
+        let endpoint = hex(iroh::SecretKey::generate().public().as_bytes());
+        let own = hex(&OWN);
         let serving = tokio::spawn(serve(listener, (scripts, own.clone())));
         Ok(Self {
             paths,
@@ -178,6 +190,10 @@ async fn serve(listener: UnixListener, (scripts, own): (Vec<Script>, String)) {
             Some("handshake") => json!({
                 "version": version, "request_id": null, "revision": 1,
                 "result": {"type": "handshake", "payload": {}},
+            }),
+            Some("endpoint_info") => json!({
+                "version": version, "request_id": null, "revision": 1,
+                "result": {"type": "endpoint_info", "payload": {"endpoint_id": own}},
             }),
             Some("stream_open") if request.get("target_endpoint_id") == Some(&json!(own)) => {
                 json!({"version": version, "request_id": null, "error": "invalid_input"})

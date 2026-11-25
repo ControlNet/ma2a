@@ -83,7 +83,7 @@ impl Fixture {
         let state = TempState::new(label)?;
         let (store, _requests) = mpsc::channel(1);
         let store = StoreClient::new(store);
-        let local = iroh::SecretKey::generate().public().into();
+        let local = local();
         let shutdown = CancellationToken::new();
         let processes = ProcessManager::new(
             (local, store.clone(), Arc::new(SystemClock)),
@@ -488,6 +488,11 @@ fn agent_answer(
     ])
 }
 
+/// This Runtime's own Endpoint, which creates every task its tools submit.
+fn local() -> ma2a_core::EndpointId {
+    iroh::SecretKey::from_bytes(&[7; 32]).public().into()
+}
+
 /// The `RequestId` every tool call here opens its mutations under.
 const OPENED: [u8; 16] = [9; 16];
 
@@ -495,10 +500,7 @@ const OPENED: [u8; 16] = [9; 16];
 fn ended(task: AgentTaskId, agent: &str) -> TestResult<ma2a_core::service::AgentTaskSummary> {
     let mut summary = ma2a_core::service::AgentTaskSummary::new(
         (task, AgentId::new(agent)?),
-        (
-            iroh::SecretKey::generate().public().into(),
-            RequestId::try_from(OPENED.as_slice())?,
-        ),
+        (local(), RequestId::try_from(OPENED.as_slice())?),
         1_000,
     );
     summary.state = ma2a_core::service::AgentTaskState::Completed;

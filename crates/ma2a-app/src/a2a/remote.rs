@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::backend::{Backend, Refusal, Route, message_json};
-use crate::commands::remote::{agent::passes, open_as, open_bound};
+use crate::commands::remote::{agent::passes, open_as, open_bound, own_endpoint};
 
 /// Pause before reaching a target again that is restarting or unreachable.
 const RETRY: Duration = Duration::from_secs(1);
@@ -72,6 +72,7 @@ async fn answer(
     (endpoint, request_id): (&str, Option<&str>),
     request: AgentRequest,
 ) -> Result<Answer, Refusal> {
+    let caller = own_endpoint(&backend.paths).await?;
     let (opened, (mut reader, writer)) = open_bound(
         &backend.paths,
         (endpoint, request_id),
@@ -81,7 +82,7 @@ async fn answer(
     let answer = client::agent::call(&mut reader).await;
     drop(writer);
     let (accept, reply) = answer.map_err(|error| refusal(&error))?;
-    if !client::answer::agent((&request, &opened), (accept, &reply)) {
+    if !client::answer::agent((&request, &opened, &caller), (accept, &reply)) {
         return Err(Refusal::named("internal"));
     }
     Ok((accept, reply))

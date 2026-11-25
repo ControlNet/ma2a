@@ -72,7 +72,8 @@ impl Call<'_> {
         let (accept, reply) = client::agent::call(&mut reader)
             .await
             .map_err(|error| failed(&error))?;
-        if !client::answer::agent((&request, &opened), (accept, &reply)) {
+        let caller = self.manager.local();
+        if !client::answer::agent((&request, &opened, &caller), (accept, &reply)) {
             return Err(invalid("Agent answer"));
         }
         Ok(reply)

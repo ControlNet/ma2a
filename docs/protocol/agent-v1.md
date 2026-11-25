@@ -76,7 +76,9 @@ should keep: a grant replaces all eight bits, so a flag left out is cleared.
 **Creator ownership.** A remote caller sees and manages only the tasks its own Endpoint created.
 Every task operation names its Agent, and the task must belong to that Agent. A task that does not
 exist, was created by another Endpoint, or belongs to another Agent answers `unknown_task`, in all
-three cases alike. The local operator sees every task through the local API.
+three cases alike. The local operator sees every task through the local API. A caller takes no
+answer that names a task of another creator, the tasks of a page included, as the answer to its
+request.
 
 **Attribution only.** `from_agent` in `submit` is recorded in the task, shown in its summary, and
 passed to the Agent as `from.agent`. It never authorizes anything, and the target never checks it.

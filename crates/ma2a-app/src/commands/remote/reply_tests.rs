@@ -16,7 +16,7 @@ use crate::{
         agents::{AgentCommand, MessageArgs, SubmitArgs, TaskTarget},
         processes::{ProcessArgs, ProcessCommand},
     },
-    test_daemon::{Daemon, Script, TestResult, answering, summary},
+    test_daemon::{Daemon, Script, TestResult, another_endpoint, answering, summary},
 };
 
 const A: AgentTaskId = AgentTaskId::from_bytes([1; 16]);
@@ -94,7 +94,15 @@ async fn an_agent_submit_takes_only_the_task_it_was_bound_to() -> TestResult {
         AgentAccept::Submitted(A, false),
         &AgentReply::Summary(another),
     )?;
-    for script in [bound(B, "worker")?, bound(A, "other")?, another] {
+    // Another Endpoint's task under the same RequestId, as its own submit of the same
+    // message to the same route derives it, is not this caller's either.
+    let mut theirs = summary(A, "worker")?;
+    theirs.creator = another_endpoint()?;
+    let theirs = answering(
+        AgentAccept::Submitted(A, false),
+        &AgentReply::Summary(theirs),
+    )?;
+    for script in [bound(B, "worker")?, bound(A, "other")?, another, theirs] {
         let answered = agent(script, submit()).await?;
         assert!(protocol(&answered), "{answered:?}");
     }
@@ -115,6 +123,11 @@ async fn an_agent_task_page_lists_only_the_agent_it_named() -> TestResult {
     assert!(own.is_ok(), "{own:?}");
     let answered = agent(page("other")?, tasks()).await?;
     assert!(protocol(&answered), "{answered:?}");
+    let mut theirs = summary(B, "worker")?;
+    theirs.creator = another_endpoint()?;
+    let page = AgentReply::Page(vec![summary(A, "worker")?, theirs], None);
+    let answered = agent(answering(AgentAccept::Admitted, &page)?, tasks()).await?;
+    assert!(protocol(&answered), "another creator's task: {answered:?}");
     Ok(())
 }
 

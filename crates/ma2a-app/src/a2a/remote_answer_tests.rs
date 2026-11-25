@@ -12,7 +12,8 @@ use tokio::sync::mpsc;
 use crate::{
     a2a::backend::{Backend, Refusal},
     test_daemon::{
-        Daemon, Script, TestResult, answering, refusing, summary, watch_completing, watch_lost,
+        Daemon, Script, TestResult, another_endpoint, answering, refusing, summary,
+        watch_completing, watch_lost,
     },
 };
 
@@ -38,6 +39,11 @@ async fn a_cancel_takes_only_the_summary_of_an_ended_task() -> TestResult {
         cancelled(answered(AgentTaskState::Cancelled)?).await?,
         Ok(())
     );
+    // The same task ID of another creator is not the task this caller cancelled.
+    let mut theirs = summary(TASK, "worker")?;
+    (theirs.state, theirs.creator) = (AgentTaskState::Cancelled, another_endpoint()?);
+    let theirs = answering(AgentAccept::Admitted, &AgentReply::Summary(theirs))?;
+    assert_eq!(cancelled(theirs).await?, Err(Refusal::named("internal")));
     // A task still running did not end, which a cancel answers only once it did.
     assert_eq!(
         cancelled(answered(AgentTaskState::Running)?).await?,
