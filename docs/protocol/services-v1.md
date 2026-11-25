@@ -250,6 +250,11 @@ restart.
   most 1 h) or the 24 h lifetime expires, on cancel, or on Runtime shutdown. After the caller's
   `end`, the target keeps reading its stream, so a later `cancel` or reset still ends the relay at
   once even while the destination stays silent.
+- **Blocked writes.** A write to the destination that makes no progress for the idle timeout ends
+  the relay as `timed_out`, even while the destination keeps sending. A destination that never
+  reads therefore cannot hold the stream open by trickling bytes back. While such a write is
+  blocked, the target does not read the caller's stream, so a `cancel` sent then takes effect
+  when the write moves again or the idle timeout ends it.
 - **Outcome.** `{reason, bytes_to_target, bytes_from_target, duration_ms}`. A failure of the
   destination socket after connect is an `unreachable` outcome.
 

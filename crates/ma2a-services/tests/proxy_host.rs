@@ -164,6 +164,43 @@ async fn idle_streams_time_out_and_cancel_ends_the_relay() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_write_blocked_for_the_idle_timeout_ends_the_relay_while_the_destination_talks()
+-> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    // Never reads, but keeps sending one byte at a time, which counts as activity.
+    let talker = tokio::spawn(async move {
+        let mut socket = listener.accept().await?.0;
+        while socket.write_all(b".").await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok::<_, std::io::Error>(socket)
+    });
+    let ((mut reader, mut writer), server) = start(loopback(port, 300)?);
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    // Far more than the loopback socket buffers hold, so the write to the destination blocks.
+    let flood = tokio::spawn(async move {
+        let chunk = content(MAX_DATA_CHUNK_LEN);
+        for _ in 0..1024 {
+            if writer.data(Channel::Input, &chunk).await.is_err() {
+                break;
+            }
+        }
+    });
+    let frames = tokio::time::timeout(Duration::from_secs(10), drain(&mut reader)).await??;
+    let result = outcome(&frames)?.map_err(|error| format!("{error:?}"))?;
+    assert_eq!(result.reason, EndReason::TimedOut);
+    assert!(result.bytes_from_target > 0, "the destination never talked");
+    assert_eq!(
+        server.await?.end,
+        OperationEnd::Failed(ServiceError::TimedOut)
+    );
+    flood.abort();
+    talker.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_cancel_after_end_stops_a_relay_to_a_silent_destination() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();

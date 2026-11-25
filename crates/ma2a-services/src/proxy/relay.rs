@@ -36,6 +36,8 @@ enum Stop {
     Caller(ServiceError),
     /// The destination socket failed.
     Target,
+    /// A write to the destination made no progress for the idle timeout.
+    Idle,
 }
 
 struct Counters {
@@ -43,6 +45,7 @@ struct Counters {
     from_target: AtomicU64,
     last_activity: AtomicU64,
     started: Instant,
+    idle: Duration,
     /// Signalled when the destination side has delivered everything to the caller.
     delivered: Notify,
 }
@@ -68,6 +71,7 @@ where
         from_target: AtomicU64::new(0),
         last_activity: AtomicU64::new(0),
         started: Instant::now(),
+        idle,
         delivered: Notify::new(),
     };
     let (target_read, target_write) = stream.into_split();
@@ -82,12 +86,13 @@ where
         biased;
         () = shutdown.cancelled() => (Ok(EndReason::Shutdown), None),
         () = tokio::time::sleep_until(lifetime) => (Ok(EndReason::TimedOut), None),
-        () = idle_expired(&counters, idle) => (Ok(EndReason::TimedOut), None),
+        () = idle_expired(&counters) => (Ok(EndReason::TimedOut), None),
         joined = both => match joined {
             Ok(((), ())) => (Ok(EndReason::Completed), None),
             Err(Stop::Caller(ServiceError::Cancelled)) => (Ok(EndReason::Cancelled), None),
             Err(Stop::Caller(error)) => (Ok(EndReason::Cancelled), Some(error)),
             Err(Stop::Target) => (Err(ServiceError::Unreachable), None),
+            Err(Stop::Idle) => (Ok(EndReason::TimedOut), None),
         },
     };
     Relayed {
@@ -98,8 +103,8 @@ where
     }
 }
 
-async fn idle_expired(counters: &Counters, idle: Duration) {
-    let idle_ms = u64::try_from(idle.as_millis()).unwrap_or(u64::MAX);
+async fn idle_expired(counters: &Counters) {
+    let idle_ms = u64::try_from(counters.idle.as_millis()).unwrap_or(u64::MAX);
     loop {
         let last = counters.last_activity.load(Ordering::Relaxed);
         let due = counters.started + Duration::from_millis(last.saturating_add(idle_ms));
@@ -127,11 +132,7 @@ async fn upstream<R: AsyncRead + Unpin>(
                 let Ok((Channel::Input, bytes)) = frame.data() else {
                     return Err(Stop::Caller(ServiceError::InvalidInput));
                 };
-                target.write_all(bytes).await.map_err(|_| Stop::Target)?;
-                counters
-                    .to_target
-                    .fetch_add(len64(bytes.len()), Ordering::Relaxed);
-                counters.touch();
+                write(&mut target, bytes, counters).await?;
             }
             FrameKind::End if frame.end() == Ok(Channel::Input) => break true,
             FrameKind::Cancel => return Err(Stop::Caller(ServiceError::Cancelled)),
@@ -155,6 +156,27 @@ async fn upstream<R: AsyncRead + Unpin>(
             Ok(None) => Ok(()),
             Err(error) => Err(Stop::Caller(error)),
         };
+    }
+    Ok(())
+}
+
+/// Writes `bytes` to the destination. A write that stays blocked for the idle timeout ends
+/// the relay even while the destination keeps sending, so one that never reads cannot hold it.
+async fn write(target: &mut OwnedWriteHalf, bytes: &[u8], counters: &Counters) -> Result<(), Stop> {
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let written = tokio::time::timeout(counters.idle, target.write(rest))
+            .await
+            .map_err(|_| Stop::Idle)?
+            .map_err(|_| Stop::Target)?;
+        if written == 0 {
+            return Err(Stop::Target);
+        }
+        rest = rest.get(written..).unwrap_or_default();
+        counters
+            .to_target
+            .fetch_add(len64(written), Ordering::Relaxed);
+        counters.touch();
     }
     Ok(())
 }
