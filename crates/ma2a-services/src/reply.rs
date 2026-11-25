@@ -138,13 +138,31 @@ mod tests {
         // Then
         assert_eq!(report.end, OperationEnd::Failed(ServiceError::TimedOut));
         assert!(started.elapsed() <= super::FRAME_GRACE * 2);
+
+        // And: the frame cut short is never followed by a clean end.
+        let mut read = [0_u8; 8];
+        assert_eq!(peer.read(&mut read).await.ok(), Some(1));
+        let ended = tokio::time::timeout(super::FRAME_GRACE, peer.read(&mut read)).await;
+        assert!(ended.is_err(), "the peer saw {ended:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reject_nobody_reads_is_given_up_after_the_grace() {
+        // Given: a stream with no room, whose reader never drains it.
+        let (mut peer, host) = tokio::io::duplex(1);
+        let mut writer = FrameWriter::new(host);
+
+        // When
+        let started = tokio::time::Instant::now();
         let rejected = super::reject(&mut writer, ServiceError::Unavailable).await;
+
+        // Then: the grace ran out on the frame itself, which is never followed by a clean end.
         assert_eq!(
             rejected.end,
             OperationEnd::Rejected(ServiceError::Unavailable)
         );
-
-        // And: the frame cut short is never followed by a clean end.
+        assert_eq!(started.elapsed(), super::FRAME_GRACE);
+        assert!(writer.is_torn());
         let mut read = [0_u8; 8];
         assert_eq!(peer.read(&mut read).await.ok(), Some(1));
         let ended = tokio::time::timeout(super::FRAME_GRACE, peer.read(&mut read)).await;
