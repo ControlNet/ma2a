@@ -38,7 +38,8 @@ bash .claude/skills/interactive-ssh/scripts/open-session.sh \
 - `ssh -F <config> <os> '<command>'` runs one command; `scp -F <config>` copies files.
 - On Windows the command runs in PowerShell; wrap bash work as `"bash -lc '<command>'"` and use
   `/d/a/...` paths.
-- `cd` into the workspace from `<out>/<os>/workspace.txt` first.
+- `cd` into the workspace from `<out>/<os>/workspace.txt` first. That path is POSIX (`/d/a/...`): use
+  it inside `bash -lc`; PowerShell (pwsh 7 over ssh) wants `D:\a\...` and already starts there.
 - Redirect long output to a log file on the runner and read it in pieces.
 - A session's token can have SeBackupPrivilege and SeRestorePrivilege enabled (seen in some
   sessions, not all; check with `C:\Windows\System32\whoami.exe /priv`), which a CI job step does
