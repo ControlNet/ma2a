@@ -3,10 +3,10 @@
 use std::io::{self, Read as _, Write as _};
 
 use ma2a_core::service::{
-    FileMetadata, FilesRequest, FilesResult, MAX_SMALL_FILE_LEN, OpenBody, WriteMode,
+    FileMetadata, FilesRequest, FilesResult, MAX_SMALL_FILE_LEN, OpenBody, ServiceError, WriteMode,
 };
 use ma2a_runtime::ipc::IpcPaths;
-use ma2a_services::client;
+use ma2a_services::client::{self, ClientError};
 
 use super::{open, remote_path, transfer};
 use crate::{
@@ -66,15 +66,30 @@ async fn done(target: Target<'_>, request: FilesRequest) -> Result<(), AppError>
     files(target, request, &[]).await.map(|_| ())
 }
 
+/// Whether a page lies strictly after the cursor sent, and so does the cursor it names next;
+/// a target answering otherwise would keep a listing going forever.
+fn moves_past(
+    after: Option<&str>,
+    (mut listed, next): (impl Iterator<Item = impl AsRef<str>>, Option<&str>),
+) -> bool {
+    after.is_none_or(|after| {
+        listed.all(|name| name.as_ref() > after) && next.is_none_or(|next| next > after)
+    })
+}
+
 async fn list(target: Target<'_>, path: &str) -> Result<(), AppError> {
     let directory = remote_path(path)?;
-    let mut cursor = None;
+    let mut cursor: Option<String> = None;
     loop {
-        let request = FilesRequest::List(directory.clone(), cursor.take());
+        let request = FilesRequest::List(directory.clone(), cursor.clone());
         let (result, _) = files(target, request, &[]).await?;
         let FilesResult::Listing(entries, next) = result else {
             return Err(io::Error::other("target answered a listing with another result").into());
         };
+        let names = entries.iter().map(|entry| entry.name.as_str());
+        if !moves_past(cursor.as_deref(), (names, next.as_deref())) {
+            return Err(ClientError::Stream(ServiceError::InvalidInput).into());
+        }
         let mut stdout = io::stdout().lock();
         for entry in entries {
             let metadata = entry.metadata;
@@ -138,4 +153,28 @@ fn print_metadata(metadata: &FileMetadata) -> io::Result<()> {
         writeln!(stdout, "Modified (Unix ms): {modified}")?;
     }
     writeln!(stdout, "Read-only: {}", metadata.read_only)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::moves_past;
+
+    /// Whether a page listing `listed` and naming `next` moves past `after`.
+    fn moves(after: Option<&str>, listed: &[&str], next: Option<&str>) -> bool {
+        moves_past(after, (listed.iter().copied(), next))
+    }
+
+    #[test]
+    fn a_listing_page_must_move_past_the_cursor_sent() {
+        // The first page has nothing to move past.
+        assert!(moves(None, &["b"], Some("b")));
+        assert!(moves(Some("b"), &["c", "d"], Some("d")));
+        assert!(moves(Some("b"), &["c"], None));
+        // The cursor may name an entry the host left out.
+        assert!(moves(Some("b"), &[], Some("c")));
+        // The same cursor again, one behind it, or an entry already listed.
+        assert!(!moves(Some("b"), &["c"], Some("b")));
+        assert!(!moves(Some("b"), &[], Some("a")));
+        assert!(!moves(Some("b"), &["b"], None));
+    }
 }
