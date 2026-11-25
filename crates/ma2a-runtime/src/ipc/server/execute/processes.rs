@@ -38,15 +38,14 @@ pub(super) async fn execute(
             Ok(CommandResult::process_details(view))
         }
         ProcessCommand::Terminate(_, id, grace_ms) => {
-            let record = manager
+            // The record and revision of the termination's own commit, as for a deletion.
+            let terminated = manager
                 .terminate((None, id), (grace_ms, ProcessReason::Requested))
                 .await
                 .map_err(refusal)?;
-            committed(
-                manager,
-                CommandResult::process_terminated(ProcessView::new(record)),
-            )
-            .await
+            let revision = terminated.revision();
+            let view = ProcessView::new(terminated.into_value());
+            Ok(CommandResult::process_terminated(view).at_revision(revision))
         }
         ProcessCommand::Delete(_, id) => {
             // The archive's own record and revision: nothing after its commit, neither a log
@@ -74,15 +73,6 @@ async fn list(
         .flatten();
     let views = records.into_iter().map(ProcessView::new).collect();
     CommandResult::processes(views, next)
-}
-
-/// Stamps a mutation with the Store revision its commit reached.
-async fn committed(
-    manager: &ProcessManager,
-    result: CommandResult,
-) -> Result<CommandResult, ApiError> {
-    let revision = manager.revision().await.map_err(refusal)?;
-    Ok(result.at_revision(revision))
 }
 
 /// Maps a Process refusal onto the local API error set.

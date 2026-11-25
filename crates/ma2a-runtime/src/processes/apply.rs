@@ -5,7 +5,7 @@ use ma2a_core::{
     service::{ProcessId, ProcessReason, ProcessState, ServiceError},
 };
 use ma2a_services::supervisor::{EndCause, SupervisorStatus, status};
-use ma2a_store::{ProcessRecord, ProcessTransition, StoreError};
+use ma2a_store::{Committed, ProcessRecord, ProcessTransition, StoreError};
 
 use super::ProcessManager;
 
@@ -55,12 +55,13 @@ fn step_for(
 
 impl ProcessManager {
     /// Moves one Process without an observed termination; a step another task already took
-    /// answers the record as it is.
+    /// answers the record as it is. Every answer comes with the revision it was committed or
+    /// read at.
     pub(super) async fn step(
         &self,
         id: ProcessId,
         (to, reason): (ProcessState, Option<ProcessReason>),
-    ) -> Result<ProcessRecord, ServiceError> {
+    ) -> Result<Committed<ProcessRecord>, ServiceError> {
         let transition = ProcessTransition {
             to,
             reason,
@@ -74,7 +75,7 @@ impl ProcessManager {
         &self,
         id: ProcessId,
         transition: ProcessTransition,
-    ) -> Result<ProcessRecord, ServiceError> {
+    ) -> Result<Committed<ProcessRecord>, ServiceError> {
         let result = self
             .store()
             .processes(move |repository| repository.transition_process(id, transition))
@@ -83,10 +84,8 @@ impl ProcessManager {
             self.coordination().terminating.remove(&id);
         }
         match result {
-            Ok(committed) => Ok(committed.into_value()),
-            Err(StoreError::Protocol(ProtocolError::CONFLICT)) => {
-                self.record(id).await?.ok_or(ServiceError::UnknownProcess)
-            }
+            Ok(committed) => Ok(committed),
+            Err(StoreError::Protocol(ProtocolError::CONFLICT)) => found(self.record_at(id).await?),
             Err(StoreError::Protocol(ProtocolError::NOT_FOUND)) => {
                 Err(ServiceError::UnknownProcess)
             }
@@ -99,15 +98,15 @@ impl ProcessManager {
         &self,
         id: ProcessId,
         reported: SupervisorStatus,
-    ) -> Result<ProcessRecord, ServiceError> {
-        let current = self.record(id).await?.ok_or(ServiceError::UnknownProcess)?;
+    ) -> Result<Committed<ProcessRecord>, ServiceError> {
+        let current = found(self.record_at(id).await?)?;
         let requested = self
             .coordination()
             .terminating
             .get(&id)
             .copied()
             .unwrap_or(ProcessReason::Requested);
-        match step_for(current.state, reported, requested) {
+        match step_for(current.value().state, reported, requested) {
             Some(transition) => self.transition(id, transition).await,
             None => Ok(current),
         }
@@ -120,7 +119,7 @@ impl ProcessManager {
     pub(super) async fn conclude(
         &self,
         record: &ProcessRecord,
-    ) -> Result<ProcessRecord, ServiceError> {
+    ) -> Result<Committed<ProcessRecord>, ServiceError> {
         let directory = self.directory(record.id);
         let recorded = tokio::task::spawn_blocking(move || status::read(&directory))
             .await
@@ -130,6 +129,16 @@ impl ProcessManager {
             Concluded::Ended(ended) => self.step(record.id, ended).await,
         }
     }
+}
+
+/// The record of a read that found the Process, at the revision it was read at.
+pub(super) fn found(
+    read: Committed<Option<ProcessRecord>>,
+) -> Result<Committed<ProcessRecord>, ServiceError> {
+    let revision = read.revision();
+    read.into_value()
+        .map(|record| Committed::new(revision, record))
+        .ok_or(ServiceError::UnknownProcess)
 }
 
 /// What a provably gone supervisor's status record proves.

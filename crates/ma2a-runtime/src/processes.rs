@@ -27,7 +27,7 @@ use ma2a_core::{
     service::{ProcessId, ProcessReason, ServiceError},
 };
 use ma2a_services::supervisor::{Credentials, SupervisorAddress};
-use ma2a_store::ProcessRecord;
+use ma2a_store::{Committed, ProcessRecord};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub(crate) use host::serve;
@@ -136,18 +136,25 @@ impl ProcessManager {
         SupervisorAddress::new(address)
     }
 
-    /// Returns the Store revision, which every Process commit advances.
-    pub(crate) async fn revision(&self) -> Result<u64, ServiceError> {
-        self.store()
-            .processes(|repository| repository.revision())
-            .await?
-            .map_err(|_| ServiceError::Unavailable)
-    }
-
     /// Returns one Process record.
     async fn record(&self, id: ProcessId) -> Result<Option<ProcessRecord>, ServiceError> {
+        Ok(self.record_at(id).await?.into_value())
+    }
+
+    /// Returns one Process record with the Store revision it was read at.
+    ///
+    /// Both are read in one Store call, which no other write can come between.
+    async fn record_at(
+        &self,
+        id: ProcessId,
+    ) -> Result<Committed<Option<ProcessRecord>>, ServiceError> {
         self.store()
-            .processes(move |repository| repository.process(id))
+            .processes(move |repository| {
+                Ok::<_, ma2a_store::StoreError>(Committed::new(
+                    repository.revision()?,
+                    repository.process(id)?,
+                ))
+            })
             .await?
             .map_err(|_| ServiceError::Unavailable)
     }

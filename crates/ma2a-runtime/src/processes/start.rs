@@ -15,7 +15,7 @@ use ma2a_services::{
     FrameWriter, OperationEnd, OperationReport,
     supervisor::{Channel, Credentials, SupervisorRequest},
 };
-use ma2a_store::{NewProcess, ProcessCreation};
+use ma2a_store::{Committed, NewProcess, ProcessCreation};
 use tokio::io::AsyncWrite;
 
 use super::{ProcessManager, follow::request, host::finish};
@@ -130,7 +130,7 @@ impl ProcessManager {
         let id = credentials.id();
         let Ok(proven) = self.launch(credentials, start).await else {
             let failed = (ProcessState::Failed, Some(ProcessReason::SpawnFailed));
-            return self.step(id, failed).await;
+            return self.step(id, failed).await.map(Committed::into_value);
         };
         fault("after_launch");
         let watching = open_watch(proven).await;
@@ -148,7 +148,7 @@ impl ProcessManager {
         fault("after_go");
         if let Ok(reported) = reported {
             self.follow(id, watching.ok());
-            return self.apply(id, reported).await;
+            return self.apply(id, reported).await.map(Committed::into_value);
         }
         // Without the open watch the follower reaches the supervisor itself, and for a
         // Process still `starting` that sends `go` again; a repeated `go` has no effect.

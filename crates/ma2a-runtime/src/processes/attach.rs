@@ -15,7 +15,7 @@ use ma2a_services::{
     FrameReader, FrameWriter, OperationEnd, OperationReport,
     supervisor::{Channel, SupervisorRequest, SupervisorStatus, protocol::decode_reading},
 };
-use ma2a_store::ProcessRecord;
+use ma2a_store::{Committed, ProcessRecord};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 
@@ -161,14 +161,17 @@ impl ProcessManager {
             Err(error) => return finish(writer, Err(error)).await,
         };
         let (record, reason) = match self.apply(id, reported).await {
-            Ok(record) if reported.is_final() => (record, EndReason::Completed),
+            Ok(applied) if reported.is_final() => (applied.into_value(), EndReason::Completed),
             // An end that could not be recorded is not reported over a summary still live.
             Err(_) if reported.is_final() => {
                 return finish(writer, Err(ServiceError::Unavailable))
                     .await
                     .with_bytes(bytes.0, bytes.1);
             }
-            applied => (applied.unwrap_or(record), EndReason::Cancelled),
+            applied => (
+                applied.map_or(record, Committed::into_value),
+                EndReason::Cancelled,
+            ),
         };
         let detached = ProcessReply::Detached(reason, record.summary(), cursor);
         finish(writer, Ok(detached))

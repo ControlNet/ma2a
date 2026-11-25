@@ -205,9 +205,9 @@ async fn a_request_id_binds_exactly_one_process() -> TestResult {
             (1_000, ma2a_core::service::ProcessReason::Requested),
         )
         .await?;
-    assert_eq!(ended.state, ProcessState::Terminated);
+    assert_eq!(ended.value().state, ProcessState::Terminated);
     assert_eq!(
-        ended.reason,
+        ended.value().reason,
         Some(ma2a_core::service::ProcessReason::Requested)
     );
     shutdown.cancel();
@@ -235,7 +235,7 @@ async fn a_new_daemon_readopts_a_running_process_through_the_proof() -> TestResu
             (1_000, ma2a_core::service::ProcessReason::Requested),
         )
         .await?;
-    assert_eq!(ended.state, ProcessState::Terminated);
+    assert_eq!(ended.value().state, ProcessState::Terminated);
     second_shutdown.cancel();
     Ok(())
 }

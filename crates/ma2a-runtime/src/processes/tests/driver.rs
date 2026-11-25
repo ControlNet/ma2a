@@ -289,7 +289,7 @@ async fn a_caller_gone_before_the_accept_still_gets_its_process() -> TestResult 
             (1_000, ma2a_core::service::ProcessReason::Requested),
         )
         .await?;
-    assert_eq!(ended.state, ProcessState::Terminated);
+    assert_eq!(ended.value().state, ProcessState::Terminated);
     shutdown.cancel();
     Ok(())
 }

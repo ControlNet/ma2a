@@ -57,7 +57,7 @@ where
             let ended = manager
                 .terminate((viewer, id), (grace_ms, ProcessReason::Requested))
                 .await;
-            let ended = ended.map(|record| ProcessReply::Summary(record.summary()));
+            let ended = ended.map(|record| ProcessReply::Summary(record.value().summary()));
             answer_effect(writer, ended).await
         }
         ProcessRequest::Delete(id) => {
@@ -204,15 +204,18 @@ impl ProcessManager {
         }
     }
 
-    /// Ends one Process: terminate, the grace period, then kill; answers once it ended.
+    /// Ends one Process: terminate, the grace period, then kill; answers once it ended, with
+    /// the revision its end was committed at, or read at when it had ended already.
     pub(crate) async fn terminate(
         &self,
         (viewer, id): (Option<EndpointId>, ProcessId),
         (grace_ms, reason): (u32, ProcessReason),
-    ) -> Result<ProcessRecord, ServiceError> {
-        let record = visible(self.record(id).await?, viewer)?;
+    ) -> Result<Committed<ProcessRecord>, ServiceError> {
+        let read = self.record_at(id).await?;
+        let revision = read.revision();
+        let record = visible(read.into_value(), viewer)?;
         if record.state.is_terminal() {
-            return Ok(record);
+            return Ok(Committed::new(revision, record));
         }
         let credentials = credentials(&record)
             .filter(|_| record.state != ProcessState::Created)
@@ -233,7 +236,7 @@ impl ProcessManager {
         // and later requests try again.
         if !ended
             .as_ref()
-            .is_ok_and(|record| record.state.is_terminal())
+            .is_ok_and(|record| record.value().state.is_terminal())
         {
             self.coordination().terminating.remove(&id);
         }

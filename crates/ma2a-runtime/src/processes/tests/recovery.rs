@@ -110,7 +110,10 @@ async fn delete_archives_ended_processes_and_keeps_their_binding() -> TestResult
     // The answer is the archive as committed, at the revision it committed.
     assert_eq!(deleted.value().id, done.id);
     assert!(deleted.value().is_archived());
-    assert_eq!(deleted.revision(), manager.revision().await?);
+    assert_eq!(
+        deleted.revision(),
+        manager.record_at(done.id).await?.revision()
+    );
     assert!(!std::fs::exists(manager.directory(done.id))?);
     let binding = (harness.creator, request_id(15)?);
     let (retry, _) = manager.create(binding, &start("echo done")?).await?;
@@ -120,9 +123,14 @@ async fn delete_archives_ended_processes_and_keeps_their_binding() -> TestResult
     assert_eq!(tombstone.id, done.id);
     assert!(tombstone.is_archived());
     let target = (None, active.id);
-    manager
+    let terminated = manager
         .terminate(target, (500, ProcessReason::Requested))
         .await?;
+    // The answer is the end as committed, at the revision it committed.
+    assert_eq!(terminated.value().state, ProcessState::Terminated);
+    let now = manager.record_at(active.id).await?;
+    assert_eq!(terminated.revision(), now.revision());
+    assert_eq!(Some(terminated.value()), now.value().as_ref());
     shutdown.cancel();
     Ok(())
 }
