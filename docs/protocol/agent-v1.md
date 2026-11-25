@@ -700,9 +700,12 @@ completed call keeps its first result.
 larger one is replaced by the error `too_large`.
 
 **Concurrency.** A task may make at most 256 tool calls; the next one fails the task with `limit`.
-At most 8 calls of one task may be open at once; a call made while 8 are open is answered at once
-with `concurrency_exceeded`. A result is delivered only while the task is live and its instance
-still holds it. A call whose task ended before it ran is answered `task_ended`.
+That call never runs. It and every call of the task still open are answered at once with
+`task_ended`, in the same transaction, so the Agent is never left waiting for a result; a result
+that arrives later for one of those open calls is dropped. At most 8 calls of one task may be open
+at once; a call made while 8 are open is answered at once with `concurrency_exceeded`. A result is
+delivered only while the task is live and its instance still holds it. A call whose task ended
+before it ran is answered `task_ended`.
 
 **Errors.** `tool_result.error` is `{code, message}`. `code` is a Services v1 status name (from the
 target, from this Runtime's stream plane, or `task_ended`, `too_large`, `not_found`, `conflict`

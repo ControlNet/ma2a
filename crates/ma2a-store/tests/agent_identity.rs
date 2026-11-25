@@ -129,6 +129,7 @@ fn another_agent_cannot_call_tools_for_a_task_at_the_same_generation() -> TestRe
             name: "exec.run".to_owned(),
             request: br#"{"program":"true","args":[]}"#.to_vec(),
             rejection: br#"{"error":{"code":"concurrency_exceeded","message":"limit"}}"#.to_vec(),
+            ended: br#"{"error":{"code":"task_ended","message":"ended"}}"#.to_vec(),
         },
     )?;
 

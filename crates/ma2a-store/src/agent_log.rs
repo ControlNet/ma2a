@@ -207,3 +207,21 @@ pub(crate) fn deliver_to_holder(
         _ => Ok(None),
     }
 }
+
+/// Returns the task when it belongs to the emitting Agent and its instance still holds it.
+///
+/// Generations of different Agents can be equal, so the Agent is part of the ownership check.
+pub(crate) fn held(
+    transaction: &Transaction<'_>,
+    task: AgentTaskId,
+    output: &crate::AgentOutput,
+) -> Result<Option<AgentTaskRecord>, StoreError> {
+    Ok(load_task(transaction, task)?.filter(|record| {
+        record.summary.agent == output.agent
+            && record.generation == Some(output.generation)
+            && matches!(
+                record.summary.state,
+                AgentTaskState::Running | AgentTaskState::Waiting
+            )
+    }))
+}

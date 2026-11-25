@@ -10,7 +10,7 @@ use rusqlite::{OptionalExtension as _, Transaction, params};
 use crate::{
     AgentTaskRecord, Committed, Repository, StoreError,
     agent_actions::record_durable_event,
-    agent_log::{MAX_DURABLE_EVENTS, append_event, durable_events, load_task, set_state},
+    agent_log::{MAX_DURABLE_EVENTS, append_event, durable_events, held, load_task, set_state},
     agent_tools::record_tool_call,
     repository::increment_revision,
     service_exposures::current_revision,
@@ -61,7 +61,8 @@ pub enum AgentOutputEffect {
     Message(AgentTaskId, AgentMessage),
     /// The Agent reported progress.
     Progress(AgentTaskId, String),
-    /// The Agent asked for a tool; `rejection` answers it when the task has too many open.
+    /// The Agent asked for a tool; `rejection` answers it when the task has too many open, and
+    /// `ended` when it is past the task's limit.
     ToolCall {
         /// The task.
         task: AgentTaskId,
@@ -73,6 +74,9 @@ pub enum AgentOutputEffect {
         request: Vec<u8>,
         /// The result to record at once when the call cannot run now.
         rejection: Vec<u8>,
+        /// The result to record for the call past the task's limit, and for every call still
+        /// open when it ends the task.
+        ended: Vec<u8>,
     },
 }
 
@@ -95,24 +99,6 @@ pub enum AgentOutputApplied {
     ToolCall(AgentTaskId, String),
     /// The tool call was answered at once with its rejection.
     ToolRejected(AgentTaskId, String),
-}
-
-/// Returns the task when it belongs to the emitting Agent and its instance still holds it.
-///
-/// Generations of different Agents can be equal, so the Agent is part of the ownership check.
-fn held(
-    transaction: &Transaction<'_>,
-    task: AgentTaskId,
-    output: &AgentOutput,
-) -> Result<Option<AgentTaskRecord>, StoreError> {
-    Ok(load_task(transaction, task)?.filter(|record| {
-        record.summary.agent == output.agent
-            && record.generation == Some(output.generation)
-            && matches!(
-                record.summary.state,
-                AgentTaskState::Running | AgentTaskState::Waiting
-            )
-    }))
 }
 
 fn apply_state(
@@ -254,8 +240,9 @@ fn apply_effect(
             name,
             request,
             rejection,
+            ended,
         } => held(transaction, task, output)?.map_or(Ok(AgentOutputApplied::Ignored), |record| {
-            let call = (call, name, request, rejection);
+            let call = (call, name, request, (rejection, ended));
             record_tool_call(transaction, (&record, at_ms), call)
         }),
     }

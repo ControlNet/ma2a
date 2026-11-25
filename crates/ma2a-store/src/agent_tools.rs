@@ -55,11 +55,20 @@ fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<CallRow> {
     ))
 }
 
+/// One tool call as the Agent made it: its identifier, tool name, and canonical request, and
+/// the answers recorded at once when it cannot run, too many being open or past the limit.
+type NewToolCall = (String, String, Vec<u8>, (Vec<u8>, Vec<u8>));
+
 /// Records one tool call of a task the calling instance holds.
+///
+/// A call made while the task has too many open is answered at once with `rejection`. The
+/// call past the task's limit never runs: it fails the task, and it and every call still open
+/// are answered at once with `ended`, because no result is delivered once the task ended and
+/// the instance would otherwise wait for them forever.
 pub(crate) fn record_tool_call(
     transaction: &Transaction<'_>,
     (record, at_ms): (&AgentTaskRecord, u64),
-    (call, name, request, rejection): (String, String, Vec<u8>, Vec<u8>),
+    (call, name, request, (rejection, ended)): NewToolCall,
 ) -> Result<AgentOutputApplied, StoreError> {
     let task = record.summary.id;
     let existing: Option<Vec<u8>> = transaction
@@ -79,16 +88,17 @@ pub(crate) fn record_tool_call(
         [task.as_bytes().as_slice()],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    if total >= MAX_TOOL_CALLS_PER_TASK {
-        let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
-        set_state(transaction, (task, at_ms), limit)?;
-        return Ok(AgentOutputApplied::Task(Box::new(
-            load_task(transaction, task)?.ok_or(StoreError::SchemaMismatch {
-                detail: "a limited Agent task could not be read back",
-            })?,
-        )));
-    }
-    let rejected = open >= MAX_OPEN_TOOL_CALLS_PER_TASK;
+    let limited = total >= MAX_TOOL_CALLS_PER_TASK;
+    let mut answered = if limited {
+        end_open_calls(transaction, task, (&ended, at_ms))?
+    } else {
+        Vec::new()
+    };
+    let answer = if limited {
+        Some(ended.as_slice())
+    } else {
+        (open >= MAX_OPEN_TOOL_CALLS_PER_TASK).then_some(rejection.as_slice())
+    };
     transaction.execute(
         "INSERT INTO agent_tool_calls (task_id, call_id, name, request, result, created_at_ms,
          completed_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -97,20 +107,55 @@ pub(crate) fn record_tool_call(
             call,
             name,
             request,
-            rejected.then_some(rejection.as_slice()),
+            answer,
             at_ms,
-            rejected.then_some(at_ms),
+            answer.map(|_| at_ms),
         ],
     )?;
-    if rejected {
+    if answer.is_some() {
+        answered.push(call.clone());
+    }
+    for answered in answered {
         deliver_to_holder(
             transaction,
             record,
-            &AgentDelivery::ToolResult(task, call.clone()),
+            &AgentDelivery::ToolResult(task, answered),
         )?;
+    }
+    if limited {
+        let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
+        set_state(transaction, (task, at_ms), limit)?;
+        return Ok(AgentOutputApplied::Task(Box::new(
+            load_task(transaction, task)?.ok_or(StoreError::SchemaMismatch {
+                detail: "a limited Agent task could not be read back",
+            })?,
+        )));
+    }
+    if answer.is_some() {
         return Ok(AgentOutputApplied::ToolRejected(task, call));
     }
     Ok(AgentOutputApplied::ToolCall(task, call))
+}
+
+/// Answers every open call of `task` with `ended`; returns their identifiers, oldest first.
+fn end_open_calls(
+    transaction: &Transaction<'_>,
+    task: AgentTaskId,
+    (ended, at_ms): (&[u8], u64),
+) -> Result<Vec<String>, StoreError> {
+    let mut statement = transaction.prepare(
+        "SELECT call_id FROM agent_tool_calls WHERE task_id = ?1 AND result IS NULL
+         ORDER BY created_at_ms, call_id",
+    )?;
+    let open = statement
+        .query_map([task.as_bytes().as_slice()], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+    transaction.execute(
+        "UPDATE agent_tool_calls SET result = ?2, completed_at_ms = max(?3, created_at_ms)
+         WHERE task_id = ?1 AND result IS NULL",
+        params![task.as_bytes().as_slice(), ended, at_ms],
+    )?;
+    Ok(open)
 }
 
 impl Repository {

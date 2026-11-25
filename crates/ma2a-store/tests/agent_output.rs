@@ -12,7 +12,8 @@ use ma2a_core::service::{
 };
 use ma2a_store::{
     AGENT_TASK_RETENTION_MS, AgentDelivery, AgentOutputApplied, AgentOutputEffect, AgentTaskChange,
-    MAX_OPEN_TOOL_CALLS_PER_TASK, MAX_PROGRESS_EVENTS, Repository, StoreConfig,
+    MAX_OPEN_TOOL_CALLS_PER_TASK, MAX_PROGRESS_EVENTS, MAX_TOOL_CALLS_PER_TASK, Repository,
+    StoreConfig,
 };
 use support::{TempState, TestResult, TestResultValue as TestValue};
 
@@ -174,8 +175,12 @@ fn tool(task: AgentTaskId, call: &str) -> AgentOutputEffect {
         name: "exec.run".to_owned(),
         request: b"{}".to_vec(),
         rejection: b"{\"error\":\"concurrency_exceeded\"}".to_vec(),
+        ended: ENDED.to_vec(),
     }
 }
+
+/// The stored answer of a call its task's end left without a result.
+const ENDED: &[u8] = b"{\"error\":\"task_ended\"}";
 
 #[test]
 fn tool_calls_run_once_are_bounded_and_answer_their_instance() -> TestResult {
@@ -254,6 +259,60 @@ fn tool_calls_run_once_are_bounded_and_answer_their_instance() -> TestResult {
 }
 
 #[test]
+fn the_call_past_the_limit_fails_the_task_and_answers_every_waiting_call() -> TestResult {
+    let (_state, mut repository, generation, task) = running("agent-tool-limit")?;
+    // One call stays open; every other one completes.
+    let mut cursor = 10;
+    for index in 0..MAX_TOOL_CALLS_PER_TASK {
+        cursor += 1;
+        let call = format!("c{index}");
+        apply(&mut repository, (generation, cursor), tool(task, &call))?;
+        if index > 0 {
+            repository.complete_tool_call((task, &call), (b"{\"ok\":1}", 20))?;
+        }
+    }
+
+    // When: the call past the limit.
+    cursor += 1;
+    let applied = apply(&mut repository, (generation, cursor), tool(task, "over"))?;
+
+    // Then: the task failed, and neither the refused call nor the open one waits forever.
+    let AgentOutputApplied::Task(record) = applied else {
+        return Err(format!("the limit did not end the task: {applied:?}").into());
+    };
+    assert_eq!(record.summary.state, AgentTaskState::Failed);
+    assert_eq!(record.summary.reason, Some(AgentTaskReason::Limit));
+    for call in ["over", "c0"] {
+        let answered = repository.tool_call((task, call))?.ok_or("missing call")?;
+        assert_eq!(answered.result.as_deref(), Some(ENDED), "{call}");
+    }
+    let deliveries: Vec<_> = repository
+        .agent_outbox((&agent()?, generation))?
+        .into_iter()
+        .map(|entry| entry.delivery)
+        .filter(|delivery| matches!(delivery, AgentDelivery::ToolResult(..)))
+        .collect();
+    // Every other call's result was delivered when it completed; these two come last.
+    assert_eq!(
+        deliveries.get(deliveries.len().saturating_sub(2)..),
+        Some(
+            [
+                AgentDelivery::ToolResult(task, "c0".to_owned()),
+                AgentDelivery::ToolResult(task, "over".to_owned()),
+            ]
+            .as_slice()
+        )
+    );
+    // The open call's own result, once it arrives, changes nothing.
+    assert!(
+        !repository
+            .complete_tool_call((task, "c0"), (b"{\"ok\":2}", 30))?
+            .into_value()
+    );
+    Ok(())
+}
+
+#[test]
 fn output_breaking_a_durable_bound_only_moves_the_cursor() -> TestResult {
     let (_state, mut repository, generation, task) = running("agent-unbound")?;
     let oversized = AgentOutputEffect::ToolCall {
@@ -262,6 +321,7 @@ fn output_breaking_a_durable_bound_only_moves_the_cursor() -> TestResult {
         name: "agent.submit".to_owned(),
         request: vec![b'x'; 16_385],
         rejection: b"{\"error\":\"concurrency_exceeded\"}".to_vec(),
+        ended: ENDED.to_vec(),
     };
     let unnamed = AgentOutputEffect::ToolCall {
         task,
@@ -269,6 +329,7 @@ fn output_breaking_a_durable_bound_only_moves_the_cursor() -> TestResult {
         name: String::new(),
         request: b"{}".to_vec(),
         rejection: b"{\"error\":\"concurrency_exceeded\"}".to_vec(),
+        ended: ENDED.to_vec(),
     };
     for (cursor, effect) in [(11, oversized), (12, unnamed)] {
         assert_eq!(

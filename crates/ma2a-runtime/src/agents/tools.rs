@@ -114,6 +114,11 @@ pub(super) fn rejection() -> Vec<u8> {
     stored(&Err(status(ServiceError::ConcurrencyExceeded)))
 }
 
+/// The stored answer of a call that its task's end, at the tool-call limit, left unanswered.
+pub(super) fn ended() -> Vec<u8> {
+    stored(&Err(status(ServiceError::TaskEnded)))
+}
+
 /// Derives the `RequestId` of one call from its task and call identifier.
 fn call_request(task: AgentTaskId, call: &str) -> Result<RequestId, ServiceError> {
     let mut hasher = blake3::Hasher::new_derive_key("ma2a agent tool call v1");
