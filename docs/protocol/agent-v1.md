@@ -703,7 +703,11 @@ where `task` is the 16 task ID bytes and `call` the call ID bytes. Read-only cal
 random RequestId, and so does each proxy connection.
 
 **Re-execution.** A call still executing when the daemon stops records no result and stays
-pending. At Runtime start, every pending call of a `running` or `waiting` task runs again.
+pending. At Runtime start, every pending call of a `running` or `waiting` task runs again. A call
+whose answer the Store fails to record keeps that answer and records it again, with backoff, until
+the Store takes it or the daemon stops; it does not run again meanwhile. While the Runtime runs,
+pending calls that are not executing are also run every 15 seconds, so a call whose run ended
+early on a failed Store read is not left waiting for a restart.
 A mutation re-opened under its derived RequestId is answered by the caller-side replay table: the
 completed operation's terminal frame, or `outcome_unknown` when the earlier stream was lost. It
 never acts twice. A replay carries only the terminal, never streamed output, so a replayed

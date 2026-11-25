@@ -37,7 +37,10 @@ pub(crate) async fn run(manager: AgentManager) {
             biased;
             () = manager.0.shutdown.cancelled() => break,
             _tick = expire.tick() => manager.expire().await,
-            _tick = sweep.tick() => manager.converge().await,
+            _tick = sweep.tick() => {
+                manager.converge().await;
+                manager.run_pending_calls().await;
+            }
             _tick = tick.tick() => {
                 manager.instances().await;
                 manager.expire_cancels().await;
@@ -61,6 +64,13 @@ impl AgentManager {
     /// that was recorded but never completed.
     pub(super) async fn reconcile(&self) {
         self.instances().await;
+        self.run_pending_calls().await;
+    }
+
+    /// Runs every recorded call that has no answer and is not running now. At start these are
+    /// the calls the last daemon left; later, calls whose run ended early because a Store read
+    /// failed.
+    pub(super) async fn run_pending_calls(&self) {
         let pending = self
             .store(|repository| repository.pending_tool_calls())
             .await

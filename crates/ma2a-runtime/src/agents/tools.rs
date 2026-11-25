@@ -15,7 +15,7 @@ mod proxy;
 mod remote;
 mod workspace;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use ma2a_agent::{
     protocol::{MAX_TOOL_RESULT_LEN, ToolError},
@@ -117,6 +117,11 @@ pub(super) fn rejection() -> Vec<u8> {
 
 /// Runs `work` unless `shutdown` comes first; `None` when it does.
 ///
+/// First wait before recording a computed answer again after the Store failed to.
+const ANSWER_RETRY: Duration = Duration::from_millis(100);
+/// Longest wait between two attempts to record one answer.
+const ANSWER_RETRY_MAX: Duration = Duration::from_secs(5);
+
 /// A call the daemon's shutdown cuts short records nothing and runs again after the restart,
 /// as after a crash. The shutdown is checked again once `work` ends: on another thread it can
 /// start, and close the call's stream, while `work` is being polled, so a call that failed
@@ -153,16 +158,35 @@ impl AgentManager {
             let executed = Box::pin(manager.execute((task, &call)));
             if let Some(outcome) = unless_shut_down(&manager.0.shutdown, executed).await {
                 fault("before_tool_result");
-                let (bytes, at_ms) = (answer(&outcome), manager.now_ms());
-                let id = call.clone();
-                let _recorded = manager
-                    .commit(move |repository| {
-                        repository.complete_tool_call((task, &id), (&bytes, at_ms))
-                    })
-                    .await;
+                let answered = (answer(&outcome), manager.now_ms());
+                manager.record_answer((task, &call), &answered).await;
             }
             manager.coordination().calls.remove(&(task, call));
         });
+    }
+
+    /// Records the answer of a call that ran, trying again until the Store takes it or the
+    /// daemon shuts down: running the call again would repeat its effects. The call stays
+    /// marked as running meanwhile, so nothing else runs it.
+    async fn record_answer(&self, (task, call): (AgentTaskId, &str), answered: &(Vec<u8>, u64)) {
+        let mut wait = ANSWER_RETRY;
+        loop {
+            let (id, (bytes, at_ms)) = (call.to_owned(), answered.clone());
+            let recorded = self
+                .commit(move |repository| {
+                    repository.complete_tool_call((task, &id), (&bytes, at_ms))
+                })
+                .await;
+            if recorded.is_ok() {
+                return;
+            }
+            tokio::select! {
+                biased;
+                () = self.0.shutdown.cancelled() => return,
+                () = tokio::time::sleep(wait) => {}
+            }
+            wait = (wait * 2).min(ANSWER_RETRY_MAX);
+        }
     }
 
     /// Executes one pending call; `None` when it is not pending any more.

@@ -532,3 +532,38 @@ async fn a_watch_given_anything_but_cancel_ends_invalid_input() -> TestResult {
     assert_eq!(outcome, Some(Err(ServiceError::InvalidInput)));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_answer_the_store_refused_once_is_recorded_when_it_recovers() -> TestResult {
+    // Given: a pending call of a tool that does not exist, answered at once without any
+    // effect, while the Store refuses every change to a tool call.
+    let live = Live::new().await?;
+    live.call(("c1", "no.such.tool", &serde_json::json!({})))?;
+    let sql = rusqlite::Connection::open(live.config.database_path())?;
+    sql.execute_batch(
+        "CREATE TRIGGER test_tool_answer_failure BEFORE UPDATE ON agent_tool_calls
+         BEGIN SELECT RAISE(ABORT, 'injected tool answer failure'); END;",
+    )?;
+
+    // When: the call runs, and the Store recovers after the answer was refused.
+    live.manager.run_tool((live.task, "c1".to_owned()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    sql.execute_batch("DROP TRIGGER test_tool_answer_failure;")?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let recorded = loop {
+        let call = Repository::open(&live.config)?.tool_call((live.task, "c1"))?;
+        if let Some(result) = call.and_then(|call| call.result) {
+            break Some(result);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    // Then: the answer the call already computed is recorded, without a restart.
+    live.finish().await?;
+    let recorded = recorded.ok_or("the answer was never recorded")?;
+    assert!(String::from_utf8(recorded)?.contains("invalid_tool"));
+    Ok(())
+}
