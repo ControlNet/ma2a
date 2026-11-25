@@ -10,8 +10,12 @@ use super::attach::{CALLER_STALL, Caller, lost};
 /// Longest wait for the supervisor's report once the caller detached.
 const DETACH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// What a relay reports: the supervisor's last status, the cursor reached, bytes in/out.
-pub(super) type Relayed = (SupervisorStatus, u64, (u64, u64));
+/// What a relay reports: the supervisor's last status, whether it took the caller's detach,
+/// the cursor reached, and bytes in/out.
+///
+/// A supervisor that took the detach may stop sending retained output and report the status the
+/// child has at that moment, final or not, so only a report without one completes.
+pub(super) type Relayed = ((SupervisorStatus, bool), u64, (u64, u64));
 
 /// How the caller's side of a relay ended.
 enum Upstream {
@@ -102,12 +106,12 @@ where
         };
         let grace = tokio::time::sleep(std::time::Duration::MAX);
         tokio::pin!(downstream, upstream, grace);
-        let mut detached = false;
+        let (mut detached, mut told) = (false, false);
         loop {
             tokio::select! {
                 biased;
                 () = stop.cancelled() => break Err(ServiceError::Unavailable),
-                reported = &mut downstream => break reported,
+                reported = &mut downstream => break reported.map(|status| (status, told)),
                 ended = &mut upstream, if !detached => {
                     detached = true;
                     match ended {
@@ -116,6 +120,7 @@ where
                         // Its output, then its outcome or the end of its stream, ends this.
                         Upstream::Closed => {}
                         Upstream::Detached => {
+                            told = true;
                             grace.as_mut().reset(tokio::time::Instant::now() + DETACH_GRACE);
                         }
                     }

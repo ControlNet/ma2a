@@ -223,7 +223,9 @@ Process and its supervisor have ended.
    - when the Process has ended and every retained byte was delivered, the outcome is Detached
      `completed`, or a failed `unavailable` when its end could not be recorded in the Store;
    - when the caller sends `cancel`, closes, or loses its stream, or sends any frame it may not
-     send, the attachment detaches with Detached `cancelled`.
+     send, the attachment detaches with Detached `cancelled`, also when the Process ended
+     meanwhile. Output after the cursor may then be left unsent, and the summary shows the end
+     when the Store recorded it.
    A caller that takes no output for 30 seconds ends it with a failed `timed_out` outcome. Input
    the Process does not take within 30 seconds detaches the attachment. A supervisor that has not
    taken the detach within 5 seconds, or reported 5 seconds after that, ends it with a failed

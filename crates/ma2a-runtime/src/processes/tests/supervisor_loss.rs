@@ -24,13 +24,13 @@ use super::{Harness, MIB, TestResult, pipe_with, request_id};
 use crate::processes::serve;
 
 /// One proven supervisor connection, as the stand-in holds it.
-type Proven = (
+pub(super) type Proven = (
     FrameReader<interprocess::local_socket::tokio::RecvHalf>,
     FrameWriter<interprocess::local_socket::tokio::SendHalf>,
 );
 
 /// Takes one connection, proves itself, and reads the `open`.
-async fn proven(listener: &Listener, credentials: &Credentials) -> TestResult<Proven> {
+pub(super) async fn proven(listener: &Listener, credentials: &Credentials) -> TestResult<Proven> {
     use interprocess::local_socket::traits::tokio::Stream as _;
     let (receive, send) = listener.accept().await?.split();
     let (mut reader, mut writer) = (FrameReader::new(receive), FrameWriter::new(send));
@@ -172,7 +172,9 @@ async fn a_lost_supervisor_connection_is_unavailable_not_cancelled() -> TestResu
 
 /// A Store client whose requests stop reaching the Store once the returned token is cancelled;
 /// each one after that fails as an unreachable Store does.
-fn cuttable(store: &crate::store::StoreClient) -> (crate::store::StoreClient, CancellationToken) {
+pub(super) fn cuttable(
+    store: &crate::store::StoreClient,
+) -> (crate::store::StoreClient, CancellationToken) {
     let (sender, mut receiver) = tokio::sync::mpsc::channel(crate::store::STORE_CAPACITY);
     let cut = CancellationToken::new();
     let (real, stop) = (store.sender.clone(), cut.clone());
@@ -189,7 +191,7 @@ fn cuttable(store: &crate::store::StoreClient) -> (crate::store::StoreClient, Ca
 
 /// A running `/bin/cat` Process with stdin whose socket path a stand-in took over, managed
 /// through `store`; returns its manager, id, credentials, and the stand-in's listener.
-async fn taken_over(
+pub(super) async fn taken_over(
     harness: &Harness,
     store: crate::store::StoreClient,
     byte: u8,
@@ -223,7 +225,7 @@ async fn taken_over(
 }
 
 /// The status a supervisor reports once its child exited with `code`.
-fn exited(code: u32) -> Vec<u8> {
+pub(super) fn exited(code: u32) -> Vec<u8> {
     ma2a_services::supervisor::status::SupervisorStatus::Ended(
         ma2a_core::service::Termination::Exited(code),
         ma2a_services::supervisor::status::EndCause::Exited,

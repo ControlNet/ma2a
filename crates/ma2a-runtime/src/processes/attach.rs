@@ -155,14 +155,16 @@ impl ProcessManager {
             return OperationReport::new(OperationEnd::Failed(error));
         }
         let relayed = relay(supervisor, (reader, writer), ((stdin, start), stop)).await;
-        let (reported, cursor, bytes) = match relayed {
+        let ((reported, told), cursor, bytes) = match relayed {
             Ok(relayed) => relayed,
             Err(error) => return finish(writer, Err(error)).await,
         };
+        // A caller that detached is told so, also when the Process ended meanwhile.
+        let completed = reported.is_final() && !told;
         let (record, reason) = match self.apply(id, reported).await {
-            Ok(applied) if reported.is_final() => (applied.into_value(), EndReason::Completed),
+            Ok(applied) if completed => (applied.into_value(), EndReason::Completed),
             // An end that could not be recorded is not reported over a summary still live.
-            Err(_) if reported.is_final() => {
+            Err(_) if completed => {
                 return finish(writer, Err(ServiceError::Unavailable))
                     .await
                     .with_bytes(bytes.0, bytes.1);

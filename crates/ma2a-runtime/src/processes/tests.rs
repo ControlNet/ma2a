@@ -4,6 +4,7 @@
 mod driver;
 mod logs;
 mod recovery;
+mod relay;
 mod supervisor_loss;
 mod watch;
 
