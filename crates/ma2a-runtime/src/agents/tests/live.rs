@@ -285,3 +285,46 @@ async fn an_artifact_blob_that_is_no_regular_file_is_refused_without_waiting() -
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_staging_file_that_vanishes_during_a_sweep_leaves_the_rest_swept() -> TestResult {
+    // Given: old orphan blobs, and staging files that appear and vanish meanwhile, as
+    // publications outside the sweep's lock make them.
+    let live = Live::new().await?;
+    let blobs = live.dir.join("agents-v1").join("blobs");
+    std::fs::create_dir_all(&blobs)?;
+    let old = std::time::SystemTime::now() - Duration::from_secs(3 * 24 * 3600);
+    let churning = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let churn = {
+        let (blobs, churning) = (blobs.clone(), Arc::clone(&churning));
+        std::thread::spawn(move || {
+            let mut serial = 0_u64;
+            while churning.load(std::sync::atomic::Ordering::Relaxed) {
+                let staging = blobs.join(format!(".staging-{}", serial % 64));
+                let _created = std::fs::write(&staging, b"x");
+                let _removed = std::fs::remove_file(&staging);
+                serial += 1;
+            }
+        })
+    };
+
+    // When: the sweep runs again and again.
+    let mut kept = 0;
+    for round in 0..200 {
+        let orphans: Vec<_> = (0..16)
+            .map(|index| blobs.join(format!("{round:04}{index:02}")))
+            .collect();
+        for orphan in &orphans {
+            std::fs::File::create(orphan)?.set_modified(old)?;
+        }
+        live.manager.collect_blobs().await;
+        kept += orphans.iter().filter(|orphan| orphan.exists()).count();
+    }
+    churning.store(false, std::sync::atomic::Ordering::Relaxed);
+    churn.join().map_err(|_| "the churn thread panicked")?;
+
+    // Then: every orphan went, whatever vanished beside it.
+    live.finish().await?;
+    assert_eq!(kept, 0);
+    Ok(())
+}

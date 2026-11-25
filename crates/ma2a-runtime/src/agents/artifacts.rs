@@ -226,11 +226,13 @@ impl AgentManager {
         let blobs = self.blobs();
         let _collected = tokio::task::spawn_blocking(move || -> io::Result<()> {
             let now = SystemTime::now();
-            for entry in std::fs::read_dir(&blobs)? {
-                let entry = entry?;
+            // A staging file a publication removes meanwhile fails only its own entry.
+            for entry in std::fs::read_dir(&blobs)?.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let age = entry
-                    .metadata()?
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                let age = metadata
                     .modified()
                     .ok()
                     .and_then(|modified| now.duration_since(modified).ok());
