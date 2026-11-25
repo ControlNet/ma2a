@@ -215,6 +215,27 @@ for link in symbolic hard; do
   fi
 done
 
+# tar unpacks an entry of a type it does not know as a plain file, but the entry is no plain file.
+if command -v python3 >/dev/null 2>&1; then
+  unknown="$temporary/unknown-type-x86_64-unknown-linux-gnu.tar.xz"
+  python3 - "$unknown" <<'PY'
+import io, sys, tarfile
+names = ("LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "README.md", "quickstart.md", "ma2a")
+with tarfile.open(sys.argv[1], "w:xz") as tf:
+    for name in names:
+        info = tarfile.TarInfo("ma2a-0.1.0/" + name)
+        info.size, info.mode = 1, 0o755
+        if name == "ma2a":
+            info.type = b"9"
+        tf.addfile(info, io.BytesIO(b"x"))
+PY
+  printf '%s *%s\n' "$(hash_file "$unknown")" "$(basename "$unknown")" > "${unknown}.sha256"
+  if ./scripts/validate-release.sh "$unknown" x86_64-unknown-linux-gnu >/dev/null 2>&1; then
+    printf 'archive with an entry of unknown type unexpectedly passed validation\n' >&2
+    exit 1
+  fi
+fi
+
 # Prefix matching must be literal, never a regex where '.' matches arbitrary characters.
 mkdir -p "$temporary/dot-prefix/ma2a-0.1.0" "$temporary/dot-prefix/ma2a-0X1X0"
 for name in LICENSE-APACHE LICENSE-MIT NOTICE README.md quickstart.md; do

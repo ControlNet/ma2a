@@ -23,6 +23,8 @@ case "$target" in
   *-pc-windows-msvc)
     [[ "$archive" == *.zip ]] || { printf 'Windows target requires .zip archive\n' >&2; exit 1; }
     binary=ma2a.exe
+    # A zip entry made on Unix with no file type bits lists as '?' and unpacks as a plain file.
+    unknown_type='?'
     unzip -Z1 "$archive" | tr -d '\r' > "$all_entries"
     # The long listing has two header lines and one totals line around one line per entry.
     unzip -Z "$archive" | sed '1,2d;$d' | cut -c1 > "$types"
@@ -30,6 +32,8 @@ case "$target" in
   *-apple-darwin|*-unknown-linux-gnu)
     [[ "$archive" == *.tar.xz ]] || { printf 'Unix target requires .tar.xz archive\n' >&2; exit 1; }
     binary=ma2a
+    # tar lists an entry of a type it does not know as '?' as well; only '-' is a file there.
+    unknown_type='-'
     tar -tJf "$archive" | tr -d '\r' > "$all_entries"
     tar -tvJf "$archive" | cut -c1 > "$types"
     ;;
@@ -40,13 +44,12 @@ case "$target" in
 esac
 
 # Every entry is a plain file, or a directory whose name ends in '/': a link, a pipe, a device,
-# or a directory named like a file could stand in for the binary. A zip entry made on Unix with
-# no file type bits lists as '?' and unpacks as a plain file. The listings are read from files to
-# the end, so a command that fails is never hidden by a reader that stopped early.
+# or a directory named like a file could stand in for the binary. The listings are read from files
+# to the end, so a command that fails is never hidden by a reader that stopped early.
 if [[ $(wc -l < "$types") -ne $(wc -l < "$all_entries") ]] ||
-  ! paste "$types" "$all_entries" | awk -F '\t' '
+  ! paste "$types" "$all_entries" | awk -F '\t' -v unknown="$unknown_type" '
     { name = substr($0, 3) }
-    name == "" || !((($1 == "-" || $1 == "?") && name !~ /\/$/) || ($1 == "d" && name ~ /\/$/)) {
+    name == "" || !((($1 == "-" || $1 == unknown) && name !~ /\/$/) || ($1 == "d" && name ~ /\/$/)) {
       bad = 1
     }
     END { exit bad }'; then
