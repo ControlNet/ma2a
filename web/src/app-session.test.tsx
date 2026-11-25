@@ -5,25 +5,21 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 
 import { App } from "./app"
-import type { RuntimeControllerCallbacks } from "./runtime-controller"
+import { RuntimeController, type RuntimeControllerCallbacks } from "./runtime-controller"
 import { MANY_RUNTIME_FIXTURE } from "./test/fixtures"
 
-// Each controller the console starts reports through these callbacks; the test plays the Runtime.
+// Each controller the console starts is held here instead of loading anything; the test plays
+// the Runtime through its callbacks.
 const controllers: RuntimeControllerCallbacks[] = []
-vi.mock("./runtime-controller", () => ({
-  RuntimeController: class {
-    constructor(callbacks: RuntimeControllerCallbacks) {
-      controllers.push(callbacks)
-    }
-    start(): Promise<void> {
-      return Promise.resolve()
-    }
-    refresh(): Promise<void> {
-      return Promise.resolve()
-    }
-    stop(): void {}
-  },
-}))
+function holdControllers(): void {
+  vi.spyOn(RuntimeController.prototype, "start").mockImplementation(function (
+    this: RuntimeController,
+  ) {
+    controllers.push((this as unknown as { callbacks: RuntimeControllerCallbacks }).callbacks)
+    return Promise.resolve()
+  })
+  vi.spyOn(RuntimeController.prototype, "refresh").mockResolvedValue(undefined)
+}
 
 afterEach(() => {
   controllers.length = 0
@@ -53,6 +49,7 @@ test("signing in again does not show the last session's snapshot failure", async
       ? Response.json({ csrf_token: "ef".repeat(32) })
       : new Response(null, { status: 204 })
   })
+  holdControllers()
   const user = userEvent.setup()
   render(<App />)
   act(() => controllers[0]?.onError(new Error("snapshot failed")))
@@ -77,6 +74,7 @@ test("a peer's inspector never shows another peer's sync status", async () => {
     () => new Promise<Response>((resolve) => (answer = resolve)),
   )
   window.history.replaceState(null, "", "/endpoint")
+  holdControllers()
   const user = userEvent.setup()
   const given = render(<App />)
   act(() => controllers[0]?.onRuntime(MANY_RUNTIME_FIXTURE))

@@ -4,6 +4,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, test, vi } from "vitest"
 
+import type { MutationEchoReplyView } from "../api/mutations"
 import { ONE_RUNTIME_FIXTURE } from "../test/fixtures"
 import { runtimeActions } from "./actions.fixture"
 import { EchoScreen } from "./echo"
@@ -37,11 +38,13 @@ test("counts payload bytes rather than characters against the 4096 byte bound", 
 
 test("sends one Echo at a time, so a late reply never overwrites a newer one", async () => {
   const user = userEvent.setup()
-  const actions = runtimeActions()
   let fail: (error: Error) => void = () => undefined
-  vi.mocked(actions.echo).mockImplementationOnce(
-    () => new Promise((_resolve, reject) => (fail = reject)),
-  )
+  const actions = {
+    ...runtimeActions(),
+    echo: vi.fn(
+      (): Promise<MutationEchoReplyView> => new Promise((_resolve, reject) => (fail = reject)),
+    ),
+  }
   render(<EchoScreen actions={actions} runtime={ONE_RUNTIME_FIXTURE} />)
   const form = within(screen.getByRole("form", { name: "Send an Echo" }))
   await user.type(form.getByLabelText("Target Endpoint ID"), "11".repeat(32))
