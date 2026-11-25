@@ -182,6 +182,13 @@ jobs:
           # This job has no checkout, so gh learns the repository from here.
           GH_REPO: ${{ github.repository }}
         run: |
+          # The tag may have moved since the build checked out its commit; the release would then
+          # present a commit other than the one its archives were built and attested from.
+          tagged=$(gh api "repos/$GH_REPO/commits/refs/tags/$GITHUB_REF_NAME" --jq .sha)
+          if [[ "$tagged" != "$GITHUB_SHA" ]]; then
+            printf 'tag %s now names %s, not the built commit %s\n' "$GITHUB_REF_NAME" "$tagged" "$GITHUB_SHA" >&2
+            exit 1
+          fi
           release_flags=(--verify-tag --generate-notes)
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_flags+=(--prerelease)
