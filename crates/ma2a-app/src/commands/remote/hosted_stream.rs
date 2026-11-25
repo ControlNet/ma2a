@@ -192,21 +192,28 @@ fn finish(attached: &Attached, reading_stdin: bool) -> Result<(), AppError> {
         },
         attached.cursor
     ));
-    let code = match (attached.reason, attached.summary.termination) {
-        (EndReason::Completed, Some(Termination::Exited(code))) => {
-            i32::try_from(code.min(255)).unwrap_or(255)
-        }
-        (EndReason::Completed, Some(Termination::Signaled(signal))) => {
-            i32::try_from(128 + signal.min(127)).unwrap_or(255)
-        }
-        _ => 0,
-    };
+    let code = exit_code(attached.reason, attached.summary.termination);
     std::io::stdout().lock().flush()?;
     std::io::stderr().lock().flush()?;
     if reading_stdin || code != 0 {
         std::process::exit(code);
     }
     Ok(())
+}
+
+/// The exit status for how an attachment ended: the Process's own once it ended, as for
+/// `exec`, 255 when it ended without one, and success after a detach.
+fn exit_code(reason: EndReason, termination: Option<Termination>) -> i32 {
+    match (reason, termination) {
+        (EndReason::Completed, Some(Termination::Exited(code))) => {
+            i32::try_from(code.min(255)).unwrap_or(255)
+        }
+        (EndReason::Completed, Some(Termination::Signaled(signal))) => {
+            i32::try_from(128 + signal.min(127)).unwrap_or(255)
+        }
+        (EndReason::Completed, _) => 255,
+        _ => 0,
+    }
 }
 
 fn gaps(gaps: Gaps) {
@@ -226,7 +233,33 @@ fn note(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_RETAINED_READS, another};
+    use ma2a_core::service::{EndReason, Termination};
+
+    use super::{MAX_RETAINED_READS, another, exit_code};
+
+    #[test]
+    fn an_attachment_exits_with_the_status_of_the_process_it_saw_end() {
+        assert_eq!(
+            exit_code(EndReason::Completed, Some(Termination::Exited(3))),
+            3
+        );
+        assert_eq!(
+            exit_code(EndReason::Completed, Some(Termination::Signaled(9))),
+            137
+        );
+        // Ended without an exit status: it never started, was lost, or its end is unknown.
+        assert_eq!(exit_code(EndReason::Completed, None), 255);
+        assert_eq!(
+            exit_code(EndReason::Completed, Some(Termination::Unknown)),
+            255
+        );
+        // Detached: the Process may still run.
+        assert_eq!(exit_code(EndReason::Cancelled, None), 0);
+        assert_eq!(
+            exit_code(EndReason::Cancelled, Some(Termination::Exited(3))),
+            0
+        );
+    }
 
     #[test]
     fn a_log_cursor_that_goes_back_is_refused() {

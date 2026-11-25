@@ -220,6 +220,8 @@ characters); a retry with the same request ID replays the recorded outcome inste
 twice, and `service call` then also needs `--version`. Commands that forward stdin
 (`exec --stdin`, `shell`, `process attach --stdin`, `process stdin`, `proxy connect`,
 `service call --stdin`) exit on every outcome, even while stdin is still open.
+`process attach` and `process logs --follow` exit with the Process's status once they see it end,
+as `exec` does, with 255 when it ended without one, and with `0` after a detach.
 
 ## Output and Errors
 
