@@ -24,6 +24,14 @@ fn a_page_must_move_past_the_cursor_sent() {
     assert!(!moves(Some(3), &[4], Some(3)));
     assert!(!moves(Some(3), &[], Some(2)));
     assert!(!moves(Some(3), &[3], None));
+    // Out of order or repeated, even on the first page.
+    assert!(!moves(None, &[2, 1], None));
+    assert!(!moves(None, &[1, 1], None));
+    assert!(!moves(Some(1), &[3, 2], Some(2)));
+    // A cursor that is not the page's last task skips tasks or repeats them.
+    assert!(!moves(None, &[1, 2], Some(3)));
+    assert!(!moves(None, &[1, 2], Some(1)));
+    assert!(!moves(Some(1), &[], Some(2)));
 }
 
 #[test]

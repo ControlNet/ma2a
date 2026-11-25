@@ -194,4 +194,58 @@ mod tests {
         assert_eq!(code(json!({"pageToken": lower})).await?, -32_603);
         Ok(())
     }
+
+    /// Lists the tasks of a target whose only page lists `tasks`, a page of one at a time,
+    /// following each token; answers the IDs listed, or the error.
+    #[cfg(unix)]
+    async fn follow_tokens(tasks: &[u8]) -> crate::a2a::remote_fixture::TestResult<Vec<String>> {
+        use ma2a_core::service::{AgentAccept, AgentReply, AgentTaskId};
+
+        use crate::a2a::remote_fixture::{Daemon, answering, summary};
+        let page = tasks
+            .iter()
+            .map(|byte| summary(AgentTaskId::from_bytes([*byte; 16]), "worker"))
+            .collect::<Result<_, _>>()?;
+        let script = answering(AgentAccept::Admitted, &AgentReply::Page(page, None))?;
+        let daemon = Daemon::start("list", script)?;
+        let served = Served {
+            backend: &daemon.backend,
+            route: &daemon.route,
+            base: "http://127.0.0.1",
+        };
+        let (mut listed, mut token) = (Vec::new(), String::new());
+        loop {
+            let params = json!({"pageSize": 1, "pageToken": token});
+            let page = list(served, &params).await.map_err(|error| error.message)?;
+            let text = |value: &Value, name: &str| {
+                value
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let ids = page
+                .get("tasks")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            listed.extend(ids.map(|task| text(task, "id")));
+            token = text(&page, "nextPageToken");
+            if token.is_empty() {
+                return Ok(listed);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_remote_task_is_reachable_by_its_tokens() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let id = |byte: u8| format!("{byte:02x}").repeat(16);
+        assert_eq!(follow_tokens(&[1, 2]).await.ok(), Some(vec![id(1), id(2)]));
+        // A target listing out of order is not believed, rather than leaving a task behind.
+        assert!(follow_tokens(&[2, 1]).await.is_err());
+        assert!(follow_tokens(&[1, 1]).await.is_err());
+        Ok(())
+    }
 }

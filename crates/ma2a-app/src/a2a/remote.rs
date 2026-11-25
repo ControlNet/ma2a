@@ -142,14 +142,21 @@ pub(super) async fn details(
     outcome(&reply, (agent, Some(task)), true)
 }
 
-/// Whether a page lies strictly after the cursor sent, and so does the cursor it names next; a
-/// target answering otherwise would keep a listing going forever.
+/// Whether a page lists tasks in ascending ID order strictly after the cursor sent, and names
+/// its own last task as the cursor when more exist. A target answering otherwise would keep a
+/// listing going forever, or put a task where no page token reaches it.
 fn moves_past(
     after: Option<AgentTaskId>,
-    (mut listed, next): (impl Iterator<Item = AgentTaskId>, Option<AgentTaskId>),
+    (listed, next): (impl Iterator<Item = AgentTaskId>, Option<AgentTaskId>),
 ) -> bool {
-    after
-        .is_none_or(|after| listed.all(|task| task > after) && next.is_none_or(|next| next > after))
+    let (mut floor, mut last) = (after, None);
+    for task in listed {
+        if floor.is_some_and(|floor| task <= floor) {
+            return false;
+        }
+        (floor, last) = (Some(task), Some(task));
+    }
+    next.is_none_or(|next| last == Some(next))
 }
 
 pub(super) async fn tasks(

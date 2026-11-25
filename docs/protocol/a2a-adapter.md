@@ -164,7 +164,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 `ListTasks` answers `{tasks, nextPageToken, pageSize, totalSize}`.
 
 - **Source.** It reads every page of the route's tasks: `agent_task_list` locally, Agent v1 `tasks` remotely.
-  It stops after 41 pages, enough for every task a Runtime retains. A remote page that does not move past the cursor sent fails the call, so a target cannot keep the listing going.
+  It stops after 41 pages, enough for every task a Runtime retains. A remote page must list task IDs in ascending order after the cursor sent, and a next cursor must be the page's last ID; any other page fails the call, so a target cannot keep the listing going or hide a task from the page tokens.
 - **Filters**, all optional:
   - `contextId`: the task;
   - `status`: an A2A `TaskState`;
