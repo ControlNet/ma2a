@@ -1,4 +1,9 @@
-use std::{error::Error, fmt, net::SocketAddr, sync::Arc};
+use std::{
+    error::Error,
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::Arc,
+};
 
 use iroh_relay::server::{
     CertConfig, RelayConfig, Server, ServerConfig, TlsConfig, clients::Clients,
@@ -32,7 +37,14 @@ impl PrivateRelayServer {
                 let server_config = tls
                     .load_server_config()
                     .map_err(PrivateRelayServerError::Tls)?;
-                let mut relay = RelayConfig::new((config.listen_addr().ip(), 0));
+                // Iroh also binds a plain HTTP listener for its captive-portal check; nothing
+                // uses it, so it stays on loopback instead of beside the TLS listener.
+                let loopback: IpAddr = if config.listen_addr().is_ipv4() {
+                    Ipv4Addr::LOCALHOST.into()
+                } else {
+                    Ipv6Addr::LOCALHOST.into()
+                };
+                let mut relay = RelayConfig::new((loopback, 0));
                 relay.tls = Some(TlsConfig::new(
                     config.listen_addr(),
                     CertConfig::Manual { server_config },
@@ -170,3 +182,7 @@ impl PrivateRelayServerError {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "private_relay_test.rs"]
+mod tests;

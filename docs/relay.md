@@ -34,7 +34,8 @@ not replace Space or service authorization.
 
 `PrivateRelayTransport::NativeTls` loads an operator-supplied certificate chain and private key from
 paths at relay startup. MA2A does not store PEM contents in configuration and does not issue, renew,
-or discover certificates.
+or discover certificates. The relay listens with TLS on the configured address only; the plain HTTP
+listener Iroh adds for its captive-portal check binds an ephemeral port on loopback.
 
 Startup fails closed unless:
 
