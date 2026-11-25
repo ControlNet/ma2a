@@ -104,7 +104,15 @@ pub(super) fn destination(workspace: &Path, relative: &str) -> Result<PathBuf, T
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => return Err(outside()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                std::fs::create_dir(&path).map_err(|error| local(&error))?;
+                match std::fs::create_dir(&path) {
+                    Ok(()) => {}
+                    // A concurrent call created it first; it must still be a directory.
+                    Err(error)
+                        if error.kind() == io::ErrorKind::AlreadyExists
+                            && std::fs::symlink_metadata(&path)
+                                .is_ok_and(|found| found.is_dir()) => {}
+                    Err(error) => return Err(local(&error)),
+                }
             }
             Err(error) => return Err(local(&error)),
         }
@@ -185,6 +193,40 @@ mod tests {
             assert!(existing(&workspace, "out").is_err());
         }
         std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_destinations_share_a_new_directory() -> Result<(), Box<dyn std::error::Error>> {
+        // Given: calls that each create a file below the same directory, not there yet.
+        let workspace = std::env::temp_dir().join(format!("ma2a-shared-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace)?;
+        let barrier = std::sync::Barrier::new(8);
+
+        // When: they resolve their destinations at the same moment, round after round.
+        let failures = std::thread::scope(|scope| {
+            let calls: Vec<_> = (0..8)
+                .map(|call| {
+                    let (workspace, barrier) = (&workspace, &barrier);
+                    scope.spawn(move || {
+                        (0..100)
+                            .filter(|round| {
+                                barrier.wait();
+                                destination(workspace, &format!("r{round}/s/f{call}")).is_err()
+                            })
+                            .count()
+                    })
+                })
+                .collect();
+            calls
+                .into_iter()
+                .map(|call| call.join().unwrap_or(usize::MAX))
+                .sum::<usize>()
+        });
+
+        // Then: whoever creates the directory first, every call gets its destination.
+        std::fs::remove_dir_all(&workspace)?;
+        assert_eq!(failures, 0);
         Ok(())
     }
 }
