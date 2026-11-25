@@ -5,7 +5,7 @@ use std::{error::Error, io, time::Duration};
 use iroh::{
     Endpoint, RelayMode,
     address_lookup::memory::MemoryLookup,
-    endpoint::{Connection, RecvStream, SendStream, presets},
+    endpoint::{Connection, ConnectionError, RecvStream, SendStream, presets},
 };
 use ma2a_core::MAX_CONTROL_BATCH_BYTES;
 use ma2a_net::{
@@ -117,14 +117,19 @@ async fn same_peer_cap_rejects_maximum_request_before_body_read() -> TestResult 
         held.push(hold_call(&client, &server, &mut calls).await?);
     }
     wait_for_active(&metrics, u64::try_from(CONTROL_PER_PEER_LIMIT)?).await?;
-    let excess = open_control(&client, &server).await?;
 
     // When
-    let result = tokio::spawn(send_maximum_request(excess));
+    let excess = client.connect(server.endpoint_addr(), CONTROL_ALPN).await?;
+    let result = tokio::spawn(send_maximum_request(excess.clone()));
     let result = tokio::time::timeout(Duration::from_secs(5), result).await??;
 
     // Then
     assert!(result.is_err());
+    let closed = tokio::time::timeout(Duration::from_secs(5), excess.closed()).await?;
+    assert!(matches!(
+        closed,
+        ConnectionError::ApplicationClosed(close) if close.error_code == 1_u8.into()
+    ));
     assert_eq!(metrics.snapshot().body_reads, 0);
     assert!(calls.try_recv().is_err());
     for (mut stream, call) in held {
@@ -137,16 +142,16 @@ async fn same_peer_cap_rejects_maximum_request_before_body_read() -> TestResult 
     Ok(())
 }
 
-async fn send_maximum_request(mut stream: ControlStream) -> Result<(), io::Error> {
-    stream
-        .send
-        .write_all(&vec![0xA5; MAX_CONTROL_BATCH_BYTES])
+async fn send_maximum_request(connection: Connection) -> Result<(), io::Error> {
+    // The server may close an over-cap connection before open_bi completes; either way
+    // the request is refused without reading its body.
+    let (mut send, mut receive) = connection.open_bi().await.map_err(io::Error::other)?;
+    send.write_all(&vec![0xA5; MAX_CONTROL_BATCH_BYTES])
         .await
         .map_err(io::Error::other)?;
-    stream.send.finish().map_err(io::Error::other)?;
+    send.finish().map_err(io::Error::other)?;
     let mut status = [0_u8; 1];
-    stream
-        .receive
+    receive
         .read_exact(&mut status)
         .await
         .map_err(io::Error::other)?;
