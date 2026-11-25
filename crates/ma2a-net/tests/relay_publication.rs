@@ -284,3 +284,43 @@ fn a_relay_url_must_fit_the_address_record_that_carries_it() -> TestResult {
     assert!(advertisement(too_long).is_err());
     Ok(())
 }
+
+#[test]
+fn a_relay_url_may_not_carry_a_user_name_or_password() -> TestResult {
+    // Given: relay URLs with credentials, and one whose path merely holds `@`.
+    let with_credentials: Vec<RelayUrl> = vec![
+        "https://user:secret@relay.example.invalid/".parse()?,
+        "https://user@relay.example.invalid/".parse()?,
+    ];
+    let at_in_path: RelayUrl = "https://relay.example.invalid/path@1".parse()?;
+    let provider = |url: RelayUrl| {
+        PrivateRelayProviderConfig::new(
+            PrivateRelayProviderLocation::new("127.0.0.1:0".parse()?, url),
+            vec![ma2a_core::SpaceId::derive(b"relay-url-credentials")],
+            PrivateRelayTransport::ExternalTlsTermination,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })
+    };
+    let advertisement = |url: RelayUrl| {
+        ma2a_core::PrivateRelayAdvertisementV1::new(
+            ma2a_core::PrivateRelayAdvertisementScope::new(
+                ma2a_core::SpaceId::derive(b"relay-url-credentials"),
+                SecretKey::generate().public().into(),
+            ),
+            url,
+            ma2a_core::PrivateRelayAdvertisementValidity::new(1, NOW_MS, NOW_MS + 600_000)?,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })
+    };
+
+    // Then: every place a relay URL enters refuses credentials, and only credentials.
+    for url in with_credentials {
+        assert!(provider(url.clone()).is_err());
+        assert!(PublicRelayFallbackConfig::new(vec![url.clone()]).is_err());
+        assert!(advertisement(url).is_err());
+    }
+    assert!(provider(at_in_path.clone()).is_ok());
+    assert!(PublicRelayFallbackConfig::new(vec![at_in_path.clone()]).is_ok());
+    assert!(advertisement(at_in_path).is_ok());
+    Ok(())
+}

@@ -72,7 +72,7 @@ pub use relay::{
     MAX_RELAY_URL_LEN, PRIVATE_RELAY_ADVERTISEMENT_HASH_DOMAIN,
     PRIVATE_RELAY_ADVERTISEMENT_SIGNATURE_DOMAIN, PrivateRelayAdvertisementScope,
     PrivateRelayAdvertisementV1, PrivateRelayAdvertisementValidity,
-    SignedPrivateRelayAdvertisementV1,
+    SignedPrivateRelayAdvertisementV1, is_supported_relay_url,
 };
 pub use space::{
     GENESIS_CHAIN_HASH_DOMAIN, GENESIS_SIGNATURE_DOMAIN, MAX_SPACE_NAME_LEN, SignedSpaceGenesisV1,

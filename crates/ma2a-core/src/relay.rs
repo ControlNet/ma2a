@@ -19,6 +19,18 @@ pub const MAX_PRIVATE_RELAY_ADVERTISEMENT_LEN: usize = 4_096;
 /// Any relay an Endpoint uses can become its home relay, which its signed address record then
 /// carries, so no relay URL may be longer than an address record allows.
 pub const MAX_RELAY_URL_LEN: usize = 512;
+
+/// Whether MA2A can configure, advertise, or carry `relay_url`.
+///
+/// It must use HTTPS, name no user or password, and be at most [`MAX_RELAY_URL_LEN`] bytes as
+/// parsed, which may be one byte more than the text it was parsed from, as parsing ends a bare
+/// origin with `/`.
+pub fn is_supported_relay_url(relay_url: &RelayUrl) -> bool {
+    relay_url.scheme() == "https"
+        && relay_url.username().is_empty()
+        && relay_url.password().is_none()
+        && relay_url.as_str().len() <= MAX_RELAY_URL_LEN
+}
 /// Maximum lifetime of one private relay advertisement.
 pub const MAX_PRIVATE_RELAY_ADVERTISEMENT_VALIDITY_MS: u64 = 600_000;
 
@@ -83,14 +95,14 @@ impl PrivateRelayAdvertisementV1 {
     /// Creates a bounded private relay advertisement.
     ///
     /// # Errors
-    /// Returns [`ProtocolError::INVALID_INPUT`] for an unsupported or oversized relay URL.
+    /// Returns [`ProtocolError::INVALID_INPUT`] for a relay URL that is not
+    /// [supported](is_supported_relay_url).
     pub fn new(
         scope: PrivateRelayAdvertisementScope,
         relay_url: RelayUrl,
         validity: PrivateRelayAdvertisementValidity,
     ) -> Result<Self, ProtocolError> {
-        let relay_url_text = relay_url.as_str();
-        if relay_url_text.len() > MAX_RELAY_URL_LEN || relay_url.scheme() != "https" {
+        if !is_supported_relay_url(&relay_url) {
             return Err(ProtocolError::INVALID_INPUT);
         }
         Ok(Self {

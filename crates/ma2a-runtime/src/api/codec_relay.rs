@@ -31,7 +31,7 @@ pub(super) fn private_configure(object: &Map<String, Value>) -> Result<CommandKi
         PrivateRelayConfiguration {
             mode,
             listen: bounded_text(object, "listen", 128)?,
-            public_url: bounded_text(object, "public_url", ma2a_core::MAX_RELAY_URL_LEN)?,
+            public_url: relay_url(object, "public_url")?,
             served_spaces: space_ids(object, "served_space_ids")?,
             certificate_path: optional_text(object, "certificate_path", 4_096)?,
             private_key_path: optional_text(object, "private_key_path", 4_096)?,
@@ -41,19 +41,26 @@ pub(super) fn private_configure(object: &Map<String, Value>) -> Result<CommandKi
 
 pub(super) fn public_configure(object: &Map<String, Value>) -> Result<CommandKind, ApiError> {
     exact_fields(object, &["version", "operation", "request_id", "url"])?;
-    let url = bounded_text(object, "url", ma2a_core::MAX_RELAY_URL_LEN)?;
-    let authority = url
-        .as_str()
-        .strip_prefix("https://")
-        .and_then(|rest| rest.split('/').next())
-        .ok_or_else(ApiError::invalid_input)?;
-    if authority.contains('@') {
-        return Err(ApiError::invalid_input());
-    }
     Ok(CommandKind::PublicRelayConfigure(
         request_id(object, "request_id")?,
-        url,
+        relay_url(object, "url")?,
     ))
+}
+
+/// Reads a relay URL the Runtime can use as written, so a URL it would refuse later, after
+/// the request is admitted, is refused here instead.
+fn relay_url(object: &Map<String, Value>, field: &str) -> Result<BoundedText, ApiError> {
+    let url = bounded_text(object, field, ma2a_core::MAX_RELAY_URL_LEN)?;
+    if !is_usable_relay_url(url.as_str()) {
+        return Err(ApiError::invalid_input());
+    }
+    Ok(url)
+}
+
+/// Whether `url` parses into a relay URL the Runtime supports.
+pub(super) fn is_usable_relay_url(url: &str) -> bool {
+    url.parse::<ma2a_net::RelayUrl>()
+        .is_ok_and(|parsed| ma2a_core::is_supported_relay_url(&parsed))
 }
 
 pub(super) fn request_only(

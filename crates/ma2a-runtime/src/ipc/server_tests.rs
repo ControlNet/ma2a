@@ -26,6 +26,8 @@ mod hosted_calls;
 mod large_snapshot;
 #[path = "server_tests/lifecycle.rs"]
 mod lifecycle;
+#[path = "server_tests/no_effect_refusals.rs"]
+mod no_effect_refusals;
 #[path = "server_tests/pending_replay.rs"]
 mod pending_replay;
 #[path = "server_tests/process_delete.rs"]

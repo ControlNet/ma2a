@@ -47,15 +47,17 @@ pub(super) async fn private_configure(
             RelayTransportConfiguration::ExternalTlsTermination
         }
     });
+    refuse_unusable(&configuration)?;
     let committed = context
         .handle
         .reconfigure_private_relay(configuration.clone())
         .await
         .map_err(|error| relay_error(&error))?;
-    Ok(
-        CommandResult::private_relay_configured(private_view(committed.value())?)
-            .at_revision(committed.revision()),
-    )
+    Ok(CommandResult::private_relay_configured(after_commit(
+        private_view(committed.value()),
+        &committed,
+    )?)
+    .at_revision(committed.revision()))
 }
 
 pub(super) async fn private_disable(
@@ -76,10 +78,11 @@ pub(super) async fn private_disable(
         .set_relay_configuration_committed(configuration.clone())
         .await
         .map_err(|error| relay_error(&error))?;
-    Ok(
-        CommandResult::private_relay_status(private_view(committed.value())?)
-            .at_revision(committed.revision()),
-    )
+    Ok(CommandResult::private_relay_status(after_commit(
+        private_view(committed.value()),
+        &committed,
+    )?)
+    .at_revision(committed.revision()))
 }
 
 pub(super) async fn private_status(
@@ -104,15 +107,17 @@ pub(super) async fn public_configure(
         .map_err(|_| ProtocolError::INTERNAL)?;
     configuration.public_fallback_enabled = true;
     configuration.public_relay_urls = vec![url.to_owned()];
+    refuse_unusable(&configuration)?;
     let committed = context
         .handle
         .set_relay_configuration_committed(configuration)
         .await
         .map_err(|error| relay_error(&error))?;
-    Ok(
-        CommandResult::public_relay_configured(public_view(committed.value())?)
-            .at_revision(committed.revision()),
-    )
+    Ok(CommandResult::public_relay_configured(after_commit(
+        public_view(committed.value()),
+        &committed,
+    )?)
+    .at_revision(committed.revision()))
 }
 
 pub(super) async fn public_disable(context: &ConnectionContext) -> Result<CommandResult, ApiError> {
@@ -128,10 +133,11 @@ pub(super) async fn public_disable(context: &ConnectionContext) -> Result<Comman
         .set_relay_configuration_committed(configuration)
         .await
         .map_err(|error| relay_error(&error))?;
-    Ok(
-        CommandResult::public_relay_status(public_view(committed.value())?)
-            .at_revision(committed.revision()),
-    )
+    Ok(CommandResult::public_relay_status(after_commit(
+        public_view(committed.value()),
+        &committed,
+    )?)
+    .at_revision(committed.revision()))
 }
 
 pub(super) async fn public_status(
@@ -181,6 +187,22 @@ fn private_view(
             .map_err(|_| ProtocolError::INTERNAL)?,
         status.applied_private.is_some() && !status.convergence_pending,
     ))
+}
+
+/// Refuses, before anything runs, a configuration the Runtime could not apply, such as a
+/// listener address that does not parse or an external TLS backend off loopback.
+fn refuse_unusable(configuration: &RelayConfiguration) -> Result<(), ApiError> {
+    ma2a_net::RuntimeRelayConfiguration::try_from(configuration.clone())
+        .map(drop)
+        .map_err(|_| ApiError::invalid_input().without_effects())
+}
+
+/// A view that fails after its configuration committed still reports that commit.
+fn after_commit<T, V>(
+    view: Result<V, ProtocolError>,
+    committed: &ma2a_store::Committed<T>,
+) -> Result<V, ApiError> {
+    view.map_err(|error| ApiError::from(error).after_commit(committed.revision()))
 }
 
 fn relay_error(error: &crate::RuntimeError) -> ApiError {

@@ -145,12 +145,7 @@ impl PrivateRelayProviderConfig {
             listen_addr,
             public_relay_url,
         } = location;
-        if public_relay_url.scheme() != "https" {
-            return Err(RelayConfigError::PublicUrlRequiresTls);
-        }
-        if public_relay_url.as_str().len() > MAX_RELAY_URL_LEN {
-            return Err(RelayConfigError::RelayUrlTooLong);
-        }
+        check_relay_url(&public_relay_url)?;
         if served_spaces.is_empty() || served_spaces.len() > MAX_SPACE_MEMBERS {
             return Err(RelayConfigError::InvalidServedSpaces);
         }
@@ -203,20 +198,13 @@ impl PublicRelayFallbackConfig {
     /// Creates a nonempty bounded public relay fallback set.
     ///
     /// # Errors
-    /// Returns [`RelayConfigError`] for empty, duplicate, oversized, or non-HTTPS entries.
+    /// Returns [`RelayConfigError`] for empty, duplicate, oversized, non-HTTPS, or
+    /// credential-bearing entries.
     pub fn new(mut relay_urls: Vec<RelayUrl>) -> Result<Self, RelayConfigError> {
         if relay_urls.is_empty() || relay_urls.len() > MAX_PUBLIC_FALLBACK_RELAYS {
             return Err(RelayConfigError::InvalidPublicFallback);
         }
-        if relay_urls.iter().any(|url| url.scheme() != "https") {
-            return Err(RelayConfigError::PublicUrlRequiresTls);
-        }
-        if relay_urls
-            .iter()
-            .any(|url| url.as_str().len() > MAX_RELAY_URL_LEN)
-        {
-            return Err(RelayConfigError::RelayUrlTooLong);
-        }
+        relay_urls.iter().try_for_each(check_relay_url)?;
         relay_urls.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
         let unique = relay_urls
             .iter()
@@ -239,6 +227,20 @@ impl PublicRelayFallbackConfig {
     }
 }
 
+/// Refuses a relay URL that MA2A cannot advertise or carry in an address record.
+fn check_relay_url(url: &RelayUrl) -> Result<(), RelayConfigError> {
+    if url.scheme() != "https" {
+        return Err(RelayConfigError::PublicUrlRequiresTls);
+    }
+    if url.as_str().len() > MAX_RELAY_URL_LEN {
+        return Err(RelayConfigError::RelayUrlTooLong);
+    }
+    if !ma2a_core::is_supported_relay_url(url) {
+        return Err(RelayConfigError::RelayUrlHasCredentials);
+    }
+    Ok(())
+}
+
 /// Invalid private provider or public fallback configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -251,6 +253,8 @@ pub enum RelayConfigError {
     PublicUrlRequiresTls,
     /// A relay URL is longer than an address record can carry.
     RelayUrlTooLong,
+    /// A relay URL names a user or password, which every peer it reaches would see.
+    RelayUrlHasCredentials,
     /// Plain external-termination backends must be restricted to loopback.
     ExternalListenerMustBeLoopback,
     /// Store-owned relay configuration is malformed or internally inconsistent.
@@ -272,6 +276,9 @@ impl fmt::Display for RelayConfigError {
                     formatter,
                     "relay URL is longer than {MAX_RELAY_URL_LEN} bytes"
                 )
+            }
+            Self::RelayUrlHasCredentials => {
+                formatter.write_str("relay URL must not include a user name or password")
             }
             Self::ExternalListenerMustBeLoopback => formatter
                 .write_str("external TLS termination backend listener must use a loopback address"),

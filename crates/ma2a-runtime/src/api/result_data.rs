@@ -250,15 +250,16 @@ impl PublicRelayView {
     /// Creates Public Relay configuration and observed status.
     ///
     /// # Errors
-    /// Returns invalid input when the URL is oversized or contains credentials.
+    /// Returns invalid input when the URL is not one the Runtime can use: oversized, not HTTPS,
+    /// or carrying credentials.
     pub fn new(
         configured: bool,
         url: Option<String>,
         online: bool,
     ) -> Result<Self, super::ApiError> {
         if url
-            .as_ref()
-            .is_some_and(|value| value.len() > ma2a_core::MAX_RELAY_URL_LEN || value.contains('@'))
+            .as_deref()
+            .is_some_and(|value| !super::codec_relay::is_usable_relay_url(value))
         {
             Err(super::ApiError::invalid_input())
         } else {
