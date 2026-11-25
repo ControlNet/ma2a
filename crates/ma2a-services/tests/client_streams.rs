@@ -177,7 +177,7 @@ async fn a_proxied_connection_is_byte_exact_in_both_directions() -> TestResult {
     let caller = client::proxy::run(
         (&mut reader, &mut writer),
         (sent.as_slice(), &mut returned),
-        std::future::pending(),
+        (Duration::from_secs(60), std::future::pending()),
     );
     let (result, _report) = within(async { tokio::join!(caller, host) }).await?;
     let result = result?;
@@ -216,7 +216,7 @@ async fn a_reset_local_connection_cancels_the_proxy_instead_of_ending_its_input(
     let caller = client::proxy::run(
         (&mut reader, &mut writer),
         (Reset, Vec::new()),
-        std::future::pending(),
+        (Duration::from_secs(60), std::future::pending()),
     );
     let target = async {
         let frame = target_reader.expect().await?;
@@ -412,7 +412,7 @@ async fn cancelling_a_proxy_before_or_after_accept_returns_cancelled() -> TestRe
     let caller = client::proxy::run(
         (&mut reader, &mut writer),
         (local_read, Vec::new()),
-        async {},
+        (Duration::from_secs(60), async {}),
     );
     let (result, scripted) = within(async { tokio::join!(caller, target) }).await?;
     scripted?;
@@ -434,7 +434,10 @@ async fn cancelling_a_proxy_before_or_after_accept_returns_cancelled() -> TestRe
     let caller = client::proxy::run(
         (&mut reader, &mut writer),
         (local_read, Vec::new()),
-        tokio::time::sleep(Duration::from_millis(50)),
+        (
+            Duration::from_secs(60),
+            tokio::time::sleep(Duration::from_millis(50)),
+        ),
     );
     let (result, scripted) = within(async { tokio::join!(caller, target) }).await?;
     scripted?;
@@ -456,7 +459,10 @@ async fn cancelling_a_proxy_before_or_after_accept_returns_cancelled() -> TestRe
     let caller = client::proxy::run(
         (&mut reader, &mut writer),
         (&b""[..], Vec::new()),
-        tokio::time::sleep(Duration::from_millis(50)),
+        (
+            Duration::from_secs(60),
+            tokio::time::sleep(Duration::from_millis(50)),
+        ),
     );
     let (result, scripted) = within(async { tokio::join!(caller, target) }).await?;
     scripted?;

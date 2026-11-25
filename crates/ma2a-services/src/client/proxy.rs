@@ -2,7 +2,9 @@
 
 use std::{
     future::Future,
+    io,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::Duration,
 };
 
 use ma2a_core::service::{
@@ -15,8 +17,7 @@ use tokio::{
 
 use super::{
     ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next,
-    sinks::{settled, write_flushed},
-    unexpected,
+    sinks::settled, unexpected,
 };
 use crate::{FrameReader, FrameWriter};
 
@@ -24,8 +25,10 @@ use crate::{FrameReader, FrameWriter};
 ///
 /// Local EOF becomes `end`, and the destination's `end` shuts down the local write side, so
 /// each direction closes independently and byte for byte. The two directions never wait on
-/// each other. Completing `cancel` sends `cancel` and still reads the target's terminal
-/// outcome; a failed local read or write cancels the relay and reports that local error.
+/// each other. Each local write, flush, and shutdown is bounded by `idle` without progress so
+/// a stalled local consumer cannot hold the relay indefinitely. Completing `cancel` sends
+/// `cancel` and still reads the target's terminal outcome; a failed or timed-out local read or
+/// write cancels the relay and reports that local error.
 ///
 /// # Errors
 /// Returns the refusal (`connection_refused`, `unreachable`, `dns_failed`, `timed_out`, or an
@@ -34,7 +37,7 @@ use crate::{FrameReader, FrameWriter};
 pub async fn run<R, W, LR, LW, C>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     (local_read, local_write): (LR, LW),
-    cancel: C,
+    (idle, cancel): (Duration, C),
 ) -> Result<ProxyResult, ClientError>
 where
     R: AsyncRead + Unpin,
@@ -53,7 +56,7 @@ where
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
     let answer = {
-        let downstream = downstream(reader, local_write, (&lost, &sent));
+        let downstream = downstream(reader, (local_write, idle), (&lost, &sent));
         tokio::pin!(downstream);
         // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
         match sender {
@@ -149,9 +152,9 @@ async fn upstream<W, LR, C>(
 /// destination; any other end may have moved part of the traffic.
 async fn downstream<R, LW>(
     reader: &mut FrameReader<R>,
-    mut local_write: LW,
+    (mut local_write, idle): (LW, Duration),
     (lost, (sent, input_ended)): (&Notify, &Sent),
-) -> (Result<ProxyResult, ClientError>, Option<std::io::Error>)
+) -> (Result<ProxyResult, ClientError>, Option<io::Error>)
 where
     R: AsyncRead + Unpin,
     LW: AsyncWrite + Unpin,
@@ -188,7 +191,7 @@ where
                         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                         received = received.saturating_add(length);
                         match unwritten {
-                            None => write_flushed(&mut local_write, bytes).await,
+                            None => write_bounded(&mut local_write, bytes, idle).await,
                             Some(_) => Ok(()),
                         }
                     }
@@ -197,7 +200,7 @@ where
                 FrameKind::End if !ended && frame.end() == Ok(Channel::Input) => {
                     ended = true;
                     match unwritten {
-                        None => local_write.shutdown().await,
+                        None => shutdown_bounded(&mut local_write, idle).await,
                         Some(_) => Ok(()),
                     }
                 }
@@ -212,6 +215,40 @@ where
     }
     .await;
     (answer, unwritten)
+}
+
+/// Writes `bytes` and flushes `local_write`, allowing up to `idle` without progress on each
+/// step so a slow consumer still draining receives every byte while a stalled one times out.
+async fn write_bounded<LW: AsyncWrite + Unpin>(
+    local_write: &mut LW,
+    bytes: &[u8],
+    idle: Duration,
+) -> io::Result<()> {
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let written = tokio::time::timeout(idle, local_write.write(rest))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local write timed out"))??;
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "local write returned zero bytes",
+            ));
+        }
+        rest = rest.get(written..).unwrap_or_default();
+    }
+    tokio::time::timeout(idle, local_write.flush())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local flush timed out"))?
+}
+
+async fn shutdown_bounded<LW: AsyncWrite + Unpin>(
+    local_write: &mut LW,
+    idle: Duration,
+) -> io::Result<()> {
+    tokio::time::timeout(idle, local_write.shutdown())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local shutdown timed out"))?
 }
 
 async fn send_cancel<W: AsyncWrite + Unpin>(

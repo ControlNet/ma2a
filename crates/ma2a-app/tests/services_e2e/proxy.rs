@@ -242,3 +242,72 @@ fn a_proxied_connection_exits_255_on_shutdown() -> TestResult {
     drop(silent.join().map_err(|_| "silent destination panicked")??);
     lab.shutdown()
 }
+
+#[test]
+fn a_stalled_forwarded_consumer_fails_by_idle_and_releases_its_slot() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let lab = Lab::start("proxy-forward-stall", &port.to_string())?;
+    let port_text = port.to_string();
+
+    // Destination 1 floods bytes until the stalled client fails; destination 2 echoes cleanly.
+    let server = std::thread::spawn(move || -> TestValue<()> {
+        let (mut first, _) = listener.accept()?;
+        let chunk = vec![b'z'; 65_536];
+        while first.write_all(&chunk).is_ok() {}
+        let (mut second, _) = listener.accept()?;
+        let mut received = Vec::new();
+        second.read_to_end(&mut received)?;
+        second.write_all(&received)?;
+        second.write_all(b"!")?;
+        second.shutdown(Shutdown::Write)?;
+        Ok(())
+    });
+
+    let mut forward = lab
+        .member
+        .command(&[
+            "proxy",
+            "forward",
+            "--endpoint",
+            lab.owner.id(),
+            "--idle",
+            "400ms",
+            "--listen",
+            "127.0.0.1:0",
+            "127.0.0.1",
+            &port_text,
+        ])
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stderr = BufReader::new(forward.stderr.take().ok_or("stderr")?);
+    let mut banner = String::new();
+    stderr.read_line(&mut banner)?;
+    let address = banner
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| format!("no listen address in {banner:?}"))?;
+
+    // Open a local consumer and never read from it; keep the socket open.
+    let stalled = TcpStream::connect(address)?;
+    let mut failure = String::new();
+    stderr.read_line(&mut failure)?;
+    assert!(
+        failure.contains("failed:") && failure.contains("timed out"),
+        "expected local timeout diagnostic, got: {failure:?}"
+    );
+
+    // A subsequent consumer still works cleanly through the forwarder.
+    let mut healthy = TcpStream::connect(address)?;
+    healthy.write_all(b"ok")?;
+    healthy.shutdown(Shutdown::Write)?;
+    let mut returned = Vec::new();
+    healthy.read_to_end(&mut returned)?;
+    assert_eq!(returned, b"ok!");
+
+    drop(stalled);
+    forward.kill()?;
+    forward.wait()?;
+    server.join().map_err(|_| "flood server panicked")??;
+    lab.shutdown()
+}

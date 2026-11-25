@@ -319,7 +319,9 @@ cancels the operation, and a stream that ends without a terminal frame is report
 that input fails, it sends `cancel` instead and reports the failure, whatever the outcome, so a
 remote program never takes part of its input as all of it. Exec, Shell, Proxy, and hosted calls
 do the same when writing the target's output locally fails, so output cut short is never reported
-as a success. A stream that broke the family contract, as below, is still reported as broken.
+as a success. For Proxy, local delivery and half-close also time out if no byte makes progress for
+the connection's idle timeout, cancelling the relay and releasing any local forwarding slot. A
+stream that broke the family contract, as below, is still reported as broken.
 
 A caller also refuses, as `invalid_input`, an answer that breaks the family contract, even after
 its own local output failed: an `accept` with a header for Files, Exec, Shell, and Proxy, which

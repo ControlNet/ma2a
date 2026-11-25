@@ -1,6 +1,6 @@
 //! `ma2a proxy`: TCP destinations reached from the target, byte for byte.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use ma2a_core::service::{
     EndReason, MAX_PROXY_IDLE_MS, OpenBody, ProxyHost, ProxyRequest, ProxyResult,
@@ -19,13 +19,14 @@ pub(crate) async fn run(paths: IpcPaths, command: ProxyCommand) -> Result<(), Ap
     match command {
         ProxyCommand::Connect { destination } => {
             let request = request(&destination)?;
+            let idle = Duration::from_millis(request.idle_timeout_ms());
             let (mut reader, mut writer) =
                 open(&paths, &destination.endpoint, OpenBody::Proxy(request)).await?;
             let local = (tokio::io::stdin(), tokio::io::stdout());
             let relayed = client::proxy::run(
                 (&mut reader, &mut writer),
                 local,
-                super::process::interrupted(),
+                (idle, super::process::interrupted()),
             )
             .await;
             exit_with(relayed.map_err(AppError::from))
@@ -110,13 +111,14 @@ async fn forward(
             let _permit = permit;
             let (paths, endpoint) = shared.as_ref();
             let relayed = async {
+                let idle = Duration::from_millis(request.idle_timeout_ms());
                 let (mut reader, mut writer) =
                     open(paths, endpoint, OpenBody::Proxy(request)).await?;
                 let (read, write) = socket.into_split();
                 client::proxy::run(
                     (&mut reader, &mut writer),
                     (read, write),
-                    std::future::pending(),
+                    (idle, std::future::pending()),
                 )
                 .await?;
                 Ok::<(), AppError>(())

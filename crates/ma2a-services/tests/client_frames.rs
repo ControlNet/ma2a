@@ -232,7 +232,7 @@ async fn proxied_with<L: tokio::io::AsyncRead + Unpin>(
     let relayed = within(proxy::run(
         (&mut reader, &mut writer),
         (local, Vec::new()),
-        std::future::pending(),
+        (Duration::from_secs(60), std::future::pending()),
     ))
     .await;
     target.abort();
@@ -745,7 +745,7 @@ async fn proxied_into(sink: &mut Sink) -> TestResult<Result<ProxyResult, ClientE
     let relaying = proxy::run(
         (&mut reader, &mut writer),
         (&b""[..], sink),
-        std::future::pending(),
+        (Duration::from_secs(60), std::future::pending()),
     );
     let (relayed, scripted) = within(async { tokio::join!(relaying, target) }).await?;
     scripted?;
@@ -1046,7 +1046,7 @@ async fn a_continuous_incoming_stream_never_starves_proxy_or_drained_cancel() ->
             let _ = proxy::run(
                 (&mut reader, &mut writer),
                 (&b"hello"[..], tokio::io::sink()),
-                std::future::pending(),
+                (Duration::from_secs(60), std::future::pending()),
             )
             .await;
             Ok(())
@@ -1064,7 +1064,7 @@ async fn a_continuous_incoming_stream_never_starves_proxy_or_drained_cancel() ->
             let _ = proxy::run(
                 (&mut reader, &mut writer),
                 (local_read, Broken),
-                std::future::pending(),
+                (Duration::from_secs(60), std::future::pending()),
             )
             .await;
             Ok(())
@@ -1073,4 +1073,174 @@ async fn a_continuous_incoming_stream_never_starves_proxy_or_drained_cancel() ->
     )
     .await?;
     assert_drained_cancel_fair_under_flood().await
+}
+
+/// A local sink whose writes and flushes succeed, but whose shutdown stays pending forever.
+struct StalledShutdown;
+
+impl AsyncWrite for StalledShutdown {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Ok(bytes.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_local_proxy_consumer_fails_by_the_idle_deadline() -> TestResult {
+    let idle = Duration::from_secs(5);
+
+    // 1. One-byte non-draining sink with target data + TimedOut terminal + close.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe();
+    let (_stalled_consumer, local_write) = tokio::io::duplex(1);
+    let (_hold, local_read) = tokio::io::duplex(64);
+    send(
+        &mut target_writer,
+        &[
+            accept(&EMPTY_ACCEPT),
+            Sent::Data(Channel::Input, b"abcdef"),
+            relay_ended(EndReason::TimedOut, (0, 6))?,
+        ],
+    )
+    .await?;
+    drop(target_writer);
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        idle * 2,
+        proxy::run(
+            (&mut reader, &mut writer),
+            (local_read, local_write),
+            (idle, std::future::pending()),
+        ),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), idle);
+    assert!(
+        matches!(result, Err(ClientError::Local(ref error)) if error.kind() == std::io::ErrorKind::TimedOut),
+        "{result:?}"
+    );
+
+    // 2. Live target receives Cancel once the stalled consumer times out, and answers Cancelled.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_stalled_consumer, local_write) = tokio::io::duplex(1);
+    let (_hold, local_read) = tokio::io::duplex(64);
+    let target = async {
+        send(
+            &mut target_writer,
+            &[accept(&EMPTY_ACCEPT), Sent::Data(Channel::Input, b"abcdef")],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(
+            &mut target_writer,
+            &[relay_ended(EndReason::Cancelled, (0, 6))?],
+        )
+        .await
+    };
+    let started = tokio::time::Instant::now();
+    let caller = proxy::run(
+        (&mut reader, &mut writer),
+        (local_read, local_write),
+        (idle, std::future::pending()),
+    );
+    let (result, scripted) =
+        tokio::time::timeout(idle * 2, async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert_eq!(started.elapsed(), idle);
+    assert!(
+        matches!(result, Err(ClientError::Local(ref error)) if error.kind() == std::io::ErrorKind::TimedOut),
+        "{result:?}"
+    );
+
+    // 3. Stalled local shutdown fails at the idle deadline.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let target = async {
+        send(&mut target_writer, &[accept(&EMPTY_ACCEPT)]).await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::End);
+        send(
+            &mut target_writer,
+            &[
+                Sent::Data(Channel::Input, b"abc"),
+                Sent::End(Channel::Input),
+                relayed(0, 3)?,
+            ],
+        )
+        .await
+    };
+    let started = tokio::time::Instant::now();
+    let caller = proxy::run(
+        (&mut reader, &mut writer),
+        (&b""[..], StalledShutdown),
+        (idle, std::future::pending()),
+    );
+    let (result, scripted) =
+        tokio::time::timeout(idle * 2, async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert_eq!(started.elapsed(), idle);
+    assert!(
+        matches!(result, Err(ClientError::Local(ref error)) if error.kind() == std::io::ErrorKind::TimedOut),
+        "{result:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_local_proxy_consumer_making_progress_receives_the_complete_stream() -> TestResult {
+    use tokio::io::AsyncReadExt as _;
+
+    // Given: a one-byte sink drained one byte every 2 s under a 5 s idle budget, so the total
+    // 8-byte transfer exceeds one idle interval while every individual step makes progress.
+    let idle = Duration::from_secs(5);
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (mut consumer, local_write) = tokio::io::duplex(1);
+    let target = async {
+        send(&mut target_writer, &[accept(&EMPTY_ACCEPT)]).await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::End);
+        send(
+            &mut target_writer,
+            &[
+                Sent::Data(Channel::Input, b"abcdefgh"),
+                Sent::End(Channel::Input),
+                relayed(0, 8)?,
+            ],
+        )
+        .await
+    };
+    let drain = async {
+        let mut received = Vec::new();
+        let mut byte = [0_u8; 1];
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if consumer.read(&mut byte).await? == 0 {
+                return TestResult::Ok(received);
+            }
+            received.push(byte[0]);
+        }
+    };
+    let caller = proxy::run(
+        (&mut reader, &mut writer),
+        (&b""[..], local_write),
+        (idle, std::future::pending()),
+    );
+    let (result, scripted, received) = tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::join!(caller, target, drain)
+    })
+    .await?;
+    scripted?;
+    assert_eq!(result?.reason, EndReason::Completed);
+    assert_eq!(received?, b"abcdefgh");
+    Ok(())
 }

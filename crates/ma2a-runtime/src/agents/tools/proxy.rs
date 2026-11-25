@@ -122,11 +122,12 @@ async fn relay((manager, task): (&AgentManager, AgentTaskId), shared: &Shared, s
     else {
         return;
     };
+    let idle = std::time::Duration::from_millis(request.idle_timeout_ms());
     let (read, write) = socket.into_split();
     let _relayed = client::proxy::run(
         (&mut reader, &mut writer),
         (read, write),
-        std::future::pending(),
+        (idle, std::future::pending()),
     )
     .await;
 }
