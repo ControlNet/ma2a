@@ -170,7 +170,14 @@ impl Actor {
         let observed_revision = self.persist_relay_observations(&staged).await?;
         let address_result = self.publish_local_address().await;
         self.state.revision = before_revision;
-        let address_revision = address_result?;
+        let address_revision = match address_result {
+            Ok(revision) => revision,
+            Err(error) if error.is_deferred_publication() => {
+                Self::absorb_background("relay candidate address publication", Err(error))?;
+                before_revision
+            }
+            Err(error) => return Err(error),
+        };
         let mut revision = observed_revision.max(address_revision);
         if revision <= before_revision {
             revision = self.store.advance_revision().await?;

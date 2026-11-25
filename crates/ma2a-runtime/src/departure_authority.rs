@@ -102,9 +102,19 @@ impl Actor {
         let _receiver_count = self
             .events
             .send(RuntimeEvent::memberships_changed(removed.revision));
-        self.refresh_after_membership_change()
-            .await
-            .map_err(|error| error.after_commit(removed.revision))?;
+        if let Err(error) = self.refresh_after_membership_change().await {
+            if error.is_deferred_publication() {
+                // Lookup, relay candidates, and private relay access already ran; only local
+                // publication waits for maintenance. Schedule the manifest round now and return
+                // the committed removal chain to the departing member.
+                if let Some(trigger) = self.maintenance.membership_pending.take() {
+                    self.schedule_control_round(trigger, None);
+                }
+                Self::absorb_background("owner departure publication", Err(error))?;
+            } else {
+                return Err(error.after_commit(removed.revision));
+            }
+        }
         Ok(Some(removed.chain))
     }
 }

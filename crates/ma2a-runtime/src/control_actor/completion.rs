@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 pub(crate) struct PendingControl {
     changes: ControlChanges,
     peers: BTreeSet<EndpointId>,
+    announced: bool,
 }
 
 impl Actor {
@@ -23,6 +24,9 @@ impl Actor {
             .control_completion
             .get_or_insert_with(PendingControl::default);
         pending.changes.merge(changes);
+        if changes.manifest {
+            pending.announced = false;
+        }
         pending.peers.extend(peers);
     }
 
@@ -32,6 +36,7 @@ impl Actor {
         };
         let peers = pending.peers.clone();
         let manifest_advanced = pending.changes.manifest;
+        let already_announced = pending.announced;
         // A completed task may be older than a local departure. Read one current
         // Store receipt, never install the task's stale lookup/membership snapshot.
         let projection = self.store.memberships(self.state.endpoint_id).await?;
@@ -41,7 +46,10 @@ impl Actor {
         if changed {
             self.synchronized_control_peers.clear();
         }
-        if changed || manifest_advanced {
+        if changed || (manifest_advanced && !already_announced) {
+            if let Some(pending) = self.maintenance.control_completion.as_mut() {
+                pending.announced = true;
+            }
             let _receivers = self
                 .events
                 .send(crate::state::RuntimeEvent::memberships_changed(
@@ -53,7 +61,13 @@ impl Actor {
         self.refresh_control_lookup().await?;
         self.refresh_relay_candidates().await?;
         self.refresh_private_relay_access().await?;
-        self.refresh_local_control_publications().await?;
+        if let Err(error) = self.refresh_local_control_publications().await {
+            if error.is_deferred_publication() {
+                Self::absorb_background("control publication", Err(error))?;
+            } else {
+                return Err(error);
+            }
+        }
         let mut eligible = BTreeSet::new();
         for peer in peers {
             match self

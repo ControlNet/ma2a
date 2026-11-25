@@ -15,6 +15,8 @@ use crate::{error::RuntimeError, store::StoreClient};
 
 #[cfg(test)]
 mod background_reconciliation_test;
+#[cfg(test)]
+mod clock_behind_ops_test;
 mod command;
 mod construction;
 #[cfg(test)]

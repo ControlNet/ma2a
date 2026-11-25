@@ -86,6 +86,15 @@ impl RuntimeError {
         }
     }
 
+    /// Local address or relay publication is waiting for a publishable address or for the clock
+    /// to catch up, so background maintenance will retry it later.
+    pub(crate) const fn is_deferred_publication(&self) -> bool {
+        matches!(
+            self.0,
+            RuntimeErrorKind::AddressObservationUnavailable | RuntimeErrorKind::ClockBehind
+        )
+    }
+
     /// A request this Runtime refuses by design: it ends that request and leaves the Runtime
     /// running.
     pub(crate) const fn is_request_refusal(&self) -> bool {
