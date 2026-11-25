@@ -13,8 +13,7 @@ use ma2a_core::service::{
     FileMetadata, FilesRequest, FilesResult, OpenBody, RemotePath, ServiceError, TransferRequest,
     TransferResource, TransferResult, WriteMode,
 };
-use ma2a_services::{FrameReader, client, client::resume::Partial};
-use tokio::io::AsyncRead;
+use ma2a_services::{client, client::resume::Partial};
 
 use super::{
     Call, Outcome, bounded, failed, ok, status,
@@ -87,11 +86,9 @@ impl Call<'_> {
         let resource = TransferResource::File(remote(&args.root, &args.path)?);
         let _target = destination(&self.workspace, &args.to)?;
         let request = TransferRequest::Get(resource, 0, None);
-        let (reader, _writer) = self
-            .open_read(&args.endpoint, OpenBody::Transfer(request))
-            .await?;
+        let body = OpenBody::Transfer(request);
         ok(&transferred(
-            download(reader, (&self.workspace, &args.to)).await?,
+            self.download((&args.endpoint, body), &args.to).await?,
         ))
     }
 
@@ -127,41 +124,48 @@ impl Call<'_> {
     }
 }
 
-/// Downloads one accepted Transfer stream into `target`, verified before it is published.
-///
-/// The content goes to a partial file in the private download directory beside `target`, held
-/// with its directories from the start, so the file published is the one whose content was
-/// verified; a concurrent download to the same target is refused.
-pub(super) async fn download<R: AsyncRead + Unpin>(
-    mut reader: FrameReader<R>,
-    (workspace, relative): (&Path, &str),
-) -> Result<TransferResult, ToolError> {
-    // A download is read-only, so waiting for its Accept is bounded like any read.
-    let identity = bounded(async {
-        client::transfer::download_accepted(&mut reader)
-            .await
-            .map_err(|error| failed(&error))
-    })
-    .await?;
-    // Re-validate immediately before opening the partial file so a directory component swapped
-    // into a symlink during the remote handshake cannot escape the workspace.
-    let target = destination(workspace, relative)?;
-    let mut partial = partial((workspace, relative), &target).await?;
-    if let Err(error) = partial.begin(identity).await {
-        let _discarded = partial.discard().await;
-        return Err(local(&error));
-    }
-    match client::transfer::download_content(&mut reader, partial.sink(), (identity, 0)).await {
-        Ok(result) => {
-            partial
-                .finish_or_discard(true)
+impl Call<'_> {
+    /// Downloads one Transfer stream into `relative`, verified before it is published.
+    ///
+    /// A download is read-only, so opening its stream and waiting for its Accept share one read
+    /// deadline; the content that follows has none. The content goes to a partial file in the
+    /// private download directory beside the target, held with its directories from the start,
+    /// so the file published is the one whose content was verified; a concurrent download to
+    /// the same target is refused.
+    pub(super) async fn download(
+        &self,
+        (endpoint, body): (&str, OpenBody),
+        relative: &str,
+    ) -> Result<TransferResult, ToolError> {
+        let ((mut reader, _writer), identity) = bounded(async {
+            let (mut reader, writer) = self.open_read(endpoint, body).await?;
+            let identity = client::transfer::download_accepted(&mut reader)
                 .await
-                .map_err(|error| local(&error))?;
-            Ok(result)
-        }
-        Err(error) => {
+                .map_err(|error| failed(&error))?;
+            Ok(((reader, writer), identity))
+        })
+        .await?;
+        // Re-validate immediately before opening the partial file so a directory component
+        // swapped into a symlink during the remote handshake cannot escape the workspace.
+        let workspace = &self.workspace;
+        let target = destination(workspace, relative)?;
+        let mut partial = partial((workspace, relative), &target).await?;
+        if let Err(error) = partial.begin(identity).await {
             let _discarded = partial.discard().await;
-            Err(failed(&error))
+            return Err(local(&error));
+        }
+        match client::transfer::download_content(&mut reader, partial.sink(), (identity, 0)).await {
+            Ok(result) => {
+                partial
+                    .finish_or_discard(true)
+                    .await
+                    .map_err(|error| local(&error))?;
+                Ok(result)
+            }
+            Err(error) => {
+                let _discarded = partial.discard().await;
+                Err(failed(&error))
+            }
         }
     }
 }

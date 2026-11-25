@@ -665,9 +665,10 @@ An Agent asks for a tool with a `tool` line. The daemon:
   its view or its error is the answer, so a wait ends at most 30 s after `timeout_ms`.
 - **Read deadline.** `files.stat`, `files.list`, and `process.inspect` are `timed_out` when the
   target has not answered within 30 s, like a task view, and so are `transfer.get` and
-  `agent.artifact` when the target has not accepted within 30 s. Mutations (`exec.run`,
-  `transfer.put`, `process.start`, `process.terminate`, `agent.submit`, `agent.send`,
-  `agent.cancel`) and a download's content have no such deadline: they wait for the target.
+  `agent.artifact` when the target has not accepted within 30 s; that 30 s also covers opening
+  the stream through this Runtime. Mutations (`exec.run`, `transfer.put`, `process.start`,
+  `process.terminate`, `agent.submit`, `agent.send`, `agent.cancel`) and a download's content
+  have no such deadline: they wait for the target.
 
 **Derived RequestId.** A call that opens a mutation (`transfer.put`, `exec.run`, `process.start`,
 `process.terminate`, `agent.submit`, `agent.send`, `agent.cancel`) uses

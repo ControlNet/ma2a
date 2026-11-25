@@ -18,7 +18,7 @@ use ma2a_core::service::{
 };
 use ma2a_services::client;
 
-use super::{Call, Outcome, bounded, failed, files::download, ok, status, workspace::destination};
+use super::{Call, Outcome, bounded, failed, ok, status, workspace::destination};
 use crate::agents::convert::{from_wire, hex, task_view};
 
 /// Pause before reaching a target again that was restarting or unreachable.
@@ -179,10 +179,8 @@ impl Call<'_> {
         let (agent, task) = names(&args.agent, &args.task)?;
         let _target = destination(&self.workspace, &args.to)?;
         let request = AgentRequest::Artifact(agent, task, args.name, 0, None);
-        let (reader, _writer) = self
-            .open_read(&args.endpoint, OpenBody::Agent(request))
-            .await?;
-        let result = download(reader, (&self.workspace, &args.to)).await?;
+        let body = OpenBody::Agent(request);
+        let result = self.download((&args.endpoint, body), &args.to).await?;
         ok(&Transferred {
             size: result.size,
             blake3: hex(&result.hash),
