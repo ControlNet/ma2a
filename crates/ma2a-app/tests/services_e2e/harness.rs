@@ -78,6 +78,16 @@ impl Node {
         self.fixture.start_owned()
     }
 
+    /// Stops the daemon gracefully and leaves it stopped until [`Self::resume`].
+    pub(crate) fn stop(&mut self) -> TestResult {
+        self.fixture.stop_owned()
+    }
+
+    /// Starts the daemon again after [`Self::stop`].
+    pub(crate) fn resume(&mut self) -> TestResult {
+        self.fixture.start_owned()
+    }
+
     /// Kills the daemon as a crash would, then starts it again with `environment`.
     pub(crate) fn crash_restart(&mut self, environment: &[(&str, &str)]) -> TestResult {
         self.fixture.kill_owned()?;

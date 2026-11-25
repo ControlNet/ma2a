@@ -109,6 +109,15 @@ impl AgentManager {
         let _installed = self.0.loopback.set(paths);
     }
 
+    /// Starts this manager's shutdown ahead of the Runtime's.
+    ///
+    /// The local API calls this before it closes its connections: a tool call relayed through
+    /// one of them must see the shutdown first, or it records the closed connection as its
+    /// answer instead of staying pending for the next start.
+    pub(crate) fn begin_shutdown(&self) {
+        self.0.shutdown.cancel();
+    }
+
     fn coordination(&self) -> MutexGuard<'_, Coordination> {
         self.0
             .coordination

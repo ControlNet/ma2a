@@ -198,6 +198,11 @@ impl LocalApiServer {
                 }
             }
         };
+        // Agent tool calls run over these connections, so they learn of the shutdown before
+        // the connections close.
+        if let Some(agents) = self.handle.agents() {
+            agents.begin_shutdown();
+        }
         cancellation.cancel();
         tasks.abort_all();
         while let Some(result) = tasks.join_next().await {

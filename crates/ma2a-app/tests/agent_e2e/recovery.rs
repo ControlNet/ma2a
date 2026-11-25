@@ -1,6 +1,9 @@
 //! Restarts and crashes: a watch reconnects, a lost instance fails its tasks and restarts,
 //! and a Runtime that crashes at any fault point finishes every task exactly once.
 
+use std::time::{Duration, Instant};
+
+use ma2a_store::{Repository, StoreConfig};
 use serde_json::Value;
 
 use super::{
@@ -70,6 +73,49 @@ fn a_crashed_runtime_resumes_its_running_task() -> TestResult {
     lab.b.crash_restart(&[])?;
     let ended = lab.wait_ended_on_b(&task)?;
     assert_eq!(text(&ended, "/task/state"), "completed", "{ended}");
+    lab.shutdown()
+}
+
+#[test]
+fn a_remote_tool_call_in_flight_when_its_daemon_stops_stays_pending() -> TestResult {
+    let mut lab = AgentLab::start("tool-stop")?;
+    lab.b.run_ok(&["service", "expose", "exec", &lab.space])?;
+    let grant = [
+        "space",
+        "grant",
+        &lab.space,
+        lab.a.id(),
+        "--agent",
+        "--exec",
+    ];
+    lab.a.run_ok(&grant)?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !lab
+        .a
+        .run(&["exec", "--endpoint", lab.b.id(), "--", "true"])?
+        .status
+        .success()
+    {
+        assert!(Instant::now() < deadline, "B never accepted A's exec");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // `lead` runs a remote program through A's own local API, and is left running it.
+    let instruction = format!("exec {} sleep 5", lab.b.id());
+    lab.a
+        .run_ok(&["agent", "submit", "lead", "--text", &instruction])?;
+    let store = StoreConfig::new(lab.a.state_dir());
+    while Repository::open(&store)?.pending_tool_calls()?.is_empty() {
+        assert!(Instant::now() < deadline, "lead never called exec.run");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+
+    lab.a.stop()?;
+
+    // The call cut short by the stop recorded no answer, so the next start runs it again.
+    let pending = Repository::open(&store)?.pending_tool_calls()?;
+    lab.a.resume()?;
+    assert_eq!(pending.len(), 1, "the stop became the call's answer");
     lab.shutdown()
 }
 

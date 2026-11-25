@@ -157,7 +157,7 @@ impl AgentLab {
         a.run_ok(&["space", "grant", &space, a.id(), "--agent"])?;
         b.run_ok(&["service", "expose", "agent", &space, "worker"])?;
         host(&b, "worker", &["transfer", "files"])?;
-        host(&a, "lead", &["agent"])?;
+        host(&a, "lead", &["agent", "exec"])?;
         Ok(Self {
             _agents: agents,
             a,
