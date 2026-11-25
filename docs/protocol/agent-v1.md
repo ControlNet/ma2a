@@ -671,7 +671,8 @@ RequestId = blake3::derive_key("ma2a agent tool call v1", task ‖ call)[..16]
 where `task` is the 16 task ID bytes and `call` the call ID bytes. Read-only calls use a fresh
 random RequestId, and so does each proxy connection.
 
-**Re-execution.** At Runtime start, every pending call of a `running` or `waiting` task runs again.
+**Re-execution.** A call still executing when the daemon stops records no result and stays
+pending. At Runtime start, every pending call of a `running` or `waiting` task runs again.
 A mutation re-opened under its derived RequestId is answered by the caller-side replay table: the
 completed operation's terminal frame, or `outcome_unknown` when the earlier stream was lost. It
 never acts twice. A replay carries only the terminal, never streamed output, so a replayed

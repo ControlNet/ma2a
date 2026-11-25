@@ -189,3 +189,33 @@ async fn a_cancellation_waiting_for_its_agent_ends_when_the_operation_stops() ->
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_tool_call_cut_short_by_shutdown_stays_pending() -> TestResult {
+    // Given: a pending call that waits for this Runtime's local API, which never binds.
+    let live = Live::new().await?;
+    let args = serde_json::json!({
+        "endpoint": crate::agents::convert::hex(iroh::SecretKey::generate().public().as_bytes()),
+        "agent": "other",
+        "task": AgentTaskId::random()?.to_string(),
+    });
+    live.call(("c1", "agent.get", &args))?;
+    live.manager.run_tool((live.task, "c1".to_owned()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // When: the daemon shuts down.
+    live.shutdown.cancel();
+    live.manager.0.tasks.close();
+    let drained = tokio::time::timeout(Duration::from_secs(2), live.manager.0.tasks.wait()).await;
+
+    // Then: the call ends at once with no answer, so a restart runs it again.
+    let recorded = Repository::open(&live.config)?.tool_call((live.task, "c1"))?;
+    live.finish().await?;
+    drained.map_err(|_| "the call outlived the shutdown")?;
+    let recorded = recorded.ok_or("the call was not recorded")?;
+    assert_eq!(
+        recorded.result, None,
+        "the shutdown became the call's answer"
+    );
+    Ok(())
+}

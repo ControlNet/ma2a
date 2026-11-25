@@ -119,7 +119,14 @@ impl AgentManager {
         }
         let manager = self.clone();
         self.0.tasks.spawn(async move {
-            if let Some(outcome) = Box::pin(manager.execute((task, &call))).await {
+            // A call the daemon's shutdown cuts short records nothing and runs again after
+            // the restart, as after a crash.
+            let executed = tokio::select! {
+                biased;
+                () = manager.0.shutdown.cancelled() => None,
+                executed = Box::pin(manager.execute((task, &call))) => executed,
+            };
+            if let Some(outcome) = executed {
                 fault("before_tool_result");
                 let (bytes, at_ms) = (answer(&outcome), manager.now_ms());
                 let id = call.clone();
