@@ -64,19 +64,25 @@ async fn read_retained(
         let request = ProcessRequest::Logs(id, from, MAX_LOGS_READ);
         let read = bounded(READ_DEADLINE, async {
             let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
-            let read = hosted::logs(&mut reader, (&mut output, &mut error), MAX_LOGS_READ).await;
+            let read = hosted::logs(
+                &mut reader,
+                (&mut output, &mut error),
+                (from, MAX_LOGS_READ),
+            )
+            .await;
             drop(writer);
             Ok(read?)
         })
         .await?;
-        if let Some(ProcessAccept::Reading {
+        // The read was checked to start where `from` resolves, so never before `reached`.
+        if let ProcessAccept::Reading {
             start,
             window,
             truncated,
             ..
-        }) = read.accept
+        } = read.accept
         {
-            reached = Some(started(reached, start)?);
+            reached = Some(start);
             until.get_or_insert(window.end);
             if truncated {
                 note(&format!(
@@ -91,17 +97,6 @@ async fn read_retained(
         }
         reached = Some(read.next);
         from = LogFrom::Cursor(read.next);
-    }
-}
-
-/// Where a read that began at `start` leaves the cursor already `reached`, if any.
-///
-/// A read starts at the cursor asked for, or later once retention dropped the output there; one
-/// that starts earlier would print output already printed.
-const fn started(reached: Option<u64>, start: u64) -> Result<u64, ClientError> {
-    match reached {
-        Some(reached) if start < reached => Err(ClientError::Stream(ServiceError::InvalidInput)),
-        _ => Ok(start),
     }
 }
 
@@ -226,16 +221,7 @@ fn note(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_RETAINED_READS, another, started};
-
-    #[test]
-    fn a_read_starting_before_the_cursor_asked_for_is_refused() {
-        assert!(started(Some(100), 99).is_err());
-        assert!(started(Some(100), 100).is_ok_and(|start| start == 100));
-        // Retention dropped the output at 100, so reading resumes later.
-        assert!(started(Some(100), 200).is_ok_and(|start| start == 200));
-        assert!(started(None, 500).is_ok_and(|start| start == 500));
-    }
+    use super::{MAX_RETAINED_READS, another};
 
     #[test]
     fn a_log_cursor_that_goes_back_is_refused() {

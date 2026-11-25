@@ -13,9 +13,9 @@ use std::{
 
 use ma2a_core::service::{
     Channel, DescribePage, DirEntry, EMPTY_ACCEPT, FileKind, FileMetadata, FilesOutcome,
-    FilesRequest, FilesResult, FrameKind, LogWindow, ProcessAccept, ProcessReply, ProcessState,
-    RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome, encode_skipped,
-    failed_outcome,
+    FilesRequest, FilesResult, FrameKind, LogFrom, LogWindow, ProcessAccept, ProcessReply,
+    ProcessState, RemotePath, ServiceError, WriteMode, encode_call_accept, encode_call_outcome,
+    encode_skipped, failed_outcome,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
@@ -250,7 +250,12 @@ async fn logs_of(max: u32) -> TestResult<(Result<LogsRead, ClientError>, Vec<u8>
     service_writer.frame(FrameKind::Outcome, &reply).await?;
     service_writer.flush().await?;
     let (mut output, mut error) = (Vec::new(), Vec::new());
-    let read = within(hosted::logs(&mut reader, (&mut output, &mut error), max)).await?;
+    let read = within(hosted::logs(
+        &mut reader,
+        (&mut output, &mut error),
+        (LogFrom::Start, max),
+    ))
+    .await?;
     Ok((read, output, error))
 }
 
@@ -318,7 +323,12 @@ async fn logs_answer(start: u64, sent: &[Sent], next: u64) -> TestResult<Result<
     service_writer.frame(FrameKind::Outcome, &reply).await?;
     service_writer.flush().await?;
     let (mut output, mut error) = (Vec::new(), Vec::new());
-    let read = within(hosted::logs(&mut reader, (&mut output, &mut error), 4096)).await?;
+    let read = within(hosted::logs(
+        &mut reader,
+        (&mut output, &mut error),
+        (LogFrom::Cursor(start), 4096),
+    ))
+    .await?;
     Ok(read.map(|read| read.next))
 }
 
@@ -345,6 +355,90 @@ async fn a_logs_cursor_must_follow_the_bytes_sent() -> TestResult {
         assert!(
             matches!(read, Err(ClientError::Stream(ServiceError::InvalidInput))),
             "start {start}, next {next}: {read:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Reads one `logs` answer from `from` whose target sends `first` (an accept or an outcome),
+/// then `abc` on stdout and `def` on stderr unless `first` was the outcome, then `next`.
+async fn logs_from(
+    from: LogFrom,
+    first: (FrameKind, Vec<u8>),
+    next: u64,
+) -> TestResult<(Result<LogsRead, ClientError>, Vec<u8>, Vec<u8>)> {
+    let ((mut reader, _writer), (_service_reader, mut service_writer)) = pipe();
+    let (kind, payload) = first;
+    service_writer.frame(kind, &payload).await?;
+    if kind == FrameKind::Accept {
+        service_writer.data(Channel::Output, b"abc").await?;
+        service_writer.data(Channel::Error, b"def").await?;
+        let reply = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(next, false)))?;
+        service_writer.frame(FrameKind::Outcome, &reply).await?;
+    }
+    service_writer.flush().await?;
+    let (mut output, mut error) = (Vec::new(), Vec::new());
+    let read = within(hosted::logs(
+        &mut reader,
+        (&mut output, &mut error),
+        (from, 4096),
+    ))
+    .await?;
+    Ok((read, output, error))
+}
+
+fn reading(start: u64, window: (u64, u64), truncated: bool) -> TestResult<(FrameKind, Vec<u8>)> {
+    let accept = ProcessAccept::Reading {
+        state: ProcessState::Running,
+        start,
+        window: LogWindow::new(window.0, window.1),
+        truncated,
+    };
+    Ok((FrameKind::Accept, accept.encode()?))
+}
+
+#[tokio::test]
+async fn a_logs_answer_that_does_not_start_where_asked_reaches_no_sink() -> TestResult {
+    // A read from cursor 3 whose output there was dropped starts at the window, truncated.
+    let (read, output, error) =
+        logs_from(LogFrom::Cursor(3), reading(100, (100, 1000), true)?, 106).await?;
+    assert_eq!(read.map(|read| read.next)?, 106);
+    assert_eq!(
+        (output.as_slice(), error.as_slice()),
+        (&b"abc"[..], &b"def"[..])
+    );
+
+    let finished = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(0, true)))?;
+    for (from, first, next) in [
+        // Before the cursor asked for: its bytes were printed already.
+        (LogFrom::Cursor(500), reading(0, (0, 1000), false)?, 6),
+        // Not where the window it reports puts the start.
+        (LogFrom::Start, reading(10, (0, 1000), false)?, 16),
+        (LogFrom::Cursor(3), reading(100, (100, 1000), false)?, 106),
+        // Past the last cursor there is.
+        (
+            LogFrom::Start,
+            reading(u64::MAX - 2, (u64::MAX - 2, u64::MAX), false)?,
+            0,
+        ),
+        // An accept that is not a read, and an outcome without any accept: a read is never
+        // answered from replay.
+        (
+            LogFrom::Start,
+            (FrameKind::Accept, ProcessAccept::Admitted.encode()?),
+            6,
+        ),
+        (LogFrom::Start, (FrameKind::Outcome, finished.clone()), 0),
+    ] {
+        let (read, output, error) = logs_from(from, first, next).await?;
+        assert!(
+            matches!(read, Err(ClientError::Stream(ServiceError::InvalidInput))),
+            "{from:?}: {read:?}"
+        );
+        assert_eq!(
+            (output.len(), error.len()),
+            (0, 0),
+            "{from:?}: nothing printed"
         );
     }
     Ok(())

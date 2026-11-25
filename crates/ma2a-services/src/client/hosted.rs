@@ -9,7 +9,7 @@ mod attach;
 mod stdin;
 
 use ma2a_core::service::{
-    Channel, FrameKind, ProcessAccept, ProcessReply, ServiceError, decode_skipped,
+    Channel, FrameKind, LogFrom, ProcessAccept, ProcessReply, ServiceError, decode_skipped,
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 
@@ -43,8 +43,8 @@ impl Gaps {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LogsRead {
-    /// Where reading started and the window it saw; `None` when answered from replay.
-    pub accept: Option<ProcessAccept>,
+    /// Where reading started and the window it saw.
+    pub accept: ProcessAccept,
     /// The cursor to continue from.
     pub next: u64,
     /// Whether the Process ended and everything retained was read.
@@ -74,21 +74,22 @@ pub async fn call<R: AsyncRead + Unpin>(
     Ok((Some(accept), reply(&frame)?))
 }
 
-/// Reads one `logs` answer of at most `max` bytes, the request's `max_bytes`, writing stdout
-/// and stderr to their sinks as they arrive.
+/// Reads one `logs` answer from `from` of at most `max` bytes, the request's `max_bytes`,
+/// writing stdout and stderr to their sinks as they arrive.
 ///
-/// After an accept, every byte's cursor is known: the read starts at `start`, each record moves
-/// the cursor by its length, and a skip moves it forward to the cursor it names. The reply's
-/// `next` must be where those bytes ended.
+/// Every byte's cursor is known: the read starts where `from` resolves in the window the
+/// accept reports, each record moves the cursor by its length, and a skip moves it forward to
+/// the cursor it names. The reply's `next` must be where those bytes ended.
 ///
 /// # Errors
-/// Returns the refusal, the failed outcome, a local write failure, or the stream failure; an
-/// answer longer than `max` fails before its excess reaches either sink, and one whose skip
-/// goes back or whose `next` is not where its bytes ended is a stream failure.
+/// Returns the refusal, the failed outcome, a local write failure, or the stream failure. An
+/// answer that starts anywhere else, or answers without reading, fails before any byte reaches
+/// a sink; one longer than `max` fails before its excess does; one whose skip goes back or whose
+/// `next` is not where its bytes ended is a stream failure.
 pub async fn logs<R, O, E>(
     reader: &mut FrameReader<R>,
     (output, error): (&mut O, &mut E),
-    max: u32,
+    (from, max): (LogFrom, u32),
 ) -> Result<LogsRead, ClientError>
 where
     R: AsyncRead + Unpin,
@@ -97,52 +98,71 @@ where
 {
     let mut gaps = Gaps::default();
     let mut left = usize::try_from(max).unwrap_or(usize::MAX);
-    let (accept, mut frame) = match first(reader).await? {
-        First::Finished(frame) => (None, frame),
-        First::Accepted(frame) => (Some(accepted(&frame)?), next(reader).await?),
+    // A read reserves nothing, so it is never answered from replay.
+    let First::Accepted(frame) = first(reader).await? else {
+        return Err(ClientError::Stream(ServiceError::InvalidInput));
     };
-    // Where the bytes read so far end; unknown for an answer from replay.
-    let mut reached = match accept {
-        Some(ProcessAccept::Reading { start, .. }) => Some(start),
-        _ => None,
-    };
+    let accept = accepted(&frame)?;
+    let mut reached = reading(&accept, from)?;
     loop {
+        let frame = next(reader).await?;
         match frame.kind() {
             FrameKind::Data => {
                 let (_, bytes) = frame.data().map_err(ClientError::Stream)?;
                 left = left
                     .checked_sub(bytes.len())
                     .ok_or(ClientError::Stream(ServiceError::InvalidInput))?;
+                reached = advanced(reached, bytes.len())?;
                 deliver(&frame, (&mut *output, Some(&mut *error))).await?;
-                let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                reached = reached.map(|reached| reached.saturating_add(length));
             }
-            FrameKind::Control => {
-                let cursor = gaps.record(&frame)?;
-                if reached.is_some_and(|reached| cursor < reached) {
-                    return Err(ClientError::Stream(ServiceError::InvalidInput));
-                }
-                reached = reached.map(|_| cursor);
+            FrameKind::Control => reached = skipped(&mut gaps, &frame, reached)?,
+            FrameKind::Outcome => {
+                output.flush().await?;
+                error.flush().await?;
+                return match reply(&frame)? {
+                    ProcessReply::Logs(next, ended) if next == reached => Ok(LogsRead {
+                        accept,
+                        next,
+                        ended,
+                        gaps,
+                    }),
+                    _ => Err(ClientError::Stream(ServiceError::InvalidInput)),
+                };
             }
-            FrameKind::Outcome => break,
             _ => return Err(unexpected(&frame)),
         }
-        frame = next(reader).await?;
     }
-    output.flush().await?;
-    error.flush().await?;
-    match reply(&frame)? {
-        ProcessReply::Logs(next, _) if reached.is_some_and(|reached| next != reached) => {
-            Err(ClientError::Stream(ServiceError::InvalidInput))
-        }
-        ProcessReply::Logs(next, ended) => Ok(LogsRead {
-            accept,
-            next,
-            ended,
-            gaps,
-        }),
+}
+
+/// Checks that an accept reads from where `from` resolves in the window it reports, exactly as
+/// the target must resolve it, and returns that start.
+fn reading(accept: &ProcessAccept, from: LogFrom) -> Result<u64, ClientError> {
+    match *accept {
+        ProcessAccept::Reading {
+            start,
+            window,
+            truncated,
+            ..
+        } if window.resolve(from) == Some((start, truncated)) => Ok(start),
         _ => Err(ClientError::Stream(ServiceError::InvalidInput)),
     }
+}
+
+/// The cursor after `length` more bytes from `reached`; none lies past the last cursor.
+fn advanced(reached: u64, length: usize) -> Result<u64, ClientError> {
+    u64::try_from(length)
+        .ok()
+        .and_then(|length| reached.checked_add(length))
+        .ok_or(ClientError::Stream(ServiceError::InvalidInput))
+}
+
+/// Records one skip, which may only move the cursor forward, and returns where it moved it.
+fn skipped(gaps: &mut Gaps, frame: &Frame, reached: u64) -> Result<u64, ClientError> {
+    let cursor = gaps.record(frame)?;
+    if cursor < reached {
+        return Err(ClientError::Stream(ServiceError::InvalidInput));
+    }
+    Ok(cursor)
 }
 
 /// Writes one output record to its sink; stderr without a sink is dropped.

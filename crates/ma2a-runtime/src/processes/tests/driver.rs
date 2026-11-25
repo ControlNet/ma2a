@@ -93,7 +93,11 @@ async fn start_retry_stdin_and_logs_run_through_the_driver() -> TestResult {
     let scope = ((harness.creator, request_id(22)?), request, &stop);
     let host = serve(&manager, scope, (&mut host_reader, &mut host_writer));
     let (mut output, mut error) = (Vec::new(), Vec::new());
-    let caller = hosted::logs(&mut reader, (&mut output, &mut error), MAX_LOGS_READ);
+    let caller = hosted::logs(
+        &mut reader,
+        (&mut output, &mut error),
+        (LogFrom::Start, MAX_LOGS_READ),
+    );
     let (_report, read) = tokio::join!(host, caller);
     let read = read?;
     assert_eq!(
@@ -255,7 +259,11 @@ async fn closed_stdin_archived_logs_relative_cwd_and_strangers_are_refused_exact
     let (mut output, mut error) = (Vec::new(), Vec::new());
     let (_report, read) = tokio::join!(
         host,
-        hosted::logs(&mut reader, (&mut output, &mut error), MAX_LOGS_READ)
+        hosted::logs(
+            &mut reader,
+            (&mut output, &mut error),
+            (LogFrom::Start, MAX_LOGS_READ)
+        )
     );
     let read = read?;
     assert_eq!(

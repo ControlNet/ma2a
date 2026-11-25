@@ -203,7 +203,11 @@ Process and its supervisor have ended.
    Process is terminal and `next` has reached the window's `end`. `next` is always where the
    bytes sent ended: `start` plus every byte after it, counted from the latest Skipped cursor
    once there is one. The caller refuses an answer whose `next` is anywhere else, or whose
-   Skipped cursor goes back, and a follow-up read that starts before the cursor it asked for.
+   Skipped cursor goes back.
+5. The caller refuses, before writing any output, an answer without `accept` Reading, since a
+   read is never replayed, and an `accept` whose `start` and `truncated` are not where `from`
+   resolves in the window it reports. A follow-up read from a cursor therefore never starts
+   before it.
 
 **`attach`.** This follows a Process that is `starting` or `running`. Any other state is
 `reject(not_running)`, and a terminal Process is read with `logs` instead.
