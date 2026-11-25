@@ -196,3 +196,31 @@ async fn permits_are_released_after_rejection_and_handler_completion() -> TestRe
     server.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_still_to_open_a_stream_hold_the_peer_slots() -> TestResult {
+    // Given: one peer holds as many control connections as it may be served, none with a stream.
+    let (server, mut calls) = server(CONTROL_PER_PEER_LIMIT + 1).await?;
+    let metrics = server.control_metrics();
+    let client = raw_client("ma2a_control_admission_streamless").await?;
+    let mut streamless = Vec::new();
+    for _ in 0..CONTROL_PER_PEER_LIMIT {
+        streamless.push(client.connect(server.endpoint_addr(), CONTROL_ALPN).await?);
+    }
+    wait_for_active(&metrics, u64::try_from(CONTROL_PER_PEER_LIMIT)?).await?;
+
+    // When: it opens one more and starts a request.
+    let excess = open_control(&client, &server).await?;
+
+    // Then: the excess connection is closed at once and never reaches the Runtime.
+    tokio::time::timeout(Duration::from_secs(5), excess.connection.closed()).await?;
+    assert!(calls.try_recv().is_err());
+    assert!(
+        streamless
+            .iter()
+            .all(|connection| connection.close_reason().is_none())
+    );
+    client.close().await;
+    server.shutdown().await?;
+    Ok(())
+}

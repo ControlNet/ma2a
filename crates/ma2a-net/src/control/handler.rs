@@ -26,7 +26,8 @@ struct ControlMetricCounters {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlMetricsSnapshot {
-    /// Number of streams currently holding global and per-peer capacity.
+    /// Number of connections currently holding global and per-peer capacity, with or without
+    /// their stream yet.
     pub active_streams: u64,
     /// Number of complete request bodies read after Runtime authorization.
     pub body_reads: u64,
@@ -81,16 +82,18 @@ impl ProtocolHandler for ControlHandler {
             return Ok(());
         };
         let peer = connection.remote_id().into();
-        let Ok(stream) = timeout(CONTROL_IO_TIMEOUT, connection.accept_bi()).await else {
-            connection.close(1_u8.into(), b"");
-            return Ok(());
-        };
-        let (mut send, mut receive) = stream?;
+        // A connection over the bound is closed before its stream is awaited, so one still to
+        // open its stream holds a slot too.
         let Some(permit) = self.limiter.try_acquire(peer) else {
             connection.close(1_u8.into(), b"");
             return Ok(());
         };
         let active_stream = ActiveControlStream::new(&self.metrics);
+        let Ok(stream) = timeout(CONTROL_IO_TIMEOUT, connection.accept_bi()).await else {
+            connection.close(1_u8.into(), b"");
+            return Ok(());
+        };
+        let (mut send, mut receive) = stream?;
         let (call, admission, request, response) = ControlCall::channel(peer);
         if timeout(CONTROL_IO_TIMEOUT, calls.send(call))
             .await
