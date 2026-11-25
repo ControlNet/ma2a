@@ -243,3 +243,47 @@ async fn background_jobs_never_outlive_their_session() -> TestResult {
     }
     Ok(())
 }
+
+/// Open descriptors of this process on the PTY multiplexer, one per terminal end held.
+fn terminal_masters() -> TestResult<usize> {
+    let mut count = 0;
+    for entry in std::fs::read_dir("/proc/self/fd")? {
+        let target = std::fs::read_link(entry?.path()).unwrap_or_default();
+        if target.as_os_str() == "/dev/ptmx" {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn input_a_raw_mode_program_left_unread_does_not_keep_its_terminal() -> TestResult {
+    // Given: a raw-mode program that reads nothing and exits shortly.
+    let script = "stty raw -echo; sleep 0.5; exit 0";
+    let ((mut reader, mut writer), server) = start(
+        session("sh", &["-c", script], 60_000)?,
+        &CancellationToken::new(),
+    );
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+
+    // When: the caller sends more input than the terminal holds.
+    let chunk = vec![b'x'; 16_384];
+    let sending = tokio::spawn(async move {
+        for _ in 0..32 {
+            if writer.data(Channel::Input, &chunk).await.is_err() {
+                break;
+            }
+        }
+        writer
+    });
+    let frames = within(drain(&mut reader)).await??;
+    assert_eq!(outcome(&frames)?.reason, EndReason::Completed);
+    server.await?;
+
+    // Then: nothing keeps the session's terminal once it ended.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(terminal_masters()?, 0);
+    drop(within(sending).await?);
+    Ok(())
+}

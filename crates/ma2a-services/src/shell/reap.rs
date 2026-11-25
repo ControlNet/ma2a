@@ -75,3 +75,36 @@ fn live_session(pid: i32) -> Option<i32> {
     let session = fields.nth(2)?.parse().ok()?;
     (state != "Z").then_some(session)
 }
+
+/// How long a session's end waits for its input thread.
+const INPUT_RELEASE: Duration = Duration::from_secs(2);
+
+/// Discards input the program left unread until the input thread has ended.
+///
+/// A write that filled the terminal blocks that thread, and on Linux the program's end does not
+/// wake it; the thread would then keep a terminal and a blocking-pool thread forever. Flushing
+/// the unread input from the terminal's own side lets the write finish.
+pub(super) async fn release_input(
+    terminal: Option<&std::path::Path>,
+    done: &mut tokio::sync::oneshot::Receiver<()>,
+) {
+    use rustix::{
+        fs::{Mode, OFlags},
+        termios::{QueueSelector, tcflush},
+    };
+    let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let Some(slave) = terminal.and_then(|path| rustix::fs::open(path, flags, Mode::empty()).ok())
+    else {
+        return;
+    };
+    let _released = tokio::time::timeout(INPUT_RELEASE, async {
+        while matches!(
+            done.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ) {
+            let _flushed = tcflush(&slave, QueueSelector::IFlush);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}

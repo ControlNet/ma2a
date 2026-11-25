@@ -24,6 +24,9 @@ pub(super) struct Session {
     killer: Box<dyn ChildKiller + Send + Sync>,
     #[cfg(unix)]
     group: Option<u32>,
+    /// The terminal's device path and the end of the input thread, to release a blocked write.
+    #[cfg(unix)]
+    input_thread: (Option<std::path::PathBuf>, oneshot::Receiver<()>),
 }
 
 impl std::fmt::Debug for Session {
@@ -86,8 +89,16 @@ pub(super) fn spawn(request: &ShellRequest) -> Result<Session, ServiceError> {
     let (output_sender, output) = mpsc::channel(OUTPUT_QUEUE);
     let (input, input_receiver) = mpsc::channel(INPUT_QUEUE);
     let (exit_sender, exited) = oneshot::channel();
+    let (input_ended, input_done) = oneshot::channel();
+    #[cfg(unix)]
+    let input_thread = (pair.master.tty_name(), input_done);
+    #[cfg(windows)]
+    drop(input_done);
     tokio::task::spawn_blocking(move || pump_output(reader, &output_sender));
-    tokio::task::spawn_blocking(move || pump_input(writer, input_receiver));
+    tokio::task::spawn_blocking(move || {
+        pump_input(writer, input_receiver);
+        let _sent = input_ended.send(());
+    });
     tokio::task::spawn_blocking(move || {
         let status = child.wait().ok();
         let termination = status.map_or(Termination::Unknown, |status| {
@@ -107,6 +118,8 @@ pub(super) fn spawn(request: &ShellRequest) -> Result<Session, ServiceError> {
         killer,
         #[cfg(unix)]
         group,
+        #[cfg(unix)]
+        input_thread,
     })
 }
 
@@ -115,15 +128,25 @@ impl Session {
     ///
     /// `leader_running` is false once the program has exited by itself.
     #[cfg(unix)]
-    pub(super) async fn close(mut self, leader_running: bool) {
-        if let Some(leader) = self
-            .group
+    pub(super) async fn close(self, leader_running: bool) {
+        let Self {
+            master,
+            input,
+            mut killer,
+            group,
+            input_thread: (terminal, mut input_done),
+            ..
+        } = self;
+        if let Some(leader) = group
             .and_then(|id| i32::try_from(id).ok())
             .and_then(rustix::process::Pid::from_raw)
         {
             super::reap::end_session(leader, leader_running).await;
         }
-        let _killed = self.killer.kill();
+        let _killed = killer.kill();
+        drop(input);
+        super::reap::release_input(terminal.as_deref(), &mut input_done).await;
+        drop(master);
     }
 
     /// Ends the session program; closing the pseudoconsole ends its attached clients.
