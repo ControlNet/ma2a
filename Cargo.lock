@@ -2198,6 +2198,7 @@ dependencies = [
  "rusqlite",
  "rustix",
  "subtle",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

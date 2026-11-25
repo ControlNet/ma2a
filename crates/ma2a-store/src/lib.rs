@@ -5,7 +5,8 @@
 //! use ma2a_store::RelayAdvertisementAdvance;
 //! ```
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 
 mod address_record_queries;
 mod address_records;

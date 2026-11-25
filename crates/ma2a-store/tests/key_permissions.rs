@@ -54,11 +54,15 @@ fn key_files_are_separate_atomic_owner_only_files_and_zeroizing_reads() -> TestR
     );
     assert!(KeyReference::parse("../escape").is_err());
     assert!(KeyReference::parse("contains/slash").is_err());
-    assert_owner_only(&store.path_for(KeyKind::Endpoint, &endpoint_ref), 0o600)?;
-    assert_owner_only(
-        &store.path_for(KeyKind::SpaceAuthority, &authority_ref),
-        0o600,
-    )?;
+    // On Windows each read above has already checked the key file's ACL.
+    #[cfg(unix)]
+    {
+        assert_owner_only(&store.path_for(KeyKind::Endpoint, &endpoint_ref), 0o600)?;
+        assert_owner_only(
+            &store.path_for(KeyKind::SpaceAuthority, &authority_ref),
+            0o600,
+        )?;
+    }
     Ok(())
 }
 
@@ -230,18 +234,27 @@ fn assert_owner_only(path: &std::path::Path, expected: u32) -> TestResult {
     Ok(())
 }
 
+/// A verbatim state path such as `\\?\C:\…` is protected and accepted, the one spelling that can
+/// name a directory ending in a dot included.
 #[cfg(windows)]
-fn assert_owner_only(path: &std::path::Path, _expected: u32) -> TestResult {
-    let output = std::process::Command::new("powershell.exe")
-        .env_remove("PSModulePath")
-        .env("MA2A_ACL_PATH", path)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$a=Get-Acl -LiteralPath $env:MA2A_ACL_PATH; if(!$a.AreAccessRulesProtected){exit 2}; $a.Access.IdentityReference.Value",
-        ])
-        .output()?;
-    assert!(output.status.success());
+#[test]
+fn a_verbatim_state_path_is_protected_and_accepted() -> TestResult {
+    // Given
+    let state = TempState::new("verbatim")?;
+    let verbatim = std::fs::canonicalize(state.path())?;
+    assert!(verbatim.as_os_str().to_string_lossy().starts_with(r"\\?\"));
+    let reference = KeyReference::parse("endpoint-main")?;
+
+    for name in ["state", "state."] {
+        // When
+        let store = KeyStore::open(&verbatim.join(name))?;
+        store.write(KeyMaterial::new(KeyKind::Endpoint, &reference, b"material"))?;
+
+        // Then
+        assert_eq!(
+            store.read(KeyKind::Endpoint, &reference)?.as_ref(),
+            b"material"
+        );
+    }
     Ok(())
 }

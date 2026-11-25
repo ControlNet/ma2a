@@ -134,16 +134,7 @@ fn validate_private_path(
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     let metadata = fs::symlink_metadata(path)?;
-    let expected_type = match kind {
-        PathKind::Directory => metadata.is_dir(),
-        PathKind::File => metadata.is_file(),
-    };
-    if metadata.file_type().is_symlink() || !expected_type {
-        return Err(StoreError::InsecurePermissions {
-            target,
-            detail: "path is a symlink or has the wrong file type",
-        });
-    }
+    check_type(&metadata, target, kind)?;
     if metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(StoreError::InsecurePermissions {
             target,
@@ -163,13 +154,12 @@ fn validate_private_path(
     Ok(())
 }
 
-#[cfg(windows)]
-fn validate_private_path(
-    path: &Path,
+/// Refuses a symlink, or anything but the kind of object expected.
+fn check_type(
+    metadata: &fs::Metadata,
     target: &'static str,
     kind: PathKind,
 ) -> Result<(), StoreError> {
-    let metadata = fs::symlink_metadata(path)?;
     let expected_type = match kind {
         PathKind::Directory => metadata.is_dir(),
         PathKind::File => metadata.is_file(),
@@ -180,76 +170,39 @@ fn validate_private_path(
             detail: "path is a symlink or has the wrong file type",
         });
     }
-    validate_windows_acl(path)
+    Ok(())
+}
+
+/// Checks the object itself through one handle, so a link put in its place is seen as a link.
+#[cfg(windows)]
+fn validate_private_path(
+    path: &Path,
+    target: &'static str,
+    kind: PathKind,
+) -> Result<(), StoreError> {
+    let file = windows_acl::open(path, false)?;
+    check_type(&file.metadata()?, target, kind)?;
+    if !windows_acl::is_private(&file).unwrap_or(false) {
+        return Err(StoreError::WindowsAcl {
+            operation: "validation",
+        });
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
 fn apply_windows_acl(path: &Path, kind: PathKind) -> Result<(), StoreError> {
-    let (acl_type, inheritance) = match kind {
-        PathKind::Directory => ("DirectorySecurity", "ContainerInherit,ObjectInherit"),
-        PathKind::File => ("FileSecurity", "None"),
+    use windows_sys::Win32::Security::{CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE};
+
+    let inherit = match kind {
+        PathKind::Directory => CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
+        PathKind::File => 0,
     };
-    run_powershell(
-        path,
-        &format!(
-            "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;$a=New-Object Security.AccessControl.{acl_type};$a.SetAccessRuleProtection($true,$false);$i=[Security.AccessControl.InheritanceFlags]'{inheritance}';$p=[Security.AccessControl.PropagationFlags]::None;$t=[Security.AccessControl.AccessControlType]::Allow;foreach($id in @($u.Value,'S-1-5-18'|Select-Object -Unique)){{$a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($id)),'FullControl',$i,$p,$t)))}};$a.SetOwner($u);Set-Acl -LiteralPath $env:MA2A_ACL_PATH -AclObject $a"
-        ),
-        "application",
-    )
-}
-
-/// Accepts one or two explicit Allow rules, each granting every `FullControl` right to the
-/// current user or SYSTEM and together covering both (one principal when running as SYSTEM),
-/// under a protected DACL that holds no inherited rule either, on an object owned by the current user, SYSTEM, or the
-/// Administrators group. Any other owner could
-/// rewrite the DACL; Administrators can take ownership anyway, and elevated sessions may make
-/// it the default owner of new objects.
-#[cfg(windows)]
-fn validate_windows_acl(path: &Path) -> Result<(), StoreError> {
-    run_powershell(
-        path,
-        "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$s='S-1-5-18';$f=[Security.AccessControl.FileSystemRights]::FullControl;$a=Get-Acl -LiteralPath $env:MA2A_ACL_PATH;if(!$a.AreAccessRulesProtected){exit 2};$o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;if(($o-ne $u)-and($o-ne $s)-and($o-ne 'S-1-5-32-544')){exit 7};if(@($a.Access|Where-Object {$_.IsInherited}).Count-gt 0){exit 8};$r=@($a.Access);if(($r.Count-lt 1)-or($r.Count-gt 2)){exit 3};$seen=@{};foreach($x in $r){$sid=$x.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value;if(($sid-ne $u)-and($sid-ne $s)){exit 4};$seen[$sid]=$true;if($x.AccessControlType-ne 'Allow' -or (($x.FileSystemRights-band $f)-ne $f)){exit 5}};if(!$seen.ContainsKey($u)-or !$seen.ContainsKey($s)){exit 6}",
-        "validation",
-    )
-}
-
-#[cfg(windows)]
-fn powershell_path(path: &Path) -> std::path::PathBuf {
-    use std::path::{Component, PathBuf, Prefix};
-
-    let mut components = path.components();
-    if let Some(Component::Prefix(prefix)) = components.next()
-        && let Prefix::VerbatimDisk(disk) = prefix.kind()
-    {
-        let mut plain = PathBuf::from(format!("{}:", char::from(disk)));
-        plain.extend(components);
-        if std::fs::canonicalize(&plain)
-            .ok()
-            .zip(std::fs::canonicalize(path).ok())
-            .is_some_and(|(left, right)| left == right)
-        {
-            return plain;
-        }
-    }
-    path.to_path_buf()
-}
-
-#[cfg(windows)]
-fn run_powershell(path: &Path, script: &str, operation: &'static str) -> Result<(), StoreError> {
-    // Windows PowerShell 5.1 must find its own modules: a PSModulePath inherited from a
-    // PowerShell 7 parent points it at modules it cannot load, Set-Acl among them. The path
-    // travels in the environment: `-Command` joins every later argument into the script
-    // text, so `$args` would be empty, and no quoting is needed this way.
-    let literal = powershell_path(path);
-    let status = std::process::Command::new("powershell.exe")
-        .env_remove("PSModulePath")
-        .env("MA2A_ACL_PATH", &literal)
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .status()?;
-    if !status.success() {
-        return Err(StoreError::WindowsAcl { operation });
-    }
-    Ok(())
+    windows_acl::open(path, true)
+        .and_then(|file| windows_acl::protect(&file, inherit))
+        .map_err(|_| StoreError::WindowsAcl {
+            operation: "application",
+        })
 }
 
 #[cfg(not(windows))]
@@ -276,5 +229,9 @@ enum PathKind {
     File,
 }
 
+#[cfg(windows)]
+mod windows_acl;
 #[cfg(all(test, windows))]
 mod windows_acl_tests;
+#[cfg(windows)]
+mod windows_sid;

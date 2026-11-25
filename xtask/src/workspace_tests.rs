@@ -11,7 +11,7 @@ const EXPECTED_MEMBERS: [&str; 9] = [
     "ma2a-store",
     "xtask",
 ];
-const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 10] = [
+const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 12] = [
     (
         "crates/ma2a-services/src/client/terminal_windows.rs",
         concat!(
@@ -56,6 +56,20 @@ const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 10] = [
     ),
     (
         "crates/ma2a-net/src/relay_tls_windows_sid.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows SID FFI boundary\")"
+        ),
+    ),
+    (
+        "crates/ma2a-store/src/permissions/windows_acl.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows ACL FFI boundary\")"
+        ),
+    ),
+    (
+        "crates/ma2a-store/src/permissions/windows_sid.rs",
         concat!(
             "allow(unsafe",
             "_code, reason = \"audited Windows SID FFI boundary\")"
