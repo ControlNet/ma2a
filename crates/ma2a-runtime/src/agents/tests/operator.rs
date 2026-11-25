@@ -149,6 +149,26 @@ async fn a_reserved_agent_left_enabled_is_stopped_by_recovery() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_reserved_agent_left_enabled_never_begins_an_instance() -> TestResult {
+    // Given: the definition was started before its name was refused.
+    let reserved = Reserved::new().await?;
+    Repository::open(&reserved.config)?.set_agent_enabled(&reserved.id, (true, 2))?;
+
+    // When
+    reserved.manager.ensure_instance(&reserved.id).await;
+
+    // Then
+    let instance = reserved
+        .manager
+        .agent(&reserved.id)
+        .await?
+        .and_then(|record| record.instance);
+    reserved.finish().await?;
+    assert_eq!(instance, None);
+    Ok(())
+}
+
 #[test]
 fn names_the_runtime_or_windows_keeps_are_reserved() {
     for name in ["blobs", "con", "nul", "aux", "prn", "com1", "lpt9"] {
