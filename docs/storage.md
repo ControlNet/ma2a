@@ -12,7 +12,8 @@ filesystem work directly on an async worker.
 1. Require an absolute local state path. On Windows only drive-letter paths (`C:\…` or
    `\\?\C:\…`) on a local volume are accepted; a drive mapped to a network share, UNC,
    `\\?\GLOBALROOT\…`, and other verbatim or device paths are rejected before any directory is
-   created.
+   created. The deepest part of the path that already exists is resolved through every link, so
+   a directory symlink on a local drive that points at a network share is rejected too.
 2. Require current-user ownership and exact `0700` directory modes and `0600` database/key-file
    modes on Unix. Symlinks and unexpected file types are rejected.
 3. Require protected Windows DACLs with exactly the current user and SYSTEM holding explicit full

@@ -92,6 +92,38 @@ fn a_drive_letter_mapped_to_a_network_share_is_refused_before_anything_is_create
 }
 
 #[test]
+fn a_state_path_below_a_link_to_a_network_share_is_refused_before_anything_is_created()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Given: a directory on C:, and two local links to it, one through this machine's C$ share.
+    let name = format!("ma2a-acl-linked-{}", std::process::id());
+    let target = Path::new(r"C:\").join(&name);
+    let (remote, local) = (
+        std::env::temp_dir().join(format!("{name}-remote")),
+        std::env::temp_dir().join(format!("{name}-local")),
+    );
+    std::fs::create_dir(&target)?;
+    std::os::windows::fs::symlink_dir(format!(r"\\localhost\C$\{name}"), &remote)?;
+    std::os::windows::fs::symlink_dir(&target, &local)?;
+
+    // When: state is asked for below each link.
+    let refused = ensure_private_dir(&remote.join("state"), "test");
+    let was_created = target.join("state").exists();
+    let accepted = validate_local_absolute(&local.join("state"));
+
+    // Then: only the link to a local directory is accepted, and nothing is created on the share.
+    std::fs::remove_dir(&remote)?;
+    std::fs::remove_dir(&local)?;
+    let _cleanup = std::fs::remove_dir_all(&target);
+    assert!(
+        matches!(refused, Err(StoreError::InvalidStateDirectory)),
+        "{refused:?}"
+    );
+    assert!(!was_created);
+    assert!(accepted.is_ok(), "{accepted:?}");
+    Ok(())
+}
+
+#[test]
 fn a_rule_for_children_alone_is_not_full_control_over_the_directory()
 -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::temp_dir().join(format!("ma2a-acl-children-{}", std::process::id()));

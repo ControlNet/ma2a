@@ -221,20 +221,31 @@ const fn is_remote(_path: &Path) -> bool {
 
 /// Only a drive letter names a local volume for certain: `\\?\GLOBALROOT\Device\Mup\…` and
 /// other verbatim or device paths can reach a network share as well as a UNC path can. A drive
-/// letter can be mapped to a network share too, so its volume must not be remote either.
+/// letter can be mapped to a network share too, and a directory link on a local drive can point
+/// at one, so the nearest level that exists, with every link resolved, must be on a local drive
+/// as well. Whatever cannot be resolved counts as remote.
 #[cfg(windows)]
 fn is_remote(path: &Path) -> bool {
+    !is_on_local_drive(path)
+        || !path
+            .ancestors()
+            .find(|level| level.exists())
+            .is_some_and(|level| fs::canonicalize(level).is_ok_and(|real| is_on_local_drive(&real)))
+}
+
+/// Whether `path` starts with the letter of a drive that is not a network share.
+#[cfg(windows)]
+fn is_on_local_drive(path: &Path) -> bool {
     use std::path::{Component, Prefix};
 
-    match path.components().next() {
-        Some(Component::Prefix(prefix)) => match prefix.kind() {
-            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
-                windows_acl::is_remote_drive(letter)
-            }
-            _ => true,
-        },
-        _ => true,
-    }
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix)) if matches!(
+            prefix.kind(),
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)
+                if !windows_acl::is_remote_drive(letter)
+        )
+    )
 }
 
 #[derive(Clone, Copy)]
