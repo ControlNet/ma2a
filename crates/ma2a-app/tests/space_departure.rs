@@ -3,7 +3,7 @@
 use std::{
     error::Error,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicI64, AtomicU64, Ordering},
@@ -15,10 +15,14 @@ use ma2a_core::{
     MemberCapabilities, RequestId, SignedInviteTicket, SpaceId, SpaceManifestMembership,
     SpaceMemberV1, SpacePolicyV1, default_member_label,
 };
+use ma2a_net::EndpointSecret;
 use ma2a_runtime::{
     EnrollmentAttempt, EnrollmentCreation, Runtime, RuntimeClock, SpaceDepartureErrorCode,
 };
-use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
+use ma2a_store::{
+    KeyKind, KeyMaterial, KeyReference, KeyStore, OwnedSpaceUpdate, Repository, SpaceCreation,
+    StoreConfig,
+};
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 type TestValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -61,6 +65,22 @@ impl Drop for TempState {
 
 fn clock() -> Arc<TestClock> {
     Arc::new(TestClock(AtomicI64::new(NOW_MS)))
+}
+
+/// Gives a fresh state directory its Endpoint identity without starting a Runtime.
+///
+/// The owner's Space is written to its Store before the owner first starts. Minting the
+/// identity with a throwaway Runtime instead would also save that Runtime's port, and another
+/// test process could take the port before the owner binds it again.
+fn seed_endpoint(state_dir: &Path) -> TestValue<EndpointId> {
+    let secret = EndpointSecret::generate();
+    let protected = secret.protected_bytes();
+    KeyStore::open(state_dir)?.write(KeyMaterial::new(
+        KeyKind::Endpoint,
+        &KeyReference::parse("endpoint-identity-v1")?,
+        &protected[..],
+    ))?;
+    Ok(secret.endpoint_id())
 }
 
 /// Creates a named owned Space directly in the owner's Store, mirroring what
@@ -107,9 +127,7 @@ impl JoinedSpace {
         let member_state = TempState::new(&format!("{label}-member"))?;
         let owner_config = StoreConfig::new(&owner_state.0);
         let member_config = StoreConfig::new(&member_state.0);
-        let bootstrap = Runtime::start_with_clock(owner_config.clone(), clock()).await?;
-        let owner_id = bootstrap.handle().status().await?.endpoint_id();
-        bootstrap.shutdown().await?;
+        let owner_id = seed_endpoint(&owner_state.0)?;
         let space_id = create_named_space(&owner_config, owner_id, name)?;
         let owner = Runtime::start_with_clock(owner_config.clone(), clock()).await?;
         let member = Runtime::start_with_clock(member_config.clone(), clock()).await?;
@@ -421,9 +439,7 @@ async fn a_long_space_history_departs_through_bounded_pagination() -> TestResult
     let member_state = TempState::new("paged-member")?;
     let owner_config = StoreConfig::new(&owner_state.0);
     let member_config = StoreConfig::new(&member_state.0);
-    let bootstrap = Runtime::start_with_clock(owner_config.clone(), clock()).await?;
-    let owner_id = bootstrap.handle().status().await?.endpoint_id();
-    bootstrap.shutdown().await?;
+    let owner_id = seed_endpoint(&owner_state.0)?;
     let space_id = create_named_space(&owner_config, owner_id, "paged")?;
     let owner_member = SpaceMemberV1::new(
         owner_id,
