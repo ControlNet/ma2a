@@ -28,7 +28,10 @@ archive and checksum are written below `target/distrib`.
 
 The exact six-target architecture and evidence contract is checked by `cargo xtask check-support`
 against `docs/platform-support.json`; `check-release` composes that gate with cargo-dist policy.
-Release CI runs `check-support` before deriving native x86_64 jobs for Linux, macOS, and Windows.
+Release CI runs `check-support` before deriving native x86_64 jobs for Linux, macOS, and Windows,
+and `release-publish` to decide whether the run publishes: a tag must be `v` followed by the
+version of `ma2a-app`, compared case-sensitively, or the run stops there; a branch builds without
+publishing.
 ARM64 targets remain evidenced as deferred until native/QEMU smoke runners are available. Tag builds
 then derive their release matrix from the validated targets marked `supported` and require archive,
 checksum, authenticated clean-room smoke, offline embedded-asset traversal, SPDX SBOM,

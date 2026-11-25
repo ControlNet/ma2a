@@ -6,11 +6,14 @@ pub(crate) mod loc;
 pub(crate) mod pins;
 pub(crate) mod process;
 pub(crate) mod release;
+pub(crate) mod release_tag;
 pub(crate) mod semver;
 pub(crate) mod support;
 
 #[cfg(test)]
 mod pins_tests;
+#[cfg(test)]
+mod release_tag_tests;
 #[cfg(test)]
 mod release_tests;
 #[cfg(test)]
@@ -28,7 +31,7 @@ use error::XtaskError;
 
 fn main() -> Result<(), XtaskError> {
     let command = env::args().nth(1).ok_or_else(|| XtaskError::Usage {
-        message: "usage: cargo xtask <check|test|web-build|dist|check-pins|check-loc|check-release|check-support> [path]".to_owned(),
+        message: "usage: cargo xtask <check|test|web-build|dist|check-pins|check-loc|check-release|release-publish|check-support> [path]".to_owned(),
     })?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -43,6 +46,7 @@ fn main() -> Result<(), XtaskError> {
         "check-pins" => pins::check(root),
         "check-loc" => loc::check(root),
         "check-release" => release::check(root),
+        "release-publish" => release_tag::check(root),
         "check-support" => {
             let path = env::args().nth(2).map_or_else(
                 || root.join("docs/platform-support.json"),

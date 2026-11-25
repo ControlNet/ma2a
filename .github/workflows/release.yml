@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       include: ${{ steps.targets.outputs.include }}
+      publish: ${{ steps.publish.outputs.publish }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -25,6 +26,14 @@ jobs:
       - name: Validate six-target support contract
         shell: bash
         run: cargo run --locked -p xtask -- check-support
+      # A tag publishes only when it is v and the version of ma2a-app, compared case-sensitively;
+      # any other tag stops the release here, and a branch builds without publishing.
+      - name: Decide whether this run publishes
+        id: publish
+        shell: bash
+        run: |
+          publish=$(cargo run --locked --quiet -p xtask -- release-publish)
+          printf 'publish=%s\n' "$publish" >> "$GITHUB_OUTPUT"
       - name: Derive supported release targets
         id: targets
         shell: bash
@@ -80,15 +89,7 @@ jobs:
         working-directory: web
       - name: Validate release policy
         shell: bash
-        run: |
-          cargo run --locked -p xtask -- check-release
-          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
-            expected="${GITHUB_REF_NAME#v}"
-            cargo metadata --locked --no-deps --format-version 1 | jq -e --arg expected "$expected" 'any(.packages[]; .name == "ma2a-app" and .version == $expected)' >/dev/null || {
-              echo "release tag $GITHUB_REF_NAME does not match Cargo.toml version" >&2
-              exit 1
-            }
-          fi
+        run: cargo run --locked -p xtask -- check-release
       - name: Build archive
         shell: bash
         run: bunx @axodotdev/dist@0.32.0 build --artifacts=local --target=${{ matrix.target }}
@@ -163,9 +164,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    # The build checks the version of a v tag only, so only a v tag is published.
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    if: needs.matrix.outputs.publish == 'true'
+    needs: [matrix, build]
     runs-on: ubuntu-latest
     permissions:
       actions: read
