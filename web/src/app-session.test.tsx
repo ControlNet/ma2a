@@ -5,21 +5,8 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
 
 import { App } from "./app"
-import { RuntimeController, type RuntimeControllerCallbacks } from "./runtime-controller"
 import { MANY_RUNTIME_FIXTURE } from "./test/fixtures"
-
-// Each controller the console starts is held here instead of loading anything; the test plays
-// the Runtime through its callbacks.
-const controllers: RuntimeControllerCallbacks[] = []
-function holdControllers(): void {
-  vi.spyOn(RuntimeController.prototype, "start").mockImplementation(function (
-    this: RuntimeController,
-  ) {
-    controllers.push((this as unknown as { callbacks: RuntimeControllerCallbacks }).callbacks)
-    return Promise.resolve()
-  })
-  vi.spyOn(RuntimeController.prototype, "refresh").mockResolvedValue(undefined)
-}
+import { controllers, holdControllers } from "./test/runtime-controller-fakes"
 
 afterEach(() => {
   controllers.length = 0

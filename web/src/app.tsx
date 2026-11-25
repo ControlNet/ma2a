@@ -129,6 +129,10 @@ export function App({
 
   const login = useCallback(
     async (password: string): Promise<void> => {
+      // A sign-in replaces the session, as after going back here while signed in, so a late
+      // answer to a request the old one sent, such as its log out, never acts on the new one.
+      sessionRef.current = undefined
+      setSession(undefined)
       const authenticatedSession = await loginAndTouchSession(password)
       forgetSession()
       sessionRef.current = authenticatedSession

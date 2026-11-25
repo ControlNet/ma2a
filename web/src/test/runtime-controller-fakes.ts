@@ -1,5 +1,24 @@
+import { vi } from "vitest"
+
 import type { RuntimeApiClient, RuntimeEventCallbacks } from "../api/client"
-import type { RuntimeRetryScheduler } from "../runtime-controller"
+import {
+  RuntimeController,
+  type RuntimeControllerCallbacks,
+  type RuntimeRetryScheduler,
+} from "../runtime-controller"
+
+// Each controller the console starts is held here instead of loading anything; the test plays
+// the Runtime through its callbacks. A test file empties it after each test.
+export const controllers: RuntimeControllerCallbacks[] = []
+export function holdControllers(): void {
+  vi.spyOn(RuntimeController.prototype, "start").mockImplementation(function (
+    this: RuntimeController,
+  ) {
+    controllers.push((this as unknown as { callbacks: RuntimeControllerCallbacks }).callbacks)
+    return Promise.resolve()
+  })
+  vi.spyOn(RuntimeController.prototype, "refresh").mockResolvedValue(undefined)
+}
 
 /** Runs each scheduled retry only when a test asks, and records every delay asked for. */
 export class ManualScheduler implements RuntimeRetryScheduler {
