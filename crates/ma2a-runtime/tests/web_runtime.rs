@@ -305,6 +305,12 @@ async fn full_spaces_keep_snapshot_details_and_events_within_the_frame_budget() 
         .oneshot(web_read("/api/v1/snapshot", Some(&cookie))?)
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
+    let http_boot_id = response
+        .headers()
+        .get("x-ma2a-runtime-boot-id")
+        .ok_or("missing x-ma2a-runtime-boot-id header")?
+        .to_str()?
+        .to_owned();
     let payload: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await?)?;
     assert_eq!(
@@ -387,6 +393,12 @@ async fn full_spaces_keep_snapshot_details_and_events_within_the_frame_budget() 
         snapshot
             .pointer("/runtime_boot_id")
             .ok_or("missing fixture field")?
+    );
+    assert_eq!(
+        stamp
+            .pointer("/result/payload/runtime_boot_id")
+            .and_then(serde_json::Value::as_str),
+        Some(http_boot_id.as_str())
     );
     let revision = stamp
         .pointer("/revision")

@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest"
 
 import type { RuntimeApiClient, RuntimeEventCallbacks } from "./api/client"
 import { parseSpaceDetails, type SpaceDetails } from "./api/codec"
-import { runtimeSnapshot } from "./api/test-fixtures"
+import { DEFAULT_BOOT_ID, runtimeSnapshot } from "./api/test-fixtures"
 import { RuntimeController } from "./runtime-controller"
 import type { RuntimeViewData } from "./view-model"
 
@@ -56,13 +56,14 @@ async function flush(): Promise<void> {
 }
 
 function scenario(details: SpaceDetails[]) {
+  let bootId = DEFAULT_BOOT_ID
   let snapshot = { ...runtimeSnapshot(10), spaces: details.map((item) => item.space) }
   let latest: RuntimeViewData | undefined
   let events: RuntimeEventCallbacks | undefined
   const requests: { id: string; pending: ReturnType<typeof deferred<SpaceDetails>> }[] = []
   const errors: unknown[] = []
   const client: RuntimeApiClient = {
-    fetchSnapshot: () => Promise.resolve(snapshot),
+    fetchSnapshot: () => Promise.resolve({ snapshot, bootId }),
     fetchSpaceDetails: (id) => {
       const pending = deferred<SpaceDetails>()
       requests.push({ id, pending })
@@ -95,6 +96,10 @@ function scenario(details: SpaceDetails[]) {
         revision: snapshot.revision + 1,
         spaces: next.map((item) => item.space),
       }
+    },
+    reboot: (revision: number, nextBootId: string, next: SpaceDetails[]) => {
+      bootId = nextBootId
+      snapshot = { ...runtimeSnapshot(revision), spaces: next.map((item) => item.space) }
     },
   }
 }
@@ -201,6 +206,25 @@ describe("Space detail loading", () => {
     await flush()
     expect(given.latest()?.spaces[0]?.members).toBeUndefined()
     expect(given.latest()?.spaces[0]?.membersError).toBe(true)
+    given.controller.stop()
+  })
+
+  test("resets cached Space details and installs a lower revision on a confirmed new boot", async () => {
+    const value = detail(1)
+    const given = scenario([value])
+    await given.controller.start()
+    given.requests[0]?.pending.resolve(value)
+    await flush()
+    expect(given.latest()?.spaces[0]?.members).toHaveLength(1)
+
+    given.reboot(5, "bb".repeat(16), [value])
+    await given.controller.refresh()
+    expect(given.latest()?.connection).toBe("online")
+    expect(given.latest()?.spaces[0]?.members).toBeUndefined()
+    expect(given.requests).toHaveLength(2)
+    given.requests[1]?.pending.resolve(value)
+    await flush()
+    expect(given.latest()?.spaces[0]?.members).toHaveLength(1)
     given.controller.stop()
   })
 })

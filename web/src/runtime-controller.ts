@@ -2,12 +2,12 @@ import { HTTPError } from "ky"
 import {
   createRuntimeApiClient,
   type RuntimeApiClient,
-  type RuntimeSnapshot,
   RuntimeStateCoordinator,
+  type StampedRuntimeSnapshot,
 } from "./api/client"
 import type { SpaceDetails } from "./api/codec"
 import { runtimeViewFromSnapshot } from "./runtime-view"
-import type { RuntimeViewData } from "./view-model"
+import type { ConnectionState, RuntimeViewData } from "./view-model"
 
 export type RuntimeControllerCallbacks = {
   readonly onRuntime: (runtime: RuntimeViewData | undefined) => void
@@ -43,7 +43,7 @@ const browserRetryScheduler: RuntimeRetryScheduler = {
 export class RuntimeController {
   private readonly coordinator: RuntimeStateCoordinator
   private closeEvents: (() => void) | undefined
-  private latestSnapshot: RuntimeSnapshot | undefined
+  private latest: StampedRuntimeSnapshot | undefined
   private cancelRetry: (() => void) | undefined
   private retryAttempt = 0
   private recoveryPending = false
@@ -67,7 +67,7 @@ export class RuntimeController {
     this.coordinator = new RuntimeStateCoordinator({
       fetchSnapshot: () => this.client.fetchSnapshot(),
       onIncremental: () => undefined,
-      onSnapshot: (snapshot) => this.install(snapshot),
+      onSnapshot: (stamped) => this.install(stamped),
       onRecoveryError: (error) => this.handleError(error),
     })
   }
@@ -76,10 +76,14 @@ export class RuntimeController {
     if (this.stopped || this.recoveryPending) return
     this.recoveryPending = true
     try {
-      const snapshot = await this.client.fetchSnapshot()
+      const stamped = await this.client.fetchSnapshot()
       if (this.stopped) return
-      if (this.latestSnapshot === undefined || snapshot.revision >= this.latestSnapshot.revision) {
-        this.coordinator.install(snapshot)
+      if (
+        this.latest === undefined ||
+        stamped.bootId !== this.latest.bootId ||
+        stamped.snapshot.revision >= this.latest.snapshot.revision
+      ) {
+        this.coordinator.install(stamped)
       }
     } catch (error) {
       this.handleError(error)
@@ -103,10 +107,7 @@ export class RuntimeController {
     this.cancelRetry?.()
     this.cancelRetry = undefined
     const settled = this.scheduler.schedule(UNCERTAIN_GRACE_MS, () => {
-      if (this.stopped || this.latestSnapshot === undefined) return
-      this.callbacks.onRuntime(
-        runtimeViewFromSnapshot(this.latestSnapshot, "uncertain", this.details, this.failedDetails),
-      )
+      if (!this.stopped) this.emit("uncertain")
     })
     try {
       await this.coordinator.resyncRequired()
@@ -117,11 +118,7 @@ export class RuntimeController {
     if (this.stopped) return
     if (this.coordinator.currentState().kind === "uncertain") {
       this.offline = true
-      if (this.latestSnapshot !== undefined) {
-        this.callbacks.onRuntime(
-          runtimeViewFromSnapshot(this.latestSnapshot, "offline", this.details, this.failedDetails),
-        )
-      }
+      this.emit("offline")
       this.scheduleRetry()
     } else if (this.refreshQueued) {
       this.refreshQueued = false
@@ -138,9 +135,18 @@ export class RuntimeController {
     this.closeEvents = undefined
   }
 
-  private install(snapshot: RuntimeSnapshot): void {
+  private emit(connection: ConnectionState): void {
+    if (this.latest === undefined) return
+    this.callbacks.onRuntime(
+      runtimeViewFromSnapshot(this.latest.snapshot, connection, this.details, this.failedDetails),
+    )
+  }
+
+  private install(stamped: StampedRuntimeSnapshot): void {
     if (this.stopped) return
-    this.latestSnapshot = snapshot
+    if (this.latest !== undefined && this.latest.bootId !== stamped.bootId) this.clearDetails()
+    const { snapshot } = stamped
+    this.latest = stamped
     for (const [id, detail] of this.details) {
       if (
         !snapshot.spaces.some(
@@ -153,9 +159,7 @@ export class RuntimeController {
     this.offline = false
     this.cancelRetry?.()
     this.cancelRetry = undefined
-    this.callbacks.onRuntime(
-      runtimeViewFromSnapshot(snapshot, "online", this.details, this.failedDetails),
-    )
+    this.emit("online")
     this.loadDetails()
     this.closeEvents?.()
     // A stream the Runtime refuses at once, as when every event connection is taken, would
@@ -190,18 +194,15 @@ export class RuntimeController {
   }
 
   private publishDetails(): void {
-    if (!this.stopped && !this.offline && this.latestSnapshot !== undefined) {
-      const connection =
-        this.coordinator.currentState().kind === "uncertain" ? "uncertain" : "online"
-      this.callbacks.onRuntime(
-        runtimeViewFromSnapshot(this.latestSnapshot, connection, this.details, this.failedDetails),
-      )
+    if (!this.stopped && !this.offline) {
+      this.emit(this.coordinator.currentState().kind === "uncertain" ? "uncertain" : "online")
     }
   }
 
   private loadDetails(): void {
-    if (this.stopped || this.latestSnapshot === undefined) return
-    for (const space of this.latestSnapshot.spaces) {
+    const latestSnapshot = this.latest?.snapshot
+    if (this.stopped || latestSnapshot === undefined) return
+    for (const space of latestSnapshot.spaces) {
       if (this.detailWorkers >= 4) break
       const key = `${this.detailEpoch}:${space.space_id}:${space.chain_hash}`
       if (
@@ -217,7 +218,7 @@ export class RuntimeController {
         .fetchSpaceDetails(space.space_id)
         .then((detail) => {
           if (this.stopped || epoch !== this.detailEpoch) return
-          const current = this.latestSnapshot?.spaces.find(
+          const current = this.latest?.snapshot.spaces.find(
             (item) => item.space_id === space.space_id,
           )
           if (current === undefined || current.chain_hash !== space.chain_hash) return
@@ -237,7 +238,7 @@ export class RuntimeController {
         })
         .catch((error: unknown) => {
           if (this.stopped || epoch !== this.detailEpoch) return
-          const current = this.latestSnapshot?.spaces.find(
+          const current = this.latest?.snapshot.spaces.find(
             (item) => item.space_id === space.space_id,
           )
           if (current?.chain_hash !== space.chain_hash) return
@@ -274,7 +275,7 @@ export class RuntimeController {
   private scheduleRetry(): void {
     if (this.stopped || this.cancelRetry !== undefined) return
     const delay =
-      this.latestSnapshot === undefined
+      this.latest === undefined
         ? RETRY_DELAYS_MS[this.retryAttempt]
         : RETRY_DELAYS_MS[Math.min(this.retryAttempt, RETRY_DELAYS_MS.length - 1)]
     if (delay === undefined) return

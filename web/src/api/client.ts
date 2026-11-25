@@ -5,10 +5,9 @@ import {
   parseSpaceDetails,
   RuntimeApiPayloadError,
   type RuntimeEvent,
-  type RuntimeSnapshot,
   type SpaceDetails,
 } from "./codec"
-import { readSnapshot } from "./snapshot-stream"
+import { readSnapshot, type StampedRuntimeSnapshot } from "./snapshot-stream"
 
 export {
   parseRuntimeEvent,
@@ -24,6 +23,7 @@ export {
   type RuntimeStateCoordinatorOptions,
   StaleRuntimeSnapshotError,
 } from "./coordinator"
+export { RUNTIME_BOOT_ID_HEADER, type StampedRuntimeSnapshot } from "./snapshot-stream"
 
 // A path is resolved as the browser resolves it, which reads a backslash as a slash and drops
 // tabs and newlines. Checking two distinct origins ensures any path carrying its own host fails at
@@ -82,7 +82,7 @@ export type RuntimeEventSourceFactory = (url: string, init: EventSourceInit) => 
 
 export type RuntimeApiClient = {
   readonly fetchSpaceDetails: (spaceId: string) => Promise<SpaceDetails>
-  readonly fetchSnapshot: () => Promise<RuntimeSnapshot>
+  readonly fetchSnapshot: () => Promise<StampedRuntimeSnapshot>
   readonly subscribe: (revision: number, callbacks: RuntimeEventCallbacks) => () => void
 }
 

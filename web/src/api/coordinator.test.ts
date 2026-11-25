@@ -1,5 +1,30 @@
-import { RuntimeStateCoordinator } from "./client"
-import { deferredRuntimeSnapshot, runtimeSnapshot } from "./test-fixtures"
+import { RUNTIME_BOOT_ID_HEADER, RuntimeStateCoordinator } from "./client"
+import { readSnapshot } from "./snapshot-stream"
+import {
+  DEFAULT_BOOT_ID,
+  deferredRuntimeSnapshot,
+  runtimeSnapshot,
+  stampedRuntimeSnapshot,
+} from "./test-fixtures"
+
+function snapshotResponse(format: "json" | "ndjson", revision: number, bootId: string): Response {
+  const payload = runtimeSnapshot(revision)
+  if (format === "json") {
+    return Response.json(payload, { headers: { [RUNTIME_BOOT_ID_HEADER]: bootId } })
+  }
+  const bytes = new TextEncoder().encode(JSON.stringify(payload))
+  const frame = JSON.stringify({
+    type: "snapshot_fragment",
+    revision,
+    runtime_boot_id: bootId,
+    index: 0,
+    last: true,
+    data_hex: Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  })
+  return new Response(`${frame}\n`, {
+    headers: { "content-type": "application/x-ndjson", [RUNTIME_BOOT_ID_HEADER]: bootId },
+  })
+}
 
 describe("runtime state coordinator", () => {
   test("resnapshots once on a gap and resumes only from the replacement revision", async () => {
@@ -13,14 +38,14 @@ describe("runtime state coordinator", () => {
         return replacement.promise
       },
       onIncremental: (revision) => acceptedRevisions.push(revision),
-      onSnapshot: (value) => appliedSnapshots.push(value.revision),
+      onSnapshot: (value) => appliedSnapshots.push(value.snapshot.revision),
       onRecoveryError: () => undefined,
     })
-    given.install(runtimeSnapshot(10))
+    given.install(stampedRuntimeSnapshot(10))
 
     const gapRecovery = given.receiveRevision(12)
     const discarded = await given.receiveRevision(13)
-    replacement.resolve(runtimeSnapshot(20))
+    replacement.resolve(stampedRuntimeSnapshot(20))
     await gapRecovery
     const accepted = await given.receiveRevision(21)
 
@@ -44,7 +69,7 @@ describe("runtime state coordinator", () => {
       onSnapshot: () => undefined,
       onRecoveryError: (error) => observedErrors.push(error),
     })
-    given.install(runtimeSnapshot(10))
+    given.install(stampedRuntimeSnapshot(10))
 
     await given.disconnect()
     const discarded = await given.receiveRevision(11)
@@ -58,35 +83,35 @@ describe("runtime state coordinator", () => {
   test("replaces state when the server explicitly requires resynchronization", async () => {
     const appliedSnapshots: number[] = []
     const given = new RuntimeStateCoordinator({
-      fetchSnapshot: () => Promise.resolve(runtimeSnapshot(30)),
+      fetchSnapshot: () => Promise.resolve(stampedRuntimeSnapshot(30)),
       onIncremental: () => undefined,
-      onSnapshot: (value) => appliedSnapshots.push(value.revision),
+      onSnapshot: (value) => appliedSnapshots.push(value.snapshot.revision),
       onRecoveryError: () => undefined,
     })
-    given.install(runtimeSnapshot(10))
+    given.install(stampedRuntimeSnapshot(10))
 
     await given.resyncRequired()
 
     expect(appliedSnapshots).toEqual([10, 30])
-    expect(given.currentState()).toEqual({ kind: "ready", revision: 30 })
+    expect(given.currentState()).toEqual({ kind: "ready", revision: 30, bootId: DEFAULT_BOOT_ID })
   })
 
   test("treats snapshot invalidation as mandatory replacement instead of an incremental update", async () => {
     const acceptedRevisions: number[] = []
     const appliedSnapshots: number[] = []
     const given = new RuntimeStateCoordinator({
-      fetchSnapshot: () => Promise.resolve(runtimeSnapshot(20)),
+      fetchSnapshot: () => Promise.resolve(stampedRuntimeSnapshot(20)),
       onIncremental: (revision) => acceptedRevisions.push(revision),
-      onSnapshot: (value) => appliedSnapshots.push(value.revision),
+      onSnapshot: (value) => appliedSnapshots.push(value.snapshot.revision),
       onRecoveryError: () => undefined,
     })
-    given.install(runtimeSnapshot(10))
+    given.install(stampedRuntimeSnapshot(10))
 
     await given.receiveEvent({ type: "snapshot_invalidated", revision: 11, changed: {} })
 
     expect(acceptedRevisions).toEqual([])
     expect(appliedSnapshots).toEqual([10, 20])
-    expect(given.currentState()).toEqual({ kind: "ready", revision: 20 })
+    expect(given.currentState()).toEqual({ kind: "ready", revision: 20, bootId: DEFAULT_BOOT_ID })
   })
 
   test("allows a later uncertainty signal to retry a failed replacement snapshot", async () => {
@@ -95,41 +120,57 @@ describe("runtime state coordinator", () => {
     const given = new RuntimeStateCoordinator({
       fetchSnapshot: () => {
         attempts += 1
-        return attempts === 1 ? Promise.reject(recoveryError) : Promise.resolve(runtimeSnapshot(30))
+        return attempts === 1
+          ? Promise.reject(recoveryError)
+          : Promise.resolve(stampedRuntimeSnapshot(30))
       },
       onIncremental: () => undefined,
       onSnapshot: () => undefined,
       onRecoveryError: () => undefined,
     })
-    given.install(runtimeSnapshot(10))
+    given.install(stampedRuntimeSnapshot(10))
 
     await given.disconnect()
     await given.resyncRequired()
 
     expect(attempts).toBe(2)
-    expect(given.currentState()).toEqual({ kind: "ready", revision: 30 })
+    expect(given.currentState()).toEqual({ kind: "ready", revision: 30, bootId: DEFAULT_BOOT_ID })
   })
 
-  test("rejects a replacement snapshot older than the last authoritative revision", async () => {
-    const appliedSnapshots: number[] = []
-    const observedErrors: unknown[] = []
-    const given = new RuntimeStateCoordinator({
-      fetchSnapshot: () => Promise.resolve(runtimeSnapshot(9)),
-      onIncremental: () => undefined,
-      onSnapshot: (value) => appliedSnapshots.push(value.revision),
-      onRecoveryError: (error) => observedErrors.push(error),
-    })
-    given.install(runtimeSnapshot(10))
+  test.each(["json", "ndjson"] as const)(
+    "rejects a lower revision from the same boot and accepts one from a new boot (%s)",
+    async (format) => {
+      const bootA = "aa".repeat(16)
+      const bootB = "bb".repeat(16)
+      const responses = [snapshotResponse(format, 5, bootA), snapshotResponse(format, 5, bootB)]
+      const appliedSnapshots: number[] = []
+      const observedErrors: unknown[] = []
+      const given = new RuntimeStateCoordinator({
+        fetchSnapshot: () => {
+          const next = responses.shift()
+          if (next === undefined) throw new Error("unexpected fetch")
+          return readSnapshot(next)
+        },
+        onIncremental: () => undefined,
+        onSnapshot: (value) => appliedSnapshots.push(value.snapshot.revision),
+        onRecoveryError: (error) => observedErrors.push(error),
+      })
+      given.install(await readSnapshot(snapshotResponse(format, 30, bootA)))
 
-    await given.disconnect()
+      await given.disconnect()
+      expect(appliedSnapshots).toEqual([30])
+      expect(observedErrors).toHaveLength(1)
+      expect(given.currentState()).toEqual({
+        kind: "uncertain",
+        lastRevision: 30,
+        lastBootId: bootA,
+        reason: "disconnected",
+        resnapshot: "required",
+      })
 
-    expect(appliedSnapshots).toEqual([10])
-    expect(observedErrors).toHaveLength(1)
-    expect(given.currentState()).toEqual({
-      kind: "uncertain",
-      lastRevision: 10,
-      reason: "disconnected",
-      resnapshot: "required",
-    })
-  })
+      await given.resyncRequired()
+      expect(appliedSnapshots).toEqual([30, 5])
+      expect(given.currentState()).toEqual({ kind: "ready", revision: 5, bootId: bootB })
+    },
+  )
 })

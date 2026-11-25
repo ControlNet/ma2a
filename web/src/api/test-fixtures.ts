@@ -1,4 +1,6 @@
-import type { RuntimeSnapshot } from "./client"
+import type { RuntimeSnapshot, StampedRuntimeSnapshot } from "./client"
+
+export const DEFAULT_BOOT_ID = "aa".repeat(16)
 
 export function runtimeSnapshot(revision: number): RuntimeSnapshot {
   return {
@@ -24,12 +26,19 @@ export function runtimeSnapshot(revision: number): RuntimeSnapshot {
   }
 }
 
+export function stampedRuntimeSnapshot(
+  revision: number,
+  bootId = DEFAULT_BOOT_ID,
+): StampedRuntimeSnapshot {
+  return { snapshot: runtimeSnapshot(revision), bootId }
+}
+
 export function deferredRuntimeSnapshot(): {
-  readonly promise: Promise<RuntimeSnapshot>
-  readonly resolve: (value: RuntimeSnapshot) => void
+  readonly promise: Promise<StampedRuntimeSnapshot>
+  readonly resolve: (value: StampedRuntimeSnapshot) => void
 } {
-  let resolveSnapshot: ((value: RuntimeSnapshot) => void) | undefined
-  const promise = new Promise<RuntimeSnapshot>((resolve) => {
+  let resolveSnapshot: ((value: StampedRuntimeSnapshot) => void) | undefined
+  const promise = new Promise<StampedRuntimeSnapshot>((resolve) => {
     resolveSnapshot = resolve
   })
   if (resolveSnapshot === undefined) {

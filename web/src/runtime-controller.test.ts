@@ -1,7 +1,7 @@
 import { HTTPError } from "ky"
 import { describe, expect, test } from "vitest"
 
-import { runtimeSnapshot } from "./api/test-fixtures"
+import { stampedRuntimeSnapshot as runtimeSnapshot } from "./api/test-fixtures"
 import { RuntimeController, UNCERTAIN_GRACE_MS } from "./runtime-controller"
 import { fakeClient, flushRecovery, ManualScheduler } from "./test/runtime-controller-fakes"
 

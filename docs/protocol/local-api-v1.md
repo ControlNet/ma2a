@@ -376,11 +376,15 @@ at maximum-width revision/index. No wire frame exceeds 33,000 bytes. Every
 non-final fragment is full. IPC fragments use the original correlation and contain
 the complete stamped response (including its `runtime_boot_id` extension); HTTP uses newline-delimited JSON
 (`application/x-ndjson`) and fragments the snapshot payload. Small HTTP responses
-remain `application/json`.
+remain `application/json`. Every `GET /api/v1/snapshot` response also carries the
+32-hex `X-MA2A-Runtime-Boot-Id` header so both formats identify the Runtime boot.
 
 All fragments belong to the same frozen projection, never repeated live reads.
-Clients require contiguous indexes, identical revision/boot, complete final data,
+Clients require contiguous indexes, identical revision/boot (including matching
+the `X-MA2A-Runtime-Boot-Id` header when present), complete final data,
 and a matching reconstructed payload revision before installing the snapshot.
+Snapshot revision order is enforced within one boot ID; a confirmed new boot ID
+resets the browser projection and cached Space details even at a lower revision.
 An interrupted stream is discarded; a new request takes a fresh snapshot. There
 is no server-side cursor cache or process-restart continuation. Collection size
 limits are not invented as capacity restrictions on otherwise legal Spaces or

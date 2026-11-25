@@ -7,21 +7,23 @@ import {
   receiveRevision,
 } from "./state"
 
+const BOOT = "aa".repeat(16)
+
 describe("runtime revision state", () => {
   test("accepts exactly the next revision when the snapshot is authoritative", () => {
-    const given = installSnapshot(10)
+    const given = installSnapshot(10, BOOT)
 
     const when = receiveRevision(given, 11)
 
     expect(when).toEqual({
       accepted: true,
       effect: "none",
-      state: { kind: "ready", revision: 11 },
+      state: { kind: "ready", revision: 11, bootId: BOOT },
     })
   })
 
   test("marks a revision gap uncertain and requests one resnapshot", () => {
-    const given = installSnapshot(10)
+    const given = installSnapshot(10, BOOT)
 
     const when = receiveRevision(given, 12)
 
@@ -31,6 +33,7 @@ describe("runtime revision state", () => {
       state: {
         kind: "uncertain",
         lastRevision: 10,
+        lastBootId: BOOT,
         reason: "revision_gap",
         resnapshot: "required",
       },
@@ -38,7 +41,7 @@ describe("runtime revision state", () => {
   })
 
   test("discards later events while recovery is required without requesting another snapshot", () => {
-    const given = receiveRevision(installSnapshot(10), 12).state
+    const given = receiveRevision(installSnapshot(10, BOOT), 12).state
 
     const when = receiveRevision(given, 13)
 
@@ -46,7 +49,7 @@ describe("runtime revision state", () => {
   })
 
   test("keeps recovery bounded after the snapshot request starts", () => {
-    const uncertain = receiveRevision(installSnapshot(10), 12).state
+    const uncertain = receiveRevision(installSnapshot(10, BOOT), 12).state
     const given = beginResnapshot(uncertain)
 
     const when = beginResnapshot(given)
@@ -63,19 +66,25 @@ describe("runtime revision state", () => {
     [10, "duplicate_revision"],
     [9, "out_of_order_revision"],
   ] as const)("marks revision %i uncertain as %s", (revision, reason) => {
-    const given = installSnapshot(10)
+    const given = installSnapshot(10, BOOT)
 
     const when = receiveRevision(given, revision)
 
     expect(when).toEqual({
       accepted: false,
       effect: "resnapshot",
-      state: { kind: "uncertain", lastRevision: 10, reason, resnapshot: "required" },
+      state: {
+        kind: "uncertain",
+        lastRevision: 10,
+        lastBootId: BOOT,
+        reason,
+        resnapshot: "required",
+      },
     })
   })
 
   test("marks a disconnect uncertain and requests one resnapshot", () => {
-    const given = installSnapshot(10)
+    const given = installSnapshot(10, BOOT)
 
     const when = markDisconnected(given)
 
@@ -85,6 +94,7 @@ describe("runtime revision state", () => {
       state: {
         kind: "uncertain",
         lastRevision: 10,
+        lastBootId: BOOT,
         reason: "disconnected",
         resnapshot: "required",
       },
@@ -92,22 +102,23 @@ describe("runtime revision state", () => {
   })
 
   test("a replacement snapshot restores authority from its own revision", () => {
-    const uncertain: RuntimeState = receiveRevision(installSnapshot(10), 12).state
+    const uncertain: RuntimeState = receiveRevision(installSnapshot(10, BOOT), 12).state
 
-    const when = installSnapshot(20)
+    const when = installSnapshot(20, BOOT)
 
     expect(uncertain.kind).toBe("uncertain")
     expect(receiveRevision(when, 21).accepted).toBe(true)
   })
 
   test("marks an explicit server resync signal uncertain", () => {
-    const given = installSnapshot(10)
+    const given = installSnapshot(10, BOOT)
 
     const when = markResyncRequired(given)
 
     expect(when.state).toEqual({
       kind: "uncertain",
       lastRevision: 10,
+      lastBootId: BOOT,
       reason: "server_resync_required",
       resnapshot: "required",
     })

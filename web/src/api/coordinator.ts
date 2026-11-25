@@ -1,4 +1,5 @@
-import type { RuntimeEvent, RuntimeSnapshot } from "./codec"
+import type { RuntimeEvent } from "./codec"
+import type { StampedRuntimeSnapshot } from "./snapshot-stream"
 import {
   beginResnapshot,
   EMPTY_RUNTIME_STATE,
@@ -26,9 +27,9 @@ export class StaleRuntimeSnapshotError extends Error {
 }
 
 export type RuntimeStateCoordinatorOptions = {
-  readonly fetchSnapshot: () => Promise<RuntimeSnapshot>
+  readonly fetchSnapshot: () => Promise<StampedRuntimeSnapshot>
   readonly onIncremental: (revision: number) => void
-  readonly onSnapshot: (snapshot: RuntimeSnapshot) => void
+  readonly onSnapshot: (stamped: StampedRuntimeSnapshot) => void
   readonly onRecoveryError: (error: unknown) => void
 }
 
@@ -41,9 +42,9 @@ export class RuntimeStateCoordinator {
     return this.state
   }
 
-  install(snapshot: RuntimeSnapshot): void {
-    this.state = installSnapshot(snapshot.revision)
-    this.options.onSnapshot(snapshot)
+  install(stamped: StampedRuntimeSnapshot): void {
+    this.state = installSnapshot(stamped.snapshot.revision, stamped.bootId)
+    this.options.onSnapshot(stamped)
   }
 
   async receiveRevision(revision: number): Promise<boolean> {
@@ -96,21 +97,29 @@ export class RuntimeStateCoordinator {
 
   private async recover(): Promise<void> {
     const lastRevision = this.state.kind === "uncertain" ? this.state.lastRevision : null
+    const lastBootId = this.state.kind === "uncertain" ? this.state.lastBootId : null
     this.state = beginResnapshot(this.state)
     const outcome = await this.options.fetchSnapshot().then(
-      (snapshot) => ({ kind: "success", snapshot }) as const,
+      (stamped) => ({ kind: "success", stamped }) as const,
       (error: unknown) => ({ kind: "failure", error }) as const,
     )
     switch (outcome.kind) {
       case "success":
-        if (lastRevision !== null && outcome.snapshot.revision < lastRevision) {
+        // Revision order is meaningful within one Runtime boot; a confirmed new boot (such as a
+        // restored database after restart) resets the projection even at a lower revision.
+        if (
+          lastRevision !== null &&
+          lastBootId !== null &&
+          outcome.stamped.bootId === lastBootId &&
+          outcome.stamped.snapshot.revision < lastRevision
+        ) {
           this.state = failResnapshot(this.state)
           this.options.onRecoveryError(
-            new StaleRuntimeSnapshotError(lastRevision, outcome.snapshot.revision),
+            new StaleRuntimeSnapshotError(lastRevision, outcome.stamped.snapshot.revision),
           )
           return
         }
-        this.install(outcome.snapshot)
+        this.install(outcome.stamped)
         return
       case "failure":
         this.state = failResnapshot(this.state)

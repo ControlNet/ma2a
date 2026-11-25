@@ -55,7 +55,12 @@ async fn fetch_snapshot(state: &WebState) -> Result<(SnapshotStamp, Value), Stat
     let boot_id = value
         .get("runtime_boot_id")
         .and_then(Value::as_str)
-        .filter(|value| value.len() == 32)
+        .filter(|value| {
+            value.len() == 32
+                && value
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         .to_owned();
     let payload = value

@@ -8,10 +8,11 @@ export type UncertaintyReason =
 
 export type RuntimeState =
   | { readonly kind: "empty" }
-  | { readonly kind: "ready"; readonly revision: number }
+  | { readonly kind: "ready"; readonly revision: number; readonly bootId: string }
   | {
       readonly kind: "uncertain"
       readonly lastRevision: number | null
+      readonly lastBootId: string | null
       readonly reason: UncertaintyReason
       readonly resnapshot: "required" | "in_flight"
     }
@@ -30,17 +31,18 @@ function assertNever(value: never): never {
 
 function requireResnapshot(
   lastRevision: number | null,
+  lastBootId: string | null,
   reason: UncertaintyReason,
 ): StateTransition {
   return {
     accepted: false,
     effect: "resnapshot",
-    state: { kind: "uncertain", lastRevision, reason, resnapshot: "required" },
+    state: { kind: "uncertain", lastRevision, lastBootId, reason, resnapshot: "required" },
   }
 }
 
-export function installSnapshot(revision: number): RuntimeState {
-  return { kind: "ready", revision }
+export function installSnapshot(revision: number, bootId: string): RuntimeState {
+  return { kind: "ready", revision, bootId }
 }
 
 export function beginResnapshot(state: RuntimeState): RuntimeState {
@@ -73,21 +75,25 @@ export function failResnapshot(state: RuntimeState): RuntimeState {
 export function receiveRevision(state: RuntimeState, revision: number): StateTransition {
   switch (state.kind) {
     case "empty":
-      return requireResnapshot(null, "event_before_snapshot")
+      return requireResnapshot(null, null, "event_before_snapshot")
     case "uncertain":
       return { accepted: false, effect: "none", state }
     case "ready": {
       const expectedRevision = state.revision + 1
       if (revision === expectedRevision) {
-        return { accepted: true, effect: "none", state: { kind: "ready", revision } }
+        return {
+          accepted: true,
+          effect: "none",
+          state: { kind: "ready", revision, bootId: state.bootId },
+        }
       }
       if (revision === state.revision) {
-        return requireResnapshot(state.revision, "duplicate_revision")
+        return requireResnapshot(state.revision, state.bootId, "duplicate_revision")
       }
       if (revision < state.revision) {
-        return requireResnapshot(state.revision, "out_of_order_revision")
+        return requireResnapshot(state.revision, state.bootId, "out_of_order_revision")
       }
-      return requireResnapshot(state.revision, "revision_gap")
+      return requireResnapshot(state.revision, state.bootId, "revision_gap")
     }
     default:
       return assertNever(state)
@@ -97,9 +103,9 @@ export function receiveRevision(state: RuntimeState, revision: number): StateTra
 export function markDisconnected(state: RuntimeState): StateTransition {
   switch (state.kind) {
     case "empty":
-      return requireResnapshot(null, "disconnected")
+      return requireResnapshot(null, null, "disconnected")
     case "ready":
-      return requireResnapshot(state.revision, "disconnected")
+      return requireResnapshot(state.revision, state.bootId, "disconnected")
     case "uncertain":
       return {
         accepted: false,
@@ -114,9 +120,9 @@ export function markDisconnected(state: RuntimeState): StateTransition {
 export function markResyncRequired(state: RuntimeState): StateTransition {
   switch (state.kind) {
     case "empty":
-      return requireResnapshot(null, "server_resync_required")
+      return requireResnapshot(null, null, "server_resync_required")
     case "ready":
-      return requireResnapshot(state.revision, "server_resync_required")
+      return requireResnapshot(state.revision, state.bootId, "server_resync_required")
     case "uncertain":
       return {
         accepted: false,
