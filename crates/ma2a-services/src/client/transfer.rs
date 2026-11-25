@@ -122,9 +122,10 @@ where
                 writer.frame(FrameKind::Control, &commit).await?;
                 writer.flush().await
             };
-            // A target that stopped reading still reports its terminal, which explains why.
-            let _committed: Result<(), ServiceError> = committed.await;
-            Ok(hash)
+            // A commitment that was not sent is a broken stream too: a target that stopped
+            // reading still reports its terminal, which explains why.
+            let committed: Result<(), ServiceError> = committed.await;
+            committed.map(|()| hash).map_err(|_| None)
         }
         Ok(Err(error)) => {
             let _cancelled = cancel(writer).await;
