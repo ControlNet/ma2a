@@ -58,6 +58,8 @@ pub(crate) enum RuntimeErrorKind {
     AddressObservationUnavailable,
     Shutdown,
     Control,
+    /// A targeted control sync found no shared eligible peer to dial.
+    ControlNotDialed,
 }
 
 impl RuntimeError {
@@ -130,6 +132,11 @@ impl RuntimeError {
         )
     }
 
+    /// A targeted control sync did not dial the requested peer at all.
+    pub(crate) const fn is_control_not_dialed(&self) -> bool {
+        matches!(self.0, RuntimeErrorKind::ControlNotDialed)
+    }
+
     /// Returns a stable non-secret error classification.
     pub const fn code(&self) -> RuntimeErrorCode {
         let kind = match &self.0 {
@@ -150,9 +157,9 @@ impl RuntimeError {
             RuntimeErrorKind::Clock | RuntimeErrorKind::ClockBehind => ErrorCodeKind::Clock,
             RuntimeErrorKind::ObservationOverflow => ErrorCodeKind::ObservationOverflow,
             RuntimeErrorKind::Shutdown => ErrorCodeKind::Shutdown,
-            RuntimeErrorKind::AddressObservationUnavailable | RuntimeErrorKind::Control => {
-                ErrorCodeKind::Control
-            }
+            RuntimeErrorKind::AddressObservationUnavailable
+            | RuntimeErrorKind::Control
+            | RuntimeErrorKind::ControlNotDialed => ErrorCodeKind::Control,
         };
         RuntimeErrorCode(kind)
     }
@@ -201,6 +208,9 @@ impl fmt::Display for RuntimeError {
             RuntimeErrorKind::Control => {
                 formatter.write_str("Runtime control synchronization failed")
             }
+            RuntimeErrorKind::ControlNotDialed => {
+                formatter.write_str("Runtime found no eligible shared peer to synchronize")
+            }
         }
     }
 }
@@ -222,7 +232,8 @@ impl Error for RuntimeError {
             | RuntimeErrorKind::ObservationOverflow
             | RuntimeErrorKind::AddressObservationUnavailable
             | RuntimeErrorKind::Shutdown
-            | RuntimeErrorKind::Control => None,
+            | RuntimeErrorKind::Control
+            | RuntimeErrorKind::ControlNotDialed => None,
         }
     }
 }

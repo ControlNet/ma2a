@@ -42,6 +42,8 @@ mod pending_replay;
 mod process_delete;
 #[path = "server_tests/read_revisions.rs"]
 mod read_revisions;
+#[path = "server_tests/remote_mutations.rs"]
+mod remote_mutations;
 #[path = "server_tests/services.rs"]
 mod services;
 #[path = "server_tests/space_leave.rs"]

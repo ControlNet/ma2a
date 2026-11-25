@@ -30,7 +30,7 @@ pub(super) async fn control_sync_status(
 pub(super) async fn control_sync_trigger(
     context: &ConnectionContext,
     command: &Command,
-) -> Result<CommandResult, ProtocolError> {
+) -> Result<CommandResult, ApiError> {
     let peer = command
         .control_sync_peer()
         .ok_or(ProtocolError::INVALID_INPUT)?;
@@ -39,7 +39,13 @@ pub(super) async fn control_sync_trigger(
         .handle
         .sync_control_with(peer)
         .await
-        .map_err(|_| ProtocolError::UNAVAILABLE)?;
+        .map_err(|error| {
+            if error.is_control_not_dialed() {
+                ApiError::new(ProtocolError::UNAVAILABLE).without_effects()
+            } else {
+                ApiError::new(ProtocolError::UNAVAILABLE)
+            }
+        })?;
     Ok(CommandResult::control_sync_triggered(
         ControlSyncView::new(vec![peer]).map_err(|_| ProtocolError::INTERNAL)?,
     )

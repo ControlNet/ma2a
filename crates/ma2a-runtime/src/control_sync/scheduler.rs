@@ -38,7 +38,9 @@ impl ControlRoundRunner {
     ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
         let local_endpoint_id = request.local_endpoint_id;
         let now_ms = request.now_ms;
-        let mut pending = DialQueue::new(self.store.prepare_control_round(request).await?);
+        let prepared = self.store.prepare_control_round(request).await?;
+        let dialed_peers: BTreeSet<_> = prepared.iter().map(|entry| entry.peer).collect();
+        let mut pending = DialQueue::new(prepared);
         let had_peers = !pending.is_empty();
         let mut dials = JoinSet::new();
         let mut latest = None;
@@ -99,6 +101,7 @@ impl ControlRoundRunner {
         let incomplete = had_peers && synchronized_peers.is_empty();
         Ok(latest.map(|revision| ControlRoundOutcome {
             revision,
+            dialed_peers,
             synchronized_peers,
             changes,
             incomplete,

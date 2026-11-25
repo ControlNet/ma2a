@@ -60,7 +60,7 @@ impl Actor {
             Ok(now) => now,
             Err(error) => {
                 self.maintenance.fatal = Some(error);
-                self.complete_control_waiters(scheduled.id(), false, &BTreeSet::new());
+                self.complete_control_waiters(scheduled.id(), false, &BTreeSet::new(), None);
                 return;
             }
         };
@@ -94,7 +94,7 @@ impl Actor {
         let (scheduled, outcome) = result.map_err(RuntimeError::from)?;
         let round_id = scheduled.id();
         let mut failure = None;
-        let peers = match outcome {
+        let (peers, dialed) = match outcome {
             Ok(Some(outcome)) => {
                 self.state.revision = self.state.revision.max(outcome.revision);
                 self.retain_control_completion(outcome.changes, outcome.synchronized_peers.clone());
@@ -102,19 +102,19 @@ impl Actor {
                     // Every dialed peer left a request unanswered; its committed part stays.
                     failure = Some(ma2a_net::ControlRejection::Unavailable.into());
                 }
-                outcome.synchronized_peers
+                (outcome.synchronized_peers, Some(outcome.dialed_peers))
             }
-            Ok(None) => BTreeSet::new(),
+            Ok(None) => (BTreeSet::new(), Some(BTreeSet::new())),
             Err(error) => {
                 self.retain_control_completion(ControlChanges::default(), BTreeSet::new());
                 failure = Some(error);
-                BTreeSet::new()
+                (BTreeSet::new(), None)
             }
         };
         let reconciled = self.reconcile_control_completion().await;
         let succeeded = failure.is_none() && reconciled.is_ok();
         self.record_control_round(succeeded, &peers);
-        self.complete_control_waiters(round_id, succeeded, &peers);
+        self.complete_control_waiters(round_id, succeeded, &peers, dialed.as_ref());
         Self::absorb_background("control projection", reconciled)?;
         if let Some(error) = failure {
             Self::control_failure(error)?;
@@ -160,14 +160,20 @@ impl Actor {
         round_id: queue::ControlRoundId,
         succeeded: bool,
         synchronized_peers: &BTreeSet<EndpointId>,
+        dialed_peers: Option<&BTreeSet<EndpointId>>,
     ) {
         for waiter in self.control_queue.complete(round_id, succeeded) {
-            let waiter_succeeded = succeeded
+            let result = if succeeded
                 && waiter
                     .peer()
-                    .is_none_or(|peer| synchronized_peers.contains(&peer));
-            let result = if waiter_succeeded {
+                    .is_none_or(|peer| synchronized_peers.contains(&peer))
+            {
                 Ok(self.state.revision)
+            } else if waiter
+                .peer()
+                .is_some_and(|peer| dialed_peers.is_some_and(|dialed| !dialed.contains(&peer)))
+            {
+                Err(RuntimeError::new(RuntimeErrorKind::ControlNotDialed))
             } else {
                 Err(RuntimeError::new(RuntimeErrorKind::Control))
             };

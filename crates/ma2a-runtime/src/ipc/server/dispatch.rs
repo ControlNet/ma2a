@@ -146,10 +146,13 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
         if let Some(answer) = replayed_or_reserved(context, request).await? {
             return Ok((answer, false));
         }
-        // Leaving a Space and redeeming an invitation wait on another Endpoint for up to thirty
-        // seconds. They keep their reservation, which already refuses the same request as
-        // pending, but give up the lock, so every other mutation is still answered meanwhile.
-        if matches!(command.operation(), "space_leave" | "space_redeem") {
+        // Remote network mutations wait on another Endpoint for up to thirty seconds. They keep
+        // their durable reservation, which already refuses the same request as pending, but give
+        // up the lock so other local mutations are still answered meanwhile.
+        if matches!(
+            command.operation(),
+            "space_leave" | "space_redeem" | "echo_call" | "control_sync_trigger"
+        ) {
             drop(replay.take());
         }
     }
