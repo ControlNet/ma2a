@@ -40,8 +40,8 @@ struct Ending {
 /// byte counts are not known.
 ///
 /// Both parties are held to the Services v1 order and direction rules: caller data or an `end`
-/// on another channel than input cancels the call, and a service frame out of order or on the
-/// caller's channel loses it.
+/// on another channel than input, or after its `end` of input, cancels the call, and a service
+/// frame out of order, on the caller's channel, or on a channel the service ended loses it.
 pub(super) async fn relay_call<R, W>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     stream: Box<dyn CallIo>,
@@ -116,6 +116,7 @@ async fn pump<R: AsyncRead + Unpin>(
     mut pipe: FrameWriter<DuplexStream>,
     ((stop, service_stop), ending): ((&CancellationToken, &CancellationToken), &Ending),
 ) {
+    let mut input_ended = false;
     loop {
         let next = tokio::select! {
             biased;
@@ -136,13 +137,18 @@ async fn pump<R: AsyncRead + Unpin>(
             }
             return;
         };
-        // Caller data or an `end` on another channel than input cancels the call, as any
-        // other frame the caller may not send does.
+        // Caller data or an `end` on another channel than input, or after its `end` of input,
+        // cancels the call, as any other frame the caller may not send does.
         let caller_input = match frame.kind() {
-            FrameKind::Data => frame
-                .data()
-                .is_ok_and(|(channel, _)| channel == Channel::Input),
-            FrameKind::End => frame.end() == Ok(Channel::Input),
+            FrameKind::Data => {
+                !input_ended
+                    && frame
+                        .data()
+                        .is_ok_and(|(channel, _)| channel == Channel::Input)
+            }
+            FrameKind::End => {
+                frame.end() == Ok(Channel::Input) && !std::mem::replace(&mut input_ended, true)
+            }
             _ => true,
         };
         let (kind, payload) = if caller_input {
@@ -175,20 +181,29 @@ async fn pump<R: AsyncRead + Unpin>(
 
 /// Forwards the service's frames to the relay while they follow Services v1: one `accept`
 /// before any `data`, `end`, or `control`, and `data` and `end` only on the output and error
-/// channels. Ending the stream at the first other frame makes the relay report the call lost.
+/// channels, each until its `end`. Ending the stream at the first other frame makes the relay
+/// report the call lost.
 async fn checked<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,
     mut pipe: FrameWriter<DuplexStream>,
 ) {
-    let mut accepted = false;
-    let from_service = |channel| channel != Channel::Input;
+    let (mut accepted, mut ended) = (false, (false, false));
+    // Whether the service may still send on `channel`; an `end` when `ends`, which closes it.
+    let mut open = |channel, ends| {
+        let ended = match channel {
+            Channel::Output => &mut ended.0,
+            Channel::Error => &mut ended.1,
+            Channel::Input => return false,
+        };
+        !std::mem::replace(ended, *ended || ends)
+    };
     while let Ok(Some(frame)) = reader.next().await {
         let valid = match frame.kind() {
             FrameKind::Accept => !std::mem::replace(&mut accepted, true),
             FrameKind::Data => {
-                accepted && frame.data().is_ok_and(|(channel, _)| from_service(channel))
+                accepted && frame.data().is_ok_and(|(channel, _)| open(channel, false))
             }
-            FrameKind::End => accepted && frame.end().is_ok_and(from_service),
+            FrameKind::End => accepted && frame.end().is_ok_and(|channel| open(channel, true)),
             FrameKind::Control => accepted,
             // The relay itself checks every other frame.
             _ => true,

@@ -130,3 +130,46 @@ async fn a_service_frame_out_of_order_or_direction_loses_the_call() {
         "{relayed:?}"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn caller_input_after_its_end_cancels_the_call_instead_of_reaching_it() {
+    for after in [Sent::Data(Channel::Input), Sent::End(Channel::Input)] {
+        let (relayed, kinds) = relayed(
+            &[Sent::End(Channel::Input), after],
+            (&[Sent::Accept, Sent::Outcome], true),
+        )
+        .await;
+        assert_eq!(kinds, [FrameKind::End, FrameKind::Cancel], "{after:?}");
+        assert!(
+            matches!(relayed.terminal, Terminal::Outcome { .. }),
+            "{after:?}: {relayed:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_service_sending_on_a_channel_it_ended_loses_the_call() {
+    for (ended, after) in [
+        (Channel::Output, Sent::Data(Channel::Output)),
+        (Channel::Output, Sent::End(Channel::Output)),
+        (Channel::Error, Sent::Data(Channel::Error)),
+        (Channel::Error, Sent::End(Channel::Error)),
+    ] {
+        let sent = [Sent::Accept, Sent::End(ended), after, Sent::Outcome];
+        let (relayed, _) = relayed(&[], (&sent, false)).await;
+        assert_eq!(relayed.terminal, Terminal::Lost, "{sent:?}");
+    }
+    // The other channel stays open after one ended.
+    let sent = [
+        Sent::Accept,
+        Sent::End(Channel::Output),
+        Sent::Data(Channel::Error),
+        Sent::End(Channel::Error),
+        Sent::Outcome,
+    ];
+    let (relayed, _) = relayed(&[], (&sent, false)).await;
+    assert!(
+        matches!(relayed.terminal, Terminal::Outcome { failure: None, .. }),
+        "{relayed:?}"
+    );
+}
