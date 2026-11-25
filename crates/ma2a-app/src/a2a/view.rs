@@ -113,7 +113,13 @@ pub(super) async fn of(
     details: &Value,
     detail: Detail,
 ) -> Result<Value, Refusal> {
-    let history = history(served, details).await?;
+    // A waiting task's status shows its newest Agent message, found in its history, so only
+    // a view of another task that keeps no history reads none.
+    let history = if detail.history == Some(0) && text(details, "/task/state") != "waiting" {
+        Vec::new()
+    } else {
+        history(served, details).await?
+    };
     Ok(mapping::task(details, (&history, served.base), detail))
 }
 
@@ -155,7 +161,14 @@ pub(super) async fn wait(
 mod tests {
     use serde_json::json;
 
-    use super::add_page;
+    use ma2a_core::service::AgentId;
+    use ma2a_runtime::ipc::IpcPaths;
+
+    use super::{Served, add_page, of};
+    use crate::a2a::{
+        backend::{Backend, Route},
+        mapping::Detail,
+    };
 
     #[test]
     fn history_stops_at_the_last_event_the_details_counted() {
@@ -177,5 +190,33 @@ mod tests {
         let mut whole = Vec::new();
         assert_eq!(add_page(&mut whole, &page, ("t", 0, 3)), Some(3));
         assert_eq!(whole.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_view_without_history_reads_no_events() -> Result<(), Box<dyn std::error::Error>> {
+        // Given: a Runtime that is not running, so reading any event fails.
+        let state_dir = std::env::temp_dir().join("ma2a-a2a-view-no-runtime");
+        let backend = Backend {
+            paths: IpcPaths::new(&state_dir)?,
+            state_dir,
+        };
+        let route = Route::Local(AgentId::new("lead")?);
+        let served = Served {
+            backend: &backend,
+            route: &route,
+            base: "http://127.0.0.1",
+        };
+        let details =
+            |state: &str| json!({"task": {"task_id": "t", "state": state, "last_seq": 4}});
+        let none = Detail {
+            history: Some(0),
+            artifacts: true,
+        };
+
+        // Then: an ended task's view with no history needs no event.
+        assert!(of(served, &details("completed"), none).await.is_ok());
+        // A waiting task's status still shows the newest Agent message, read from its events.
+        assert!(of(served, &details("waiting"), none).await.is_err());
+        Ok(())
     }
 }

@@ -174,7 +174,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - `pageSize` is 1–100, default 50.
   - `pageToken` is the last task ID of the previous page. Tasks are listed in task ID order, so the next page starts after that ID even if that task no longer matches. A token that is not a task ID in its listed lowercase form answers `-32602`.
   - `totalSize` counts every match.
-- **Detail.** Artifacts are included only with `includeArtifacts: true`. History is included only when `historyLength` is greater than 0. Without either, no task's details are read.
+- **Detail.** Artifacts are included only with `includeArtifacts: true`. History is included only when `historyLength` is greater than 0. Without either, no task's details are read. With artifacts but no history, a local task's events are read only while it waits for input, because its status message is the newest Agent message among them.
 
 ## Errors
 
