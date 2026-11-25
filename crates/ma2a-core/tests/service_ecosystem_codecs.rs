@@ -197,6 +197,42 @@ fn pages_order_built_ins_first_then_hosted_names() -> TestResult {
 }
 
 #[test]
+fn a_page_continues_its_listing_from_the_cursor_sent() -> TestResult {
+    let manifest = ServiceManifest::new("", vec![version(1, &["run"])?], 1)?;
+    let service = |name: &str| -> TestResult<ServiceDescriptor> {
+        Ok(match ServiceKind::from_name(name) {
+            Some(kind) => builtin_descriptor(kind)?,
+            None => ServiceDescriptor::hosted(ServiceName::new(name)?, &manifest, true),
+        })
+    };
+    let page = |names: &[&str], next: Option<&str>| -> TestResult<DescribePage> {
+        let descriptors = names
+            .iter()
+            .map(|name| service(name))
+            .collect::<TestResult<_>>()?;
+        Ok(DescribePage::new(descriptors, next.map(str::to_owned)))
+    };
+    // Built-ins first, then hosted services by name, with the last one listed as the cursor.
+    assert!(page(&["files", "alpha"], Some("alpha"))?.continues(None));
+    assert!(page(&["beta"], None)?.continues(Some("alpha")));
+    assert!(page(&[], None)?.continues(Some("alpha")));
+    assert!(page(&["agent"], Some("agent"))?.continues(Some("files")));
+    // A service at or before the cursor, out of order, or listed twice.
+    assert!(!page(&["files"], None)?.continues(Some("transfer")));
+    assert!(!page(&["alpha"], None)?.continues(Some("alpha")));
+    assert!(!page(&["beta", "alpha"], None)?.continues(None));
+    assert!(!page(&["alpha", "files"], None)?.continues(None));
+    assert!(!page(&["alpha", "alpha"], None)?.continues(None));
+    // A cursor that is not the last service listed skips services or repeats the request.
+    assert!(!page(&["alpha"], Some("zulu"))?.continues(None));
+    assert!(!page(&["alpha", "beta"], Some("alpha"))?.continues(None));
+    assert!(!page(&[], Some("beta"))?.continues(Some("alpha")));
+    assert!(!page(&[], Some("alpha"))?.continues(Some("alpha")));
+    assert!(!page(&["alpha"], Some("Not A Name"))?.continues(None));
+    Ok(())
+}
+
+#[test]
 fn every_built_in_family_has_a_valid_catalog_entry() -> TestResult {
     for kind in ServiceKind::ALL {
         let descriptor = builtin_descriptor(kind)?;

@@ -30,19 +30,25 @@ pub struct Called {
     pub result: Vec<u8>,
 }
 
-/// Reads one discovery page.
+/// Reads one discovery page, answering a `describe` after `after`.
 ///
 /// # Errors
 /// Returns the refusal, such as `unauthorized` for an Endpoint sharing no Space, or the
-/// stream failure.
+/// stream failure: `invalid_input` for a page that does not continue the listing from `after`
+/// (see [`DescribePage::continues`]).
 pub async fn describe<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,
+    after: Option<&str>,
 ) -> Result<DescribePage, ClientError> {
     let frame = next(reader).await?;
-    match frame.kind() {
-        FrameKind::Outcome => decoded(DescribePage::decode_outcome(frame.payload())),
-        _ => Err(unexpected(&frame)),
+    let page = match frame.kind() {
+        FrameKind::Outcome => decoded(DescribePage::decode_outcome(frame.payload()))?,
+        _ => return Err(unexpected(&frame)),
+    };
+    if !page.continues(after) {
+        return Err(ClientError::Stream(ServiceError::InvalidInput));
     }
+    Ok(page)
 }
 
 /// Relays one call until its outcome: local input to channel 0 once the service accepted,

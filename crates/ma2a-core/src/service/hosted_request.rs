@@ -142,6 +142,22 @@ impl DescribePage {
         Self { descriptors, next }
     }
 
+    /// Whether this page answers a `describe` after `after`: descriptors in discovery order
+    /// strictly after the cursor, and a next cursor, when there is one, naming the last of
+    /// them. A page answering otherwise would skip a service or repeat the request.
+    #[must_use]
+    pub fn continues(&self, after: Option<&str>) -> bool {
+        let mut floor = after;
+        for descriptor in &self.descriptors {
+            if !sorts_after(descriptor.origin(), floor) {
+                return false;
+            }
+            floor = Some(descriptor.origin().name());
+        }
+        let last = self.descriptors.last().map(|last| last.origin().name());
+        self.next.is_none() || self.next.as_deref() == last
+    }
+
     /// Encodes one `describe` outcome envelope.
     ///
     /// # Errors

@@ -119,6 +119,16 @@ async fn control<W: AsyncWrite + Unpin>(
 /// Longest wait for a target to answer one `describe`, dial included.
 const DESCRIBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// `page` when it continues a listing from `after`: a page repeating its cursor would keep a
+/// caller paging forever, and one skipping past its last service would hide services.
+fn continuing(page: DescribePage, after: Option<&str>) -> Result<DescribePage, Error> {
+    if page.continues(after) {
+        Ok(page)
+    } else {
+        Err(Error::Protocol("the target sent a page out of order"))
+    }
+}
+
 /// Discovers and calls services on other Endpoints through this user's Runtime.
 #[derive(Clone, Debug)]
 pub struct Caller {
@@ -136,8 +146,9 @@ impl Caller {
     /// Returns one page of what `target` serves this Endpoint, after `after`.
     ///
     /// # Errors
-    /// Returns [`Error::Refused`] when the local Runtime refuses, and [`Error::Service`] when
-    /// the target refuses, such as `unauthorized` for an Endpoint sharing no Space.
+    /// Returns [`Error::Refused`] when the local Runtime refuses, [`Error::Service`] when
+    /// the target refuses, such as `unauthorized` for an Endpoint sharing no Space, and
+    /// [`Error::Protocol`] for a page that does not continue the listing from `after`.
     pub async fn describe(
         &self,
         target: EndpointId,
@@ -151,7 +162,8 @@ impl Caller {
                 FrameKind::Reject => Err(Error::Service(frame.rejection()?)),
                 FrameKind::Outcome => DescribePage::decode_outcome(frame.payload())
                     .map_err(|_| Error::Protocol("the target sent a malformed page"))?
-                    .map_err(Error::Service),
+                    .map_err(Error::Service)
+                    .and_then(|page| continuing(page, after)),
                 _ => Err(Error::Protocol(
                     "describe is answered by one outcome or reject",
                 )),

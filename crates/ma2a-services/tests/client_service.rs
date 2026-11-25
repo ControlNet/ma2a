@@ -211,21 +211,27 @@ async fn refusals_and_lost_streams_are_classified() -> TestResult {
 #[tokio::test]
 async fn discovery_reads_one_page_or_its_refusal() -> TestResult {
     let ((mut reader, _writer), (_service_reader, mut service_writer)) = pipe();
-    let page = DescribePage::new(Vec::new(), Some("next".to_owned()));
-    service_writer
-        .frame(
-            FrameKind::Outcome,
-            &DescribePage::encode_outcome(Ok(&page))?,
-        )
-        .await?;
+    let files = ma2a_core::service::builtin_descriptor(ma2a_core::ServiceKind::Files)?;
+    let page = DescribePage::new(vec![files], Some("files".to_owned()));
+    let outcome = DescribePage::encode_outcome(Ok(&page))?;
+    service_writer.frame(FrameKind::Outcome, &outcome).await?;
     service_writer.flush().await?;
-    assert_eq!(within(service::describe(&mut reader)).await??, page);
+    assert_eq!(within(service::describe(&mut reader, None)).await??, page);
+
+    // The same page again for its own cursor would keep the caller paging forever.
+    let ((mut reader, _writer), (_service_reader, mut service_writer)) = pipe();
+    service_writer.frame(FrameKind::Outcome, &outcome).await?;
+    service_writer.flush().await?;
+    assert!(matches!(
+        within(service::describe(&mut reader, Some("files"))).await?,
+        Err(ClientError::Stream(ServiceError::InvalidInput))
+    ));
 
     let ((mut reader, _writer), (_service_reader, mut service_writer)) = pipe();
     service_writer.reject(ServiceError::Unauthorized).await?;
     service_writer.flush().await?;
     assert!(matches!(
-        within(service::describe(&mut reader)).await?,
+        within(service::describe(&mut reader, None)).await?,
         Err(ClientError::Rejected(ServiceError::Unauthorized))
     ));
     Ok(())

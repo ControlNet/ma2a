@@ -2,12 +2,9 @@
 
 use std::{io::Write as _, time::Duration};
 
-use ma2a_core::{
-    ServiceKind,
-    service::{
-        DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceError,
-        ServiceName, ServiceOrigin, ServiceRequest, ServiceVersion, sorts_after,
-    },
+use ma2a_core::service::{
+    DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceError,
+    ServiceName, ServiceOrigin, ServiceRequest, ServiceVersion,
 };
 use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client::{ClientError, process::ProcessIo, service};
@@ -45,9 +42,9 @@ async fn page(
     after: Option<String>,
 ) -> Result<DescribePage, AppError> {
     bounded(PAGE_DEADLINE, async {
-        let body = OpenBody::Service(ServiceRequest::Describe(after));
+        let body = OpenBody::Service(ServiceRequest::Describe(after.clone()));
         let (mut reader, writer) = open(paths, endpoint, body).await?;
-        let page = service::describe(&mut reader).await;
+        let page = service::describe(&mut reader, after.as_deref()).await;
         drop(writer);
         Ok(page?)
     })
@@ -74,22 +71,6 @@ pub(crate) async fn discover(
 /// services a Runtime registers fit in 5, so a target paging further is not believed.
 const MAX_PAGES: usize = 8;
 
-/// Whether a page lists only services after the cursor sent, and names a next cursor after it
-/// too; a target answering otherwise would keep the search from moving on.
-fn moves_on(after: Option<&str>, page: &DescribePage) -> bool {
-    let past = |origin: &ServiceOrigin| sorts_after(origin, after);
-    let named = |name: &str| {
-        ServiceKind::from_name(name)
-            .map(ServiceOrigin::Builtin)
-            .or_else(|| ServiceName::new(name).ok().map(ServiceOrigin::Hosted))
-    };
-    page.descriptors.iter().all(|found| past(found.origin()))
-        && page
-            .next
-            .as_deref()
-            .is_none_or(|next| named(next).is_some_and(|origin| past(&origin)))
-}
-
 /// The highest version of `service` that lists `operation`, from discovery.
 async fn newest(
     target: (&IpcPaths, &str),
@@ -99,9 +80,6 @@ async fn newest(
     let mut after = None;
     for _ in 0..MAX_PAGES {
         let page = page(target, after.clone()).await?;
-        if !moves_on(after.as_deref(), &page) {
-            return Err(ClientError::Stream(ServiceError::InvalidInput).into());
-        }
         if let Some(descriptor) = page
             .descriptors
             .iter()
@@ -122,14 +100,14 @@ async fn newest(
                 });
         }
         if page.next.is_none() {
-            break;
+            return Err(AppError::NotFound(format!(
+                "unknown_service: the target serves this Endpoint no service {}",
+                service.as_str()
+            )));
         }
         after = page.next;
     }
-    Err(AppError::NotFound(format!(
-        "unknown_service: the target serves this Endpoint no service {}",
-        service.as_str()
-    )))
+    Err(ClientError::Stream(ServiceError::InvalidInput).into())
 }
 
 /// Calls one operation; output goes to stdout followed by the result, errors to stderr, and
@@ -170,35 +148,84 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
 
 #[cfg(test)]
 mod tests {
-    use ma2a_core::{
-        ServiceKind,
-        service::{DescribePage, builtin_descriptor},
-    };
+    use super::{AppError, PAGE_DEADLINE, bounded};
 
-    use super::{AppError, PAGE_DEADLINE, bounded, moves_on};
-
-    #[test]
-    fn a_discovery_page_must_move_past_its_cursor() -> Result<(), Box<dyn std::error::Error>> {
-        let files = || builtin_descriptor(ServiceKind::Files);
-        let page = |descriptors, next: Option<&str>| {
-            DescribePage::new(descriptors, next.map(str::to_owned))
+    #[cfg(unix)]
+    mod through_the_daemon {
+        use ma2a_core::service::{
+            DescribePage, FrameKind, Interaction, OperationName, ServiceDescriptor,
+            ServiceManifest, ServiceName, ServiceVersion,
         };
-        // Built-ins come in catalog order, then hosted services by name.
-        assert!(moves_on(None, &page(vec![files()?], Some("files"))));
-        assert!(moves_on(Some("echo"), &page(vec![files()?], Some("alpha"))));
-        assert!(moves_on(Some("alpha"), &page(Vec::new(), Some("beta"))));
-        assert!(moves_on(Some("alpha"), &page(Vec::new(), None)));
-        // A cursor repeated or going back, a listed service before the cursor, and a cursor
-        // that names nothing would keep the search from moving on.
-        assert!(!moves_on(Some("alpha"), &page(Vec::new(), Some("alpha"))));
-        assert!(!moves_on(Some("beta"), &page(Vec::new(), Some("alpha"))));
-        assert!(!moves_on(Some("beta"), &page(Vec::new(), Some("files"))));
-        assert!(!moves_on(Some("transfer"), &page(vec![files()?], None)));
-        assert!(!moves_on(
-            Some("alpha"),
-            &page(Vec::new(), Some("Not A Name"))
-        ));
-        Ok(())
+
+        use crate::{
+            AppError,
+            test_daemon::{Daemon, Script, TestResult},
+        };
+
+        /// A hosted service `name` whose one version lists `run`.
+        fn hosted(name: &str) -> TestResult<ServiceDescriptor> {
+            let run = (OperationName::new("run")?, Interaction::Unary);
+            let manifest = ServiceManifest::new("", vec![ServiceVersion::new(1, vec![run])?], 1)?;
+            Ok(ServiceDescriptor::hosted(
+                ServiceName::new(name)?,
+                &manifest,
+                true,
+            ))
+        }
+
+        /// A target's discovery page listing `services`, built-in or hosted, and naming `next`.
+        fn page(services: &[&str], next: Option<&str>) -> TestResult<Script> {
+            let descriptors = services
+                .iter()
+                .map(|name| match ma2a_core::ServiceKind::from_name(name) {
+                    Some(kind) => Ok(ma2a_core::service::builtin_descriptor(kind)?),
+                    None => hosted(name),
+                })
+                .collect::<TestResult<_>>()?;
+            let page = DescribePage::new(descriptors, next.map(str::to_owned));
+            Ok(vec![(
+                FrameKind::Outcome,
+                DescribePage::encode_outcome(Ok(&page))?,
+            )])
+        }
+
+        /// What the automatic lookup of `beta` makes of a target answering `pages` in turn.
+        async fn newest_beta(pages: Vec<Script>) -> TestResult<Result<u16, AppError>> {
+            let daemon = Daemon::paging("describe", pages)?;
+            let (beta, run) = (ServiceName::new("beta")?, OperationName::new("run")?);
+            let target = (&daemon.paths, daemon.endpoint.as_str());
+            Ok(super::super::newest(target, (&beta, &run)).await)
+        }
+
+        #[tokio::test]
+        async fn the_lookup_follows_only_pages_that_continue_the_listing() -> TestResult {
+            let broken = |found: Result<u16, AppError>| matches!(found, Err(AppError::Protocol(_)));
+            // Built-ins first, then hosted services by name, across the page boundary.
+            let pages = vec![
+                page(&["files", "alpha"], Some("alpha"))?,
+                page(&["beta"], None)?,
+            ];
+            assert_eq!(newest_beta(pages).await?.ok(), Some(1));
+            // A cursor past the page's last service would skip `beta`.
+            let pages = vec![page(&["alpha"], Some("zulu"))?, page(&[], None)?];
+            assert!(broken(newest_beta(pages).await?));
+            // Out of order, or a cursor naming no listed service.
+            assert!(broken(
+                newest_beta(vec![page(&["gamma", "beta"], None)?]).await?
+            ));
+            let pages = vec![page(&[], Some("alpha"))?, page(&["beta"], None)?];
+            assert!(broken(newest_beta(pages).await?));
+            // A target still paging after the most pages read is not believed.
+            let names: Vec<String> = (0..super::super::MAX_PAGES)
+                .map(|page| format!("a{page:03}"))
+                .collect();
+            let pages = names
+                .iter()
+                .map(|name| page(&[name.as_str()], Some(name.as_str())))
+                .collect::<TestResult<Vec<_>>>()?;
+            assert!(broken(newest_beta(pages).await?));
+            Ok(())
+        }
     }
 
     #[tokio::test(start_paused = true)]

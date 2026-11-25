@@ -95,7 +95,11 @@ For this caller only, discovery lists:
    only while the service is `ready`.
 
 Because built-in names are reserved, a name alone says which of the two it is, and a page's
-`after` cursor works across both.
+`after` cursor works across both. `next` is the name of the page's last descriptor when more
+exist. A caller treats a page as malformed (`invalid_input`) when its descriptors are not in this
+order strictly after the `after` it sent, or when `next` is not its last descriptor, since such a
+page would skip services or repeat the request. The CLI's own lookup of a service's newest version
+reads at most 8 pages and treats a target still paging after them the same way.
 
 A service is left out only when the caller is not authorized for it. If the target cannot decide,
 for example because its store is unavailable, the whole page fails with that status, so the caller
