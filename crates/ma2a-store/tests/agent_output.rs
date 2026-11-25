@@ -673,3 +673,23 @@ fn a_queued_task_at_its_durable_event_bound_fails_instead_of_running() -> TestRe
     assert_eq!(deliveries, [AgentDelivery::Task(next.summary.id)]);
     Ok(())
 }
+
+#[test]
+fn progress_its_event_could_not_be_read_back_is_ignored() -> TestResult {
+    // Given
+    let (_state, mut repository, generation, task) = running("agent-unreadable-progress")?;
+
+    // When: the Agent reports progress with a NUL, or over 1 KiB in bytes but not in
+    // characters, which the event log could store but never decode again.
+    for (at, text) in [(10, "step\0one".to_owned()), (11, "é".repeat(600))] {
+        let effect = AgentOutputEffect::Progress(task, text);
+        let applied = apply(&mut repository, (generation, at), effect)?;
+
+        // Then: the line changes nothing, and the task's events stay readable.
+        assert_eq!(applied, AgentOutputApplied::Ignored);
+    }
+    assert!(repository.agent_task_events(task, (0, 64)).is_ok());
+    let record = repository.agent_task(task)?.ok_or("missing")?;
+    assert_eq!(record.progress, None);
+    Ok(())
+}

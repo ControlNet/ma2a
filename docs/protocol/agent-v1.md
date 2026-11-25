@@ -515,7 +515,8 @@ like CBOR messages.
 - In `state`, an Agent `message` is recorded as a `message` event, and with `completed` it also
   becomes the inline `result`. `failed` records `error` and reason `agent_failed`. A `message`
   that is invalid or not in role `agent` invalidates the whole line.
-- `error` and progress `text` are cut to 1,024 bytes at a character boundary.
+- `error` and progress `text` are cut to 1,024 bytes at a character boundary. Progress `text`
+  with a NUL is ignored.
 - `call` is 1–64 bytes of `[A-Za-z0-9._-]`, unique per task. A repeated `call` is ignored and
   never runs twice.
 - A `tool` line whose `name` is not 1–64 bytes, or whose `args` encode to more than 16,384 bytes,

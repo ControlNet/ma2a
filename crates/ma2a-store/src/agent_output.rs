@@ -233,6 +233,11 @@ fn apply_effect(
             changed(task)
         }
         AgentOutputEffect::Progress(task, text) => {
+            // Text its event could not be decoded from again would break every later read
+            // of the task's events.
+            let Ok(body) = AgentEventBody::progress(&text) else {
+                return Ok(AgentOutputApplied::Ignored);
+            };
             if held(transaction, task, output)?.is_none() {
                 return Ok(AgentOutputApplied::Ignored);
             }
@@ -240,7 +245,7 @@ fn apply_effect(
                 "UPDATE agent_tasks SET progress = ?2 WHERE task_id = ?1",
                 params![task.as_bytes().as_slice(), text],
             )?;
-            append_event(transaction, task, (AgentEventBody::Progress(text), at_ms))?;
+            append_event(transaction, task, (body, at_ms))?;
             changed(task)
         }
         AgentOutputEffect::ToolCall {
