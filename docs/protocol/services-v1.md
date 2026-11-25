@@ -310,14 +310,16 @@ A caller keeps its write side open until it receives the terminal frame. Closing
 cancels the operation, and a stream that ends without a terminal frame is reported as
 `outcome_unknown`. It sends `end` on channel 0 only at the end of its local input. When reading
 that input fails, it sends `cancel` instead and reports the failure, whatever the outcome, so a
-remote program never takes part of its input as all of it.
+remote program never takes part of its input as all of it. Exec, Shell, and hosted calls do the
+same when writing the target's output locally fails, so output cut short is never reported as a
+success. A stream that broke the family contract, as below, is still reported as broken.
 
 A caller also refuses, as `invalid_input`, an answer that breaks the family contract, even after
 its own local output failed: an `accept` with a header for Files, Exec, Shell, and Proxy, which
 send an empty one; a `reject` after `accept`, which would claim that an admitted operation had no
 effect; a Files `read` answered with an `outcome` alone, since a read is always
-accepted and never answered from replay; `data` or `end` on a channel the target does not send on; and for Proxy,
-the destination's bytes after its `end`, or a second `end`. An Exec, Shell, or Proxy outcome must
+accepted and never answered from replay; `data` or `end` on a channel the target does not send on;
+and `data` on a channel the target already ended, or a second `end` of it. An Exec, Shell, or Proxy outcome must
 count exactly the bytes received from the target on each channel, and Proxy's `bytes_to_target`
 can be no more than the caller sent; any other count is `integrity_mismatch`.
 

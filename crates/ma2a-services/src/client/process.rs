@@ -6,11 +6,14 @@ use ma2a_core::service::{
     Channel, FrameKind, MAX_DATA_CHUNK_LEN, ProcessResult, ServiceError, TerminalSize,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite},
     sync::{Notify, mpsc},
 };
 
-use super::{ClientError, First, decoded, empty_accept, first_or_cancel, next, unexpected};
+use super::{
+    ClientError, First, decoded, empty_accept, first_or_cancel, next,
+    sinks::{Sinks, settled},
+};
 use crate::{FrameReader, FrameWriter};
 
 /// Local ends of one remote process.
@@ -117,32 +120,24 @@ where
         error,
     } = local;
     let lost = Notify::new();
-    let outbound = outbound(reader, (output, error), &lost);
+    let errors = error.is_some();
+    let outbound = outbound(reader, Sinks::new((output, error), errors, &lost));
     // Once cancelled, nothing more is sent; the outcome still follows.
-    let result = if cancelled {
-        outbound.await
+    let (answer, unread) = if cancelled {
+        (outbound.await, None)
     } else {
         let inbound = inbound(writer, (input, ProcessControl { resizes, cancel }), &lost);
         tokio::pin!(outbound, inbound);
         tokio::select! {
             biased;
-            result = &mut outbound => result,
-            failed = &mut inbound => finished(outbound.await, failed),
+            answer = &mut outbound => (answer, None),
+            unread = &mut inbound => (outbound.await, unread),
         }
-    }?;
+    };
     Ok(Streamed {
-        result,
+        result: settled(answer, unread)?,
         replayed: false,
     })
-}
-
-/// The outcome of a remote process whose input side ended with `failed`: a failed local read
-/// is the answer, since the target only saw a `cancel`.
-pub(super) fn finished<T>(
-    outcome: Result<T, ClientError>,
-    failed: Option<std::io::Error>,
-) -> Result<T, ClientError> {
-    failed.map_or(outcome, |failure| Err(ClientError::Local(failure)))
 }
 
 /// Caller → target: input, resizes, and at most one `cancel`, until nothing is left to send;
@@ -210,78 +205,35 @@ where
 }
 
 /// Target → caller until the outcome; lost local output asks the inbound side to cancel.
+/// Returns the answer and the first local write that failed.
 ///
-/// The target sends only on the output channel, and on the error channel when there is one,
-/// and its outcome counts exactly the bytes it sent on each: an answer with other counts is
-/// not the run that streamed.
+/// The outcome counts exactly the bytes the target sent on each channel: an answer with other
+/// counts is not the run that streamed.
 async fn outbound<R, O, E>(
     reader: &mut FrameReader<R>,
-    (mut output, mut error): (O, Option<E>),
-    lost: &Notify,
-) -> Result<ProcessResult, ClientError>
+    mut sinks: Sinks<'_, O, E>,
+) -> (Result<ProcessResult, ClientError>, Option<std::io::Error>)
 where
     R: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
     E: AsyncWrite + Unpin,
 {
-    let invalid = || ClientError::Stream(ServiceError::InvalidInput);
-    let sends_on = |channel, error: bool| {
-        matches!(
-            (channel, error),
-            (Channel::Output, _) | (Channel::Error, true)
-        )
-    };
-    let mut delivering = true;
-    // Bytes received on the output and the error channel.
-    let mut received = (0_u64, 0_u64);
-    loop {
-        let frame = next(reader).await?;
-        match frame.kind() {
-            FrameKind::Outcome => {
-                let result = decoded(ProcessResult::decode_outcome(frame.payload()))?;
-                if (result.output_bytes, result.error_bytes) != received {
-                    return Err(ClientError::Stream(ServiceError::IntegrityMismatch));
-                }
-                return Ok(result);
+    let answer = async {
+        loop {
+            let frame = next(reader).await?;
+            if frame.kind() != FrameKind::Outcome {
+                sinks.take(&frame).await?;
+                continue;
             }
-            FrameKind::Data => {
-                let (channel, bytes) = frame.data().map_err(ClientError::Stream)?;
-                if !sends_on(channel, error.is_some()) {
-                    return Err(invalid());
-                }
-                let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                let count = match channel {
-                    Channel::Output => &mut received.0,
-                    Channel::Error | Channel::Input => &mut received.1,
-                };
-                *count = count.saturating_add(length);
-                let written = match (channel, error.as_mut()) {
-                    _ if !delivering => Ok(()),
-                    (Channel::Error, Some(error)) => write_flushed(error, bytes).await,
-                    _ => write_flushed(&mut output, bytes).await,
-                };
-                if written.is_err() {
-                    // Nothing can observe the process any more, so it is cancelled.
-                    delivering = false;
-                    lost.notify_one();
-                }
+            let result = decoded(ProcessResult::decode_outcome(frame.payload()))?;
+            if (result.output_bytes, result.error_bytes) != sinks.received {
+                return Err(ClientError::Stream(ServiceError::IntegrityMismatch));
             }
-            FrameKind::End => {
-                if !sends_on(frame.end().map_err(ClientError::Stream)?, error.is_some()) {
-                    return Err(invalid());
-                }
-            }
-            _ => return Err(unexpected(&frame)),
+            return Ok(result);
         }
     }
-}
-
-pub(super) async fn write_flushed<T: AsyncWrite + Unpin>(
-    sink: &mut T,
-    bytes: &[u8],
-) -> std::io::Result<()> {
-    sink.write_all(bytes).await?;
-    sink.flush().await
+    .await;
+    (answer, sinks.unwritten)
 }
 
 /// Reads local input; `None` is EOF.

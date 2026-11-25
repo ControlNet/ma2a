@@ -26,7 +26,7 @@ use ma2a_services::{
         proxy, service, transfer,
     },
 };
-use support::TestResult;
+use support::{TestResult, pipe};
 use tokio::io::AsyncWrite;
 
 /// One frame a scripted target sends.
@@ -40,6 +40,12 @@ enum Sent {
 /// The bytes a target sending `sent` writes.
 async fn replies(sent: &[Sent]) -> TestResult<Vec<u8>> {
     let mut writer = FrameWriter::new(Vec::new());
+    send(&mut writer, sent).await?;
+    Ok(writer.into_inner())
+}
+
+/// Writes `sent` and flushes it.
+async fn send<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>, sent: &[Sent]) -> TestResult {
     for frame in sent {
         match frame {
             Sent::Frame(kind, payload) => writer.frame(*kind, payload).await?,
@@ -48,7 +54,7 @@ async fn replies(sent: &[Sent]) -> TestResult<Vec<u8>> {
         }
     }
     writer.flush().await?;
-    Ok(writer.into_inner())
+    Ok(())
 }
 
 fn accept(payload: &[u8]) -> Sent {
@@ -370,5 +376,148 @@ async fn a_late_precondition_reject_of_a_resumed_download_keeps_it_resumable() -
 
     // Then: that is a broken stream, not the refusal that would restart the download.
     assert!(malformed(&downloaded), "{downloaded:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn output_that_could_not_be_written_fails_a_successful_run() -> TestResult {
+    // Given: a local sink that refuses the output of a run the target reports as succeeded.
+    let sent = [
+        accept(&EMPTY_ACCEPT),
+        Sent::Data(Channel::Output, b"abc"),
+        exited(3, 0)?,
+    ];
+
+    // When
+    let ran = exec(&sent, Broken).await?;
+
+    // Then: the run is not reported as complete, since its output is not.
+    assert!(matches!(ran, Err(ClientError::Local(_))), "exec: {ran:?}");
+    let sent = [
+        accept(&encode_call_accept(b"h")?),
+        Sent::Data(Channel::Output, b"abc"),
+        Sent::Frame(FrameKind::Outcome, encode_call_outcome(Ok(b"r"))?),
+    ];
+    let ran = called(&sent, Broken).await?;
+    assert!(
+        matches!(ran, Err(ClientError::Local(_))),
+        "service call: {ran:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_target_sends_nothing_on_a_channel_it_ended() -> TestResult {
+    let call_accept = accept(&encode_call_accept(b"h")?);
+    let call_outcome = Sent::Frame(FrameKind::Outcome, encode_call_outcome(Ok(b"r"))?);
+    let ended = Sent::End(Channel::Output);
+    for (case, after) in [
+        ("data after end", Sent::Data(Channel::Output, b"x")),
+        ("end twice", ended.clone()),
+    ] {
+        let sent = [
+            accept(&EMPTY_ACCEPT),
+            ended.clone(),
+            after.clone(),
+            exited(1, 0)?,
+        ];
+        let ran = exec(&sent, Vec::new()).await?;
+        assert!(malformed(&ran), "exec, {case}: {ran:?}");
+        let sent = [
+            call_accept.clone(),
+            ended.clone(),
+            after,
+            call_outcome.clone(),
+        ];
+        let ran = called(&sent, Vec::new()).await?;
+        assert!(malformed(&ran), "service call, {case}: {ran:?}");
+    }
+    Ok(())
+}
+
+/// Local input that delivers one chunk and then fails.
+struct FailsAfter(Option<&'static [u8]>);
+
+impl tokio::io::AsyncRead for FailsAfter {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(self.0.take().map_or_else(
+            || Err(std::io::ErrorKind::BrokenPipe.into()),
+            |chunk| {
+                buffer.put_slice(chunk);
+                Ok(())
+            },
+        ))
+    }
+}
+
+/// Runs an Exec, or a service call when `call`, whose local input fails after `ab`, against a
+/// target that takes that input and the `cancel` after it, then sends `after` and ends the
+/// stream.
+async fn failing_input(call: bool, after: &[Sent]) -> TestResult<Result<(), ClientError>> {
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let target = async move {
+        let accepted = if call {
+            encode_call_accept(b"")?
+        } else {
+            EMPTY_ACCEPT.to_vec()
+        };
+        send(&mut target_writer, &[accept(&accepted)]).await?;
+        assert_eq!(
+            target_reader.expect().await?.data()?,
+            (Channel::Input, &b"ab"[..])
+        );
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(&mut target_writer, after).await?;
+        target_writer.shutdown().await?;
+        TestResult::Ok(())
+    };
+    let local = ProcessIo {
+        input: Some(FailsAfter(Some(b"ab"))),
+        output: Vec::new(),
+        error: Some(Vec::new()),
+    };
+    let (answer, scripted) = if call {
+        let calling = service::call((&mut reader, &mut writer), local, std::future::pending());
+        let (called, scripted) = within(async { tokio::join!(calling, target) }).await?;
+        (called.map(drop), scripted)
+    } else {
+        let control = ProcessControl {
+            resizes: None,
+            cancel: std::future::pending(),
+        };
+        let running = process::run((&mut reader, &mut writer), local, control);
+        let (ran, scripted) = within(async { tokio::join!(running, target) }).await?;
+        (ran.map(drop), scripted)
+    };
+    scripted?;
+    Ok(answer)
+}
+
+#[tokio::test]
+async fn a_broken_stream_is_reported_over_a_failed_local_read() -> TestResult {
+    for call in [false, true] {
+        // A frame on the caller's own channel.
+        let answer = failing_input(call, &[Sent::Data(Channel::Input, b"x")]).await?;
+        assert!(malformed(&answer), "call {call}: {answer:?}");
+        // No terminal at all.
+        let answer = failing_input(call, &[]).await?;
+        assert!(
+            matches!(
+                answer,
+                Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+            ),
+            "call {call}: {answer:?}"
+        );
+    }
+    // An outcome counting output that never came.
+    let answer = failing_input(false, &[exited(5, 0)?]).await?;
+    assert!(miscounted(&answer), "{answer:?}");
+    // Any outcome the target did report gives way to the failed read.
+    let answer = failing_input(false, &[exited(0, 0)?]).await?;
+    assert!(matches!(answer, Err(ClientError::Local(_))), "{answer:?}");
     Ok(())
 }

@@ -6,7 +6,7 @@
 use std::future::Future;
 
 use ma2a_core::service::{
-    Channel, DescribePage, FrameKind, ServiceError, decode_call_accept, decode_call_outcome,
+    DescribePage, FrameKind, ServiceError, decode_call_accept, decode_call_outcome,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -15,8 +15,10 @@ use tokio::{
 
 use super::{
     ClientError, First, decoded, first_or_cancel, next,
-    process::{ProcessControl, ProcessIo, finished, inbound, write_flushed},
-    refused, unexpected,
+    process::{ProcessControl, ProcessIo, inbound},
+    refused,
+    sinks::{Sinks, settled},
+    unexpected,
 };
 use crate::{FrameReader, FrameWriter};
 
@@ -92,10 +94,10 @@ where
         error,
     } = local;
     let lost = Notify::new();
-    let outbound = outbound(reader, (output, error), &lost);
+    let outbound = outbound(reader, Sinks::new((output, error), true, &lost));
     // Once cancelled, nothing more is sent; the outcome still follows.
-    let result = if cancelled {
-        outbound.await
+    let (answer, unread) = if cancelled {
+        (outbound.await, None)
     } else {
         let control = ProcessControl {
             resizes: None,
@@ -105,56 +107,39 @@ where
         tokio::pin!(outbound, inbound);
         tokio::select! {
             biased;
-            result = &mut outbound => result,
-            failed = &mut inbound => finished(outbound.await, failed),
+            answer = &mut outbound => (answer, None),
+            unread = &mut inbound => (outbound.await, unread),
         }
-    }?;
+    };
     Ok(Called {
         header: Some(header),
-        result,
+        result: settled(answer, unread)?,
     })
 }
 
 /// Service → caller until the outcome; lost local output asks the inbound side to cancel.
+/// Returns the answer and the first local write that failed.
 async fn outbound<R, O, E>(
     reader: &mut FrameReader<R>,
-    (mut output, mut error): (O, Option<E>),
-    lost: &Notify,
-) -> Result<Vec<u8>, ClientError>
+    mut sinks: Sinks<'_, O, E>,
+) -> (Result<Vec<u8>, ClientError>, Option<std::io::Error>)
 where
     R: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
     E: AsyncWrite + Unpin,
 {
-    let mut delivering = true;
-    loop {
-        let frame = next(reader).await?;
-        match frame.kind() {
-            FrameKind::Outcome => return decoded(decode_call_outcome(frame.payload())),
-            FrameKind::Data => {
-                let (channel, bytes) = frame.data().map_err(ClientError::Stream)?;
-                let written = match (channel, error.as_mut()) {
-                    (Channel::Input, _) => {
-                        return Err(ClientError::Stream(ServiceError::InvalidInput));
-                    }
-                    _ if !delivering => Ok(()),
-                    (Channel::Output, _) => write_flushed(&mut output, bytes).await,
-                    (Channel::Error, Some(error)) => write_flushed(error, bytes).await,
-                    (Channel::Error, None) => Ok(()),
-                };
-                if written.is_err() {
-                    // Nothing can observe the call any more, so it is cancelled.
-                    delivering = false;
-                    lost.notify_one();
-                }
+    let answer = async {
+        loop {
+            let frame = next(reader).await?;
+            match frame.kind() {
+                FrameKind::Outcome => return decoded(decode_call_outcome(frame.payload())),
+                // Control messages are the service's own; this generic caller has no use for
+                // them.
+                FrameKind::Control => {}
+                _ => sinks.take(&frame).await?,
             }
-            // The service ends only its own channels.
-            FrameKind::End if frame.end().map_err(ClientError::Stream)? == Channel::Input => {
-                return Err(ClientError::Stream(ServiceError::InvalidInput));
-            }
-            // Control messages are the service's own; this generic caller has no use for them.
-            FrameKind::End | FrameKind::Control => {}
-            _ => return Err(unexpected(&frame)),
         }
     }
+    .await;
+    (answer, sinks.unwritten)
 }

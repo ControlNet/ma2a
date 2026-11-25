@@ -19,6 +19,7 @@ pub mod process;
 pub mod proxy;
 pub mod resume;
 pub mod service;
+mod sinks;
 pub mod terminal;
 pub mod transfer;
 
