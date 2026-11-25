@@ -51,6 +51,8 @@ impl Actor {
     ) -> Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError> {
         let runtime = RuntimeRelayConfiguration::try_from(configuration.clone())
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        // Every URL parsed, so it is saved and reported as parsed, as startup would save it.
+        let configuration = crate::store::with_parsed_relay_urls(configuration);
         // Reject bad TLS input before committing desired state or touching the old listener.
         if let Some(provider) = runtime.private_provider()
             && let ma2a_net::PrivateRelayTransport::NativeTls(tls) = provider.transport()

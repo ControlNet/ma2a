@@ -13,7 +13,7 @@ Endpoint secret used by the Runtime.
 Every relay URL, whether configured as a private relay, as a public fallback, or received in another
 provider's advertisement, uses HTTPS, names no user or password, and is at most 512 bytes as parsed.
 Parsing ends a bare origin with `/`, so `https://relay.example` counts one byte more than it is
-written. Any relay an Endpoint uses can become its home relay, and its signed address record
+written. A configured URL is saved and reported in that parsed form. Any relay an Endpoint uses can become its home relay, and its signed address record
 carries that URL with the same bound. A private relay URL is also signed into the advertisement
 every member of a served Space receives, so credentials in it would reach all of them. The local
 API refuses such a URL as `invalid_input` before the request runs. If the stored configuration

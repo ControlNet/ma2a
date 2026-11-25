@@ -246,7 +246,7 @@ pub(super) fn enabled_configuration(served_spaces: Vec<ma2a_core::SpaceId>) -> R
         public_relay_urls: Vec::new(),
         private_provider_enabled: true,
         listener_address: Some("127.0.0.1:0".to_owned()),
-        private_relay_url: Some("https://relay.example.invalid".to_owned()),
+        private_relay_url: Some("https://relay.example.invalid/".to_owned()),
         served_spaces,
         transport: Some(RelayTransportConfiguration::ExternalTlsTermination),
     }

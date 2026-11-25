@@ -47,7 +47,7 @@ async fn failed_same_port_replacement_recovers_after_old_listener_release() -> T
     let mut desired = enabled_configuration(vec![space]);
     desired.listener_address = Some(address.to_string());
     handle.set_relay_configuration(desired.clone()).await?;
-    desired.private_relay_url = Some("https://replacement.example.invalid".to_owned());
+    desired.private_relay_url = Some("https://replacement.example.invalid/".to_owned());
     handle.fail_background_once(
         FaultPoint::PrivateRelayStart,
         RuntimeError::from(StoreError::Io(std::io::ErrorKind::Interrupted.into())),
@@ -88,7 +88,7 @@ async fn configuration_commit_failure_preserves_the_applied_listener() -> TestRe
     // Test-only failure at the actual durable configuration update boundary.
     sql.execute_batch("CREATE TRIGGER test_relay_commit_failure BEFORE UPDATE ON relay_configuration BEGIN SELECT RAISE(ABORT, 'injected relay commit failure'); END;")?;
     let mut changed = desired.clone();
-    changed.private_relay_url = Some("https://uncommitted.example.invalid".to_owned());
+    changed.private_relay_url = Some("https://uncommitted.example.invalid/".to_owned());
     assert!(handle.set_relay_configuration(changed).await.is_err());
     let after = handle.relay_status().await?;
     assert_eq!(before.private_listen_addr, after.private_listen_addr);

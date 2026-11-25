@@ -50,6 +50,8 @@ mod relay_configuration;
 #[cfg(test)]
 mod relay_lifecycle_test;
 pub(crate) mod relay_server;
+#[cfg(test)]
+mod relay_spelling_test;
 mod run;
 mod services;
 mod shutdown;

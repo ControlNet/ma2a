@@ -20,7 +20,7 @@ async fn fixed_listener_reconfiguration_does_not_bind_over_its_own_server() -> T
     handle.set_relay_configuration(desired.clone()).await?;
     handle.set_relay_configuration(desired.clone()).await?;
     handle.reconfigure_private_relay(desired.clone()).await?;
-    desired.private_relay_url = Some("https://updated.example.invalid".to_owned());
+    desired.private_relay_url = Some("https://updated.example.invalid/".to_owned());
     handle.set_relay_configuration(desired.clone()).await?;
     assert_eq!(
         handle.relay_status().await?.private_listen_addr,

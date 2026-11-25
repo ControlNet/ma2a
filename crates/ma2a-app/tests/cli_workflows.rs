@@ -295,7 +295,8 @@ fn external_private_and_public_relays_configure_status_and_disable() -> TestResu
         public_status
             .pointer("/result/payload/url")
             .and_then(Value::as_str),
-        Some("https://public.example")
+        // Saved as parsed, so a restart has nothing to rewrite.
+        Some("https://public.example/")
     );
     // A new Runtime boot over the same store proves the relay survived it.
     fixture.restart()?;

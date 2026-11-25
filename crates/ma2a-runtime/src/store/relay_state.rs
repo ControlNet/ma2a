@@ -127,15 +127,22 @@ fn usable_relay_configuration(
         kept.served_spaces.clear();
         kept.transport = None;
     }
-    // A kept URL is saved as parsed, the spelling the Runtime uses and the Store bounds; text
-    // written before the bound existed may be longer than its parsed form.
+    // Text written before the bound existed may be longer than its parsed form.
+    with_parsed_relay_urls(kept)
+}
+
+/// `configuration` with each relay URL in its parsed spelling, the one the Runtime uses and the
+/// Store bounds, so saving it again later changes nothing. A URL that does not parse is kept.
+pub(crate) fn with_parsed_relay_urls(
+    mut configuration: ma2a_store::RelayConfiguration,
+) -> ma2a_store::RelayConfiguration {
     let parsed = |url: &String| {
         url.parse::<ma2a_net::RelayUrl>()
             .map_or_else(|_| url.clone(), |parsed| parsed.as_str().to_owned())
     };
-    kept.public_relay_urls = kept.public_relay_urls.iter().map(parsed).collect();
-    kept.private_relay_url = kept.private_relay_url.as_ref().map(parsed);
-    kept
+    configuration.public_relay_urls = configuration.public_relay_urls.iter().map(parsed).collect();
+    configuration.private_relay_url = configuration.private_relay_url.as_ref().map(parsed);
+    configuration
 }
 
 #[cfg(test)]
