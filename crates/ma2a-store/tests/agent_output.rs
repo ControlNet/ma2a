@@ -595,3 +595,32 @@ fn a_state_carrying_a_user_message_is_ignored_whole() -> TestResult {
     assert_eq!(record.summary.state, AgentTaskState::Running);
     Ok(())
 }
+
+#[test]
+fn a_queued_task_at_its_durable_event_bound_fails_instead_of_running() -> TestResult {
+    // Given: a queued task whose `queued` event and messages fill the durable event bound.
+    let directory = TempState::new("agent-queued-bound")?;
+    let mut repository = Repository::open(&StoreConfig::new(directory.path()))?;
+    let generation = ready_agent(&mut repository, 1)?;
+    let task = created(
+        &repository
+            .create_agent_task(&new_task(1, endpoint(1))?)?
+            .into_value(),
+    )?;
+    for at_ms in 1..u64::from(ma2a_store::MAX_DURABLE_EVENTS) {
+        let message = text(MessageRole::User, "more")?;
+        repository.send_agent_message(task, (&message, 30 + at_ms))?;
+    }
+
+    // When: a slot is free, so the task would start running.
+    let changed = repository.assign_agent_tasks(&agent()?, 900)?.into_value();
+
+    // Then: `running` would be an event past the bound, so the task fails with `limit`.
+    assert_eq!(changed, [task]);
+    let record = repository.agent_task(task)?.ok_or("missing")?;
+    assert_eq!(record.summary.state, AgentTaskState::Failed);
+    assert_eq!(record.summary.reason, Some(AgentTaskReason::Limit));
+    assert_eq!(record.summary.last_seq, ma2a_store::MAX_DURABLE_EVENTS + 1);
+    assert!(repository.agent_outbox((&agent()?, generation))?.is_empty());
+    Ok(())
+}

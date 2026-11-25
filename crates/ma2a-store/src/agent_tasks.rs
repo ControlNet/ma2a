@@ -3,14 +3,15 @@
 
 use ma2a_core::{
     EndpointId, RequestId,
-    service::{AgentId, AgentMessage, AgentTaskId, AgentTaskState},
+    service::{AgentId, AgentMessage, AgentTaskId, AgentTaskReason, AgentTaskState},
 };
 use rusqlite::{OptionalExtension as _, Transaction, params};
 
 use crate::{
     AgentTaskRecord, Committed, Repository, StoreError,
     agent_log::{
-        AgentDelivery, MAX_UNACKED_DELIVERIES, enqueue, load_task, reload_task, set_state,
+        AgentDelivery, MAX_DURABLE_EVENTS, MAX_UNACKED_DELIVERIES, durable_events, enqueue,
+        load_task, reload_task, set_state,
     },
     agents::load_agent,
     repository::increment_revision,
@@ -185,7 +186,8 @@ impl Repository {
     }
 
     /// Assigns queued tasks, oldest first, to the Agent's live ready instance while it has
-    /// free slots; each assignment and its deliveries commit together.
+    /// free slots; each assignment and its deliveries commit together. Returns every task
+    /// taken from the queue, including one that failed at its durable event bound.
     ///
     /// # Errors
     /// Returns [`StoreError`] when the change cannot be committed.
@@ -260,12 +262,17 @@ impl Repository {
 }
 
 /// Moves one queued task to `running` on an instance and delivers it with every message
-/// its submitter sent while it waited.
+/// its submitter sent while it waited. A task whose messages already fill its durable event
+/// bound fails with `limit` instead, since `running` would be one event more.
 fn assign(
     transaction: &Transaction<'_>,
     (agent, generation): (&AgentId, u64),
     (task, at_ms): (AgentTaskId, u64),
 ) -> Result<(), StoreError> {
+    if durable_events(transaction, task)? >= MAX_DURABLE_EVENTS {
+        let limit = (AgentTaskState::Failed, Some(AgentTaskReason::Limit));
+        return set_state(transaction, (task, at_ms), limit);
+    }
     transaction.execute(
         "UPDATE agent_tasks SET generation = ?2 WHERE task_id = ?1",
         params![task.as_bytes().as_slice(), generation],
