@@ -65,13 +65,11 @@ impl AuthorizedFixture {
     pub(super) async fn new(label: &str) -> TestResult<Self> {
         let state = TempState::new(label)?;
         let config = StoreConfig::new(state.path());
-        let runtime = Runtime::start(config.clone()).await?;
-        let status = runtime.handle().status().await?;
-        runtime.shutdown().await?;
+        let owner_id = super::endpoint_seed::seed_endpoint(state.path())?;
         let peer_secret = SecretKey::generate();
         let peer_id = peer_secret.public().into();
         let owner_member = SpaceMemberV1::new(
-            status.endpoint_id(),
+            owner_id,
             "owner".to_owned(),
             MemberCapabilities::new(true, true),
         )?;
@@ -108,7 +106,7 @@ impl AuthorizedFixture {
             runtime,
             client,
             owner_addr,
-            owner_id: status.endpoint_id(),
+            owner_id,
             owner_member,
             peer_id,
             space_id: space.space_id(),

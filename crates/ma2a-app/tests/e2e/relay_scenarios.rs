@@ -58,9 +58,7 @@ async fn scenario_d_no_common_relay_is_exactly_degraded() -> TestResult {
     // Given
     let state = super::harness::TempState::new("scenario-d")?;
     let config = state.config();
-    let bootstrap = Runtime::start(config.clone()).await?;
-    let endpoint_id = bootstrap.handle().status().await?.endpoint_id();
-    bootstrap.shutdown().await?;
+    let endpoint_id = crate::endpoint_seed::seed_endpoint(config.state_dir())?;
     let mut repository = Repository::open(&config)?;
     create_local_space(&mut repository, endpoint_id, 90)?;
     create_local_space(&mut repository, endpoint_id, 100)?;

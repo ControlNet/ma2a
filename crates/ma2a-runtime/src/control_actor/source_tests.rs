@@ -268,9 +268,7 @@ async fn periodic_timer_schedules_a_control_round() -> TestResult {
 async fn runtime_with_owned_space(label: &str) -> TestResultValue<OwnedRuntime> {
     let state = TempState::new(label)?;
     let config = StoreConfig::new(&state.0);
-    let bootstrap = Runtime::start_with_clock(config.clone(), Arc::new(FixedClock)).await?;
-    let endpoint_id = bootstrap.handle().status().await?.endpoint_id();
-    bootstrap.shutdown().await?;
+    let endpoint_id = crate::endpoint_seed::seed_endpoint(&state.0)?;
     let mut repository = Repository::open(&config)?;
     let member = SpaceMemberV1::new(
         endpoint_id,

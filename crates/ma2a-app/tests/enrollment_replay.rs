@@ -1,5 +1,8 @@
 //! End-to-end enrollment replay coverage.
 
+#[path = "../../ma2a-runtime/tests/support/endpoint_seed.rs"]
+mod endpoint_seed;
+
 use std::{
     error::Error,
     fs,
@@ -61,9 +64,7 @@ async fn race_exact_retry_and_wrong_candidate_replay_fail_closed() -> TestResult
     let first_state = TempState::new("first")?;
     let second_state = TempState::new("second")?;
     let owner_config = StoreConfig::new(&owner_state.0);
-    let bootstrap = Runtime::start(owner_config.clone()).await?;
-    let owner_id = bootstrap.handle().status().await?.endpoint_id();
-    bootstrap.shutdown().await?;
+    let owner_id = endpoint_seed::seed_endpoint(&owner_state.0)?;
     let mut repository = Repository::open(&owner_config)?;
     let created = repository.create_owned_space(&SpaceCreation::new(
         1_000,

@@ -1,5 +1,7 @@
 //! Authenticated Web projection integration coverage.
 
+#[path = "support/endpoint_seed.rs"]
+mod endpoint_seed;
 #[path = "support/sse.rs"]
 mod sse;
 #[path = "support/web.rs"]
@@ -247,9 +249,7 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
 async fn full_spaces_keep_snapshot_details_and_events_within_the_frame_budget() -> TestResult {
     let state = TempState::new("full-spaces")?;
     let config = StoreConfig::new(state.path());
-    let initial = Runtime::start(config.clone()).await?;
-    let local = initial.handle().status().await?.endpoint_id();
-    initial.shutdown().await?;
+    let local = endpoint_seed::seed_endpoint(state.path())?;
     let ids = seed_full_spaces(&config, local)?;
     let runtime = Runtime::start(config).await?;
     let auth_clock = clock(1_000);

@@ -1,5 +1,8 @@
 //! End-to-end enrollment denial coverage.
 
+#[path = "../../ma2a-runtime/tests/support/endpoint_seed.rs"]
+mod endpoint_seed;
+
 use std::{
     error::Error,
     fs,
@@ -69,9 +72,7 @@ async fn expiry_cancellation_and_cross_space_leave_state_unchanged() -> TestResu
     let owner_state = TempState::new("owner")?;
     let candidate_state = TempState::new("candidate")?;
     let owner_config = StoreConfig::new(&owner_state.0);
-    let bootstrap = Runtime::start(owner_config.clone()).await?;
-    let owner_id = bootstrap.handle().status().await?.endpoint_id();
-    bootstrap.shutdown().await?;
+    let owner_id = endpoint_seed::seed_endpoint(&owner_state.0)?;
     let mut repository = Repository::open(&owner_config)?;
     let first = repository.create_owned_space(&SpaceCreation::new(
         10,

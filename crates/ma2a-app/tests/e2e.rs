@@ -1,4 +1,10 @@
 //! Focused Phase One E2E test target required by the release gate.
+// CLIPPY-ALLOW: The release-gate binary composes standalone targets, which load the same
+// shared files: the Web integration targets and the Endpoint seed helper.
+#![allow(
+    clippy::duplicate_mod,
+    reason = "the release gate composes standalone targets that load the same shared files"
+)]
 
 #[path = "e2e/control_sync.rs"]
 mod control_sync;
@@ -10,6 +16,8 @@ mod control_sync_e2e_artifacts;
 mod control_sync_e2e_support;
 #[path = "daemon_lifecycle.rs"]
 mod daemon_lifecycle;
+#[path = "../../ma2a-runtime/tests/support/endpoint_seed.rs"]
+mod endpoint_seed;
 #[path = "e2e/harness.rs"]
 mod harness;
 #[path = "e2e/ipc.rs"]
@@ -51,11 +59,6 @@ mod relay_tls;
 mod space_departure;
 #[path = "../../ma2a-runtime/tests/web_security.rs"]
 mod web;
-// CLIPPY-ALLOW: The release-gate binary composes two standalone Web integration targets.
-#[allow(
-    clippy::duplicate_mod,
-    reason = "release gate composes standalone Web integration targets"
-)]
 #[path = "../../ma2a-runtime/tests/web_session_mutation.rs"]
 mod web_session;
 

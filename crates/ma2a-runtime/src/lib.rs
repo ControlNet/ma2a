@@ -23,6 +23,9 @@ mod departure;
 mod departure_actor;
 mod departure_authority;
 mod echo_audit;
+#[cfg(test)]
+#[path = "../tests/support/endpoint_seed.rs"]
+mod endpoint_seed;
 mod enrollment;
 mod enrollment_actor;
 mod error;

@@ -1,5 +1,8 @@
 //! End-to-end enrollment chain establishment coverage.
 
+#[path = "../../ma2a-runtime/tests/support/endpoint_seed.rs"]
+mod endpoint_seed;
+
 use std::time::Duration;
 use std::{
     error::Error,
@@ -67,14 +70,7 @@ async fn generation_57_invite_establishes_only_after_contiguous_generation_58() 
     let candidate_state = TempState::new("candidate-57")?;
     let owner_config = StoreConfig::new(&owner_state.0);
     let candidate_config = StoreConfig::new(&candidate_state.0);
-    let owner = Runtime::start_with_clock(
-        owner_config.clone(),
-        Arc::new(TestClock(AtomicI64::new(3_000))),
-    )
-    .await?;
-    let owner_status = owner.handle().status().await?;
-    owner.shutdown().await?;
-    let owner_member = member(owner_status.endpoint_id(), "owner")?;
+    let owner_member = member(endpoint_seed::seed_endpoint(&owner_state.0)?, "owner")?;
     let mut repository = Repository::open(&owner_config)?;
     let created = repository.create_owned_space(&SpaceCreation::new(
         1_700_000_000_000,
@@ -176,13 +172,7 @@ async fn cold_candidate_bootstraps_owner_reachability_and_completes_targeted_con
     let owner_config = StoreConfig::new(&owner_state.0);
     let candidate_config = StoreConfig::new(&candidate_state.0);
     let now_ms = 1_700_000_000_000;
-    let owner_bootstrap = Runtime::start_with_clock(
-        owner_config.clone(),
-        Arc::new(TestClock(AtomicI64::new(now_ms))),
-    )
-    .await?;
-    let owner_id = owner_bootstrap.handle().status().await?.endpoint_id();
-    owner_bootstrap.shutdown().await?;
+    let owner_id = endpoint_seed::seed_endpoint(&owner_state.0)?;
     let mut owner_repository = Repository::open(&owner_config)?;
     let space_id = owner_repository
         .create_owned_space(&SpaceCreation::new(

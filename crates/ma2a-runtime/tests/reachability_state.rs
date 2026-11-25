@@ -1,5 +1,8 @@
 //! Runtime relay reachability startup and persistence integration.
 
+#[path = "support/endpoint_seed.rs"]
+mod endpoint_seed;
+
 use std::{
     error::Error,
     fs,
@@ -50,9 +53,7 @@ async fn active_spaces_without_common_home_or_public_fallback_are_degraded() -> 
     // Given
     let state = TempState::new("no-common-home")?;
     let config = StoreConfig::new(state.path());
-    let bootstrap = Runtime::start(config.clone()).await?;
-    let local_endpoint_id = bootstrap.handle().status().await?.endpoint_id();
-    bootstrap.shutdown().await?;
+    let local_endpoint_id = endpoint_seed::seed_endpoint(state.path())?;
     let mut repository = Repository::open(&config)?;
     create_local_space(&mut repository, local_endpoint_id, 10)?;
     create_local_space(&mut repository, local_endpoint_id, 20)?;

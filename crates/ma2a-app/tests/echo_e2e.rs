@@ -4,6 +4,8 @@
 mod echo_e2e_adversarial;
 #[path = "echo_e2e/concurrency.rs"]
 mod echo_e2e_concurrency;
+#[path = "../../ma2a-runtime/tests/support/endpoint_seed.rs"]
+mod endpoint_seed;
 
 use std::{
     error::Error,
@@ -59,12 +61,10 @@ async fn shared_space_peer_receives_exact_echo_over_real_iroh() -> TestResult {
     let owner_state = TempState::new("owner")?;
     let candidate_state = TempState::new("candidate")?;
     let owner_config = StoreConfig::new(owner_state.path());
-    let owner = Runtime::start(owner_config.clone()).await?;
-    let owner_status = owner.handle().status().await?;
-    owner.shutdown().await?;
+    let owner_id = endpoint_seed::seed_endpoint(owner_state.path())?;
     let mut repository = Repository::open(&owner_config)?;
     let owner_member = SpaceMemberV1::new(
-        owner_status.endpoint_id(),
+        owner_id,
         "owner".to_owned(),
         MemberCapabilities::new(true, true),
     )?;
@@ -99,13 +99,13 @@ async fn shared_space_peer_receives_exact_echo_over_real_iroh() -> TestResult {
         .handle()
         .echo(
             RequestId::try_from([0x61; 16].as_slice())?,
-            owner_status.endpoint_id(),
+            owner_id,
             payload,
         )
         .await?;
 
     // Then
-    assert_eq!(response.responder_endpoint_id(), owner_status.endpoint_id());
+    assert_eq!(response.responder_endpoint_id(), owner_id);
     assert_eq!(response.payload(), payload);
     assert_eq!(owner.handle().echo_metrics().body_reads, 1);
     assert_eq!(owner.handle().echo_metrics().decoded_requests, 1);
@@ -121,14 +121,12 @@ async fn unrelated_zero_space_peer_is_denied_before_echo_body_read() -> TestResu
     // Given
     let state = TempState::new("isolated")?;
     let config = StoreConfig::new(state.path());
-    let runtime = Runtime::start(config.clone()).await?;
-    let status = runtime.handle().status().await?;
-    runtime.shutdown().await?;
+    let endpoint_id = endpoint_seed::seed_endpoint(state.path())?;
     let mut repository = Repository::open(&config)?;
     repository.create_owned_space(&SpaceCreation::new(
         1,
         SpaceMemberV1::new(
-            status.endpoint_id(),
+            endpoint_id,
             "isolated".to_owned(),
             MemberCapabilities::new(true, true),
         )?,

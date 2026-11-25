@@ -1,5 +1,8 @@
 //! Enrollment behavior for an Endpoint that is already a current member.
 
+#[path = "../../ma2a-runtime/tests/support/endpoint_seed.rs"]
+mod endpoint_seed;
+
 use std::{
     error::Error,
     fs,
@@ -64,12 +67,8 @@ async fn already_current_member_is_rejected_without_new_generation() -> TestResu
     let candidate_state = TempState::new("candidate")?;
     let owner_config = StoreConfig::new(&owner_state.0);
     let candidate_config = StoreConfig::new(&candidate_state.0);
-    let owner_bootstrap = Runtime::start(owner_config.clone()).await?;
-    let owner_id = owner_bootstrap.handle().status().await?.endpoint_id();
-    owner_bootstrap.shutdown().await?;
-    let candidate_bootstrap = Runtime::start(candidate_config.clone()).await?;
-    let candidate_id = candidate_bootstrap.handle().status().await?.endpoint_id();
-    candidate_bootstrap.shutdown().await?;
+    let owner_id = endpoint_seed::seed_endpoint(&owner_state.0)?;
+    let candidate_id = endpoint_seed::seed_endpoint(&candidate_state.0)?;
     let owner_member = member(owner_id, "owner")?;
     let candidate_member = member(candidate_id, "candidate")?;
     let mut repository = Repository::open(&owner_config)?;

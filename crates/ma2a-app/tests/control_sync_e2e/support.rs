@@ -16,6 +16,8 @@ use crate::control_sync_e2e_artifacts::{
     relay_advertisement,
 };
 
+#[path = "../../../ma2a-runtime/tests/support/endpoint_seed.rs"]
+mod endpoint_seed;
 #[path = "support/state.rs"]
 mod state;
 
@@ -75,11 +77,8 @@ async fn create_and_enroll(
 ) -> TestResultValue<([ma2a_core::SpaceId; 2], ma2a_core::SpaceId)> {
     let owner_config = StoreConfig::new(&owner_state.0);
     let candidate_config = StoreConfig::new(&candidate_state.0);
-    let owner = Runtime::start_with_clock(owner_config.clone(), clock()).await?;
-    let owner_status = owner.handle().status().await?;
-    owner.shutdown().await?;
     let owner_member = SpaceMemberV1::new(
-        owner_status.endpoint_id(),
+        endpoint_seed::seed_endpoint(&owner_state.0)?,
         "owner".to_owned(),
         MemberCapabilities::new(true, true),
     )?;

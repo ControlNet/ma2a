@@ -13,9 +13,7 @@ use std::sync::Arc;
 async fn legal_snapshot_above_single_frame_and_collection_limits_is_addressable() -> TestResult {
     let state = TempState::new_named("snapshot-stream")?;
     let config = StoreConfig::new(&state.0);
-    let runtime = Runtime::start(config.clone()).await?;
-    let endpoint = runtime.handle().status().await?.endpoint_id();
-    runtime.shutdown().await?;
+    let endpoint = crate::endpoint_seed::seed_endpoint(&state.0)?;
     let mut repository = Repository::open(&config)?;
     let member = SpaceMemberV1::new(
         endpoint,
