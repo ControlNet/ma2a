@@ -53,13 +53,48 @@ fn rejects_duplicate_root_members_without_callbacks() {
 
 #[test]
 fn preserves_unambiguous_version_rejection_before_other_duplicate_members() {
-    let input = br#"{"version":2,"operation":"handshake","operation":"handshake"}"#;
-    let mut boundary = CallbackProbe::default();
+    let inputs = [
+        br#"{"version":2,"operation":"handshake","operation":"handshake"}"#.to_vec(),
+        format!(
+            r#"{{"version":2,"operation":"agent_task_submit","request_id":"{REQUEST_ID}","agent":"worker","message":{{"role":"agent","role":"user","parts":[{{"kind":"text","content":"hi"}}]}}}}"#
+        )
+        .into_bytes(),
+    ];
 
-    let error = dispatch_request(input, &mut boundary).expect_err("version 2 must fail first");
+    for input in inputs {
+        let mut boundary = CallbackProbe::default();
+        let error = dispatch_request(&input, &mut boundary).expect_err("version 2 must fail first");
 
-    assert_eq!(error.code(), ProtocolError::VERSION_MISMATCH);
-    assert_eq!(boundary.callbacks, 0);
+        assert_eq!(error.code(), ProtocolError::VERSION_MISMATCH);
+        assert_eq!(boundary.callbacks, 0);
+    }
+}
+
+#[test]
+fn rejects_duplicate_nested_members_without_callbacks() {
+    let inputs = [
+        format!(
+            r#"{{"version":1,"operation":"agent_task_submit","request_id":"{REQUEST_ID}","agent":"worker","message":{{"role":"agent","role":"user","parts":[{{"kind":"text","content":"hi"}}]}}}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"agent_task_submit","request_id":"{REQUEST_ID}","agent":"worker","message":{{"role":"user","parts":[{{"kind":"data","kind":"text","content":"hi"}}]}}}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_register","request_id":"{REQUEST_ID}","service":"calc","manifest":{{"description":"calc","max_calls":2,"max_calls":1,"versions":[{{"version":1,"operations":[{{"name":"add","interaction":"unary"}}]}}]}}}}"#
+        ),
+        format!(
+            r#"{{"version":1,"operation":"service_register","request_id":"{REQUEST_ID}","service":"calc","manifest":{{"description":"calc","max_calls":1,"versions":[{{"version":1,"operations":[{{"name":"add","interaction":"stream","interaction":"unary"}}]}}]}}}}"#
+        ),
+    ];
+
+    for input in inputs {
+        let mut boundary = CallbackProbe::default();
+        let error = dispatch_request(input.as_bytes(), &mut boundary)
+            .expect_err("nested duplicates must fail");
+
+        assert_eq!(error.code(), ProtocolError::INVALID_INPUT);
+        assert_eq!(boundary.callbacks, 0);
+    }
 }
 
 #[test]
