@@ -1244,3 +1244,283 @@ async fn a_slow_local_proxy_consumer_making_progress_receives_the_complete_strea
     assert_eq!(received?, b"abcdefgh");
     Ok(())
 }
+
+async fn run_blocked_process_sink<O: AsyncWrite + Unpin, E: AsyncWrite + Unpin>(
+    local: ProcessIo<&'static [u8], O, E>,
+    channel: Channel,
+    counts: (u64, u64),
+) -> TestResult {
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let outcome = {
+        let mut result = ProcessResult::new(Termination::Exited(0), EndReason::Cancelled, 1);
+        result.output_bytes = counts.0;
+        result.error_bytes = counts.1;
+        ProcessResult::encode_outcome(&Ok(result))?
+    };
+    let target = async {
+        send(
+            &mut target_writer,
+            &[accept(&EMPTY_ACCEPT), Sent::Data(channel, b"abcdef")],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(
+            &mut target_writer,
+            &[
+                Sent::Data(channel, b"xyz"),
+                Sent::End(channel),
+                Sent::Frame(FrameKind::Outcome, outcome),
+            ],
+        )
+        .await
+    };
+    let started = tokio::time::Instant::now();
+    let caller = process::run_streamed(
+        (&mut reader, &mut writer),
+        local,
+        ProcessControl {
+            resizes: None,
+            cancel: tokio::time::sleep(Duration::from_millis(50)),
+        },
+    );
+    let (result, scripted) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let streamed = result?;
+    assert_eq!(streamed.result.reason, EndReason::Cancelled);
+    assert_eq!(
+        (streamed.result.output_bytes, streamed.result.error_bytes),
+        counts
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_process_interrupts_blocked_stdout_and_stderr_and_validates_discarded_frames()
+-> TestResult {
+    let outcome = |reason, out_bytes, err_bytes| -> TestResult<Vec<u8>> {
+        let mut result = ProcessResult::new(Termination::Exited(0), reason, 1);
+        result.output_bytes = out_bytes;
+        result.error_bytes = err_bytes;
+        Ok(ProcessResult::encode_outcome(&Ok(result))?)
+    };
+
+    let (_hold_out, out_sink) = tokio::io::duplex(1);
+    run_blocked_process_sink(
+        ProcessIo {
+            input: None,
+            output: out_sink,
+            error: Some(tokio::io::sink()),
+        },
+        Channel::Output,
+        (9, 0),
+    )
+    .await?;
+
+    let (_hold_err, err_sink) = tokio::io::duplex(1);
+    run_blocked_process_sink(
+        ProcessIo {
+            input: None,
+            output: tokio::io::sink(),
+            error: Some(err_sink),
+        },
+        Channel::Error,
+        (0, 9),
+    )
+    .await?;
+
+    // 2. Discarded frames after cancel still reject mismatched byte counts.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold, out_sink) = tokio::io::duplex(1);
+    let target = async {
+        send(
+            &mut target_writer,
+            &[
+                accept(&EMPTY_ACCEPT),
+                Sent::Data(Channel::Output, b"abcdef"),
+            ],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(
+            &mut target_writer,
+            &[
+                Sent::Data(Channel::Output, b"xyz"),
+                Sent::Frame(FrameKind::Outcome, outcome(EndReason::Cancelled, 6, 0)?),
+            ],
+        )
+        .await
+    };
+    let caller = process::run_streamed(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: out_sink,
+            error: Some(tokio::io::sink()),
+        },
+        ProcessControl {
+            resizes: None,
+            cancel: tokio::time::sleep(Duration::from_millis(50)),
+        },
+    );
+    let (result, scripted) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert!(miscounted(&result), "{result:?}");
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_process_bounds_a_missing_terminal() -> TestResult {
+    // A peer that acknowledges nothing after Cancel is bounded by FRAME_GRACE.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold, out_sink) = tokio::io::duplex(1);
+    let target = async {
+        send(
+            &mut target_writer,
+            &[
+                accept(&EMPTY_ACCEPT),
+                Sent::Data(Channel::Output, b"abcdef"),
+            ],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        TestResult::Ok(())
+    };
+    let started = tokio::time::Instant::now();
+    let caller = process::run_streamed(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: out_sink,
+            error: Some(tokio::io::sink()),
+        },
+        ProcessControl {
+            resizes: None,
+            cancel: tokio::time::sleep(Duration::from_millis(50)),
+        },
+    );
+    let (result, scripted) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_millis(50) + ma2a_services::reply::FRAME_GRACE
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_uncancelled_slow_process_consumer_receives_every_byte_in_order() -> TestResult {
+    use tokio::io::AsyncReadExt as _;
+
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe();
+    let (mut consumer, out_sink) = tokio::io::duplex(1);
+    let mut completed = ProcessResult::new(Termination::Exited(0), EndReason::Completed, 1);
+    completed.output_bytes = 8;
+    send(
+        &mut target_writer,
+        &[
+            accept(&EMPTY_ACCEPT),
+            Sent::Data(Channel::Output, b"abcdefgh"),
+            Sent::End(Channel::Output),
+            Sent::Frame(
+                FrameKind::Outcome,
+                ProcessResult::encode_outcome(&Ok(completed))?,
+            ),
+        ],
+    )
+    .await?;
+    drop(target_writer);
+
+    let drain = async {
+        let mut received = Vec::new();
+        let mut byte = [0_u8; 1];
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if consumer.read(&mut byte).await? == 0 {
+                return TestResult::Ok(received);
+            }
+            received.push(byte[0]);
+        }
+    };
+    let caller = process::run_streamed(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: out_sink,
+            error: None::<tokio::io::Sink>,
+        },
+        ProcessControl {
+            resizes: None,
+            cancel: std::future::pending(),
+        },
+    );
+    let (result, received) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(caller, drain)
+    })
+    .await?;
+    let streamed = result?;
+    assert_eq!(streamed.result.reason, EndReason::Completed);
+    assert_eq!(received?, b"abcdefgh");
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_hosted_call_interrupts_blocked_local_sinks_and_bounds_missing_terminal()
+-> TestResult {
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold, out_sink) = tokio::io::duplex(1);
+    let target = async {
+        send(
+            &mut target_writer,
+            &[
+                accept(&encode_call_accept(b"")?),
+                Sent::Data(Channel::Output, b"abcdef"),
+            ],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(
+            &mut target_writer,
+            &[Sent::Frame(
+                FrameKind::Outcome,
+                encode_call_outcome(Err(ServiceError::Cancelled))?,
+            )],
+        )
+        .await
+    };
+    let caller = service::call(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: out_sink,
+            error: Some(tokio::io::sink()),
+        },
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (result, scripted) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert!(
+        matches!(result, Err(ClientError::Failed(ServiceError::Cancelled))),
+        "{result:?}"
+    );
+    Ok(())
+}

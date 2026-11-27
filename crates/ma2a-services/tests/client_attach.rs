@@ -779,3 +779,84 @@ async fn a_failed_local_read_is_reported_when_the_outcome_comes_first() -> TestR
     );
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_detached_attachment_interrupts_a_blocked_local_sink_and_bounds_missing_terminal()
+-> TestResult {
+    // 1. Blocked stdout is interrupted on detach and returns the acknowledged detach cursor.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold, out_sink) = tokio::io::duplex(1);
+    let target = async {
+        let (kind, accept) = reading(0, (0, 0))?;
+        target_writer.frame(kind, &accept).await?;
+        target_writer.data(Channel::Output, b"abcdef").await?;
+        target_writer.flush().await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        let (kind, outcome) = detached(EndReason::Cancelled, process(1), 6)?;
+        target_writer.frame(kind, &outcome).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (
+            (process(1), LogFrom::Now),
+            ProcessIo {
+                input: None::<&[u8]>,
+                output: out_sink,
+                error: None::<Vec<u8>>,
+            },
+        ),
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (attached, scripted) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    let attached = attached?;
+    assert_eq!(attached.reason, EndReason::Cancelled);
+    assert_eq!(attached.cursor, 6);
+
+    // 2. Missing terminal after detach is bounded by FRAME_GRACE.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold, out_sink) = tokio::io::duplex(1);
+    let target = async {
+        let (kind, accept) = reading(0, (0, 0))?;
+        target_writer.frame(kind, &accept).await?;
+        target_writer.data(Channel::Output, b"abcdef").await?;
+        target_writer.flush().await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        TestResult::Ok(())
+    };
+    let started = tokio::time::Instant::now();
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (
+            (process(1), LogFrom::Now),
+            ProcessIo {
+                input: None::<&[u8]>,
+                output: out_sink,
+                error: None::<Vec<u8>>,
+            },
+        ),
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (attached, scripted) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_millis(50) + ma2a_services::reply::FRAME_GRACE
+    );
+    assert!(
+        matches!(
+            attached,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{attached:?}"
+    );
+    Ok(())
+}

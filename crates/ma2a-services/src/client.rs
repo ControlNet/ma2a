@@ -146,33 +146,49 @@ where
         () = cancel => {}
     }
     let mut sending: Cancelling<'w> = Box::pin(async move {
-        let _sent = async {
+        let _sent = tokio::time::timeout(crate::reply::FRAME_GRACE, async {
             writer.frame(FrameKind::Cancel, &[]).await?;
             writer.flush().await
-        }
+        })
         .await;
     });
     tokio::select! {
         biased;
         first = &mut answer => Ok((first?, Sender::Cancelled(Some(sending)))),
-        () = &mut sending => Ok((answer.await?, Sender::Cancelled(None))),
+        () = &mut sending => {
+            let first = tokio::time::timeout(crate::reply::FRAME_GRACE, answer)
+                .await
+                .map_err(|_| ClientError::Stream(ServiceError::OutcomeUnknown))??;
+            Ok((first, Sender::Cancelled(None)))
+        }
     }
 }
 
-/// Reads the answer `outcome` gives while the rest of a `cancel`, if any, goes on; the answer
-/// does not wait for it.
+/// Reads the answer `outcome` gives while the rest of a `cancel`, if any, goes on; once `rest`
+/// finishes, `outcome` has at most [`crate::reply::FRAME_GRACE`] to deliver the terminal.
 pub(crate) async fn drained<T>(
     outcome: impl Future<Output = T>,
     rest: Option<Cancelling<'_>>,
-) -> T {
-    let Some(rest) = rest else {
-        return outcome.await;
-    };
+) -> Option<T> {
     tokio::pin!(outcome);
-    tokio::select! {
-        answer = &mut outcome => answer,
-        () = rest => outcome.await,
+    if let Some(rest) = rest {
+        tokio::select! {
+            answer = &mut outcome => return Some(answer),
+            () = rest => {}
+        }
     }
+    tokio::time::timeout(crate::reply::FRAME_GRACE, outcome)
+        .await
+        .ok()
+}
+
+/// Sends a `cancel` frame and flushes it within [`crate::reply::FRAME_GRACE`].
+pub(crate) async fn send_cancel<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>) {
+    let _sent = tokio::time::timeout(crate::reply::FRAME_GRACE, async {
+        writer.frame(FrameKind::Cancel, &[]).await?;
+        writer.flush().await
+    })
+    .await;
 }
 
 /// Reads one frame, treating a stream that ends without a terminal as an unknown outcome.

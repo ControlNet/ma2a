@@ -1,12 +1,13 @@
 //! A target's output and errors on their way to the caller's local sinks.
 
-use std::io;
+use std::{future::Future, io};
 
 use ma2a_core::service::{Channel, FrameKind, ServiceError};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt as _},
     sync::Notify,
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{ClientError, unexpected};
 use crate::Frame;
@@ -23,8 +24,12 @@ pub(super) struct Sinks<'a, O, E> {
     pub(super) received: (u64, u64),
     /// The first local write that failed; nothing is written after it.
     pub(super) unwritten: Option<io::Error>,
+    /// Set once cancellation interrupts local delivery so remaining frames are only validated.
+    discarding: bool,
     /// Told once a write failed, so the inbound side cancels.
     lost: &'a Notify,
+    /// Cancelled when the caller cancels or a local read fails.
+    stop: &'a CancellationToken,
 }
 
 impl<'a, O, E> Sinks<'a, O, E>
@@ -34,7 +39,11 @@ where
 {
     /// Sinks for `output` and `error`; `errors` tells whether the target may send on the error
     /// channel, which is dropped when it has no sink.
-    pub(super) fn new((output, error): (O, Option<E>), errors: bool, lost: &'a Notify) -> Self {
+    pub(super) fn new(
+        (output, error): (O, Option<E>),
+        errors: bool,
+        (lost, stop): (&'a Notify, &'a CancellationToken),
+    ) -> Self {
         Self {
             output,
             error,
@@ -42,7 +51,9 @@ where
             ended: (false, false),
             received: (0, 0),
             unwritten: None,
+            discarding: false,
             lost,
+            stop,
         }
     }
 
@@ -50,7 +61,9 @@ where
     ///
     /// The target sends only on the output channel, and on the error channel when it may, and
     /// nothing on a channel it ended. A failed local write is kept, and since nothing can
-    /// observe the operation any more, the inbound side is asked to cancel it.
+    /// observe the operation any more, the inbound side is asked to cancel it. Cancellation
+    /// interrupts any blocked write and discards further output while still checking frames and
+    /// byte counts.
     ///
     /// # Errors
     /// Returns `invalid_input` for a frame that breaks those rules, or any other frame.
@@ -77,19 +90,39 @@ where
             return Ok(());
         };
         *count = count.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-        if self.unwritten.is_some() {
+        if self.unwritten.is_some() || self.discarding || self.stop.is_cancelled() {
+            self.discarding = true;
             return Ok(());
         }
         let written = match (channel, self.error.as_mut()) {
-            (Channel::Error, Some(error)) => write_flushed(error, bytes).await,
-            (Channel::Error, None) => Ok(()),
-            _ => write_flushed(&mut self.output, bytes).await,
+            (Channel::Error, Some(error)) => {
+                write_until(write_flushed(error, bytes), self.stop).await
+            }
+            (Channel::Error, None) => Some(Ok(())),
+            _ => write_until(write_flushed(&mut self.output, bytes), self.stop).await,
         };
-        if let Err(failure) = written {
-            self.unwritten = Some(failure);
-            self.lost.notify_one();
+        match written {
+            Some(Ok(())) => {}
+            Some(Err(failure)) => {
+                self.unwritten = Some(failure);
+                self.lost.notify_one();
+            }
+            None => self.discarding = true,
         }
         Ok(())
+    }
+}
+
+/// Runs `write` until it finishes or `stop` is cancelled; preserves a completed write over a
+/// simultaneous cancellation.
+pub(super) async fn write_until<F: Future>(
+    write: F,
+    stop: &CancellationToken,
+) -> Option<F::Output> {
+    tokio::select! {
+        biased;
+        result = write => Some(result),
+        () = stop.cancelled() => None,
     }
 }
 

@@ -9,9 +9,10 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite},
     sync::{Notify, mpsc},
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{
-    ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next,
+    ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next, send_cancel,
     sinks::{Sinks, settled},
 };
 use crate::{FrameReader, FrameWriter};
@@ -119,22 +120,34 @@ where
         output,
         error,
     } = local;
-    let lost = Notify::new();
+    let (lost, stop) = (Notify::new(), CancellationToken::new());
     let errors = error.is_some();
-    let outbound = outbound(reader, Sinks::new((output, error), errors, &lost));
-    tokio::pin!(outbound);
+    let mut outbound = Box::pin(outbound(
+        reader,
+        Sinks::new((output, error), errors, (&lost, &stop)),
+    ));
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
     // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
     let answer = match sender {
-        Sender::Cancelled(rest) => drained(outbound.as_mut(), rest).await,
+        Sender::Cancelled(rest) => {
+            stop.cancel();
+            drained(outbound.as_mut(), rest)
+                .await
+                .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None))
+        }
         Sender::Open(writer) => {
             let control = ProcessControl { resizes, cancel };
-            let inbound = inbound(writer, (input, control), (&lost, &mut unread));
-            tokio::pin!(inbound);
+            let mut inbound = Box::pin(inbound(
+                writer,
+                (input, control),
+                (&lost, &stop, &mut unread),
+            ));
             tokio::select! {
                 answer = &mut outbound => answer,
-                () = &mut inbound => outbound.await,
+                () = &mut inbound => drained(outbound.as_mut(), None)
+                    .await
+                    .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None)),
             }
         }
     };
@@ -149,7 +162,7 @@ where
 pub(super) async fn inbound<W, I, C>(
     writer: &mut FrameWriter<W>,
     (mut input, control): (Option<I>, ProcessControl<C>),
-    (lost, unread): (&Notify, &mut Option<std::io::Error>),
+    (lost, stop_signal, unread): (&Notify, &CancellationToken, &mut Option<std::io::Error>),
 ) where
     W: AsyncWrite + Unpin,
     I: AsyncRead + Unpin,
@@ -197,10 +210,11 @@ pub(super) async fn inbound<W, I, C>(
             }
         };
         if stop {
+            stop_signal.cancel();
             cancelled = true;
             input = None;
             resizes = None;
-            send(writer, FrameKind::Cancel, &[]).await;
+            send_cancel(writer).await;
         }
     }
 }

@@ -60,7 +60,9 @@ where
         tokio::pin!(downstream);
         // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
         match sender {
-            Sender::Cancelled(rest) => drained(downstream.as_mut(), rest).await,
+            Sender::Cancelled(rest) => drained(downstream.as_mut(), rest)
+                .await
+                .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None)),
             Sender::Open(writer) => {
                 let upstream = upstream(writer, (local_read, cancel), (&lost, &sent, &mut unread));
                 tokio::pin!(upstream);

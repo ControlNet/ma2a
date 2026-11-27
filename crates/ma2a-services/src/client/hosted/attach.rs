@@ -13,13 +13,17 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     sync::Notify,
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{Gaps, accepted, advanced, deliver, reading, reply, skipped, until};
 use crate::{
     FrameReader, FrameWriter,
     client::{
-        ClientError, First, Sender, drained, first_or_cancel, next, process::ProcessIo,
-        sinks::settled, unexpected,
+        ClientError, First, Sender, drained, first_or_cancel, next,
+        process::ProcessIo,
+        send_cancel,
+        sinks::{settled, write_until},
+        unexpected,
     },
 };
 
@@ -82,20 +86,27 @@ where
         output,
         error,
     } = local;
-    let lost = Notify::new();
-    let outbound = outbound(reader, (output, error), (&lost, start));
+    let (lost, stop) = (Notify::new(), CancellationToken::new());
+    let outbound = outbound(reader, (output, error), (&lost, &stop, start));
     tokio::pin!(outbound);
     // A failed local read is kept even when the outcome arrives before the detach is sent.
     let mut unread = None;
     // Once detached, nothing but the rest of that `cancel` is sent; the outcome still follows.
     let (frame, gaps, reached, unwritten) = match sender {
-        Sender::Cancelled(rest) => drained(outbound.as_mut(), rest).await?,
+        Sender::Cancelled(rest) => {
+            stop.cancel();
+            drained(outbound.as_mut(), rest)
+                .await
+                .unwrap_or(Err(ClientError::Stream(ServiceError::OutcomeUnknown)))?
+        }
         Sender::Open(writer) => {
-            let inbound = inbound(writer, (input, detach), (&lost, &mut unread));
+            let inbound = inbound(writer, (input, detach), (&lost, &stop, &mut unread));
             tokio::pin!(inbound);
             tokio::select! {
                 read = &mut outbound => read?,
-                () = &mut inbound => outbound.await?,
+                () = &mut inbound => drained(outbound.as_mut(), None)
+                    .await
+                    .unwrap_or(Err(ClientError::Stream(ServiceError::OutcomeUnknown)))?,
             }
         }
     };
@@ -108,7 +119,7 @@ where
 async fn inbound<W, I, D>(
     writer: &mut FrameWriter<W>,
     (mut input, detach): (Option<I>, D),
-    (lost, unread): (&Notify, &mut Option<std::io::Error>),
+    (lost, stop, unread): (&Notify, &CancellationToken, &mut Option<std::io::Error>),
 ) where
     W: AsyncWrite + Unpin,
     I: AsyncRead + Unpin,
@@ -143,12 +154,8 @@ async fn inbound<W, I, D>(
             }
         }
     }
-    // A failed write is answered by the target's terminal anyway.
-    let _cancelled = async {
-        writer.frame(FrameKind::Cancel, &[]).await?;
-        writer.flush().await
-    }
-    .await;
+    stop.cancel();
+    send_cancel(writer).await;
 }
 
 /// What the target sent until its outcome: the outcome, the gaps, the cursor reached, and the
@@ -156,11 +163,11 @@ async fn inbound<W, I, D>(
 type Received = (crate::Frame, Gaps, u64, Option<std::io::Error>);
 
 /// Target → caller until the outcome, from cursor `start`. A failed local write asks the
-/// inbound side to detach.
+/// inbound side to detach; detaching interrupts any blocked write and discards further output.
 async fn outbound<R, O, E>(
     reader: &mut FrameReader<R>,
     (mut output, mut error): (O, Option<E>),
-    (lost, start): (&Notify, u64),
+    (lost, stop, start): (&Notify, &CancellationToken, u64),
 ) -> Result<Received, ClientError>
 where
     R: AsyncRead + Unpin,
@@ -170,6 +177,7 @@ where
     let mut gaps = Gaps::default();
     let mut reached = start;
     let mut unwritten = None;
+    let mut discarding = false;
     loop {
         let frame = next(reader).await?;
         match frame.kind() {
@@ -183,7 +191,8 @@ where
                     (_, bytes) => bytes,
                 };
                 reached = advanced(reached, bytes.len())?;
-                if unwritten.is_some() {
+                if unwritten.is_some() || discarding || stop.is_cancelled() {
+                    discarding = true;
                     continue;
                 }
                 let delivered = async {
@@ -194,13 +203,14 @@ where
                     }
                     Ok::<(), ClientError>(())
                 };
-                match delivered.await {
-                    Ok(()) => {}
-                    Err(ClientError::Local(failure)) => {
+                match write_until(delivered, stop).await {
+                    Some(Ok(())) => {}
+                    Some(Err(ClientError::Local(failure))) => {
                         unwritten = Some(failure);
                         lost.notify_one();
                     }
-                    Err(failure) => return Err(failure),
+                    Some(Err(failure)) => return Err(failure),
+                    None => discarding = true,
                 }
             }
             _ => return Err(unexpected(&frame)),

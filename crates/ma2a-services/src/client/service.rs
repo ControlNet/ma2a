@@ -12,6 +12,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::Notify,
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{
     ClientError, First, Sender, decoded, drained, first_or_cancel, next,
@@ -93,24 +94,36 @@ where
         output,
         error,
     } = local;
-    let lost = Notify::new();
-    let outbound = outbound(reader, Sinks::new((output, error), true, &lost));
-    tokio::pin!(outbound);
+    let (lost, stop) = (Notify::new(), CancellationToken::new());
+    let mut outbound = Box::pin(outbound(
+        reader,
+        Sinks::new((output, error), true, (&lost, &stop)),
+    ));
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
     // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
     let answer = match sender {
-        Sender::Cancelled(rest) => drained(outbound.as_mut(), rest).await,
+        Sender::Cancelled(rest) => {
+            stop.cancel();
+            drained(outbound.as_mut(), rest)
+                .await
+                .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None))
+        }
         Sender::Open(writer) => {
             let control = ProcessControl {
                 resizes: None,
                 cancel,
             };
-            let inbound = inbound(writer, (input, control), (&lost, &mut unread));
-            tokio::pin!(inbound);
+            let mut inbound = Box::pin(inbound(
+                writer,
+                (input, control),
+                (&lost, &stop, &mut unread),
+            ));
             tokio::select! {
                 answer = &mut outbound => answer,
-                () = &mut inbound => outbound.await,
+                () = &mut inbound => drained(outbound.as_mut(), None)
+                    .await
+                    .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None)),
             }
         }
     };
