@@ -1,11 +1,14 @@
 //! The relay of one attachment between the caller and the supervisor.
 
-use ma2a_core::service::{Channel as DataChannel, FrameKind, ServiceError, decode_skipped};
-use ma2a_services::{Frame, FrameReader, FrameWriter, supervisor::SupervisorStatus};
+mod upstream;
+
+use ma2a_core::service::{FrameKind, ServiceError, decode_skipped};
+use ma2a_services::{FrameReader, FrameWriter, supervisor::SupervisorStatus};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 
 use super::attach::{CALLER_STALL, Caller, lost};
+use upstream::{Upstream, relay_upstream};
 
 /// Longest wait for the supervisor's report once the caller detached.
 const DETACH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
@@ -17,20 +20,9 @@ const DETACH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// child has at that moment, final or not, so only a report without one completes.
 pub(super) type Relayed = ((SupervisorStatus, bool), u64, (u64, u64));
 
-/// How the caller's side of a relay ended.
-enum Upstream {
-    /// The supervisor took the detach.
-    Detached,
-    /// The caller detached, but the supervisor's connection was closed and could not take it;
-    /// what the supervisor sent before still follows.
-    Closed,
-    /// The supervisor did not take input or the detach in time.
-    Stalled,
-}
-
 /// Relays one attachment until the supervisor's `outcome`.
 pub(super) async fn relay<SR, SW, R, W>(
-    (mut from_supervisor, mut to_supervisor): (FrameReader<SR>, FrameWriter<SW>),
+    (from_supervisor, to_supervisor): (FrameReader<SR>, FrameWriter<SW>),
     (reader, writer): Caller<'_, R, W>,
     ((stdin, mut cursor), stop): ((bool, u64), &CancellationToken),
 ) -> Result<Relayed, ServiceError>
@@ -42,54 +34,50 @@ where
 {
     let mut bytes_in = 0_u64;
     let mut bytes_out = 0_u64;
+    let stop_downstream = CancellationToken::new();
     let reported = {
-        let downstream = async {
-            loop {
-                let frame = from_supervisor.expect().await.map_err(lost)?;
-                match frame.kind() {
-                    FrameKind::Data => {
-                        let (channel, bytes) = frame.data().map_err(lost)?;
-                        tokio::time::timeout(CALLER_STALL, writer.data(channel, bytes))
-                            .await
-                            .map_err(|_| ServiceError::TimedOut)??;
-                        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                        cursor += length;
-                        bytes_out += length;
-                    }
-                    FrameKind::Control => {
-                        cursor = decode_skipped(frame.payload())
-                            .map_err(|_| ServiceError::Unavailable)?;
-                        tokio::time::timeout(
-                            CALLER_STALL,
-                            writer.frame(FrameKind::Control, frame.payload()),
-                        )
-                        .await
-                        .map_err(|_| ServiceError::TimedOut)??;
-                    }
-                    FrameKind::Outcome => {
-                        return SupervisorStatus::from_bytes(frame.payload())
-                            .map_err(|_| ServiceError::Unavailable);
-                    }
-                    _ => return Err(ServiceError::Unavailable),
-                }
-            }
-        };
-        let upstream = relay_upstream((reader, &mut to_supervisor), stdin, &mut bytes_in);
+        let downstream = relay_downstream(
+            (from_supervisor, writer),
+            (&mut cursor, &mut bytes_out),
+            &stop_downstream,
+        );
+        let upstream = relay_upstream((reader, to_supervisor), stdin, &mut bytes_in);
         let grace = tokio::time::sleep(std::time::Duration::MAX);
-        tokio::pin!(downstream, upstream, grace);
+        tokio::pin!(downstream, grace);
+        let mut upstream = Some(Box::pin(upstream));
         let (mut detached, mut told) = (false, false);
         if stop.is_cancelled() {
             return Err(ServiceError::Unavailable);
         }
         loop {
             tokio::select! {
-                () = stop.cancelled() => break Err(ServiceError::Unavailable),
-                reported = &mut downstream => break reported.map(|status| (status, told)),
-                ended = &mut upstream, if !detached => {
+                () = stop.cancelled() => {
+                    drop(upstream.take());
+                    stop_downstream.cancel();
+                    let _finished = downstream.await;
+                    break Err(ServiceError::Unavailable);
+                }
+                reported = &mut downstream => match reported {
+                    Ok(Some(status)) => break Ok((status, told)),
+                    Ok(None) => break Err(ServiceError::Cancelled),
+                    Err(error) => break Err(error),
+                },
+                ended = async {
+                    match upstream.as_mut() {
+                        Some(fut) => fut.await,
+                        None => std::future::pending().await,
+                    }
+                }, if !detached => {
                     detached = true;
+                    upstream = None;
                     match ended {
-                        // A detach the supervisor did not take has used up the grace already.
-                        Upstream::Stalled => break Err(ServiceError::Cancelled),
+                        // Release the supervisor connection immediately, but give any started
+                        // caller frame a bounded chance to finish before sending the outcome.
+                        Upstream::Stalled => {
+                            stop_downstream.cancel();
+                            let _finished = downstream.await;
+                            break Err(ServiceError::Cancelled);
+                        }
                         // Its output, then its outcome or the end of its stream, ends this
                         // within the grace.
                         Upstream::Closed | Upstream::Detached => {
@@ -98,121 +86,99 @@ where
                         }
                     }
                 }
-                () = &mut grace, if detached => break Err(ServiceError::Cancelled),
+                () = &mut grace, if detached => {
+                    stop_downstream.cancel();
+                    let _finished = downstream.await;
+                    break Err(ServiceError::Cancelled);
+                }
             }
         }
     }?;
     Ok((reported, cursor, (bytes_in, bytes_out)))
 }
 
-enum Forward {
-    Done(Result<(), ServiceError>),
-    Stop,
-}
-
-async fn relay_upstream<R, SW>(
-    (reader, to_supervisor): (&mut FrameReader<R>, &mut FrameWriter<SW>),
-    stdin: bool,
-    bytes_in: &mut u64,
-) -> Upstream
-where
-    R: AsyncRead + Unpin,
-    SW: AsyncWrite + Unpin,
-{
-    // Returning detaches: the supervisor then reports where the Process is. Input the Process
-    // does not take within the stall bound detaches too, so a caller's detach is never stuck
-    // behind it. A supervisor that closed its connection, for example once the child ended,
-    // takes nothing more: later input is dropped, its output is still delivered, and the
-    // caller's detach is still seen.
-    let mut open = true;
-    let mut input_ended = false;
-    let mut ended: Option<Frame> = None;
-    let mut ahead: Option<Frame> = None;
-    while let Some(frame) = next_frame(reader, &mut ended, &mut ahead).await {
-        let forwarded = match (frame.kind(), frame.data(), frame.end()) {
-            (FrameKind::Data, Ok((DataChannel::Input, _)), _)
-            | (FrameKind::End, _, Ok(DataChannel::Input))
-                if stdin && !open =>
-            {
-                continue;
-            }
-            (FrameKind::Data, Ok((DataChannel::Input, bytes)), _) if stdin && !input_ended => {
-                *bytes_in += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                let write = to_supervisor.data(DataChannel::Input, bytes);
-                forward_watching(reader, (&mut ended, &mut ahead, input_ended), write).await
-            }
-            (FrameKind::End, _, Ok(DataChannel::Input)) if stdin && !input_ended => {
-                input_ended = true;
-                let write = to_supervisor.end(DataChannel::Input);
-                forward_watching(reader, (&mut ended, &mut ahead, input_ended), write).await
-            }
-            _ => break,
-        };
-        match forwarded {
-            Forward::Done(Ok(())) => {}
-            Forward::Done(Err(ServiceError::Cancelled)) => open = false,
-            // A write cut short by the stall bound or caller cancel/EOF left a torn frame: no
-            // detach follows.
-            Forward::Stop => return Upstream::Stalled,
-            Forward::Done(Err(_)) => break,
-        }
-    }
-    if !open {
-        return Upstream::Closed;
-    }
-    let cancel = to_supervisor.frame(FrameKind::Cancel, &[]);
-    match tokio::time::timeout(DETACH_GRACE, cancel).await {
-        Ok(Ok(())) => Upstream::Detached,
-        Ok(Err(_)) => Upstream::Closed,
-        Err(_) => Upstream::Stalled,
-    }
-}
-
-async fn next_frame<R: AsyncRead + Unpin>(
-    reader: &mut FrameReader<R>,
-    ended: &mut Option<Frame>,
-    ahead: &mut Option<Frame>,
-) -> Option<Frame> {
-    if let Some(frame) = ended.take().or_else(|| ahead.take()) {
-        return Some(frame);
-    }
-    reader.next().await.ok().flatten()
-}
-
-async fn forward_watching<R, F>(
-    reader: &mut FrameReader<R>,
-    (ended, ahead, input_ended): (&mut Option<Frame>, &mut Option<Frame>, bool),
+/// Writes one caller-facing frame, finishing an already-started write within `FRAME_GRACE`
+/// if `stop` fires after releasing `from_supervisor`. Returns `Ok(false)` when stopped.
+async fn write_downstream<SR, F>(
+    from_supervisor: &mut Option<FrameReader<SR>>,
+    stop: &CancellationToken,
     write: F,
-) -> Forward
+) -> Result<bool, ServiceError>
 where
-    R: AsyncRead + Unpin,
     F: Future<Output = Result<(), ServiceError>>,
 {
-    let deadline = tokio::time::sleep(CALLER_STALL);
-    tokio::pin!(write, deadline);
+    if stop.is_cancelled() {
+        drop(from_supervisor.take());
+        return Ok(false);
+    }
+    let stall = tokio::time::sleep(CALLER_STALL);
+    tokio::pin!(write, stall);
+    tokio::select! {
+        biased;
+        () = stop.cancelled() => {
+            drop(from_supervisor.take());
+            let _finished = tokio::time::timeout(ma2a_services::reply::FRAME_GRACE, write).await;
+            Ok(false)
+        }
+        written = &mut write => written.map(|()| true),
+        () = &mut stall => Err(ServiceError::TimedOut),
+    }
+}
+
+async fn relay_downstream<SR, W>(
+    (from_supervisor, writer): (FrameReader<SR>, &mut FrameWriter<W>),
+    (cursor, bytes_out): (&mut u64, &mut u64),
+    stop: &CancellationToken,
+) -> Result<Option<SupervisorStatus>, ServiceError>
+where
+    SR: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut from_supervisor = Some(from_supervisor);
     loop {
-        tokio::select! {
+        let Some(reader) = from_supervisor.as_mut() else {
+            return Ok(None);
+        };
+        let frame = tokio::select! {
             biased;
-            written = &mut write => return Forward::Done(written),
-            // Keep watching for `cancel`, EOF, or `end` while the supervisor pipe is full so a
-            // caller that detaches or disappears releases the attachment at once.
-            next = reader.next(), if ahead.is_none() => match next {
-                Ok(Some(next)) if next.kind() == FrameKind::Cancel => return Forward::Stop,
-                Ok(Some(next))
-                    if !input_ended && ended.is_none() && next.end() == Ok(DataChannel::Input) =>
+            () = stop.cancelled() => {
+                drop(from_supervisor.take());
+                return Ok(None);
+            }
+            frame = reader.expect() => frame.map_err(lost)?,
+        };
+        match frame.kind() {
+            FrameKind::Data => {
+                let (channel, bytes) = frame.data().map_err(lost)?;
+                if !write_downstream(&mut from_supervisor, stop, writer.data(channel, bytes))
+                    .await?
                 {
-                    *ended = Some(next);
+                    return Ok(None);
                 }
-                Ok(Some(_)) if input_ended || ended.is_some() => return Forward::Stop,
-                Ok(Some(next))
-                    if next.kind() == FrameKind::Data
-                        && matches!(next.data(), Ok((DataChannel::Input, _))) =>
+                let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                *cursor += length;
+                *bytes_out += length;
+            }
+            FrameKind::Control => {
+                let next_cursor =
+                    decode_skipped(frame.payload()).map_err(|_| ServiceError::Unavailable)?;
+                if !write_downstream(
+                    &mut from_supervisor,
+                    stop,
+                    writer.frame(FrameKind::Control, frame.payload()),
+                )
+                .await?
                 {
-                    *ahead = Some(next);
+                    return Ok(None);
                 }
-                Ok(None | Some(_)) | Err(_) => return Forward::Stop,
-            },
-            () = &mut deadline => return Forward::Stop,
+                *cursor = next_cursor;
+            }
+            FrameKind::Outcome => {
+                return SupervisorStatus::from_bytes(frame.payload())
+                    .map(Some)
+                    .map_err(|_| ServiceError::Unavailable);
+            }
+            _ => return Err(ServiceError::Unavailable),
         }
     }
 }

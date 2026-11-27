@@ -342,3 +342,101 @@ async fn a_caller_cancel_or_eof_while_attach_stdin_write_is_blocked_ends_at_once
     }
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn cancel_while_both_writes_block_finishes_output_frame_and_releases_supervisor() -> TestResult
+{
+    use ma2a_core::service::{ProcessReply, ServiceError};
+    use ma2a_services::{FrameReader, FrameWriter};
+    use tokio::io::AsyncReadExt as _;
+
+    // Two tiny 64-byte buffers force both a 128-byte output write and a 128-byte stdin write
+    // to stall mid-frame.
+    let (caller, host) = tokio::io::duplex(64);
+    let (caller_read, caller_write) = tokio::io::split(caller);
+    let (host_read, host_write) = tokio::io::split(host);
+    let mut caller_reader = FrameReader::new(caller_read);
+    let mut caller_writer = FrameWriter::new(caller_write);
+    let mut host_reader = FrameReader::new(host_read);
+    let mut host_writer = FrameWriter::new(host_write);
+
+    let (supervisor, pipe_sup) = tokio::io::duplex(64);
+    let (mut sup_read, sup_write) = tokio::io::split(supervisor);
+    let (pipe_read, pipe_write) = tokio::io::split(pipe_sup);
+    let mut sup_writer = FrameWriter::new(sup_write);
+    let from_sup = FrameReader::new(pipe_read);
+    let to_sup = FrameWriter::new(pipe_write);
+    let stop = CancellationToken::new();
+
+    let host = async move {
+        let relayed = crate::processes::relay::relay(
+            (from_sup, to_sup),
+            (&mut host_reader, &mut host_writer),
+            ((true, 0), &stop),
+        )
+        .await;
+        if let Err(error) = relayed {
+            let _report = crate::processes::host::finish(&mut host_writer, Err(error)).await;
+        }
+        host_writer.is_torn()
+    };
+
+    let (sup_sent_tx, sup_sent_output) = tokio::sync::oneshot::channel();
+    let (cancel_tx, cancel_sent) = tokio::sync::oneshot::channel();
+    let (sup_released_tx, sup_released) = tokio::sync::oneshot::channel();
+    let supervisor_task = async {
+        sup_writer.data(Channel::Output, &[b'o'; 128]).await?;
+        sup_writer.flush().await?;
+        let _sent = sup_sent_tx.send(());
+        // Do not read `sup_read` until after `Cancel`, forcing `to_supervisor.data` to block
+        // mid-frame. Once `Cancel` is sent, both supervisor halves must be dropped promptly even
+        // before the caller drains output.
+        cancel_sent.await?;
+        let mut drained = [0_u8; 64];
+        let mut total = 0_usize;
+        loop {
+            let n = sup_read.read(&mut drained).await?;
+            if n == 0 {
+                break;
+            }
+            total += n;
+        }
+        assert!(total < 128, "expected partial stdin write, got {total}");
+        let _released = sup_released_tx.send(());
+        TestResult::Ok(())
+    };
+
+    let caller_task = async {
+        sup_sent_output.await?;
+        caller_writer.data(Channel::Input, &[b'x'; 128]).await?;
+        caller_writer.flush().await?;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        caller_writer.frame(FrameKind::Cancel, &[]).await?;
+        caller_writer.flush().await?;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let _sent = cancel_tx.send(());
+
+        // Supervisor connection closes before output is drained.
+        sup_released.await?;
+        let data = caller_reader.expect().await?;
+        assert_eq!(data.data()?, (Channel::Output, &[b'o'; 128][..]));
+        let outcome = caller_reader.expect().await?;
+        assert_eq!(outcome.kind(), FrameKind::Outcome);
+        assert_eq!(
+            ProcessReply::decode_outcome(outcome.payload())?,
+            Err(ServiceError::Cancelled)
+        );
+        TestResult::Ok(())
+    };
+
+    let (torn, sup_res, caller_res) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(host, supervisor_task, caller_task)
+        })
+        .await?;
+    sup_res?;
+    caller_res?;
+    assert!(!torn, "downstream writer left torn");
+    Ok(())
+}
