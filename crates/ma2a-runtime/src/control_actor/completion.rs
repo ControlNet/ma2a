@@ -15,6 +15,14 @@ pub(crate) struct PendingControl {
 }
 
 impl Actor {
+    pub(crate) fn clear_synchronized_control_peers(&mut self) {
+        let had_peers = !self.synchronized_control_peers.peers().is_empty();
+        self.synchronized_control_peers.clear();
+        if had_peers {
+            self.view_sequence = self.view_sequence.saturating_add(1);
+        }
+    }
+
     pub(crate) fn retain_control_completion(
         &mut self,
         changes: ControlChanges,
@@ -22,7 +30,7 @@ impl Actor {
     ) {
         if changes.manifest && peers.is_empty() {
             // A manifest error committed outside a round invalidates in-flight rounds immediately.
-            self.synchronized_control_peers.clear();
+            self.clear_synchronized_control_peers();
         }
         let generation = self.synchronized_control_peers.generation();
         let pending = self

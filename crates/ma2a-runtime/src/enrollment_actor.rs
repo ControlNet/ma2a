@@ -223,7 +223,7 @@ impl Actor {
         let revision = persisted.revision;
         self.state.memberships = persisted.memberships;
         self.state.revision = revision;
-        self.synchronized_control_peers.clear();
+        self.clear_synchronized_control_peers();
         self.endpoint.set_control_enabled(true);
         self.maintenance
             .enrollment

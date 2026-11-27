@@ -108,6 +108,7 @@ impl Actor {
         let round_id = scheduled.id();
         let current_round =
             scheduled.membership_generation() == self.synchronized_control_peers.generation();
+        let before_view = self.view_sequence;
         let mut failure = None;
         let (peers, dialed) = match outcome {
             Ok(Some(outcome)) => {
@@ -131,7 +132,6 @@ impl Actor {
                 (BTreeSet::new(), None)
             }
         };
-        let before_view = self.view_sequence;
         let reconciled = self.reconcile_control_completion().await;
         let succeeded = failure.is_none() && reconciled.is_ok();
         self.record_control_round((succeeded, &peers), before_view);

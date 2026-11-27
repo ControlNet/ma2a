@@ -6,6 +6,46 @@ use crate::{
     control_sync::{ControlChanges, ControlExchangeInput, ControlFailure, ControlRespondOutcome},
 };
 
+#[cfg(test)]
+mod view_sequence_tests;
+
+#[cfg(test)]
+struct InboundControlGate {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+fn inbound_gates()
+-> &'static std::sync::Mutex<std::collections::BTreeMap<EndpointId, InboundControlGate>> {
+    static GATES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<EndpointId, InboundControlGate>>,
+    > = std::sync::OnceLock::new();
+    GATES.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn arm_inbound_control_gate(
+    endpoint_id: EndpointId,
+) -> (
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    inbound_gates()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            endpoint_id,
+            InboundControlGate {
+                entered: entered_tx,
+                release: release_rx,
+            },
+        );
+    (entered_rx, release_tx)
+}
+
 pub(crate) enum InboundControlCompletion {
     NoResponse,
     Response {
@@ -131,6 +171,16 @@ async fn run_inbound(input: InboundControlInput) -> InboundControlCompletion {
             now_ms,
         })
         .await;
+    #[cfg(test)]
+    let pending_gate = inbound_gates()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&input.local_endpoint_id);
+    #[cfg(test)]
+    if let Some(gate) = pending_gate {
+        let _sent = gate.entered.send(());
+        let _released = gate.release.await;
+    }
     InboundControlCompletion::Response {
         remote_endpoint_id: input.remote_endpoint_id,
         membership_generation: input.membership_generation,
