@@ -861,3 +861,114 @@ async fn a_stalled_service_or_attach_upstream_write_bounds_frame_grace_and_termi
     );
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_proxy_write_error_keeps_watching_cancel_and_lost() -> TestResult {
+    let grace = ma2a_services::reply::FRAME_GRACE;
+    let cancel_at = Duration::from_millis(50);
+
+    // 1. Upstream `data` write fails while target keeps its write half open and silent; cancel at 50 ms.
+    let (caller_write, target_read) = tokio::io::duplex(256);
+    let (target_write, caller_read) = tokio::io::duplex(256);
+    let (mut reader, mut writer) = (
+        ma2a_services::FrameReader::new(caller_read),
+        ma2a_services::FrameWriter::new(caller_write),
+    );
+    let mut target_writer = ma2a_services::FrameWriter::new(target_write);
+    target_writer
+        .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+        .await?;
+    target_writer.flush().await?;
+    drop(target_read);
+
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        client::proxy::run(
+            (&mut reader, &mut writer),
+            (tokio::io::repeat(b'x'), Vec::new()),
+            (Duration::from_secs(60), tokio::time::sleep(cancel_at)),
+        ),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), cancel_at + grace);
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+
+    // 2. Upstream `end` write fails while target keeps its write half open and silent; cancel at 50 ms.
+    let (caller_write, target_read) = tokio::io::duplex(256);
+    let (target_write, caller_read) = tokio::io::duplex(256);
+    let (mut reader, mut writer) = (
+        ma2a_services::FrameReader::new(caller_read),
+        ma2a_services::FrameWriter::new(caller_write),
+    );
+    let mut target_writer = ma2a_services::FrameWriter::new(target_write);
+    target_writer
+        .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+        .await?;
+    target_writer.flush().await?;
+    drop(target_read);
+
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        client::proxy::run(
+            (&mut reader, &mut writer),
+            (&b""[..], Vec::new()),
+            (Duration::from_secs(60), tokio::time::sleep(cancel_at)),
+        ),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), cancel_at + grace);
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+
+    // 3. Upstream `data` write fails first, then downstream hits local write stall; `lost` still bounds wait.
+    let (caller_write, target_read) = tokio::io::duplex(256);
+    let (target_write, caller_read) = tokio::io::duplex(256);
+    let (mut reader, mut writer) = (
+        ma2a_services::FrameReader::new(caller_read),
+        ma2a_services::FrameWriter::new(caller_write),
+    );
+    let mut target_writer = ma2a_services::FrameWriter::new(target_write);
+    target_writer
+        .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+        .await?;
+    target_writer
+        .data(ma2a_core::service::Channel::Input, b"hello")
+        .await?;
+    target_writer.flush().await?;
+    drop(target_read);
+
+    let (_hold, local_write) = tokio::io::duplex(1);
+    let idle = Duration::from_millis(20);
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        client::proxy::run(
+            (&mut reader, &mut writer),
+            (tokio::io::repeat(b'x'), local_write),
+            (idle, std::future::pending()),
+        ),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), idle + grace);
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+    Ok(())
+}

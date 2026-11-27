@@ -154,15 +154,11 @@ async fn upstream<W, LR, C>(
                 Written::Done(Ok(())) => {
                     // The destination may keep sending; a lost local side or a caller cancel still
                     // cancels it.
-                    tokio::select! {
-                        biased;
-                        () = lost.notified() => {}
-                        () = &mut cancel => {}
-                    }
-                    stop.cancel();
+                    wait_stop(lost, cancel.as_mut(), stop).await;
                     send_cancel(writer).await;
                 }
-                Written::Done(Err(_)) | Written::Cancelled { finished: false } => {}
+                Written::Done(Err(_)) => wait_stop(lost, cancel.as_mut(), stop).await,
+                Written::Cancelled { finished: false } => {}
                 Written::Cancelled { finished: true } => send_cancel(writer).await,
             }
             return;
@@ -175,13 +171,31 @@ async fn upstream<W, LR, C>(
         };
         match write_watching(forwarded, (lost, cancel.as_mut(), stop)).await {
             Written::Done(Ok(())) => {}
-            Written::Done(Err(_)) | Written::Cancelled { finished: false } => return,
+            Written::Done(Err(_)) => {
+                wait_stop(lost, cancel.as_mut(), stop).await;
+                return;
+            }
+            Written::Cancelled { finished: false } => return,
             Written::Cancelled { finished: true } => {
                 send_cancel(writer).await;
                 return;
             }
         }
     }
+}
+
+/// Waits until `lost` or `cancel` fires, then cancels `stop` so `downstream` bounds its wait.
+async fn wait_stop<C: Future<Output = ()>>(
+    lost: &Notify,
+    cancel: std::pin::Pin<&mut C>,
+    stop: &CancellationToken,
+) {
+    tokio::select! {
+        biased;
+        () = lost.notified() => {}
+        () = cancel => {}
+    }
+    stop.cancel();
 }
 
 /// Destination → local until the outcome; a lost local side asks upstream to cancel, and
