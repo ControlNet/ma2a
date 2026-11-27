@@ -122,6 +122,14 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
+    pub(crate) fn clear_background_faults(&self) {
+        self.maintenance_faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    #[cfg(test)]
     pub(crate) fn candidate_refresh_attempts(&self) -> usize {
         self.candidate_refresh_attempts
             .load(std::sync::atomic::Ordering::Relaxed)

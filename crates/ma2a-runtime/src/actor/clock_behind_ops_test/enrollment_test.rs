@@ -13,7 +13,7 @@ use crate::{
     control_sync::{ControlRoundScope, ControlRoundTrigger},
 };
 
-async fn start_with_clock(
+pub(super) async fn start_with_clock(
     label: &str,
     now_ms: i64,
 ) -> Result<
@@ -28,7 +28,7 @@ async fn start_with_clock(
     Ok((dir, config, clock, runtime))
 }
 
-async fn invite(
+pub(super) async fn invite(
     owner: &Runtime,
     space: ma2a_core::SpaceId,
 ) -> Result<ma2a_core::SignedInviteTicket, Box<dyn std::error::Error + Send + Sync>> {
@@ -42,7 +42,7 @@ async fn invite(
         .await?)
 }
 
-async fn redeem(
+pub(super) async fn redeem(
     candidate: &Runtime,
     ticket: ma2a_core::SignedInviteTicket,
     request_byte: u8,
@@ -62,7 +62,7 @@ async fn redeem(
     .await?)
 }
 
-fn has_member(chain: &SpaceChain, id: EndpointId) -> bool {
+pub(super) fn has_member(chain: &SpaceChain, id: EndpointId) -> bool {
     chain.members().iter().any(|m| m.endpoint_id() == id)
 }
 

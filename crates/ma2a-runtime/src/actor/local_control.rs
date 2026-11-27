@@ -79,6 +79,9 @@ impl Actor {
     pub(crate) async fn publish_local_address(&mut self) -> Result<u64, RuntimeError> {
         let now_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
+        #[cfg(test)]
+        self.maintenance
+            .check(super::maintenance::FaultPoint::AddressObservation)?;
         let publisher = self
             .endpoint
             .address_publisher()

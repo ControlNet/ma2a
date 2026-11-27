@@ -106,8 +106,10 @@ impl Actor {
                 .store
                 .address_record(chain.space_id(), self.state.endpoint_id)
                 .await?
-                .ok_or(ma2a_store::StoreError::SchemaMismatch {
-                    detail: "enrollment bootstrap owner address missing after publication",
+                .ok_or_else(|| {
+                    crate::RuntimeError::new(
+                        crate::error::RuntimeErrorKind::AddressObservationUnavailable,
+                    )
                 })?;
             let owner_address = ma2a_core::SignedSpaceAddressRecordV1::parse_canonical_bytes(
                 persisted.signed_record(),

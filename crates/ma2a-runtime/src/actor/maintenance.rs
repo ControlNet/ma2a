@@ -43,6 +43,7 @@ pub(crate) enum FaultPoint {
     RelayMapApply,
     RelayObservationPersist,
     EndpointObservationPersist,
+    AddressObservation,
     AddressPublication,
     RelayPublication,
 }
