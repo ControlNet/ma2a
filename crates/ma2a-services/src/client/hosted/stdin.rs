@@ -11,8 +11,14 @@ use crate::{
     client::{ClientError, First, first, next, unexpected},
 };
 
-/// How far input went: the bytes sent, and whether `end` followed them.
-type Progress = (u64, bool);
+/// How far input went: bytes completed, bytes started (including any in-flight write), and
+/// whether `end` has started (so all `data` frames completed).
+#[derive(Clone, Copy, Default)]
+struct Progress {
+    sent: u64,
+    started: u64,
+    ended: bool,
+}
 
 /// Writes local input to the Process stdin until EOF, then reports what was delivered.
 ///
@@ -83,18 +89,20 @@ where
         let Some(chunk) = buffer.get(..read).filter(|chunk| !chunk.is_empty()) else {
             break;
         };
+        let len = u64::try_from(read).unwrap_or(u64::MAX);
+        progress.started = progress.started.saturating_add(len);
         writer
             .data(Channel::Input, chunk)
             .await
             .map_err(ClientError::Stream)?;
-        progress.0 += u64::try_from(read).unwrap_or(u64::MAX);
+        progress.sent = progress.started;
     }
+    // The target may answer `end` before its write or flush returns.
+    progress.ended = true;
     writer
         .end(Channel::Input)
         .await
         .map_err(ClientError::Stream)?;
-    // The target may answer the `end` before the flush returns, or fails.
-    progress.1 = true;
     writer.flush().await.map_err(ClientError::Stream)
 }
 
@@ -109,11 +117,11 @@ fn written(
     if frame.kind() != FrameKind::Outcome {
         return Err(unexpected(frame));
     }
-    let answers = |(bytes, closed): (u64, bool), (sent, ended): Progress| {
+    let answers = |(bytes, closed): (u64, bool), progress: Progress| {
         if closed {
-            bytes <= sent
+            bytes <= progress.started
         } else {
-            ended && bytes == sent
+            progress.ended && bytes == progress.sent
         }
     };
     match reply(frame)? {

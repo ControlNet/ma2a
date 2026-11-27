@@ -1,15 +1,15 @@
 //! Caller side of Proxy v1: one local byte stream bound to one remote TCP destination.
 
+mod downstream;
+
 use std::{
     future::Future,
-    io,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
-use ma2a_core::service::{
-    Channel, EndReason, FrameKind, MAX_DATA_CHUNK_LEN, ProxyResult, ServiceError,
-};
+use downstream::downstream;
+use ma2a_core::service::{Channel, MAX_DATA_CHUNK_LEN, ProxyResult, ServiceError};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite},
     sync::Notify,
@@ -17,10 +17,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ClientError, First, Sender, Written, decoded, drained, empty_accept, first_or_cancel, next,
-    send_cancel,
-    sinks::{settled, shutdown_bounded, write_bounded, write_until},
-    unexpected, write_watching,
+    ClientError, First, Sender, Written, drained, empty_accept, first_or_cancel, send_cancel,
+    sinks::settled, write_watching,
 };
 use crate::{FrameReader, FrameWriter};
 
@@ -58,7 +56,11 @@ where
     let (lost, stop, sent) = (
         Notify::new(),
         CancellationToken::new(),
-        (AtomicU64::new(0), AtomicBool::new(false)),
+        Sent {
+            started: AtomicU64::new(0),
+            completed: AtomicU64::new(0),
+            ended: AtomicBool::new(false),
+        },
     );
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
@@ -98,15 +100,19 @@ where
     settled(answer, unread)
 }
 
-/// The bytes the caller sent toward the destination, and whether it sent its `end`.
-type Sent = (AtomicU64, AtomicBool);
+/// Bytes started and completed toward the destination, and whether `end` started.
+pub(super) struct Sent {
+    pub(super) started: AtomicU64,
+    pub(super) completed: AtomicU64,
+    pub(super) ended: AtomicBool,
+}
 
 /// Local → destination, then `end` at local EOF, and a `cancel` once cancelled or the local
 /// side is lost or fails; records what it sent in `sent`, and a failed local read in `unread`.
 async fn upstream<W, LR, C>(
     writer: &mut FrameWriter<W>,
     (mut local_read, cancel): (LR, C),
-    (lost, stop, (sent, input_ended), unread): (
+    (lost, stop, sent, unread): (
         &Notify,
         &CancellationToken,
         &Sent,
@@ -146,8 +152,8 @@ async fn upstream<W, LR, C>(
         };
         if read == 0 {
             let ended = async {
+                sent.ended.store(true, Ordering::Release);
                 writer.end(Channel::Input).await?;
-                input_ended.store(true, Ordering::Relaxed);
                 writer.flush().await
             };
             match write_watching(ended, (lost, cancel.as_mut(), stop)).await {
@@ -164,9 +170,14 @@ async fn upstream<W, LR, C>(
             return;
         }
         let chunk = buffer.get(..read).unwrap_or_default();
+        let len = u64::try_from(read).unwrap_or(u64::MAX);
         let forwarded = async {
+            let total = sent
+                .started
+                .fetch_add(len, Ordering::AcqRel)
+                .saturating_add(len);
             writer.data(Channel::Input, chunk).await?;
-            sent.fetch_add(u64::try_from(read).unwrap_or(u64::MAX), Ordering::Relaxed);
+            sent.completed.store(total, Ordering::Release);
             writer.flush().await
         };
         match write_watching(forwarded, (lost, cancel.as_mut(), stop)).await {
@@ -196,90 +207,4 @@ async fn wait_stop<C: Future<Output = ()>>(
         () = cancel => {}
     }
     stop.cancel();
-}
-
-/// Destination → local until the outcome; a lost local side asks upstream to cancel, and
-/// explicit cancellation interrupts local delivery and discards remaining output while still
-/// checking frames and byte counts. Returns the answer and the first local write that failed.
-///
-/// The destination's bytes end once, and the outcome counts exactly the bytes received from it
-/// and at most the `sent` ones as taken to it: an answer with other counts is not this relay.
-/// A relay completes only once both sides ended, with every byte sent taken to the
-/// destination; any other end may have moved part of the traffic.
-async fn downstream<R, LW>(
-    reader: &mut FrameReader<R>,
-    (mut local_write, idle): (LW, Duration),
-    (lost, stop, (sent, input_ended)): (&Notify, &CancellationToken, &Sent),
-) -> (Result<ProxyResult, ClientError>, Option<io::Error>)
-where
-    R: AsyncRead + Unpin,
-    LW: AsyncWrite + Unpin,
-{
-    let mut unwritten = None;
-    let mut discarding = false;
-    let answer = async {
-        let invalid = || ClientError::Stream(ServiceError::InvalidInput);
-        let (mut ended, mut received) = (false, 0_u64);
-        loop {
-            let frame = next(reader).await?;
-            let delivered = match frame.kind() {
-                FrameKind::Outcome => {
-                    let result = decoded(ProxyResult::decode_outcome(frame.payload()))?;
-                    let (sent, completed) = (
-                        sent.load(Ordering::Relaxed),
-                        result.reason == EndReason::Completed,
-                    );
-                    if completed && !(ended && input_ended.load(Ordering::Relaxed)) {
-                        return Err(invalid());
-                    }
-                    let taken = if completed {
-                        result.bytes_to_target == sent
-                    } else {
-                        result.bytes_to_target <= sent
-                    };
-                    let counted = result.bytes_from_target == received && taken;
-                    if !counted {
-                        return Err(ClientError::Stream(ServiceError::IntegrityMismatch));
-                    }
-                    return Ok(result);
-                }
-                FrameKind::Data if !ended => match frame.data().map_err(ClientError::Stream)? {
-                    (Channel::Input, bytes) => {
-                        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                        received = received.saturating_add(length);
-                        if unwritten.is_some() {
-                            Some(Ok(()))
-                        } else if discarding || stop.is_cancelled() {
-                            None
-                        } else {
-                            write_until(write_bounded(&mut local_write, bytes, idle), stop).await
-                        }
-                    }
-                    _ => return Err(invalid()),
-                },
-                FrameKind::End if !ended && frame.end() == Ok(Channel::Input) => {
-                    ended = true;
-                    if unwritten.is_some() {
-                        Some(Ok(()))
-                    } else if discarding || stop.is_cancelled() {
-                        None
-                    } else {
-                        write_until(shutdown_bounded(&mut local_write, idle), stop).await
-                    }
-                }
-                FrameKind::Data | FrameKind::End => return Err(invalid()),
-                _ => return Err(unexpected(&frame)),
-            };
-            match delivered {
-                Some(Ok(())) => {}
-                Some(Err(failure)) => {
-                    unwritten = Some(failure);
-                    lost.notify_one();
-                }
-                None => discarding = true,
-            }
-        }
-    }
-    .await;
-    (answer, unwritten)
 }

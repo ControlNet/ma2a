@@ -1700,3 +1700,168 @@ async fn cancelling_a_proxy_bounds_missing_terminal_and_preserves_prior_io_error
     );
     Ok(())
 }
+
+/// Simulates an overlapped write that delivers bytes to the peer (`inner`) and stays
+/// `Poll::Pending` once the total written bytes reach `trigger_at`, until `released` is set.
+struct PendingAfterDeliver<W> {
+    inner: W,
+    trigger_at: usize,
+    written: usize,
+    pending_len: Option<usize>,
+    triggered: bool,
+}
+
+impl<W> PendingAfterDeliver<W> {
+    const fn new(inner: W, trigger_at: usize) -> Self {
+        Self {
+            inner,
+            trigger_at,
+            written: 0,
+            pending_len: None,
+            triggered: false,
+        }
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for PendingAfterDeliver<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.pending_len.is_some() {
+            // Remain pending until the peer's early outcome ends the select.
+            return Poll::Pending;
+        }
+        let poll = Pin::new(&mut self.inner).poll_write(context, buffer);
+        if let Poll::Ready(Ok(count)) = poll {
+            self.written += count;
+            if !self.triggered && self.written >= self.trigger_at {
+                self.triggered = true;
+                self.pending_len = Some(count);
+                return Poll::Pending;
+            }
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(context)
+    }
+}
+
+async fn overlapped_stdin_case(
+    (trigger_at, expect_end): (usize, bool),
+    (close, reply_bytes): (bool, u64),
+) -> TestResult<Result<(u64, bool), ClientError>> {
+    use ma2a_core::service::{ProcessAccept, ProcessReply};
+    use ma2a_services::client::hosted;
+
+    let admitted = ProcessAccept::Admitted.encode()?;
+    let ((mut reader, writer), (mut target_reader, mut target_writer)) = pipe();
+    let mut writer = FrameWriter::new(PendingAfterDeliver::new(writer.into_inner(), trigger_at));
+    let target = async {
+        target_writer.frame(FrameKind::Accept, &admitted).await?;
+        target_writer.flush().await?;
+        assert_eq!(
+            target_reader.expect().await?.data()?,
+            (Channel::Input, &b"hello"[..])
+        );
+        if expect_end {
+            assert_eq!(target_reader.expect().await?.end()?, Channel::Input);
+        }
+        let reply = ProcessReply::Written(reply_bytes, close);
+        target_writer
+            .frame(
+                FrameKind::Outcome,
+                &ProcessReply::encode_outcome(&Ok(reply))?,
+            )
+            .await?;
+        target_writer.flush().await
+    };
+    let caller = hosted::stdin((&mut reader, &mut writer), (&b"hello"[..], close));
+    let (written, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    Ok(written)
+}
+
+async fn overlapped_proxy_case(
+    (trigger_at, expect_end): (usize, bool),
+    (reason, to_target): (EndReason, u64),
+) -> TestResult<Result<ProxyResult, ClientError>> {
+    let ((mut reader, writer), (mut target_reader, mut target_writer)) = pipe();
+    let mut writer = FrameWriter::new(PendingAfterDeliver::new(writer.into_inner(), trigger_at));
+    let target = async {
+        target_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        target_writer.flush().await?;
+        assert_eq!(
+            target_reader.expect().await?.data()?,
+            (Channel::Input, &b"hello"[..])
+        );
+        if expect_end {
+            assert_eq!(target_reader.expect().await?.end()?, Channel::Input);
+            target_writer.end(Channel::Input).await?;
+        }
+        let outcome = ProxyResult::new(reason, (to_target, 0), 1);
+        target_writer
+            .frame(
+                FrameKind::Outcome,
+                &ProxyResult::encode_outcome(&Ok(outcome))?,
+            )
+            .await?;
+        target_writer.flush().await
+    };
+    let caller = proxy::run(
+        (&mut reader, &mut writer),
+        (&b"hello"[..], Vec::new()),
+        (Duration::from_secs(60), std::future::pending()),
+    );
+    let (relayed, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    Ok(relayed)
+}
+
+#[tokio::test]
+async fn overlapped_in_flight_stdin_writes_accept_early_outcomes_and_reject_excess() -> TestResult {
+    // 11 bytes = 5 header + 1 channel + 5 payload; 17 bytes = 11 Data + 6 End.
+    assert_eq!(
+        overlapped_stdin_case((11, false), (true, 5)).await??,
+        (5, true)
+    );
+    assert_eq!(
+        overlapped_stdin_case((17, true), (false, 5)).await??,
+        (5, false)
+    );
+    let excess = overlapped_stdin_case((11, false), (true, 6)).await?;
+    assert!(malformed(&excess), "{excess:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn overlapped_in_flight_proxy_writes_accept_early_outcomes_and_reject_excess() -> TestResult {
+    let cancelled = overlapped_proxy_case((11, false), (EndReason::Cancelled, 5)).await??;
+    assert_eq!(
+        (cancelled.reason, cancelled.bytes_to_target),
+        (EndReason::Cancelled, 5)
+    );
+    let completed = overlapped_proxy_case((17, true), (EndReason::Completed, 5)).await??;
+    assert_eq!(
+        (completed.reason, completed.bytes_to_target),
+        (EndReason::Completed, 5)
+    );
+    let excess = overlapped_proxy_case((11, false), (EndReason::Cancelled, 6)).await?;
+    assert!(miscounted(&excess), "{excess:?}");
+    Ok(())
+}
