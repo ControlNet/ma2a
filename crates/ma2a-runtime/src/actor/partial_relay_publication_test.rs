@@ -10,6 +10,7 @@ use crate::{Runtime, RuntimeClock, error::RuntimeError};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+mod explicit_expiry_test;
 mod freshness_test;
 
 #[derive(Debug)]

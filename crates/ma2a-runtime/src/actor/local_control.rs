@@ -38,7 +38,7 @@ impl Actor {
             // One clock reading gives the renewal both its issue time and its expiry, so a
             // clock step between two readings cannot leave it an invalid window. Always reconcile
             // durable activity against `effective`, skipping signing only for current Spaces.
-            self.publish_local_relay(provider.clone(), (issued_at_ms, expires_at_ms))
+            self.publish_local_relay(provider.clone(), (issued_at_ms, expires_at_ms, true))
                 .await?;
         } else {
             self.maintenance.published_relay.clear();
@@ -107,24 +107,30 @@ impl Actor {
     ) -> Result<u64, RuntimeError> {
         let issued_at_ms = u64::try_from(self.clock.now_ms()?)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
-        self.publish_local_relay(config, (issued_at_ms, expires_at_ms))
+        ma2a_core::PrivateRelayAdvertisementValidity::new(1, issued_at_ms, expires_at_ms)
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        self.publish_local_relay(config, (issued_at_ms, expires_at_ms, false))
             .await
     }
 
     async fn publish_local_relay(
         &mut self,
         config: ma2a_net::PrivateRelayProviderConfig,
-        (issued_at_ms, expires_at_ms): (u64, u64),
+        (issued_at_ms, expires_at_ms, use_freshness_cache): (u64, u64, bool),
     ) -> Result<u64, RuntimeError> {
         let authorizations = self
             .store
             .relay_authorizations(self.state.endpoint_id)
             .await?;
         let effective = self.effective_relay_spaces(&config, &authorizations);
-        let skip_spaces = self.current_relay_spaces(
-            (config.public_relay_url().as_str(), issued_at_ms),
-            &effective,
-        );
+        let skip_spaces = if use_freshness_cache {
+            self.current_relay_spaces(
+                (config.public_relay_url().as_str(), issued_at_ms),
+                &effective,
+            )
+        } else {
+            std::collections::BTreeSet::new()
+        };
         let publisher = self
             .endpoint
             .private_relay_advertisement_publisher(config.clone());

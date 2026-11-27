@@ -20,7 +20,7 @@ impl PendingRelayPublication {
             &[ma2a_core::SpaceAuthorizationView],
             &std::collections::BTreeSet<ma2a_core::SpaceId>,
         ),
-        now_ms: u64,
+        (now_ms, desired_expires_at_ms): (u64, u64),
     ) -> Result<bool, RuntimeError> {
         let (config, authorizations, skip_spaces) = desired;
         let (issued_at_ms, expires_at_ms) = self.effective_window()?;
@@ -30,6 +30,7 @@ impl PendingRelayPublication {
         Ok(self.config == *config
             && self.authorizations == authorizations
             && self.skip_spaces == *skip_spaces
+            && desired_expires_at_ms >= expires_at_ms
             && crate::relay_publication::is_current(now_ms, issued_at_ms, expires_at_ms))
     }
 
@@ -172,7 +173,7 @@ impl StoreBackend {
             .map_or(Ok(false), |pending| {
                 pending.can_reuse(
                     (publisher.config(), &authorizations, skip_spaces),
-                    issued_at_ms,
+                    (issued_at_ms, expires_at_ms),
                 )
             })?;
         if !reuse {
