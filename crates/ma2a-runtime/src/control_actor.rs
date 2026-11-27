@@ -66,12 +66,13 @@ impl Actor {
         };
         let store = self.store.clone();
         let client = self.endpoint.control_client();
+        let clock = std::sync::Arc::clone(&self.clock);
         let endpoint_id = self.state.endpoint_id;
         let task = scheduled;
         #[cfg(test)]
         let gate = std::sync::Arc::clone(&self.maintenance.control_round_gate);
         self.control_rounds.spawn(async move {
-            let result = ControlRoundRunner::new(store, client)
+            let result = ControlRoundRunner::new(store, client, clock)
                 .run(ControlRoundRequest {
                     local_endpoint_id: endpoint_id,
                     rotation: task.rotation(),

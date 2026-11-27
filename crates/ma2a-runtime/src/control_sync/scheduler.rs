@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, future::Future};
+use std::{collections::BTreeSet, future::Future, sync::Arc};
 
 use ma2a_net::{
     CONTROL_DIAL_CONCURRENCY, CONTROL_ROUND_DEADLINE, ControlClient, exchange_control_with_retry,
@@ -7,22 +7,32 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::{
+    RuntimeClock,
     control_sync::{
         ControlApplyOutcome, ControlExchangeInput, ControlFailure, ControlRoundOutcome,
         ControlRoundRequest, PreparedControlPeer, dial_queue::DialQueue,
     },
-    error::RuntimeError,
+    error::{RuntimeError, RuntimeErrorKind},
     store::StoreClient,
 };
 
 pub(crate) struct ControlRoundRunner {
     store: StoreClient,
     client: ControlClient,
+    clock: Arc<dyn RuntimeClock>,
 }
 
 impl ControlRoundRunner {
-    pub(crate) const fn new(store: StoreClient, client: ControlClient) -> Self {
-        Self { store, client }
+    pub(crate) const fn new(
+        store: StoreClient,
+        client: ControlClient,
+        clock: Arc<dyn RuntimeClock>,
+    ) -> Self {
+        Self {
+            store,
+            client,
+            clock,
+        }
     }
 
     pub(crate) async fn run(
@@ -37,7 +47,6 @@ impl ControlRoundRunner {
         request: ControlRoundRequest,
     ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
         let local_endpoint_id = request.local_endpoint_id;
-        let now_ms = request.now_ms;
         let prepared = self.store.prepare_control_round(request).await?;
         let dialed_peers: BTreeSet<_> = prepared.iter().map(|entry| entry.peer).collect();
         let mut pending = DialQueue::new(prepared);
@@ -62,6 +71,9 @@ impl ControlRoundRunner {
                 pending.finished(peer, false);
                 continue;
             };
+            let now_ms = self.clock.now_ms().and_then(|value| {
+                u64::try_from(value).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
+            })?;
             let applied = self
                 .store
                 .apply_control_response(
@@ -146,6 +158,8 @@ fn spawn_control_dials<Dial, DialFuture, DialError>(
     }
 }
 
+#[cfg(test)]
+mod clock_tests;
 #[cfg(test)]
 mod tests {
     use std::{
