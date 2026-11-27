@@ -91,10 +91,14 @@ paths. PEM bytes are never stored. Net parses this Store-owned record into runti
 
 SQLite holds the desired Private Relay configuration. The running server retains
 its applied configuration; a committed change remains pending until the listener,
-admission state, candidates and signed publications converge. Temporary listener
-bind failures retry on normal Runtime maintenance, including after restart. A
-failed mutation response after configuration commit retains its RequestId outcome;
-it does not undo the desired configuration or execute the mutation again.
+admission state, and candidate view converge. Applied listener and admission
+state take effect even when signed advertisement publication remains deferred (for
+example, while the clock is behind a persisted issue time); in that case the
+configuration response succeeds and periodic Runtime maintenance retries the
+deferred signed publication. Temporary listener bind failures also retry on
+normal Runtime maintenance, including after restart. A failed mutation response
+after configuration commit retains its RequestId outcome; it does not undo the
+desired configuration or execute the mutation again.
 
 Reconfiguring the same listener joins the old server before binding its replacement.
 Different listeners can prepare the replacement while the old server still serves.
