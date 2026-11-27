@@ -11,7 +11,9 @@ use ma2a_core::service::{
     TerminalSize, Termination,
 };
 use ma2a_services::{Frame, OperationEnd, OperationReport, serve_shell};
-use support::{ClientIo, TempRoot, TestResult, drain, pipe_blocked, pipe_with};
+#[cfg(target_os = "linux")]
+use support::TempRoot;
+use support::{ClientIo, TestResult, drain, pipe_blocked, pipe_with};
 use tokio_util::sync::CancellationToken;
 
 fn session(program: &str, args: &[&str], lifetime_ms: u64) -> TestResult<ShellRequest> {
