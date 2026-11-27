@@ -14,7 +14,7 @@ impl Actor {
         &self,
     ) -> Result<super::RelayRuntimeStatus, RuntimeError> {
         let desired = self.store.relay_configuration_committed().await?;
-        let revision = desired.revision();
+        let revision = self.snapshot_revision(desired.revision());
         self.relay_status_for(desired.into_value(), revision)
     }
 

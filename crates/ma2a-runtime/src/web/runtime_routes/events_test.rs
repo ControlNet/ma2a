@@ -42,7 +42,7 @@ async fn revocation_during_snapshot_read_prevents_notification()
     Ok(())
 }
 
-struct TestState(std::path::PathBuf);
+pub(super) struct TestState(std::path::PathBuf);
 
 impl Drop for TestState {
     fn drop(&mut self) {
@@ -146,7 +146,7 @@ async fn equal_revision_restart_with_stale_boot_id_emits_resync_required()
     Ok(())
 }
 
-type TestRouter = (
+pub(super) type TestRouter = (
     TestState,
     crate::Runtime,
     tokio_util::sync::CancellationToken,
@@ -156,7 +156,8 @@ type TestRouter = (
     String,
 );
 
-async fn start_test_router() -> Result<TestRouter, Box<dyn std::error::Error + Send + Sync>> {
+pub(super) async fn start_test_router()
+-> Result<TestRouter, Box<dyn std::error::Error + Send + Sync>> {
     use std::net::SocketAddr;
 
     use axum::extract::connect_info::MockConnectInfo;

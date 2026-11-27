@@ -95,6 +95,10 @@ impl Actor {
         let round_id = scheduled.id();
         let current_round =
             scheduled.membership_generation() == self.synchronized_control_peers.generation();
+        let before_revision = self.state.revision;
+        let round_had_peers = !matches!(outcome, Ok(None));
+        let explicit_round = self.control_queue.has_waiter(round_id);
+        let advance_from = (round_had_peers || explicit_round).then_some(before_revision);
         let mut failure = None;
         let (peers, dialed) = match outcome {
             Ok(Some(outcome)) => {
@@ -120,7 +124,7 @@ impl Actor {
         };
         let reconciled = self.reconcile_control_completion().await;
         let succeeded = failure.is_none() && reconciled.is_ok();
-        self.record_control_round(succeeded, &peers);
+        self.record_control_round(advance_from, (succeeded, &peers));
         self.complete_control_waiters(round_id, succeeded, &peers, dialed.as_ref());
         Self::absorb_background("control projection", reconciled)?;
         if let Some(error) = failure {
@@ -131,7 +135,11 @@ impl Actor {
 
     /// Retains a bounded in-memory round history. It is a diagnostic, never a log:
     /// it is not persisted and does not survive a restart.
-    fn record_control_round(&mut self, succeeded: bool, synchronized_peers: &BTreeSet<EndpointId>) {
+    fn record_control_round(
+        &mut self,
+        advance_from: Option<u64>,
+        (succeeded, synchronized_peers): (bool, &BTreeSet<EndpointId>),
+    ) {
         let at_ms = match self.clock.now_ms().and_then(|now| {
             u64::try_from(now).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
         }) {
@@ -152,6 +160,13 @@ impl Actor {
         let Ok(record) = crate::api::ControlRoundView::new(at_ms, peer_count, outcome) else {
             return;
         };
+        // Advance the observable snapshot revision when an explicit or peered round appends
+        // history without advancing durable Store state, keeping durable revisions untouched.
+        if let Some(before_revision) = advance_from
+            && self.state.revision <= before_revision
+        {
+            self.control_round_revision_bumps = self.control_round_revision_bumps.saturating_add(1);
+        }
         if self.control_round_history.len() >= crate::api::MAX_RETAINED_CONTROL_ROUNDS {
             self.control_round_history.pop_front();
         }

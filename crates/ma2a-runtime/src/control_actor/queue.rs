@@ -158,6 +158,12 @@ impl ControlRoundQueue {
         self.healthy && self.active.is_none() && self.pending.is_none()
     }
 
+    pub(super) fn has_waiter(&self, round_id: ControlRoundId) -> bool {
+        self.waiters
+            .iter()
+            .any(|waiter| waiter.round_id == Some(round_id))
+    }
+
     pub(super) fn complete(
         &mut self,
         round_id: ControlRoundId,

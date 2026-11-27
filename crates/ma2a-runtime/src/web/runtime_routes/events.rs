@@ -222,5 +222,8 @@ async fn authenticated_stamp(
 }
 
 #[cfg(test)]
+#[path = "events_control_test.rs"]
+mod control_tests;
+#[cfg(test)]
 #[path = "events_test.rs"]
 mod tests;

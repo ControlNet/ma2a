@@ -43,11 +43,9 @@ impl Actor {
         &self,
         reply: oneshot::Sender<Result<crate::api::SnapshotStampView, RuntimeError>>,
     ) {
-        let result = self
-            .store
-            .revision()
-            .await
-            .map(|revision| crate::api::SnapshotStampView::new(revision, self.state.boot_id));
+        let result = self.store.revision().await.map(|revision| {
+            crate::api::SnapshotStampView::new(self.snapshot_revision(revision), self.state.boot_id)
+        });
         drop(reply.send(result));
     }
 
@@ -138,7 +136,7 @@ impl Actor {
             ),
         );
         RuntimeSnapshot::new(
-            SnapshotHeader::new(durable.revision(), endpoint),
+            SnapshotHeader::new(self.snapshot_revision(durable.revision()), endpoint),
             collections,
             state,
         )
