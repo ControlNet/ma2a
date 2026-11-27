@@ -42,31 +42,56 @@ impl ProcessManager {
     /// Records one start for `creator`, or answers the Process its `RequestId` already made.
     pub(super) async fn create(
         &self,
-        (creator, request_id): (EndpointId, RequestId),
+        binding: (EndpointId, RequestId),
         start: &ProcessStart,
     ) -> Result<(ProcessCreation, Credentials), ServiceError> {
+        let ((creation, _), credentials) = self.create_inner(binding, (start, false)).await?;
+        Ok((creation, credentials))
+    }
+
+    /// Records one local start, returning any archived Process whose directory must be removed.
+    pub(super) async fn create_local(
+        &self,
+        binding: (EndpointId, RequestId),
+        start: &ProcessStart,
+    ) -> Result<((ProcessCreation, Option<ProcessId>), Credentials), ServiceError> {
+        self.create_inner(binding, (start, true)).await
+    }
+
+    async fn create_inner(
+        &self,
+        (creator, request_id): (EndpointId, RequestId),
+        (start, reclaim_retained): (&ProcessStart, bool),
+    ) -> Result<((ProcessCreation, Option<ProcessId>), Credentials), ServiceError> {
         let bytes = start.to_bytes().map_err(|_| ServiceError::InvalidInput)?;
         let name = start.name().map(str::to_owned);
         let id = ProcessId::random().map_err(|_| ServiceError::Internal)?;
         let mut secret = [0; 32];
         getrandom::fill(&mut secret).map_err(|_| ServiceError::Internal)?;
         let created_ms = self.now_ms();
-        let creation = self
+        let outcome = self
             .store()
             .processes(move |repository| {
-                repository.create_process(&NewProcess {
+                let new = NewProcess {
                     id,
                     binding: (creator, request_id),
                     fingerprint: fingerprint(&bytes),
                     start: (&bytes, name.as_deref()),
                     secret,
                     created_ms,
-                })
+                };
+                if reclaim_retained {
+                    repository.create_local_process(&new)
+                } else {
+                    repository.create_process(&new).map(|committed| {
+                        Committed::new(committed.revision(), (committed.into_value(), None))
+                    })
+                }
             })
             .await?
             .map_err(|_| ServiceError::Unavailable)?
             .into_value();
-        Ok((creation, Credentials::new(id, secret)))
+        Ok((outcome, Credentials::new(id, secret)))
     }
 
     /// Serves one remote `start`.

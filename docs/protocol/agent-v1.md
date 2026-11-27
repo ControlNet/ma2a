@@ -854,9 +854,10 @@ inside each crash window. Release builds compile the check out entirely.
 - **Instances are local Processes.** Each instance counts against the Process limits of the local
   Endpoint as creator (Process v1: 8 non-terminal and 16 non-archived records per creator), so at
   most 8 Agents run instances at once. Ended instance Processes, with their output, stay readable
-  until a new instance needs the room: a start that finds 16 non-archived local records archives
-  the oldest ended local Process that is not bound to an unconcluded Agent instance and tries
-  once more, or refuses when none is eligible.
+  until a new instance needs the room: while below the live Process limits, a start that finds a
+  retained-record limit reached atomically archives the oldest ended local Process that is not
+  bound to an unconcluded Agent instance alongside recording the new Process, or refuses without
+  archiving when a live limit is reached or no ended Process is eligible.
 - **Workspace downloads replace.** `transfer.get` and `agent.artifact` replace an existing
   workspace file of the same name.
 - **Backoff and ready deadline.** The restart backoff is in memory and resets with the daemon. The

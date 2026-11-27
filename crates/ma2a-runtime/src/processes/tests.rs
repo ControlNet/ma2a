@@ -2,6 +2,7 @@
 #![cfg(unix)]
 
 mod driver;
+mod local_limit;
 mod logs;
 mod recovery;
 mod relay;

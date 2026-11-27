@@ -1,10 +1,13 @@
 //! Bounded retention of ended Processes and their tombstones.
 
-use ma2a_core::service::ProcessId;
-use rusqlite::params;
+use ma2a_core::{EndpointId, service::ProcessId};
+use rusqlite::{OptionalExtension as _, Transaction, params};
 
 use crate::{
-    Committed, ProcessArchive, Repository, StoreError, processes::load,
+    Committed, MAX_ACTIVE_PROCESSES, MAX_ACTIVE_PROCESSES_PER_CREATOR, MAX_RETAINED_PROCESSES,
+    MAX_RETAINED_PROCESSES_PER_CREATOR, NewProcess, ProcessArchive, ProcessCreation, Repository,
+    StoreError,
+    processes::{ACTIVE, RETAINED, count, find_by_binding, insert_process, load},
     repository::increment_revision,
 };
 
@@ -88,10 +91,7 @@ impl Repository {
                 if bound_to_live_instance {
                     ProcessArchive::Active
                 } else {
-                    transaction.execute(
-                        "UPDATE processes SET start = NULL, archived_at_ms = ?2 WHERE process_id = ?1",
-                        params![id.as_bytes().as_slice(), at_ms],
-                    )?;
+                    archive_row(&transaction, id, at_ms)?;
                     increment_revision(&transaction)?;
                     ProcessArchive::Archived(Box::new(load(&transaction, id)?.ok_or(
                         StoreError::SchemaMismatch {
@@ -105,4 +105,108 @@ impl Repository {
         transaction.commit()?;
         Ok(Committed::new(revision, outcome))
     }
+
+    /// Records a local start, atomically archiving the oldest eligible ended local Process when
+    /// below live limits and a retained limit is reached.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the transaction cannot be committed.
+    pub fn create_local_process(
+        &mut self,
+        new: &NewProcess<'_>,
+    ) -> Result<Committed<(ProcessCreation, Option<ProcessId>)>, StoreError> {
+        self.create_process_inner(new, true)
+    }
+
+    pub(crate) fn create_process_inner(
+        &mut self,
+        new: &NewProcess<'_>,
+        reclaim_retained: bool,
+    ) -> Result<Committed<(ProcessCreation, Option<ProcessId>)>, StoreError> {
+        let transaction = self.immediate()?;
+        let (creator, request_id) = new.binding;
+        let existing = find_by_binding(&transaction, creator, request_id)?;
+        let mut archived = None;
+        let creation = if let Some(record) = existing {
+            if record.fingerprint == new.fingerprint {
+                ProcessCreation::Existing(record)
+            } else {
+                ProcessCreation::Conflict
+            }
+        } else if count(&transaction, ACTIVE, Some(creator))? >= MAX_ACTIVE_PROCESSES_PER_CREATOR
+            || count(&transaction, ACTIVE, None)? >= MAX_ACTIVE_PROCESSES
+        {
+            ProcessCreation::LimitExceeded
+        } else {
+            let creator_retained = count(&transaction, RETAINED, Some(creator))?;
+            let total_retained = count(&transaction, RETAINED, None)?;
+            let needs_room = creator_retained >= MAX_RETAINED_PROCESSES_PER_CREATOR
+                || total_retained >= MAX_RETAINED_PROCESSES;
+            let room_made = if !needs_room {
+                true
+            } else if reclaim_retained
+                && creator_retained <= MAX_RETAINED_PROCESSES_PER_CREATOR
+                && total_retained <= MAX_RETAINED_PROCESSES
+            {
+                archived = reclaim_oldest_local(&transaction, creator, new.created_ms)?;
+                archived.is_some()
+            } else {
+                false
+            };
+            if room_made {
+                ProcessCreation::Created(insert_process(&transaction, new)?)
+            } else {
+                ProcessCreation::LimitExceeded
+            }
+        };
+        let revision = crate::service_exposures::current_revision(&transaction)?;
+        transaction.commit()?;
+        Ok(Committed::new(revision, (creation, archived)))
+    }
+}
+
+pub(crate) fn archive_row(
+    transaction: &Transaction<'_>,
+    id: ProcessId,
+    at_ms: u64,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "UPDATE processes SET start = NULL, archived_at_ms = ?2 WHERE process_id = ?1",
+        params![id.as_bytes().as_slice(), at_ms],
+    )?;
+    Ok(())
+}
+
+/// Archives the oldest ended Process of `creator` not bound to an unconcluded Agent instance.
+pub(crate) fn reclaim_oldest_local(
+    transaction: &Transaction<'_>,
+    creator: EndpointId,
+    at_ms: u64,
+) -> Result<Option<ProcessId>, StoreError> {
+    let candidate = transaction
+        .query_row(
+            "SELECT process_id FROM processes
+             WHERE creator_endpoint_id = ?1
+               AND state BETWEEN 3 AND 6
+               AND archived_at_ms IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM agent_instances
+                   WHERE process_id = processes.process_id AND ended_at_ms IS NULL
+               )
+             ORDER BY ended_at_ms ASC, process_id ASC
+             LIMIT 1",
+            [creator.as_bytes().as_slice()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()?;
+    let Some(bytes) = candidate else {
+        return Ok(None);
+    };
+    let id = <[u8; 16]>::try_from(bytes.as_slice())
+        .map(ProcessId::from_bytes)
+        .map_err(|_| StoreError::SchemaMismatch {
+            detail: "persisted Process is malformed",
+        })?;
+    archive_row(transaction, id, at_ms)?;
+    Ok(Some(id))
 }

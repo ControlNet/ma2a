@@ -476,9 +476,115 @@ fn ended_processes_bound_to_unconcluded_agent_instances_are_not_archived() -> Te
             .is_empty()
     );
 
-    // Once the instance concludes, archival proceeds.
+    // Once concluded, archival proceeds.
     repository.end_agent_instance((&agent, generation), 5)?;
     let archived = repository.archive_process(process, 6)?.into_value();
     assert!(matches!(archived, ProcessArchive::Archived(record) if record.is_archived()));
+    Ok(())
+}
+
+#[test]
+fn local_creation_checks_live_limits_before_archiving_and_reclaims_atomically() -> TestResult {
+    use ma2a_core::service::AgentId;
+    use ma2a_store::AgentDefinition;
+
+    let state = TempState::new("process-local-create")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let local = endpoint(1);
+
+    // One ended Process plus MAX_ACTIVE_PROCESSES_PER_CREATOR active Processes.
+    ended_process(&mut repository, (1, local))?;
+    let ended_id = ProcessId::from_bytes([1; 16]);
+    let live_limit = u8::try_from(MAX_ACTIVE_PROCESSES_PER_CREATOR)?;
+    for offset in 0..live_limit {
+        created(
+            repository
+                .create_process(&new_process(10 + offset, (local, request(10 + offset)?), 1))?
+                .value(),
+        )?;
+    }
+
+    // Refused at live limit without archiving the ended Process.
+    let refused = repository
+        .create_local_process(&new_process(90, (local, request(90)?), 2))?
+        .into_value();
+    assert_eq!(refused, (ProcessCreation::LimitExceeded, None));
+    assert!(
+        !repository
+            .process(ended_id)?
+            .ok_or("missing")?
+            .is_archived()
+    );
+
+    // Conclude the active Processes so retained limit is reached instead of live limit.
+    for offset in 0..live_limit {
+        let id = ProcessId::from_bytes([10 + offset; 16]);
+        repository.transition_process(id, step(ProcessState::Starting, 3))?;
+        repository.transition_process(
+            id,
+            ProcessTransition {
+                termination: Some(Termination::Exited(0)),
+                ..step(ProcessState::Exited, 4 + u64::from(offset))
+            },
+        )?;
+    }
+    let remaining = u8::try_from(MAX_RETAINED_PROCESSES_PER_CREATOR)? - 1 - live_limit;
+    for offset in 0..remaining {
+        let seed = 30 + offset;
+        let id = created(
+            repository
+                .create_process(&new_process(seed, (local, request(seed)?), 1))?
+                .value(),
+        )?;
+        repository.transition_process(id, step(ProcessState::Starting, 3))?;
+        repository.transition_process(
+            id,
+            ProcessTransition {
+                termination: Some(Termination::Exited(0)),
+                ..step(ProcessState::Exited, 20 + u64::from(offset))
+            },
+        )?;
+    }
+
+    // Bind the oldest ended Process ([1; 16], ended_ms = 3) to an unconcluded Agent instance so
+    // the next-oldest eligible Process ([10; 16], ended_ms = 4) is archived instead.
+    let agent = AgentId::new("worker")?;
+    repository.define_agent(
+        &AgentDefinition {
+            id: agent.clone(),
+            description: String::new(),
+            start: b"start".to_vec(),
+            tools: 0,
+            max_tasks: 1,
+        },
+        1,
+    )?;
+    repository.set_agent_enabled(&agent, (true, 2))?;
+    let generation = repository
+        .begin_agent_instance(&agent, 3)?
+        .into_value()
+        .and_then(|record| record.instance)
+        .ok_or("missing instance")?
+        .generation;
+    repository.bind_agent_process((&agent, generation), ended_id)?;
+
+    let (creation, archived) = repository
+        .create_local_process(&new_process(91, (local, request(91)?), 50))?
+        .into_value();
+    let next_oldest = ProcessId::from_bytes([10; 16]);
+    assert!(matches!(creation, ProcessCreation::Created(_)));
+    assert_eq!(archived, Some(next_oldest));
+    assert!(
+        !repository
+            .process(ended_id)?
+            .ok_or("missing")?
+            .is_archived()
+    );
+    assert!(
+        repository
+            .process(next_oldest)?
+            .ok_or("missing")?
+            .is_archived()
+    );
     Ok(())
 }

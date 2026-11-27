@@ -27,10 +27,10 @@ pub const MAX_RETAINED_PROCESSES: u32 = 128;
 pub const MAX_RETAINED_PROCESSES_PER_CREATOR: u32 = 16;
 
 /// SQL predicate of a record that still holds its start and output.
-const RETAINED: &str = "archived_at_ms IS NULL";
+pub(crate) const RETAINED: &str = "archived_at_ms IS NULL";
 
 /// SQL predicate of a non-terminal state.
-const ACTIVE: &str = "state BETWEEN 0 AND 2";
+pub(crate) const ACTIVE: &str = "state BETWEEN 0 AND 2";
 
 /// A Process to record before any supervisor exists.
 #[derive(Clone, Copy, Debug)]
@@ -135,7 +135,7 @@ pub(crate) fn load(
         .transpose()
 }
 
-fn count(
+pub(crate) fn count(
     transaction: &Transaction<'_>,
     predicate: &str,
     creator: Option<EndpointId>,
@@ -147,6 +147,55 @@ fn count(
     Ok(transaction.query_row(&sql, [creator], |row| row.get(0))?)
 }
 
+pub(crate) fn find_by_binding(
+    transaction: &Transaction<'_>,
+    creator: EndpointId,
+    request_id: RequestId,
+) -> Result<Option<ProcessRecord>, StoreError> {
+    transaction
+        .query_row(
+            &format!(
+                "SELECT {PROCESS_COLUMNS} FROM processes
+                 WHERE creator_endpoint_id = ?1 AND request_id = ?2"
+            ),
+            params![
+                creator.as_bytes().as_slice(),
+                request_id.as_bytes().as_slice()
+            ],
+            read_row,
+        )
+        .optional()?
+        .map(decode_row)
+        .transpose()
+}
+
+pub(crate) fn insert_process(
+    transaction: &Transaction<'_>,
+    new: &NewProcess<'_>,
+) -> Result<ProcessRecord, StoreError> {
+    let (creator, request_id) = new.binding;
+    let (start, name) = new.start;
+    transaction.execute(
+        "INSERT INTO processes (process_id, creator_endpoint_id, request_id, fingerprint,
+         start, name, state, secret, created_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)",
+        params![
+            new.id.as_bytes().as_slice(),
+            creator.as_bytes().as_slice(),
+            request_id.as_bytes().as_slice(),
+            new.fingerprint.as_slice(),
+            start,
+            name,
+            new.secret.as_slice(),
+            new.created_ms,
+        ],
+    )?;
+    increment_revision(transaction)?;
+    load(transaction, new.id)?.ok_or(StoreError::SchemaMismatch {
+        detail: "a recorded Process could not be read back",
+    })
+}
+
 impl Repository {
     /// Records a start, or answers the Process an earlier attempt with this `RequestId` made.
     ///
@@ -156,62 +205,9 @@ impl Repository {
         &mut self,
         new: &NewProcess<'_>,
     ) -> Result<Committed<ProcessCreation>, StoreError> {
-        let transaction = self.immediate()?;
-        let (creator, request_id) = new.binding;
-        let existing = transaction
-            .query_row(
-                &format!(
-                    "SELECT {PROCESS_COLUMNS} FROM processes
-                     WHERE creator_endpoint_id = ?1 AND request_id = ?2"
-                ),
-                params![
-                    creator.as_bytes().as_slice(),
-                    request_id.as_bytes().as_slice()
-                ],
-                read_row,
-            )
-            .optional()?
-            .map(decode_row)
-            .transpose()?;
-        let creation = if let Some(record) = existing {
-            if record.fingerprint == new.fingerprint {
-                ProcessCreation::Existing(record)
-            } else {
-                ProcessCreation::Conflict
-            }
-        } else if count(&transaction, ACTIVE, Some(creator))? >= MAX_ACTIVE_PROCESSES_PER_CREATOR
-            || count(&transaction, ACTIVE, None)? >= MAX_ACTIVE_PROCESSES
-            || count(&transaction, RETAINED, Some(creator))? >= MAX_RETAINED_PROCESSES_PER_CREATOR
-            || count(&transaction, RETAINED, None)? >= MAX_RETAINED_PROCESSES
-        {
-            ProcessCreation::LimitExceeded
-        } else {
-            let (start, name) = new.start;
-            transaction.execute(
-                "INSERT INTO processes (process_id, creator_endpoint_id, request_id, fingerprint,
-                 start, name, state, secret, created_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)",
-                params![
-                    new.id.as_bytes().as_slice(),
-                    creator.as_bytes().as_slice(),
-                    request_id.as_bytes().as_slice(),
-                    new.fingerprint.as_slice(),
-                    start,
-                    name,
-                    new.secret.as_slice(),
-                    new.created_ms,
-                ],
-            )?;
-            increment_revision(&transaction)?;
-            ProcessCreation::Created(load(&transaction, new.id)?.ok_or(
-                StoreError::SchemaMismatch {
-                    detail: "a recorded Process could not be read back",
-                },
-            )?)
-        };
-        let revision = crate::service_exposures::current_revision(&transaction)?;
-        transaction.commit()?;
-        Ok(Committed::new(revision, creation))
+        let committed = self.create_process_inner(new, false)?;
+        let revision = committed.revision();
+        Ok(Committed::new(revision, committed.into_value().0))
     }
 
     /// Moves one Process forward; any transition its lifecycle does not permit is refused.

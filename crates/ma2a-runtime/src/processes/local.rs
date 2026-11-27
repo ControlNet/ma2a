@@ -10,9 +10,7 @@ use ma2a_core::{
     service::{LogFrom, ProcessId, ProcessStart, ServiceError},
 };
 use ma2a_services::supervisor::{Channel, SupervisorRequest};
-use ma2a_store::{
-    MAX_RETAINED_PROCESSES_PER_CREATOR, ProcessCreation, ProcessFilter, ProcessRecord,
-};
+use ma2a_store::{ProcessCreation, ProcessRecord};
 
 use super::ProcessManager;
 
@@ -27,9 +25,9 @@ impl ProcessManager {
             return Err(ServiceError::Unavailable);
         }
         let binding = (self.0.local, request_id);
-        let (mut creation, mut credentials) = self.create(binding, &start).await?;
-        if matches!(creation, ProcessCreation::LimitExceeded) && self.archive_oldest_local().await {
-            (creation, credentials) = self.create(binding, &start).await?;
+        let ((creation, archived), credentials) = self.create_local(binding, &start).await?;
+        if let Some(id) = archived {
+            self.remove_directory(id).await;
         }
         match creation {
             ProcessCreation::Created(_) => self.bring_up(credentials, start).await,
@@ -37,38 +35,6 @@ impl ProcessManager {
             ProcessCreation::Conflict => Err(ServiceError::Conflict),
             ProcessCreation::LimitExceeded => Err(ServiceError::ConcurrencyExceeded),
         }
-    }
-
-    /// Archives the oldest eligible ended local Process; `true` when one was archived.
-    async fn archive_oldest_local(&self) -> bool {
-        let filter = ProcessFilter {
-            creator: Some(self.0.local),
-            after: None,
-            limit: MAX_RETAINED_PROCESSES_PER_CREATOR,
-            archived: false,
-        };
-        let listed = self
-            .store()
-            .processes(move |repository| repository.processes(filter))
-            .await;
-        let Ok(Ok(listed)) = listed else {
-            return false;
-        };
-        let mut candidates: Vec<_> = listed
-            .into_value()
-            .into_iter()
-            .filter(|record| record.state.is_terminal())
-            .collect();
-        candidates.sort_by_key(|record| (record.times.ended_ms, record.id));
-        for record in candidates {
-            match self.delete(None, record.id).await {
-                Ok(_) => return true,
-                // Processes bound to unconcluded Agent instances stay protected until concluded.
-                Err(ServiceError::ProcessActive) => {}
-                Err(_) => return false,
-            }
-        }
-        false
     }
 
     /// Attaches to a live local Process as its stdin writer, reading output from `from`.
