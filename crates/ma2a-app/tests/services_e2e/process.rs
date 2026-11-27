@@ -140,16 +140,57 @@ fn drain_pipe(mut pipe: impl std::io::Read + Send + 'static) -> std::thread::Joi
     })
 }
 
+fn open_probed_pipe() -> Result<
+    (std::io::PipeReader, std::io::PipeWriter, usize),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    use std::io::{Read as _, Write as _};
+
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+
+    let (mut read_end, mut write_end) = std::io::pipe()?;
+    let saved = fcntl_getfl(&write_end)?;
+    fcntl_setfl(&write_end, saved | OFlags::NONBLOCK)?;
+    let total = (|| -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let chunk = [0_u8; 4_096];
+        let mut total = 0_usize;
+        loop {
+            match write_end.write(&chunk) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        loop {
+            match write_end.write(&[0_u8]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(total)
+    })();
+    fcntl_setfl(&write_end, saved)?;
+    let capacity = total?;
+    let mut drained = vec![0_u8; capacity];
+    read_end.read_exact(&mut drained)?;
+    Ok((read_end, write_end, capacity))
+}
+
 fn wait_pipe_filled(
     child: &mut std::process::Child,
     fd: std::os::fd::BorrowedFd<'_>,
+    capacity: usize,
 ) -> TestResult {
+    let target = u64::try_from(capacity)?;
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(status) = child.try_wait()? {
             return Err(format!("exec exited before pipe filled: {status}").into());
         }
-        if rustix::io::ioctl_fionread(fd)? >= 65_536 {
+        if rustix::io::ioctl_fionread(fd)? >= target {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
@@ -186,6 +227,8 @@ fn exec_exits_promptly_on_timeout_and_sigint_with_undrained_pipes() -> TestResul
     };
 
     let lab = Lab::start("exec-blocked-pipes", "1")?;
+    let (stderr_read, stderr_write, cap) = open_probed_pipe()?;
+    let timeout_script = format!("head -c {cap} /dev/zero | tr '\\0' e >&2; sleep 30");
     let mut child = lab
         .member
         .command(&[
@@ -197,47 +240,56 @@ fn exec_exits_promptly_on_timeout_and_sigint_with_undrained_pipes() -> TestResul
             "--",
             "sh",
             "-c",
-            "head -c 65536 /dev/zero | tr '\\0' e >&2; sleep 30",
+            &timeout_script,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::from(stderr_write))
         .spawn()?;
     let stdout_drain = drain_pipe(child.stdout.take().ok_or("missing stdout")?);
-    let stderr_fd: OwnedFd = child.stderr.take().ok_or("missing stderr")?.into();
-    wait_pipe_filled(&mut child, stderr_fd.as_fd())?;
+    let stderr_fd: OwnedFd = stderr_read.into();
+    wait_pipe_filled(&mut child, stderr_fd.as_fd(), cap)?;
     let status = await_exec_exit(&mut child)?;
     drop(stderr_fd);
     let _ = stdout_drain.join();
     assert_eq!(status.code(), Some(124), "expected 124, got {status:?}");
 
-    for (block_stdout, script) in [
-        (true, "head -c 262144 /dev/zero | tr '\\0' a; sleep 30"),
-        (false, "head -c 262144 /dev/zero | tr '\\0' e >&2; sleep 30"),
-    ] {
-        let mut child = lab
-            .member
-            .command(&[
-                "exec",
-                "--endpoint",
-                lab.owner.id(),
-                "--",
-                "sh",
-                "-c",
-                script,
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let stdout = child.stdout.take().ok_or("missing stdout")?;
-        let stderr = child.stderr.take().ok_or("missing stderr")?;
-        let (blocked_fd, other): (OwnedFd, _) = if block_stdout {
-            (stdout.into(), drain_pipe(stderr))
+    for block_stdout in [true, false] {
+        let (blocked_read, blocked_write, cap) = open_probed_pipe()?;
+        let fill = cap.saturating_mul(4);
+        let script = if block_stdout {
+            format!("head -c {fill} /dev/zero | tr '\\0' a; sleep 30")
         } else {
-            (stderr.into(), drain_pipe(stdout))
+            format!("head -c {fill} /dev/zero | tr '\\0' e >&2; sleep 30")
         };
-        wait_pipe_filled(&mut child, blocked_fd.as_fd())?;
+        let mut command = lab.member.command(&[
+            "exec",
+            "--endpoint",
+            lab.owner.id(),
+            "--",
+            "sh",
+            "-c",
+            &script,
+        ]);
+        command.stdin(Stdio::null());
+        let other = if block_stdout {
+            command
+                .stdout(Stdio::from(blocked_write))
+                .stderr(Stdio::piped());
+            let mut spawned = command.spawn()?;
+            let reader = drain_pipe(spawned.stderr.take().ok_or("missing stderr")?);
+            (spawned, reader)
+        } else {
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::from(blocked_write));
+            let mut spawned = command.spawn()?;
+            let reader = drain_pipe(spawned.stdout.take().ok_or("missing stdout")?);
+            (spawned, reader)
+        };
+        let (mut child, other) = other;
+        let blocked_fd: OwnedFd = blocked_read.into();
+        wait_pipe_filled(&mut child, blocked_fd.as_fd(), cap)?;
         let pid = rustix::process::Pid::from_raw(i32::try_from(child.id())?).ok_or("no pid")?;
         rustix::process::kill_process(pid, rustix::process::Signal::INT)?;
         let status = await_exec_exit(&mut child)?;

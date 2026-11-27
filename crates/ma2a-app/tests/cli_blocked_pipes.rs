@@ -54,9 +54,9 @@ impl Drop for Standin {
 
 #[derive(Clone, Copy)]
 enum Mode {
-    CancelChannel(Channel),
-    OkStdoutOnCancel,
-    DropChannelOnCancel(Channel),
+    CancelChannel(Channel, usize),
+    OkStdoutOnCancel(usize),
+    DropChannelOnCancel(Channel, usize),
     LogsStderrFill(usize),
     DelayedOk,
 }
@@ -173,10 +173,10 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
         return;
     }
     let accept = match mode {
-        Mode::CancelChannel(_) | Mode::OkStdoutOnCancel | Mode::DelayedOk => {
+        Mode::CancelChannel(..) | Mode::OkStdoutOnCancel(_) | Mode::DelayedOk => {
             encode_call_accept(&[]).unwrap_or_default()
         }
-        Mode::DropChannelOnCancel(_) => EMPTY_ACCEPT.to_vec(),
+        Mode::DropChannelOnCancel(..) => EMPTY_ACCEPT.to_vec(),
         Mode::LogsStderrFill(_) => return,
     };
     if writer.frame(FrameKind::Accept, &accept).await.is_err() {
@@ -197,16 +197,21 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
         ipc_closed.store(true, Ordering::Release);
         return;
     }
-    let channel = match mode {
-        Mode::CancelChannel(channel) | Mode::DropChannelOnCancel(channel) => channel,
-        Mode::OkStdoutOnCancel => Channel::Output,
+    let (channel, fill) = match mode {
+        Mode::CancelChannel(channel, cap) | Mode::DropChannelOnCancel(channel, cap) => {
+            (channel, cap.saturating_mul(2))
+        }
+        Mode::OkStdoutOnCancel(cap) => (Channel::Output, cap.saturating_mul(2)),
         Mode::LogsStderrFill(_) | Mode::DelayedOk => return,
     };
-    let chunk = vec![b'x'; 8_192];
-    for _ in 0..32 {
+    let mut remaining = fill;
+    while remaining > 0 {
+        let step = remaining.min(8_192);
+        let chunk = vec![b'x'; step];
         if writer.data(channel, &chunk).await.is_err() {
             return;
         }
+        remaining -= step;
     }
     if writer.flush().await.is_err() {
         return;
@@ -214,9 +219,9 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
     while let Ok(Some(frame)) = reader.next().await {
         if frame.kind() == FrameKind::Cancel {
             let outcome = match mode {
-                Mode::CancelChannel(_) => encode_call_outcome(Err(ServiceError::Cancelled)),
-                Mode::OkStdoutOnCancel => encode_call_outcome(Ok(b"{\"ok\":true}")),
-                Mode::DropChannelOnCancel(_) | Mode::LogsStderrFill(_) | Mode::DelayedOk => return,
+                Mode::CancelChannel(..) => encode_call_outcome(Err(ServiceError::Cancelled)),
+                Mode::OkStdoutOnCancel(_) => encode_call_outcome(Ok(b"{\"ok\":true}")),
+                Mode::DropChannelOnCancel(..) | Mode::LogsStderrFill(_) | Mode::DelayedOk => return,
             };
             let Ok(payload) = outcome else {
                 return;
@@ -253,7 +258,11 @@ async fn write_frame(stream: &mut UnixStream, correlation: u64, answer: &Value) 
     Ok(())
 }
 
-fn spawn_service_call(standin: &Standin, use_stdin: bool) -> TestResult<Child> {
+fn spawn_service_call(
+    standin: &Standin,
+    use_stdin: bool,
+    (blocked_stdout, blocked_stderr): (Option<PipeWriter>, Option<PipeWriter>),
+) -> TestResult<Child> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ma2a"));
     command.arg("--state-dir").arg(&standin.state_dir).args([
         "service",
@@ -271,8 +280,8 @@ fn spawn_service_call(standin: &Standin, use_stdin: bool) -> TestResult<Child> {
         command.stdin(Stdio::null());
     }
     Ok(command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(blocked_stdout.map_or_else(Stdio::piped, Stdio::from))
+        .stderr(blocked_stderr.map_or_else(Stdio::piped, Stdio::from))
         .spawn()?)
 }
 
@@ -321,17 +330,17 @@ fn open_probed_pipe() -> TestResult<(PipeReader, PipeWriter, usize)> {
 }
 
 fn wait_pipe_full_and_interrupt(
-    label: &str,
+    (label, block_stdout): (&str, bool),
     child: &mut Child,
-    block_stdout: bool,
+    (blocked_read, capacity): (PipeReader, usize),
 ) -> TestResult<std::process::ExitStatus> {
-    let stdout = child.stdout.take().ok_or("missing stdout")?;
-    let stderr = child.stderr.take().ok_or("missing stderr")?;
-    let (blocked_fd, other): (OwnedFd, _) = if block_stdout {
-        (stdout.into(), drain(stderr))
+    let other = if block_stdout {
+        drain(child.stderr.take().ok_or("missing stderr")?)
     } else {
-        (stderr.into(), drain(stdout))
+        drain(child.stdout.take().ok_or("missing stdout")?)
     };
+    let blocked_fd: OwnedFd = blocked_read.into();
+    let target = u64::try_from(capacity)?;
     let fill_deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(status) = child.try_wait()? {
@@ -343,7 +352,7 @@ fn wait_pipe_full_and_interrupt(
             )
             .into());
         }
-        if rustix::io::ioctl_fionread(blocked_fd.as_fd())? >= 65_536 {
+        if rustix::io::ioctl_fionread(blocked_fd.as_fd())? >= target {
             break;
         }
         if Instant::now() >= fill_deadline {
@@ -375,22 +384,31 @@ fn wait_pipe_full_and_interrupt(
 #[test]
 fn service_call_exits_promptly_on_sigint_with_undrained_stdout_or_stderr() -> TestResult {
     // 1. No --stdin, undrained stdout, Cancel -> Cancelled.
-    let standin = start_standin("stdout", Mode::CancelChannel(Channel::Output))?;
-    let mut child = spawn_service_call(&standin, false)?;
-    let status = wait_pipe_full_and_interrupt("service-stdout", &mut child, true)?;
+    let (stdout_read, stdout_write, cap) = open_probed_pipe()?;
+    let standin = start_standin("stdout", Mode::CancelChannel(Channel::Output, cap))?;
+    let mut child = spawn_service_call(&standin, false, (Some(stdout_write), None))?;
+    let status =
+        wait_pipe_full_and_interrupt(("service-stdout", true), &mut child, (stdout_read, cap))?;
     assert!(!status.success(), "expected failure exit, got {status:?}");
 
     // 2. No --stdin, undrained stderr, Cancel -> Cancelled.
-    let standin = start_standin("stderr", Mode::CancelChannel(Channel::Error))?;
-    let mut child = spawn_service_call(&standin, false)?;
-    let status = wait_pipe_full_and_interrupt("service-stderr", &mut child, false)?;
+    let (stderr_read, stderr_write, cap) = open_probed_pipe()?;
+    let standin = start_standin("stderr", Mode::CancelChannel(Channel::Error, cap))?;
+    let mut child = spawn_service_call(&standin, false, (None, Some(stderr_write)))?;
+    let status =
+        wait_pipe_full_and_interrupt(("service-stderr", false), &mut child, (stderr_read, cap))?;
     assert!(!status.success(), "expected failure exit, got {status:?}");
 
     // 3. Even with --stdin, if target answers Ok(Called) after stdout was interrupted on a full
     // pipe, the CLI must not block locking std::io::stdout().
-    let standin = start_standin("ok-on-cancel", Mode::OkStdoutOnCancel)?;
-    let mut child = spawn_service_call(&standin, true)?;
-    let status = wait_pipe_full_and_interrupt("service-ok-on-cancel", &mut child, true)?;
+    let (stdout_read, stdout_write, cap) = open_probed_pipe()?;
+    let standin = start_standin("ok-on-cancel", Mode::OkStdoutOnCancel(cap))?;
+    let mut child = spawn_service_call(&standin, true, (Some(stdout_write), None))?;
+    let status = wait_pipe_full_and_interrupt(
+        ("service-ok-on-cancel", true),
+        &mut child,
+        (stdout_read, cap),
+    )?;
     assert!(
         !status.success(),
         "expected interrupted exit, got {status:?}"
@@ -401,16 +419,26 @@ fn service_call_exits_promptly_on_sigint_with_undrained_stdout_or_stderr() -> Te
         ("exec-stdout", Channel::Output, true),
         ("exec-stderr", Channel::Error, false),
     ] {
-        let standin = start_standin(label, Mode::DropChannelOnCancel(channel))?;
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        let (blocked_read, blocked_write, cap) = open_probed_pipe()?;
+        let standin = start_standin(label, Mode::DropChannelOnCancel(channel, cap))?;
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ma2a"));
+        command
             .arg("--state-dir")
             .arg(&standin.state_dir)
             .args(["exec", "--endpoint", &standin.endpoint, "--", "sleep", "30"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let status = wait_pipe_full_and_interrupt(label, &mut child, block_stdout)?;
+            .stdin(Stdio::null());
+        if block_stdout {
+            command
+                .stdout(Stdio::from(blocked_write))
+                .stderr(Stdio::piped());
+        } else {
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::from(blocked_write));
+        }
+        let mut child = command.spawn()?;
+        let status =
+            wait_pipe_full_and_interrupt((label, block_stdout), &mut child, (blocked_read, cap))?;
         assert_eq!(
             status.code(),
             Some(1),
@@ -461,7 +489,7 @@ fn process_logs_exits_0_when_diagnostic_note_blocks_full_stderr() -> TestResult 
 fn service_call_sigint_interrupts_delayed_result_on_full_stdout() -> TestResult {
     // 1. Drainable stdout receives exact output and exits 0.
     let standin = start_standin("delayed-ok-drain", Mode::DelayedOk)?;
-    let output = spawn_service_call(&standin, false)?.wait_with_output()?;
+    let output = spawn_service_call(&standin, false, (None, None))?.wait_with_output()?;
     assert_eq!(
         output.status.code(),
         Some(0),
