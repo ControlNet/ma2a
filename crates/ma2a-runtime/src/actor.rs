@@ -62,6 +62,7 @@ mod relay_lifecycle_test;
 pub(crate) mod relay_server;
 #[cfg(test)]
 mod relay_spelling_test;
+mod relay_tls_load;
 mod run;
 mod services;
 mod shutdown;

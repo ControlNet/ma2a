@@ -20,7 +20,7 @@ use crate::{
     web::{SystemClock, WebAuthConfig},
 };
 
-async fn spawn_ipc(
+pub(super) async fn spawn_ipc(
     dir: &std::path::Path,
     handle: crate::RuntimeHandle,
 ) -> Result<
@@ -44,7 +44,7 @@ async fn spawn_ipc(
     Ok((LocalApiClient::new(paths), stop, task))
 }
 
-async fn expect_ipc_ok(
+pub(super) async fn expect_ipc_ok(
     (client, handle): (&LocalApiClient, &crate::RuntimeHandle),
     payload: serde_json::Value,
     expected_type: Option<&str>,
@@ -69,7 +69,7 @@ async fn expect_ipc_ok(
     Ok(())
 }
 
-async fn start_clock(
+pub(super) async fn start_clock(
     label: &str,
 ) -> Result<(TempState, Arc<MutableClock>, Runtime), Box<dyn std::error::Error + Send + Sync>> {
     let dir = TempState::new(label)?;

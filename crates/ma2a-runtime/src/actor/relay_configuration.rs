@@ -1,53 +1,13 @@
 use ma2a_net::{PrivateRelayServer, RuntimeRelayConfiguration};
 
+#[cfg(test)]
+pub(super) use super::relay_tls_load::{TLS_LOAD_GATE, TLS_LOAD_GATE_TEST_LOCK, TlsLoadGate};
 use super::{
     Actor,
     relay_server::{PrivateRelayApply, RelayCompletion},
+    relay_tls_load::load_native_tls_raw,
 };
 use crate::error::{RuntimeError, RuntimeErrorKind};
-
-#[cfg(test)]
-pub(super) struct TlsLoadGate {
-    pub(super) entered: std::sync::mpsc::Sender<()>,
-    pub(super) release: std::sync::mpsc::Receiver<()>,
-    pub(super) released_in_time: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
-#[cfg(test)]
-pub(super) static TLS_LOAD_GATE: std::sync::Mutex<Option<TlsLoadGate>> =
-    std::sync::Mutex::new(None);
-
-#[cfg(test)]
-pub(super) static TLS_LOAD_GATE_TEST_LOCK: tokio::sync::Mutex<()> =
-    tokio::sync::Mutex::const_new(());
-
-pub(super) fn load_native_tls_blocking(
-    tls: &ma2a_net::NativeRelayTlsConfig,
-) -> Result<ma2a_net::LoadedRelayTls, RuntimeError> {
-    load_native_tls_raw(tls).map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
-}
-
-fn load_native_tls_raw(
-    tls: &ma2a_net::NativeRelayTlsConfig,
-) -> Result<ma2a_net::LoadedRelayTls, ma2a_net::RelayTlsError> {
-    #[cfg(test)]
-    {
-        let gate = TLS_LOAD_GATE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(gate) = gate {
-            let _entered = gate.entered.send(());
-            let woke = gate
-                .release
-                .recv_timeout(std::time::Duration::from_secs(1))
-                .is_ok();
-            gate.released_in_time
-                .store(woke, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    tls.load_tls()
-}
 
 impl Actor {
     pub(super) async fn relay_runtime_status(
@@ -249,7 +209,13 @@ impl Actor {
         self.maintenance.relay_configuration =
             Some(RelayCompletion::Pending(PrivateRelayApply::IfChanged));
         self.refresh_private_relay_access().await?;
-        self.refresh_local_relay_publication().await?;
+        if let Err(error) = self.refresh_local_relay_publication().await {
+            if error.is_deferred_publication() {
+                Self::absorb_background("relay configuration publication", Err(error))?;
+            } else {
+                return Err(error);
+            }
+        }
         self.refresh_relay_candidates().await?;
         self.maintenance.relay_configuration = None;
         let _receiver_count = self

@@ -86,7 +86,7 @@ impl RuntimeHandle {
         {
             let tls = tls.clone();
             let loaded = tokio::task::spawn_blocking(move || {
-                super::relay_configuration::load_native_tls_blocking(&tls)
+                super::relay_tls_load::load_native_tls_blocking(&tls)
             })
             .await
             .map_err(RuntimeError::from)??;

@@ -69,13 +69,10 @@ async fn relay_rollback_does_not_starve_other_spaces_deactivation_or_reconfigura
     let refresh_ms = NOW_MS + 300_100;
     clock.0.store(refresh_ms, Ordering::Relaxed);
     let before_relay_rounds = relay_round_count(&handle);
-    let reconfigured = handle
+    handle
         .set_relay_configuration(enabled_configuration(vec![blocked, fresh]))
-        .await;
-    assert!(
-        reconfigured.is_err(),
-        "set_relay_configuration must still report ClockBehind while blocked is served"
-    );
+        .await?;
+    assert!(!handle.relay_status().await?.convergence_pending);
 
     let repo = Repository::open(&config)?;
     let blocked_after = repo

@@ -173,15 +173,16 @@ async fn disabling_and_reenabling_a_relay_while_clock_is_behind_keeps_the_stored
         .set_relay_configuration(disabled_configuration())
         .await?;
     clock.now.store(NOW_MS - 60_000, Ordering::Relaxed);
-    let reenabled = handle
+    handle
         .set_relay_configuration(enabled_configuration(vec![space_id]))
-        .await;
-    assert!(reenabled.is_err(), "backdated re-enable must not succeed");
+        .await?;
+    assert!(!handle.relay_status().await?.convergence_pending);
 
     // Then: neither the persisted sequence nor the signed bytes moved backwards.
     let stored = Repository::open(&config)?
         .relay_advertisement(space_id, endpoint_id)?
         .ok_or("stored advertisement missing")?;
+    assert!(!stored.is_active());
     assert_eq!(stored.sequence(), initial.sequence());
     assert_eq!(stored.issued_at_ms(), initial.issued_at_ms());
     assert_eq!(
