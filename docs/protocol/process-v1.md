@@ -447,8 +447,13 @@ checked, and every 15 s even without a change. A Process whose creator no longer
 authorization path (because of a revoked grant, a `process` unexposure, a departure, or a removal)
 is terminated with a 5 s grace period and reason `unauthorized`.
 
-- A Process that is already terminating is skipped.
-- A termination that failed leaves nothing behind, so the next check tries again.
+- A Process that already has a withdrawal termination in flight is skipped. If only a
+  `requested` termination is in flight, withdrawal still sends a 5 s `terminate`, shortening any
+  longer remaining grace period and upgrading the recorded reason to `unauthorized`.
+- A failed withdrawal attempt is retried on the next check. Once `terminate` has been sent to the
+  supervisor, a status-record read failed transiently, or storing a reported termination failed,
+  the Runtime retains `unauthorized` in memory until a terminal state is recorded so the follower
+  or a retry commits that reason; a failure before reaching the supervisor retains nothing.
 - A `created` Process is not checked: it has no child, and it is decided at bring-up or at the
   next start.
 
