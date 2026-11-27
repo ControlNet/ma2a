@@ -67,6 +67,9 @@ jobs:
       - name: Check Process supervisor pipe names natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-runtime --lib processes::windows_tests
+      - name: Check native relay TLS natively
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p ma2a-net --test relay_tls
 
   quality:
     runs-on: ubuntu-latest

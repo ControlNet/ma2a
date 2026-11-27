@@ -56,11 +56,7 @@ fn write_certificate_fixture(
     let key_path = state.path().join(format!("{name}.key.pem"));
     fs::write(&cert_path, generated.cert.pem())?;
     fs::write(&key_path, generated.signing_key.serialize_pem())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
-    }
+    ma2a_store::protect_private_file(&key_path, "test relay key")?;
     Ok((cert_path, key_path))
 }
 
@@ -175,11 +171,7 @@ fn oversized_tls_material_fails_before_parsing() -> TestResult {
     let oversized_key = state.path().join("oversized.key.pem");
     fs::write(&oversized_cert, vec![b'x'; 1_048_577])?;
     fs::write(&oversized_key, vec![b'x'; 262_145])?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&oversized_key, fs::Permissions::from_mode(0o600))?;
-    }
+    ma2a_store::protect_private_file(&oversized_key, "test oversized relay key")?;
 
     // When
     let certificate_result =
@@ -214,11 +206,26 @@ fn mismatched_and_insecure_key_material_fail_closed() -> TestResult {
         NativeRelayTlsConfig::new(state.path().join("other.cert.pem"), other_key)
             .load_server_config()
     };
+    #[cfg(windows)]
+    let insecure_result = {
+        let generated = rcgen::generate_simple_self_signed(vec![
+            "localhost".to_owned(),
+            "127.0.0.1".to_owned(),
+        ])?;
+        let cert_path = state.path().join("unprotected.cert.pem");
+        let key_path = state.path().join("unprotected.key.pem");
+        fs::write(&cert_path, generated.cert.pem())?;
+        fs::write(&key_path, generated.signing_key.serialize_pem())?;
+        NativeRelayTlsConfig::new(cert_path, key_path).load_server_config()
+    };
 
     // Then
-    assert!(mismatch_result.is_err());
-    #[cfg(unix)]
-    assert!(insecure_result.is_err());
+    assert!(matches!(mismatch_result, Err(RelayTlsError::KeyMismatch)));
+    #[cfg(any(unix, windows))]
+    assert!(matches!(
+        insecure_result,
+        Err(RelayTlsError::InsecurePrivateKeyPermissions)
+    ));
     Ok(())
 }
 
@@ -244,30 +251,45 @@ fn private_key_with_special_permission_bits_fails_closed() -> TestResult {
 }
 
 #[cfg(windows)]
+fn unc_share_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err("expected Windows drive prefix".into());
+    };
+    let drive = match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => char::from(letter),
+        _ => return Err("expected Windows disk drive prefix".into()),
+    };
+    let mut unc = PathBuf::from(format!(r"\\localhost\{drive}$"));
+    for component in components {
+        if !matches!(component, Component::RootDir) {
+            unc.push(component.as_os_str());
+        }
+    }
+    Ok(unc)
+}
+
+#[cfg(windows)]
 #[test]
 fn unc_and_named_pipe_tls_material_fails_closed() -> TestResult {
-    let pid = std::process::id();
-    let name = format!("ma2a-relay-tls-win-{pid}");
-    let dir = Path::new(r"C:\").join(&name);
-    let _stale = fs::remove_dir_all(&dir);
-    fs::create_dir(&dir)?;
-    let generated =
-        rcgen::generate_simple_self_signed(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])?;
-    let cert_path = dir.join("cert.pem");
-    let key_path = dir.join("key.pem");
-    fs::write(&cert_path, generated.cert.pem())?;
-    fs::write(&key_path, generated.signing_key.serialize_pem())?;
-    ma2a_store::protect_private_file(&key_path, "test relay key")?;
+    let state = TempState::new("relay-tls-win")?;
+    let (cert_path, key_path) = write_certificate_fixture(&state, "win")?;
 
-    let unc_cert = PathBuf::from(format!(r"\\localhost\C$\{name}\cert.pem"));
-    let unc_key = PathBuf::from(format!(r"\\localhost\C$\{name}\key.pem"));
+    let unc_cert = unc_share_path(&cert_path)?;
+    let unc_key = unc_share_path(&key_path)?;
     let unc_cert_result =
         NativeRelayTlsConfig::new(unc_cert, key_path.clone()).load_server_config();
     let unc_key_result = NativeRelayTlsConfig::new(cert_path.clone(), unc_key).load_server_config();
     let device_result =
-        NativeRelayTlsConfig::new(dir.join("NUL"), key_path.clone()).load_server_config();
+        NativeRelayTlsConfig::new(state.path().join("NUL"), key_path.clone()).load_server_config();
 
-    let pipe_name = format!(r"\\.\pipe\ma2a-relay-tls-pipe-{pid}");
+    let serial = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+    let pipe_name = format!(
+        r"\\.\pipe\ma2a-relay-tls-pipe-{}-{serial}",
+        std::process::id()
+    );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -285,7 +307,6 @@ fn unc_and_named_pipe_tls_material_fails_closed() -> TestResult {
     });
     let (pipe_cert_result, pipe_key_result) =
         results.recv_timeout(std::time::Duration::from_secs(5))?;
-    let _cleanup = fs::remove_dir_all(&dir);
 
     assert!(matches!(
         unc_cert_result,
