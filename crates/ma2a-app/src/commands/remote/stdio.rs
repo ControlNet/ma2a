@@ -65,7 +65,7 @@ impl StdioGuard {
             return;
         }
         let _written = tokio::time::timeout(DIAGNOSTIC_GRACE, async {
-            let mut stderr = tokio::io::stderr();
+            let mut stderr = self.stderr();
             let _ = stderr.write_all(line.as_bytes()).await;
             let _ = stderr.write_all(b"\n").await;
         })

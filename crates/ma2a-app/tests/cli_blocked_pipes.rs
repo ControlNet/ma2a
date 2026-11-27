@@ -1,10 +1,11 @@
-//! Child-process regression tests for `service call` with undrained stdout/stderr pipes.
+//! Child-process regression tests for CLI commands with undrained stdout/stderr pipes.
 #![cfg(unix)]
 
 use std::{
     error::Error,
     fmt::Write as _,
     fs::File,
+    io::{PipeReader, PipeWriter, Read as _, Write as _},
     os::fd::{AsFd, OwnedFd},
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -12,14 +13,18 @@ use std::{
 };
 
 use ma2a_core::service::{
-    Channel, EMPTY_ACCEPT, FrameKind, ServiceError, encode_call_accept, encode_call_outcome,
+    Channel, EMPTY_ACCEPT, FrameKind, LogWindow, ProcessAccept, ProcessReply, ProcessState,
+    ServiceError, encode_call_accept, encode_call_outcome,
 };
 use ma2a_runtime::{
     api::{LOCAL_API_VERSION, MAX_LOCAL_REQUEST_BYTES},
     ipc::IpcPaths,
 };
 use ma2a_services::{FrameReader, FrameWriter};
-use rustix::process::{Pid, Signal, kill_process};
+use rustix::{
+    fs::{OFlags, fcntl_getfl, fcntl_setfl},
+    process::{Pid, Signal, kill_process},
+};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -47,6 +52,7 @@ enum Mode {
     CancelChannel(Channel),
     OkStdoutOnCancel,
     DropChannelOnCancel(Channel),
+    LogsStderrFill(usize),
 }
 
 fn start_standin(label: &str, mode: Mode) -> TestResult<Standin> {
@@ -128,11 +134,42 @@ async fn handle_call(stream: UnixStream, mode: Mode) {
     if open.kind() != FrameKind::Open {
         return;
     }
+    if let Mode::LogsStderrFill(fill) = mode {
+        let end = u64::try_from(fill).unwrap_or(u64::MAX);
+        let Ok(accept) = (ProcessAccept::Reading {
+            state: ProcessState::Exited,
+            start: 0,
+            window: LogWindow::new(0, end),
+            truncated: false,
+        })
+        .encode() else {
+            return;
+        };
+        if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+            return;
+        }
+        let mut remaining = fill;
+        while remaining > 0 {
+            let step = remaining.min(8_192);
+            let chunk = vec![b'e'; step];
+            if writer.data(Channel::Error, &chunk).await.is_err() {
+                return;
+            }
+            remaining -= step;
+        }
+        let Ok(outcome) = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(end, true))) else {
+            return;
+        };
+        let _ = writer.frame(FrameKind::Outcome, &outcome).await;
+        let _ = writer.flush().await;
+        return;
+    }
     let accept = match mode {
         Mode::CancelChannel(_) | Mode::OkStdoutOnCancel => {
             encode_call_accept(&[]).unwrap_or_default()
         }
         Mode::DropChannelOnCancel(_) => EMPTY_ACCEPT.to_vec(),
+        Mode::LogsStderrFill(_) => return,
     };
     if writer.frame(FrameKind::Accept, &accept).await.is_err() {
         return;
@@ -140,6 +177,7 @@ async fn handle_call(stream: UnixStream, mode: Mode) {
     let channel = match mode {
         Mode::CancelChannel(channel) | Mode::DropChannelOnCancel(channel) => channel,
         Mode::OkStdoutOnCancel => Channel::Output,
+        Mode::LogsStderrFill(_) => return,
     };
     let chunk = vec![b'x'; 8_192];
     for _ in 0..32 {
@@ -155,7 +193,7 @@ async fn handle_call(stream: UnixStream, mode: Mode) {
             let outcome = match mode {
                 Mode::CancelChannel(_) => encode_call_outcome(Err(ServiceError::Cancelled)),
                 Mode::OkStdoutOnCancel => encode_call_outcome(Ok(b"{\"ok\":true}")),
-                Mode::DropChannelOnCancel(_) => return,
+                Mode::DropChannelOnCancel(_) | Mode::LogsStderrFill(_) => return,
             };
             let Ok(payload) = outcome else {
                 return;
@@ -221,6 +259,42 @@ fn drain(mut pipe: impl std::io::Read + Send + 'static) -> std::thread::JoinHand
         let _ = pipe.read_to_end(&mut buf);
         buf
     })
+}
+
+fn fill_nonblocking(write_end: &mut PipeWriter) -> TestResult<usize> {
+    let saved = fcntl_getfl(&*write_end)?;
+    fcntl_setfl(&*write_end, saved | OFlags::NONBLOCK)?;
+    let result = (|| -> TestResult<usize> {
+        let chunk = [0_u8; 4_096];
+        let mut total = 0_usize;
+        loop {
+            match write_end.write(&chunk) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        loop {
+            match write_end.write(&[0_u8]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(total)
+    })();
+    fcntl_setfl(&*write_end, saved)?;
+    result
+}
+
+fn open_probed_pipe() -> TestResult<(PipeReader, PipeWriter, usize)> {
+    let (mut read_end, mut write_end) = std::io::pipe()?;
+    let capacity = fill_nonblocking(&mut write_end)?;
+    let mut drained = vec![0_u8; capacity];
+    read_end.read_exact(&mut drained)?;
+    Ok((read_end, write_end, capacity))
 }
 
 fn wait_pipe_full_and_interrupt(
@@ -320,5 +394,42 @@ fn service_call_exits_promptly_on_sigint_with_undrained_stdout_or_stderr() -> Te
             "expected OutcomeUnknown exit 1, got {status:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn process_logs_exits_0_when_diagnostic_note_blocks_full_stderr() -> TestResult {
+    let (stderr_read, stderr_write, capacity) = open_probed_pipe()?;
+    let standin = start_standin("logs-stderr-fill", Mode::LogsStderrFill(capacity))?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(&standin.state_dir)
+        .args([
+            "process",
+            "logs",
+            "--endpoint",
+            &standin.endpoint,
+            "03030303030303030303030303030303",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr_write))
+        .spawn()?;
+    let stdout_drain = drain(child.stdout.take().ok_or("missing stdout")?);
+    let exit_deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("process logs deadlocked after note_stderr blocked on full pipe".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(stderr_read);
+    let _ = stdout_drain.join();
+    assert_eq!(status.code(), Some(0), "expected exit 0, got {status:?}");
     Ok(())
 }
