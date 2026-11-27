@@ -180,8 +180,16 @@ impl Actor {
                         self.finish_control_round(result).await?;
                     }
                 },
+                joined = self.maintenance.relay_tls_loads.join_next(), if !self.maintenance.relay_tls_loads.is_empty() => {
+                    if let Some(loaded) = joined {
+                        let applied = self
+                            .finish_relay_tls_load(loaded.map_err(RuntimeError::from)?)
+                            .await;
+                        Self::absorb_background("relay server configuration", applied)?;
+                    }
+                },
                 _ = periodic.tick() => {
-                    let configured = self.reconcile_relay_configuration().await;
+                    let configured = self.reconcile_relay_configuration_maintenance().await;
                     Self::absorb_background("relay server configuration", configured)?;
                     let membership = self.reconcile_membership_completion().await;
                     Self::absorb_background("membership completion", membership)?;

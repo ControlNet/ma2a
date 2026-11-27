@@ -42,6 +42,9 @@ async fn native_tls_loading_does_not_stall_runtime_status() -> TestResult {
         mpsc,
     };
 
+    let _gate_guard = crate::actor::relay_configuration::TLS_LOAD_GATE_TEST_LOCK
+        .lock()
+        .await;
     let state = TempState::new("tls-nonblocking")?;
     let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
     let handle = runtime.handle();

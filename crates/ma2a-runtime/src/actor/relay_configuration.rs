@@ -17,9 +17,19 @@ pub(super) struct TlsLoadGate {
 pub(super) static TLS_LOAD_GATE: std::sync::Mutex<Option<TlsLoadGate>> =
     std::sync::Mutex::new(None);
 
+#[cfg(test)]
+pub(super) static TLS_LOAD_GATE_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 pub(super) fn load_native_tls_blocking(
     tls: &ma2a_net::NativeRelayTlsConfig,
 ) -> Result<ma2a_net::LoadedRelayTls, RuntimeError> {
+    load_native_tls_raw(tls).map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
+}
+
+fn load_native_tls_raw(
+    tls: &ma2a_net::NativeRelayTlsConfig,
+) -> Result<ma2a_net::LoadedRelayTls, ma2a_net::RelayTlsError> {
     #[cfg(test)]
     {
         let gate = TLS_LOAD_GATE
@@ -37,7 +47,6 @@ pub(super) fn load_native_tls_blocking(
         }
     }
     tls.load_tls()
-        .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
 }
 
 impl Actor {
@@ -107,25 +116,123 @@ impl Actor {
         self.reconcile_relay_configuration_with(None).await
     }
 
-    async fn reconcile_relay_configuration_with(
+    pub(crate) async fn reconcile_relay_configuration_maintenance(
         &mut self,
-        preloaded_tls: Option<ma2a_net::LoadedRelayTls>,
     ) -> Result<(), RuntimeError> {
+        let Some((runtime, mode)) = self.pending_desired_relay().await? else {
+            return Ok(());
+        };
+        if let Some(provider) = runtime.private_provider()
+            && let ma2a_net::PrivateRelayTransport::NativeTls(tls) = provider.transport()
+            && self.needs_private_relay_restart(Some(provider), mode)
+        {
+            self.maintenance.relay_configuration = Some(RelayCompletion::Pending(mode));
+            if self.maintenance.relay_tls_loading.as_ref() != Some(tls) {
+                let tls_key = tls.clone();
+                let tls_task = tls.clone();
+                self.maintenance.relay_tls_loading = Some(tls.clone());
+                self.maintenance.relay_tls_loads.spawn(async move {
+                    let result =
+                        tokio::task::spawn_blocking(move || load_native_tls_raw(&tls_task))
+                            .await
+                            .unwrap_or(Err(ma2a_net::RelayTlsError::TlsConfiguration));
+                    (tls_key, result)
+                });
+            }
+            return Ok(());
+        }
+        self.reconcile_desired_relay(runtime, (mode, None)).await
+    }
+
+    pub(crate) async fn finish_relay_tls_load(
+        &mut self,
+        (loaded_for, loaded): (
+            ma2a_net::NativeRelayTlsConfig,
+            Result<ma2a_net::LoadedRelayTls, ma2a_net::RelayTlsError>,
+        ),
+    ) -> Result<(), RuntimeError> {
+        if self.maintenance.relay_tls_loading.as_ref() == Some(&loaded_for) {
+            self.maintenance.relay_tls_loading = None;
+        }
+        let Some((runtime, mode)) = self.pending_desired_relay().await? else {
+            return Ok(());
+        };
+        let Some(provider) = runtime.private_provider() else {
+            return Ok(());
+        };
+        let ma2a_net::PrivateRelayTransport::NativeTls(current_tls) = provider.transport() else {
+            return Ok(());
+        };
+        if current_tls != &loaded_for || !self.needs_private_relay_restart(Some(provider), mode) {
+            return Ok(());
+        }
+        let loaded = loaded.map_err(|error| {
+            RuntimeError::new(RuntimeErrorKind::PrivateRelay(
+                ma2a_net::PrivateRelayServerError::Tls(error),
+            ))
+        })?;
+        self.reconcile_desired_relay(runtime, (mode, Some(loaded)))
+            .await
+    }
+
+    async fn pending_desired_relay(
+        &self,
+    ) -> Result<Option<(RuntimeRelayConfiguration, PrivateRelayApply)>, RuntimeError> {
         let desired = self.store.relay_configuration().await?;
         let runtime = RuntimeRelayConfiguration::try_from(desired)
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let Some(mode) = self.pending_relay_mode(runtime.private_provider())? else {
+            return Ok(None);
+        };
+        Ok(Some((runtime, mode)))
+    }
+
+    fn pending_relay_mode(
+        &self,
+        desired: Option<&ma2a_net::PrivateRelayProviderConfig>,
+    ) -> Result<Option<PrivateRelayApply>, RuntimeError> {
         let applied = self
             .private_relay_server
             .as_ref()
             .map(PrivateRelayServer::configuration);
-        let mode = match self.maintenance.relay_configuration {
+        match self.maintenance.relay_configuration {
             Some(RelayCompletion::ShutdownFailed) => {
-                return Err(RuntimeError::new(RuntimeErrorKind::Shutdown));
+                Err(RuntimeError::new(RuntimeErrorKind::Shutdown))
             }
-            Some(RelayCompletion::Pending(mode)) => mode,
-            None if applied == runtime.private_provider() => return Ok(()),
-            None => PrivateRelayApply::IfChanged,
+            Some(RelayCompletion::Pending(mode)) => Ok(Some(mode)),
+            None if applied == desired => Ok(None),
+            None => Ok(Some(PrivateRelayApply::IfChanged)),
+        }
+    }
+
+    fn needs_private_relay_restart(
+        &self,
+        desired: Option<&ma2a_net::PrivateRelayProviderConfig>,
+        mode: PrivateRelayApply,
+    ) -> bool {
+        let applied = self
+            .private_relay_server
+            .as_ref()
+            .map(PrivateRelayServer::configuration);
+        !(applied == desired && mode == PrivateRelayApply::IfChanged)
+    }
+
+    async fn reconcile_relay_configuration_with(
+        &mut self,
+        preloaded_tls: Option<ma2a_net::LoadedRelayTls>,
+    ) -> Result<(), RuntimeError> {
+        let Some((runtime, mode)) = self.pending_desired_relay().await? else {
+            return Ok(());
         };
+        self.reconcile_desired_relay(runtime, (mode, preloaded_tls))
+            .await
+    }
+
+    async fn reconcile_desired_relay(
+        &mut self,
+        runtime: RuntimeRelayConfiguration,
+        (mode, preloaded_tls): (PrivateRelayApply, Option<ma2a_net::LoadedRelayTls>),
+    ) -> Result<(), RuntimeError> {
         self.maintenance.relay_configuration = Some(RelayCompletion::Pending(mode));
         self.apply_private_relay(runtime.private_provider(), (mode, preloaded_tls))
             .await?;

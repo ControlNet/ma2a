@@ -32,6 +32,7 @@ impl Actor {
         // departure or redemption did not complete instead of waiting out the exchange bound.
         self.departure_tasks.shutdown().await;
         self.redemption_tasks.shutdown().await;
+        self.maintenance.relay_tls_loads.shutdown().await;
         let relay_stopped = match self.private_relay_server.take() {
             Some(server) => server.shutdown().await.map_err(|_| {
                 crate::error::RuntimeError::new(crate::error::RuntimeErrorKind::Shutdown)
