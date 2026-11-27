@@ -8,28 +8,15 @@ use ma2a_store::{RelayTransportConfiguration, StoreConfig};
 
 use super::{
     TempState, TestResult,
-    tls_retry::{native_tls_config, wait_for_gate, write_tls_fixture},
+    tls_retry::{drain_tls_completion, native_tls_config, wait_for_gate, write_tls_fixture},
 };
 use crate::{
     Runtime,
     actor::{
         relay_configuration::{TLS_LOAD_GATE, TLS_LOAD_GATE_TEST_LOCK, TlsLoadGate},
-        relay_tls_load::TLS_LOAD_COMPLETIONS,
+        relay_tls_load::{TLS_LOAD_COMPLETIONS, wait_for_gate_done},
     },
 };
-
-async fn drain_tls_completion(handle: &crate::RuntimeHandle, before: usize) -> TestResult {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst) <= before {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for background TLS load completion"
-        );
-        handle.status().await?;
-        tokio::task::yield_now().await;
-    }
-    Ok(())
-}
 
 #[tokio::test(start_paused = true)]
 async fn superseded_maintenance_tls_failure_at_same_paths_does_not_stop_runtime() -> TestResult {
@@ -61,6 +48,7 @@ async fn superseded_maintenance_tls_failure_at_same_paths_does_not_stop_runtime(
     std::fs::remove_file(certificate_path)?;
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let released_in_time = Arc::new(AtomicBool::new(false));
     *TLS_LOAD_GATE
         .lock()
@@ -68,6 +56,7 @@ async fn superseded_maintenance_tls_failure_at_same_paths_does_not_stop_runtime(
         entered: entered_tx,
         release: release_rx,
         released_in_time: Arc::clone(&released_in_time),
+        done: done_tx,
     });
     wait_for_gate(entered_rx).await?;
 
@@ -82,6 +71,7 @@ async fn superseded_maintenance_tls_failure_at_same_paths_does_not_stop_runtime(
     // Drain the superseded failed load; the Runtime must stay responsive and converge once free.
     let before_completions = TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst);
     let _released = release_tx.send(());
+    wait_for_gate_done(done_rx).await?;
     drain_tls_completion(&handle, before_completions).await?;
     assert!(handle.status().await?.is_ready());
     assert!(released_in_time.load(Ordering::SeqCst));
@@ -115,6 +105,7 @@ async fn superseded_maintenance_tls_success_at_same_paths_is_discarded() -> Test
 
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let released_in_time = Arc::new(AtomicBool::new(false));
     *TLS_LOAD_GATE
         .lock()
@@ -122,6 +113,7 @@ async fn superseded_maintenance_tls_success_at_same_paths_is_discarded() -> Test
         entered: entered_tx,
         release: release_rx,
         released_in_time: Arc::clone(&released_in_time),
+        done: done_tx,
     });
     wait_for_gate(entered_rx).await?;
 
@@ -131,6 +123,7 @@ async fn superseded_maintenance_tls_success_at_same_paths_is_discarded() -> Test
     drop(occupied);
     let before_completions = TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst);
     let _released = release_tx.send(());
+    wait_for_gate_done(done_rx).await?;
     drain_tls_completion(&handle, before_completions).await?;
     let after_stale = handle.relay_status().await?;
     assert!(after_stale.convergence_pending);

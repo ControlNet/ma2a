@@ -5,6 +5,7 @@ pub(super) struct TlsLoadGate {
     pub(super) entered: std::sync::mpsc::Sender<()>,
     pub(super) release: std::sync::mpsc::Receiver<()>,
     pub(super) released_in_time: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) done: std::sync::mpsc::Sender<()>,
 }
 
 #[cfg(test)]
@@ -43,7 +44,17 @@ pub(super) fn load_native_tls_raw(
                 .is_ok();
             gate.released_in_time
                 .store(woke, std::sync::atomic::Ordering::SeqCst);
+            let _done = gate.done.send(());
         }
     }
     result
+}
+
+#[cfg(test)]
+pub(super) async fn wait_for_gate_done(
+    done_rx: std::sync::mpsc::Receiver<()>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::task::spawn_blocking(move || done_rx.recv_timeout(std::time::Duration::from_secs(2)))
+        .await??;
+    Ok(())
 }

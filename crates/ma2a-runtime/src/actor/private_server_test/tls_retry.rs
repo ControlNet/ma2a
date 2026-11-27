@@ -15,6 +15,7 @@ use crate::{
     actor::{
         relay_configuration::{TLS_LOAD_GATE, TLS_LOAD_GATE_TEST_LOCK, TlsLoadGate},
         relay_lifecycle_test::{disabled_configuration, enabled_configuration},
+        relay_tls_load::{TLS_LOAD_COMPLETIONS, wait_for_gate_done},
     },
 };
 
@@ -69,6 +70,22 @@ pub(super) async fn wait_for_gate(entered_rx: mpsc::Receiver<()>) -> TestResult 
     Ok(())
 }
 
+pub(super) async fn drain_tls_completion(
+    handle: &crate::RuntimeHandle,
+    before: usize,
+) -> TestResult {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst) <= before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for background TLS load completion"
+        );
+        handle.status().await?;
+        tokio::task::yield_now().await;
+    }
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn maintenance_native_tls_retry_does_not_stall_status_or_snapshot() -> TestResult {
     let _gate_guard = TLS_LOAD_GATE_TEST_LOCK.lock().await;
@@ -91,6 +108,7 @@ async fn maintenance_native_tls_retry_does_not_stall_status_or_snapshot() -> Tes
     // When: maintenance retries TLS loading while the gate holds the blocking file read.
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let released_in_time = Arc::new(AtomicBool::new(false));
     *TLS_LOAD_GATE
         .lock()
@@ -98,6 +116,7 @@ async fn maintenance_native_tls_retry_does_not_stall_status_or_snapshot() -> Tes
         entered: entered_tx,
         release: release_rx,
         released_in_time: Arc::clone(&released_in_time),
+        done: done_tx,
     });
     wait_for_gate(entered_rx).await?;
 
@@ -111,6 +130,7 @@ async fn maintenance_native_tls_retry_does_not_stall_status_or_snapshot() -> Tes
         .map_err(|_| "Runtime snapshot stalled while maintenance loaded TLS files")??;
     assert!(snapshot.revision() >= status.revision());
     let _released = release_tx.send(());
+    wait_for_gate_done(done_rx).await?;
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while handle.relay_status().await?.convergence_pending {
@@ -146,6 +166,7 @@ async fn stale_maintenance_native_tls_load_is_discarded_when_configuration_chang
 
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let released_in_time = Arc::new(AtomicBool::new(false));
     *TLS_LOAD_GATE
         .lock()
@@ -153,6 +174,7 @@ async fn stale_maintenance_native_tls_load_is_discarded_when_configuration_chang
         entered: entered_tx,
         release: release_rx,
         released_in_time: Arc::clone(&released_in_time),
+        done: done_tx,
     });
     wait_for_gate(entered_rx).await?;
 
@@ -160,8 +182,10 @@ async fn stale_maintenance_native_tls_load_is_discarded_when_configuration_chang
     handle
         .set_relay_configuration(disabled_configuration())
         .await?;
+    let before_completions = TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst);
     let _released = release_tx.send(());
-    tokio::task::yield_now().await;
+    wait_for_gate_done(done_rx).await?;
+    drain_tls_completion(&handle, before_completions).await?;
 
     // Then: the stale preloaded TLS result is ignored and the newer configuration stays applied.
     let status = handle.relay_status().await?;

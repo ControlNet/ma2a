@@ -56,6 +56,7 @@ async fn native_tls_loading_does_not_stall_runtime_status() -> TestResult {
     });
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let released_in_time = Arc::new(AtomicBool::new(false));
     *crate::actor::relay_configuration::TLS_LOAD_GATE
         .lock()
@@ -64,6 +65,7 @@ async fn native_tls_loading_does_not_stall_runtime_status() -> TestResult {
             entered: entered_tx,
             release: release_rx,
             released_in_time: Arc::clone(&released_in_time),
+            done: done_tx,
         });
 
     let configuring = tokio::spawn({
@@ -79,6 +81,7 @@ async fn native_tls_loading_does_not_stall_runtime_status() -> TestResult {
         .map_err(|_| "Runtime status stalled while TLS files loaded")??;
     assert!(status.is_ready());
     let _released = release_tx.send(());
+    crate::actor::relay_tls_load::wait_for_gate_done(done_rx).await?;
     assert!(configuring.await?.is_err());
     assert!(
         released_in_time.load(Ordering::SeqCst),
