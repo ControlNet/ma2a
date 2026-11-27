@@ -67,7 +67,17 @@ export function SpacesInspector({
         <Form
           disabled={disabled}
           label="Create a Space"
-          onSubmit={(data) => createSpace(text(data, "name"))}
+          onSubmit={(data) => {
+            const name = text(data, "name")
+            if (pendingSpaceCreation !== undefined && name !== pendingSpaceCreation.name) {
+              setStatus((current) => ({
+                ...current,
+                create: `Unresolved request for “${pendingSpaceCreation.name}”. Retry it or choose Start new creation first.`,
+              }))
+              return
+            }
+            createSpace(name)
+          }}
           submitLabel="Create"
           {...(status.create === undefined ? {} : { status: status.create })}
         >

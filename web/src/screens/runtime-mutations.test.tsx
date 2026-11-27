@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest"
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, test, vi } from "vitest"
-
+import type { RequestId } from "../api/generated"
 import { createRuntimeMutationClient, RuntimeMutationRejectedError } from "../api/mutations"
 import { createRuntimeActions } from "../runtime-actions"
 import { ONE_RUNTIME_FIXTURE } from "../test/fixtures"
@@ -134,4 +134,27 @@ test("an invalid Space ID in RelaysInspector shows a validation error without ca
   expect(await form.findByText(/64 lowercase hexadecimal/)).toBeInTheDocument()
   expect(form.queryByText(/No answer came back/)).not.toBeInTheDocument()
   expect(fetchSpy).not.toHaveBeenCalled()
+})
+
+test("refuses creating a different Space name while an unresolved creation is pending", async () => {
+  const user = userEvent.setup()
+  const actions = runtimeActions()
+  render(
+    <SpacesInspector
+      actions={actions}
+      pendingSpaceCreation={{
+        endpointId: "aa".repeat(32),
+        name: "Alpha",
+        requestId: "01".repeat(16) as RequestId,
+      }}
+      runtime={ONE_RUNTIME_FIXTURE}
+    />,
+  )
+  const form = within(screen.getByRole("form", { name: "Create a Space" }))
+
+  await user.type(form.getByLabelText("Name"), "Beta")
+  await user.click(form.getByRole("button", { name: "Create" }))
+
+  expect(actions.createSpace).not.toHaveBeenCalled()
+  expect(form.getByRole("status")).toHaveTextContent(/Alpha/)
 })

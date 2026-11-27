@@ -1,6 +1,7 @@
-import { expect, test } from "vitest"
+import { afterEach, expect, test, vi } from "vitest"
 
 import type { RequestId } from "./generated"
+import { createRuntimeMutationClient } from "./mutations"
 import {
   clearPendingSpaceCreation,
   createPendingSpaceTracker,
@@ -9,6 +10,10 @@ import {
   readPendingSpaceCreation,
   writePendingSpaceCreation,
 } from "./pending-space"
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 function memoryStorage(): Storage {
   const entries = new Map<string, string>()
@@ -96,5 +101,69 @@ test("falls back to in-memory tracking and notifies onChange when storage throws
 
     tracker.settle(first.requestId)
     expect(observed.at(-1)).toBeUndefined()
+  }
+})
+
+test("different-name refusal and pre-dispatch 403/422 keep Alpha's original request ID across reload", async () => {
+  for (const betaAnswer of [
+    new Response(null, { status: 403 }),
+    new Response(null, { status: 422 }),
+    Response.json({ version: 1, error: "conflict", remediation: null }),
+  ]) {
+    const storage = memoryStorage()
+    const observed: (PendingSpaceCreation | undefined)[] = []
+    const sentIds: string[] = []
+    let next = 0
+    const endpointId = "aa".repeat(32)
+    const answers: Array<"drop" | Response | "create"> = ["drop", betaAnswer, "create"]
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+      const command = (await new Request(input, init).json()) as { request_id: string }
+      sentIds.push(command.request_id)
+      const answer = answers.shift()
+      if (answer === "drop") throw new TypeError("Failed to fetch")
+      if (answer === "create") {
+        return Response.json({
+          version: 1,
+          request_id: command.request_id,
+          revision: 12,
+          result: {
+            type: "space_created",
+            payload: { space_id: "ab".repeat(32), name: "Alpha", member_count: 1 },
+          },
+        })
+      }
+      return answer ?? new Response(null, { status: 500 })
+    })
+    const makeClient = () =>
+      createRuntimeMutationClient({
+        csrfToken: () => "cd".repeat(32),
+        requestId: () => (++next).toString(16).padStart(32, "0"),
+        endpointId: () => endpointId,
+        storage,
+        onPendingSpaceCreation: (pending) => observed.push(pending),
+      })
+
+    const beforeReload = makeClient()
+    await expect(beforeReload.createSpace("Alpha")).rejects.toThrow()
+    await expect(beforeReload.createSpace("Beta")).rejects.toThrow()
+    expect(readPendingSpaceCreation(endpointId, storage)).toEqual({
+      endpointId,
+      name: "Alpha",
+      requestId: "01".padStart(32, "0") as RequestId,
+    })
+    expect(observed.at(-1)).toEqual({
+      endpointId,
+      name: "Alpha",
+      requestId: "01".padStart(32, "0") as RequestId,
+    })
+
+    const afterReload = makeClient()
+    await expect(afterReload.createSpace("Alpha")).resolves.toBeDefined()
+    expect(sentIds).toEqual([
+      "01".padStart(32, "0"),
+      "02".padStart(32, "0"),
+      "01".padStart(32, "0"),
+    ])
+    vi.restoreAllMocks()
   }
 })

@@ -11,6 +11,11 @@ const PendingSpaceCreationSchema = z.strictObject({
   requestId: RequestIdSchema,
 })
 
+const StoredPendingSpaceCreationsSchema = z.union([
+  PendingSpaceCreationSchema,
+  z.array(PendingSpaceCreationSchema).min(1),
+])
+
 /** Non-secret idempotency state retained across a same-tab reload for one Runtime. */
 export type PendingSpaceCreation = {
   readonly endpointId: string
@@ -26,35 +31,60 @@ export function browserSessionStorage(): Storage | undefined {
   }
 }
 
-export function readPendingSpaceCreation(
+function readPendingSpaceCreations(
   endpointId: string | undefined,
   storage: Storage | undefined,
-): PendingSpaceCreation | undefined {
-  if (endpointId === undefined || storage === undefined) return undefined
+): PendingSpaceCreation[] {
+  if (endpointId === undefined || storage === undefined) return []
   let raw: string | null
   try {
     raw = storage.getItem(PENDING_SPACE_STORAGE_KEY)
   } catch {
-    return undefined
+    return []
   }
-  if (raw === null) return undefined
+  if (raw === null) return []
   let parsedJson: unknown
   try {
     parsedJson = JSON.parse(raw)
   } catch {
     clearPendingSpaceCreation(storage)
-    return undefined
+    return []
   }
-  const parsed = PendingSpaceCreationSchema.safeParse(parsedJson)
+  const parsed = StoredPendingSpaceCreationsSchema.safeParse(parsedJson)
   if (!parsed.success) {
     clearPendingSpaceCreation(storage)
-    return undefined
+    return []
   }
-  if (parsed.data.endpointId !== endpointId) return undefined
-  return {
-    endpointId: parsed.data.endpointId,
-    name: parsed.data.name,
-    requestId: parsed.data.requestId as RequestId,
+  const entries = Array.isArray(parsed.data) ? parsed.data : [parsed.data]
+  return entries
+    .filter((entry) => entry.endpointId === endpointId)
+    .map((entry) => ({
+      endpointId: entry.endpointId,
+      name: entry.name,
+      requestId: entry.requestId as RequestId,
+    }))
+}
+
+export function readPendingSpaceCreation(
+  endpointId: string | undefined,
+  storage: Storage | undefined,
+): PendingSpaceCreation | undefined {
+  return readPendingSpaceCreations(endpointId, storage).at(-1)
+}
+
+function writePendingSpaceCreations(
+  entries: readonly PendingSpaceCreation[],
+  storage: Storage | undefined,
+): void {
+  if (entries.length === 0) {
+    clearPendingSpaceCreation(storage)
+    return
+  }
+  try {
+    const value = entries.length === 1 ? entries[0] : entries
+    storage?.setItem(PENDING_SPACE_STORAGE_KEY, JSON.stringify(value))
+  } catch {
+    return
   }
 }
 
@@ -62,11 +92,7 @@ export function writePendingSpaceCreation(
   entry: PendingSpaceCreation,
   storage: Storage | undefined,
 ): void {
-  try {
-    storage?.setItem(PENDING_SPACE_STORAGE_KEY, JSON.stringify(entry))
-  } catch {
-    return
-  }
+  writePendingSpaceCreations([entry], storage)
 }
 
 export function clearPendingSpaceCreation(storage: Storage | undefined): void {
@@ -93,52 +119,78 @@ export type PendingSpaceTracker = {
   readonly discard: () => void
 }
 
+type MemoryPendingSpace = {
+  readonly endpointId: string | undefined
+  readonly name: string
+  readonly requestId: RequestId
+}
+
 /**
- * Tracks one unresolved Space creation across retries and (when Runtime identity and tab storage
- * are supplied) across same-tab reloads.
+ * Tracks unresolved Space creations per name across retries and (when Runtime identity and tab
+ * storage are supplied) across same-tab reloads.
  */
 export function createPendingSpaceTracker(
   options: PendingSpaceTrackerOptions,
 ): PendingSpaceTracker {
-  let memory:
-    | {
-        readonly endpointId: string | undefined
-        readonly name: string
-        readonly requestId: RequestId
-      }
-    | undefined
-  const load = (scope: string | undefined) =>
-    (scope !== undefined && options.storage !== undefined
-      ? readPendingSpaceCreation(scope, options.storage)
-      : undefined) ?? (memory?.endpointId === scope ? memory : undefined)
-  const clear = (expected?: RequestId): void => {
-    const current = load(options.endpointId?.())
-    if (expected !== undefined && current?.requestId !== expected) return
-    memory = undefined
-    if (options.storage !== undefined) clearPendingSpaceCreation(options.storage)
-    options.onChange?.(undefined)
+  let memory: MemoryPendingSpace[] = []
+  const load = (scope: string | undefined): readonly MemoryPendingSpace[] => {
+    const stored =
+      scope !== undefined && options.storage !== undefined
+        ? readPendingSpaceCreations(scope, options.storage)
+        : []
+    return stored.length > 0 ? stored : memory.filter((entry) => entry.endpointId === scope)
+  }
+  const persist = (scope: string | undefined, entries: readonly MemoryPendingSpace[]): void => {
+    memory = [...memory.filter((entry) => entry.endpointId !== scope), ...entries]
+    if (scope !== undefined && options.storage !== undefined) {
+      writePendingSpaceCreations(
+        entries.map((entry) => ({
+          endpointId: scope,
+          name: entry.name,
+          requestId: entry.requestId,
+        })),
+        options.storage,
+      )
+    }
+  }
+  const notify = (scope: string | undefined, entry: MemoryPendingSpace | undefined): void => {
+    options.onChange?.(
+      scope !== undefined && entry !== undefined
+        ? { endpointId: scope, name: entry.name, requestId: entry.requestId }
+        : undefined,
+    )
   }
   return {
     begin: (name, nextId) => {
       const scope = options.endpointId?.()
       const current = load(scope)
-      const reused = current !== undefined && current.name === name
-      const requestId =
-        current !== undefined && current.name === name ? current.requestId : nextId()
-      memory = { endpointId: scope, name, requestId }
-      if (scope !== undefined && options.storage !== undefined) {
-        writePendingSpaceCreation({ endpointId: scope, name, requestId }, options.storage)
+      const existing = current.find((entry) => entry.name === name)
+      if (existing !== undefined) {
+        return { requestId: existing.requestId, reused: true }
       }
-      return { requestId, reused }
+      const requestId = nextId()
+      persist(scope, [...current, { endpointId: scope, name, requestId }])
+      return { requestId, reused: false }
     },
     markUnsettled: (requestId) => {
       const scope = options.endpointId?.()
-      const current = load(scope)
-      if (scope !== undefined && current?.requestId === requestId) {
-        options.onChange?.({ endpointId: scope, name: current.name, requestId })
+      const matched = load(scope).find((entry) => entry.requestId === requestId)
+      if (scope !== undefined && matched !== undefined) {
+        notify(scope, matched)
       }
     },
-    settle: (requestId) => clear(requestId),
-    discard: () => clear(),
+    settle: (requestId) => {
+      const scope = options.endpointId?.()
+      const current = load(scope)
+      if (!current.some((entry) => entry.requestId === requestId)) return
+      const remaining = current.filter((entry) => entry.requestId !== requestId)
+      persist(scope, remaining)
+      notify(scope, remaining.at(-1))
+    },
+    discard: () => {
+      const scope = options.endpointId?.()
+      persist(scope, [])
+      notify(scope, undefined)
+    },
   }
 }
