@@ -1,10 +1,15 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicI64, Ordering},
+};
 
 use ma2a_core::{SignedPrivateRelayAdvertisementV1, SpaceId};
 use ma2a_net::{PrivateRelayProviderConfig, PrivateRelayProviderLocation, PrivateRelayTransport};
 use ma2a_store::{Repository, StoreConfig};
 
-use super::{NOW_MS, TempState, TestResult, enabled_configuration};
+use super::{
+    NOW_MS, PublicationClock, TempState, TestResult, enabled_configuration, maintenance_tick,
+};
 use crate::{Runtime, RuntimeClock, error::RuntimeError};
 
 #[derive(Debug)]
@@ -197,6 +202,75 @@ async fn explicit_retry_with_longer_expiry_replaces_pending_partial_batch() -> T
     );
     assert_eq!(completed.sequence(), partial_record.sequence());
     assert_eq!(completed.expires_at_ms(), NOW_MS + 420_000);
+
+    runtime.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_explicit_shortening_does_not_leave_maintenance_skipping_expired_space() -> TestResult
+{
+    let state = TempState::new("explicit-shorten-fail")?;
+    let config = StoreConfig::new(&state.0);
+    let clock = Arc::new(PublicationClock(AtomicI64::new(NOW_MS)));
+    let runtime =
+        Runtime::start_with_clock(config.clone(), Arc::clone(&clock) as Arc<dyn RuntimeClock>)
+            .await?;
+    let handle = runtime.handle();
+    let spaces = [
+        handle.create_owned_space("shorten-a".to_owned()).await?,
+        handle.create_owned_space("shorten-b".to_owned()).await?,
+    ];
+    let endpoint_id = handle.status().await?.endpoint_id();
+    let relay_config = enabled_configuration(spaces.to_vec());
+    let provider = ma2a_net::RuntimeRelayConfiguration::try_from(relay_config.clone())?
+        .private_provider()
+        .ok_or("private provider missing")?
+        .clone();
+    handle.set_relay_configuration(relay_config).await?;
+    let now_ms = u64::try_from(NOW_MS)?;
+
+    // Shorten the first Space to 100 ms and fail before writing the second Space.
+    handle.store.fail_relay_publication_after(1).await?;
+    assert!(
+        handle
+            .publish_relay_advertisements(provider, now_ms + 100)
+            .await
+            .is_err()
+    );
+    let repository = Repository::open(&config)?;
+    let shortened_space = match (
+        repository.relay_advertisement(spaces[0], endpoint_id)?,
+        repository.relay_advertisement(spaces[1], endpoint_id)?,
+    ) {
+        (Some(first), Some(second))
+            if first.expires_at_ms() == NOW_MS + 100
+                && second.expires_at_ms() == NOW_MS + 600_000 =>
+        {
+            spaces[0]
+        }
+        (Some(first), Some(second))
+            if second.expires_at_ms() == NOW_MS + 100
+                && first.expires_at_ms() == NOW_MS + 600_000 =>
+        {
+            spaces[1]
+        }
+        _ => return Err("shortening fault did not leave one shortened Space".into()),
+    };
+    drop(repository);
+
+    // Advance past the shortened record's expiry and run a maintenance pass.
+    let after_expiry_ms = NOW_MS + 200;
+    clock.0.store(after_expiry_ms, Ordering::Relaxed);
+    maintenance_tick(&handle).await;
+
+    let repository = Repository::open(&config)?;
+    let restored = repository
+        .relay_advertisement(shortened_space, endpoint_id)?
+        .ok_or("shortened Space advertisement missing")?;
+    assert!(restored.is_active());
+    assert_eq!(restored.issued_at_ms(), after_expiry_ms);
+    assert_eq!(restored.expires_at_ms(), after_expiry_ms + 600_000);
 
     runtime.shutdown().await?;
     Ok(())
