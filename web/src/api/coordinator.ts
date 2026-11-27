@@ -21,8 +21,16 @@ export class StaleRuntimeSnapshotError extends Error {
   constructor(
     readonly lastRevision: number,
     readonly snapshotRevision: number,
+    readonly lastViewSequence?: number,
+    readonly snapshotViewSequence?: number,
   ) {
-    super(`Replacement snapshot revision ${snapshotRevision} is older than ${lastRevision}`)
+    super(
+      snapshotRevision === lastRevision &&
+        lastViewSequence !== undefined &&
+        snapshotViewSequence !== undefined
+        ? `Replacement snapshot view_sequence ${snapshotViewSequence} is older than ${lastViewSequence} at revision ${snapshotRevision}`
+        : `Replacement snapshot revision ${snapshotRevision} is older than ${lastRevision}`,
+    )
   }
 }
 
@@ -35,6 +43,7 @@ export type RuntimeStateCoordinatorOptions = {
 
 export class RuntimeStateCoordinator {
   private state: RuntimeState = EMPTY_RUNTIME_STATE
+  private lastViewSequence: number | null = null
 
   constructor(private readonly options: RuntimeStateCoordinatorOptions) {}
 
@@ -44,6 +53,7 @@ export class RuntimeStateCoordinator {
 
   install(stamped: StampedRuntimeSnapshot): void {
     this.state = installSnapshot(stamped.snapshot.revision, stamped.bootId)
+    this.lastViewSequence = stamped.snapshot.view_sequence
     this.options.onSnapshot(stamped)
   }
 
@@ -98,29 +108,40 @@ export class RuntimeStateCoordinator {
   private async recover(): Promise<void> {
     const lastRevision = this.state.kind === "uncertain" ? this.state.lastRevision : null
     const lastBootId = this.state.kind === "uncertain" ? this.state.lastBootId : null
+    const lastViewSequence = this.lastViewSequence
     this.state = beginResnapshot(this.state)
     const outcome = await this.options.fetchSnapshot().then(
       (stamped) => ({ kind: "success", stamped }) as const,
       (error: unknown) => ({ kind: "failure", error }) as const,
     )
     switch (outcome.kind) {
-      case "success":
-        // Revision order is meaningful within one Runtime boot; a confirmed new boot (such as a
-        // restored database after restart) resets the projection even at a lower revision.
-        if (
+      case "success": {
+        const { revision, view_sequence: viewSequence } = outcome.stamped.snapshot
+        // Revision and view_sequence order are meaningful within one Runtime boot; a confirmed
+        // new boot (such as a restored database after restart) resets the projection.
+        const staleSameBoot =
           lastRevision !== null &&
           lastBootId !== null &&
           outcome.stamped.bootId === lastBootId &&
-          outcome.stamped.snapshot.revision < lastRevision
-        ) {
+          (revision < lastRevision ||
+            (revision === lastRevision &&
+              lastViewSequence !== null &&
+              viewSequence < lastViewSequence))
+        if (staleSameBoot) {
           this.state = failResnapshot(this.state)
           this.options.onRecoveryError(
-            new StaleRuntimeSnapshotError(lastRevision, outcome.stamped.snapshot.revision),
+            new StaleRuntimeSnapshotError(
+              lastRevision,
+              revision,
+              lastViewSequence ?? undefined,
+              viewSequence,
+            ),
           )
           return
         }
         this.install(outcome.stamped)
         return
+      }
       case "failure":
         this.state = failResnapshot(this.state)
         this.options.onRecoveryError(outcome.error)

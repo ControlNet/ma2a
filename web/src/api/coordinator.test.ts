@@ -1,4 +1,8 @@
-import { RUNTIME_BOOT_ID_HEADER, RuntimeStateCoordinator } from "./client"
+import {
+  RUNTIME_BOOT_ID_HEADER,
+  RuntimeStateCoordinator,
+  StaleRuntimeSnapshotError,
+} from "./client"
 import { readSnapshot } from "./snapshot-stream"
 import {
   DEFAULT_BOOT_ID,
@@ -192,5 +196,49 @@ describe("runtime state coordinator", () => {
     ])
     expect(await given.receiveRevision(11)).toBe(true)
     expect(given.currentState()).toEqual({ kind: "ready", revision: 11, bootId: DEFAULT_BOOT_ID })
+  })
+
+  test("rejects a lower view_sequence at the same revision and boot, and accepts a new boot", async () => {
+    const bootA = "aa".repeat(16)
+    const bootB = "bb".repeat(16)
+    const responses = [
+      stampedRuntimeSnapshot(10, bootA, 2),
+      stampedRuntimeSnapshot(10, bootA, 4),
+      stampedRuntimeSnapshot(10, bootB, 1),
+    ]
+    const applied: Array<readonly [string, number, number]> = []
+    const observedErrors: unknown[] = []
+    const given = new RuntimeStateCoordinator({
+      fetchSnapshot: () => {
+        const next = responses.shift()
+        if (next === undefined) throw new Error("unexpected fetch")
+        return Promise.resolve(next)
+      },
+      onIncremental: () => undefined,
+      onSnapshot: (value) =>
+        applied.push([value.bootId, value.snapshot.revision, value.snapshot.view_sequence]),
+      onRecoveryError: (error) => observedErrors.push(error),
+    })
+    given.install(stampedRuntimeSnapshot(10, bootA, 3))
+
+    await given.disconnect()
+    expect(applied).toEqual([[bootA, 10, 3]])
+    expect(observedErrors).toHaveLength(1)
+    expect(observedErrors[0]).toBeInstanceOf(StaleRuntimeSnapshotError)
+    expect(given.currentState().kind).toBe("uncertain")
+
+    await given.resyncRequired()
+    expect(applied).toEqual([
+      [bootA, 10, 3],
+      [bootA, 10, 4],
+    ])
+
+    await given.resyncRequired()
+    expect(applied).toEqual([
+      [bootA, 10, 3],
+      [bootA, 10, 4],
+      [bootB, 10, 1],
+    ])
+    expect(given.currentState()).toEqual({ kind: "ready", revision: 10, bootId: bootB })
   })
 })
