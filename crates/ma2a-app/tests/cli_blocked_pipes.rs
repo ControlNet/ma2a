@@ -11,7 +11,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -59,6 +59,7 @@ enum Mode {
     DropChannelOnCancel(Channel, usize),
     LogsStderrFill(usize),
     DelayedOk(&'static [u8]),
+    LogsFollowNotRunningFallback(usize),
 }
 
 fn start_standin(label: &str, mode: Mode) -> TestResult<Standin> {
@@ -100,6 +101,7 @@ fn start_standin(label: &str, mode: Mode) -> TestResult<Standin> {
 }
 
 async fn serve(listener: UnixListener, mode: Mode, ipc_closed: Arc<AtomicBool>) {
+    let streams = Arc::new(AtomicUsize::new(0));
     while let Ok((mut stream, _)) = listener.accept().await {
         let Ok((correlation, request)) = read_frame(&mut stream).await else {
             continue;
@@ -127,7 +129,8 @@ async fn serve(listener: UnixListener, mode: Mode, ipc_closed: Arc<AtomicBool>) 
             continue;
         }
         if answer.pointer("/result/type") == Some(&json!("stream_opened")) {
-            tokio::spawn(handle_call(stream, mode, Arc::clone(&ipc_closed)));
+            let index = streams.fetch_add(1, Ordering::AcqRel);
+            tokio::spawn(handle_call(stream, (mode, index), Arc::clone(&ipc_closed)));
         }
     }
 }
@@ -165,7 +168,75 @@ async fn write_logs_stderr_fill(
     let _ = writer.flush().await;
 }
 
-async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>) {
+async fn write_logs_follow_fallback(
+    writer: &mut FrameWriter<tokio::net::unix::OwnedWriteHalf>,
+    stream_index: usize,
+    fill: usize,
+) {
+    match stream_index {
+        0 => {
+            let Ok(accept) = (ProcessAccept::Reading {
+                state: ProcessState::Running,
+                start: 0,
+                window: LogWindow::new(0, 0),
+                truncated: false,
+            })
+            .encode() else {
+                return;
+            };
+            let Ok(outcome) = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(0, false)))
+            else {
+                return;
+            };
+            let _ = writer.frame(FrameKind::Accept, &accept).await;
+            let _ = writer.frame(FrameKind::Outcome, &outcome).await;
+            let _ = writer.flush().await;
+        }
+        1 => {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = writer
+                .frame(FrameKind::Reject, &[ServiceError::NotRunning.code()])
+                .await;
+            let _ = writer.flush().await;
+        }
+        _ => {
+            let end = u64::try_from(fill).unwrap_or(u64::MAX);
+            let Ok(accept) = (ProcessAccept::Reading {
+                state: ProcessState::Exited,
+                start: 0,
+                window: LogWindow::new(0, end),
+                truncated: false,
+            })
+            .encode() else {
+                return;
+            };
+            if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+                return;
+            }
+            let mut remaining = fill;
+            while remaining > 0 {
+                let step = remaining.min(8_192);
+                let chunk = vec![b'a'; step];
+                if writer.data(Channel::Output, &chunk).await.is_err() {
+                    return;
+                }
+                remaining -= step;
+            }
+            let Ok(outcome) = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(end, true)))
+            else {
+                return;
+            };
+            let _ = writer.frame(FrameKind::Outcome, &outcome).await;
+            let _ = writer.flush().await;
+        }
+    }
+}
+
+async fn handle_call(
+    stream: UnixStream,
+    (mode, stream_index): (Mode, usize),
+    ipc_closed: Arc<AtomicBool>,
+) {
     let (read, write) = stream.into_split();
     let mut reader = FrameReader::new(read);
     let mut writer = FrameWriter::new(write);
@@ -175,16 +246,23 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
     if open.kind() != FrameKind::Open {
         return;
     }
-    if let Mode::LogsStderrFill(fill) = mode {
-        write_logs_stderr_fill(&mut writer, fill).await;
-        return;
+    match mode {
+        Mode::LogsStderrFill(fill) => {
+            write_logs_stderr_fill(&mut writer, fill).await;
+            return;
+        }
+        Mode::LogsFollowNotRunningFallback(fill) => {
+            write_logs_follow_fallback(&mut writer, stream_index, fill).await;
+            return;
+        }
+        _ => {}
     }
     let accept = match mode {
         Mode::CancelChannel(..) | Mode::OkStdoutOnCancel(_) | Mode::DelayedOk(_) => {
             encode_call_accept(&[]).unwrap_or_default()
         }
         Mode::DropChannelOnCancel(..) => EMPTY_ACCEPT.to_vec(),
-        Mode::LogsStderrFill(_) => return,
+        Mode::LogsStderrFill(_) | Mode::LogsFollowNotRunningFallback(_) => return,
     };
     if writer.frame(FrameKind::Accept, &accept).await.is_err() {
         return;
@@ -209,7 +287,9 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
             (channel, cap.saturating_mul(2))
         }
         Mode::OkStdoutOnCancel(cap) => (Channel::Output, cap.saturating_mul(2)),
-        Mode::LogsStderrFill(_) | Mode::DelayedOk(_) => return,
+        Mode::LogsStderrFill(_) | Mode::DelayedOk(_) | Mode::LogsFollowNotRunningFallback(_) => {
+            return;
+        }
     };
     let mut remaining = fill;
     while remaining > 0 {
@@ -228,7 +308,10 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
             let outcome = match mode {
                 Mode::CancelChannel(..) => encode_call_outcome(Err(ServiceError::Cancelled)),
                 Mode::OkStdoutOnCancel(_) => encode_call_outcome(Ok(b"{\"ok\":true}")),
-                Mode::DropChannelOnCancel(..) | Mode::LogsStderrFill(_) | Mode::DelayedOk(_) => {
+                Mode::DropChannelOnCancel(..)
+                | Mode::LogsStderrFill(_)
+                | Mode::DelayedOk(_)
+                | Mode::LogsFollowNotRunningFallback(_) => {
                     return;
                 }
             };
@@ -646,5 +729,41 @@ fn service_call_sigint_interrupts_delayed_result_on_full_stdout() -> TestResult 
             "{label}: expected exit 1, got {status:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn process_logs_follow_detaches_on_sigint_during_not_running_fallback_read() -> TestResult {
+    let (stdout_read, stdout_write, capacity) = open_probed_pipe()?;
+    let fill = capacity.saturating_mul(2).min(1_048_576);
+    let standin = start_standin(
+        "logs-follow-fallback",
+        Mode::LogsFollowNotRunningFallback(fill),
+    )?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(&standin.state_dir)
+        .args([
+            "process",
+            "logs",
+            "--endpoint",
+            &standin.endpoint,
+            "--follow",
+            "03030303030303030303030303030303",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout_write))
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let status = wait_pipe_full_and_interrupt(
+        ("logs-follow-fallback", true),
+        &mut child,
+        (stdout_read, capacity),
+    )?;
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "expected detach exit 0, got {status:?}"
+    );
     Ok(())
 }

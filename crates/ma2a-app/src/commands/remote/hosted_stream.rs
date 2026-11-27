@@ -1,5 +1,10 @@
 //! `process logs`, `attach`, and `stdin`: output to this terminal, stdin to the Process.
 
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use ma2a_core::service::{
     EndReason, LogFrom, OpenBody, ProcessId, ProcessRequest, ServiceError, Termination,
 };
@@ -13,7 +18,7 @@ use ma2a_services::client::{
 use super::hosted_logs::{MAX_RETAINED_READS, another};
 use super::{
     hosted::Target,
-    hosted_logs::{ended_code, read_retained},
+    hosted_logs::{Retained, ended_code, read_retained},
     hosted_view, open,
     process::interrupted,
     stdio::StdioGuard,
@@ -47,40 +52,117 @@ pub(super) async fn logs_code(
     Ok(logs_exit(&stdio, target, (id, from, follow)).await?.0)
 }
 
+/// Sticky Ctrl-C listener kept alive across `logs --follow` phases so Tokio's signal handler
+/// never drops its only waiter between attach and retained reads, and re-polling after firing
+/// stays ready without panicking.
+struct Interrupt {
+    fired: bool,
+    wait: Pin<Box<dyn Future<Output = ()> + Send>>,
+}
+
+impl Interrupt {
+    fn new(active: bool) -> Self {
+        Self {
+            fired: false,
+            wait: if active {
+                Box::pin(interrupted())
+            } else {
+                Box::pin(std::future::pending())
+            },
+        }
+    }
+
+    const fn is_fired(&self) -> bool {
+        self.fired
+    }
+}
+
+impl Future for Interrupt {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.fired {
+            return Poll::Ready(());
+        }
+        let poll = self.wait.as_mut().poll(cx);
+        if poll.is_ready() {
+            self.fired = true;
+        }
+        poll
+    }
+}
+
+async fn detach_note(stdio: &StdioGuard, cursor: Option<u64>) -> (i32, bool) {
+    match cursor {
+        Some(cursor) => note(stdio, &format!("detached at cursor {cursor}")).await,
+        None => note(stdio, "detached").await,
+    }
+    (0, false)
+}
+
+async fn ended_or_detach(
+    (stdio, interrupt): (&StdioGuard, &mut Interrupt),
+    target: Target<'_>,
+    (id, cursor): (ProcessId, u64),
+) -> Result<(i32, bool), AppError> {
+    tokio::select! {
+        biased;
+        () = interrupt => Ok(detach_note(stdio, Some(cursor)).await),
+        code = ended_code(target, id) => Ok((code?, true)),
+    }
+}
+
 async fn logs_exit(
     stdio: &StdioGuard,
     target: Target<'_>,
     (id, from, follow): (ProcessId, LogFrom, bool),
 ) -> Result<(i32, bool), AppError> {
-    let (next, ended) = read_retained(stdio, target, (id, from)).await?;
+    let mut interrupt = Interrupt::new(follow);
+    let (next, ended) = match read_retained((stdio, &mut interrupt), target, (id, from)).await? {
+        Retained::Read { next, ended } => (next, ended),
+        Retained::Detached(cursor) => return Ok(detach_note(stdio, cursor).await),
+    };
     if !follow || ended {
         note(stdio, &format!("next cursor {next}")).await;
         return if ended && follow {
-            Ok((ended_code(target, id).await?, true))
+            ended_or_detach((stdio, &mut interrupt), target, (id, next)).await
         } else {
             Ok((0, true))
         };
     }
-    let (mut reader, mut writer) = open_attach(target, (id, LogFrom::Cursor(next), false)).await?;
+    let (mut reader, mut writer) = tokio::select! {
+        biased;
+        () = &mut interrupt => return Ok(detach_note(stdio, Some(next)).await),
+        opened = open_attach(target, (id, LogFrom::Cursor(next), false)) => opened?,
+    };
     let local = ProcessIo::<tokio::io::Stdin, _, _> {
         input: None,
         output: stdio.stdout(),
         error: Some(stdio.stderr()),
     };
     let attach = (id, LogFrom::Cursor(next));
-    match hosted::attach((&mut reader, &mut writer), (attach, local), interrupted()).await {
+    match hosted::attach((&mut reader, &mut writer), (attach, local), &mut interrupt).await {
         Ok(attached) => Ok((
             report(stdio, &attached).await,
             attached.reason == EndReason::Completed,
         )),
         // The Process ended between the read and the attach: print what it wrote last.
         Err(ClientError::Rejected(ServiceError::NotRunning)) => {
-            let (next, ended) = read_retained(stdio, target, (id, LogFrom::Cursor(next))).await?;
+            if interrupt.is_fired() {
+                return Ok(detach_note(stdio, Some(next)).await);
+            }
+            let (next, ended) =
+                match read_retained((stdio, &mut interrupt), target, (id, LogFrom::Cursor(next)))
+                    .await?
+                {
+                    Retained::Read { next, ended } => (next, ended),
+                    Retained::Detached(cursor) => return Ok(detach_note(stdio, cursor).await),
+                };
             note(stdio, &format!("next cursor {next}")).await;
             if !ended {
                 return Err(ClientError::Rejected(ServiceError::NotRunning).into());
             }
-            Ok((ended_code(target, id).await?, true))
+            ended_or_detach((stdio, &mut interrupt), target, (id, next)).await
         }
         Err(error) => Err(error.into()),
     }

@@ -38,16 +38,24 @@ pub(super) async fn ended_code(target: Target<'_>, id: ProcessId) -> Result<i32,
     }
 }
 
+/// Outcome of reading retained output, or detaching early on Ctrl-C.
+pub(super) enum Retained {
+    /// Finished the retained window at `next`; `ended` reports whether the Process already ended.
+    Read { next: u64, ended: bool },
+    /// Interrupted before finishing the retained window.
+    Detached(Option<u64>),
+}
+
 /// Reads the output retained when reading began; returns the cursor and whether the
-/// Process ended with everything read.
+/// Process ended with everything read, or detaches promptly when `cancel` completes.
 ///
 /// Output written meanwhile is left to the next read, so a Process writing faster than
 /// one round trip never keeps this from returning.
 pub(super) async fn read_retained(
-    stdio: &StdioGuard,
+    (stdio, mut cancel): (&StdioGuard, impl Future<Output = ()> + Unpin),
     target: Target<'_>,
     (id, mut from): (ProcessId, LogFrom),
-) -> Result<(u64, bool), AppError> {
+) -> Result<Retained, AppError> {
     let (mut output, mut error) = (stdio.stdout(), stdio.stderr());
     let mut reached = match from {
         LogFrom::Cursor(cursor) => Some(cursor),
@@ -67,8 +75,12 @@ pub(super) async fn read_retained(
             .await;
             drop(writer);
             Ok(read?)
-        })
-        .await?;
+        });
+        let read = tokio::select! {
+            biased;
+            () = &mut cancel => return Ok(Retained::Detached(reached)),
+            read = read => read?,
+        };
         // The read was checked to start where `from` resolves, so never before `reached`.
         if let ProcessAccept::Reading {
             start,
@@ -90,7 +102,10 @@ pub(super) async fn read_retained(
         gaps(stdio, read.gaps).await;
         let done = read.ended || until.is_some_and(|until| read.next >= until);
         if !another((reads, reached), (read.next, done))? {
-            return Ok((read.next, read.ended));
+            return Ok(Retained::Read {
+                next: read.next,
+                ended: read.ended,
+            });
         }
         reached = Some(read.next);
         from = LogFrom::Cursor(read.next);
