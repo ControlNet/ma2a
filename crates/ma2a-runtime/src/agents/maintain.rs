@@ -81,6 +81,9 @@ impl AgentManager {
     }
 
     /// Makes sure every started Agent has a linked instance, and assigns queued tasks.
+    ///
+    /// Missing or unbound instances start in bounded background tasks so slow supervisor
+    /// bring-up never delays cancellation expiry or healthy Agents.
     async fn instances(&self) {
         let Ok((_, agents)) = self.list().await else {
             return;
@@ -93,9 +96,50 @@ impl AgentManager {
                 let _stopped = self.stop(id).await;
                 continue;
             }
-            self.ensure_instance(id).await;
-            self.assign(id).await;
+            if let Some(instance) = record
+                .instance
+                .filter(|instance| instance.is_live() && instance.process_id.is_some())
+            {
+                self.link(id, instance.generation);
+                self.assign(id).await;
+                continue;
+            }
+            self.start_instance(id);
         }
+    }
+
+    /// Starts or recovers one Agent's instance in a background task, at most once per Agent
+    /// and bounded by `start_permits`.
+    fn start_instance(&self, agent: &ma2a_core::service::AgentId) {
+        let permit = {
+            let mut coordination = self.coordination();
+            let waiting = coordination
+                .restarts
+                .get(agent)
+                .is_some_and(|(not_before, _)| tokio::time::Instant::now() < *not_before);
+            if waiting || coordination.starting.contains(agent) {
+                return;
+            }
+            let Ok(permit) = std::sync::Arc::clone(&self.0.start_permits).try_acquire_owned()
+            else {
+                return;
+            };
+            coordination.starting.insert(agent.clone());
+            permit
+        };
+        let (manager, agent) = (self.clone(), agent.clone());
+        self.0.tasks.spawn(async move {
+            let shutdown = manager.0.shutdown.clone();
+            tokio::select! {
+                () = shutdown.cancelled() => {}
+                () = async {
+                    manager.ensure_instance(&agent).await;
+                    manager.assign(&agent).await;
+                } => {}
+            }
+            manager.coordination().starting.remove(&agent);
+            drop(permit);
+        });
     }
 
     /// Ends every task whose instance did not confirm its cancellation in time.

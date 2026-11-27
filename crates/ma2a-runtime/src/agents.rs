@@ -26,6 +26,9 @@ mod link_tests;
 #[cfg(test)]
 #[path = "agents/tests/live.rs"]
 mod live_tests;
+#[cfg(test)]
+#[path = "agents/tests/maintain.rs"]
+mod maintain_tests;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -51,12 +54,16 @@ use crate::{RuntimeClock, ipc::IpcPaths, processes::ProcessManager, store::Store
 
 /// Name of the directory holding every Agent's workspace and the artifact blobs.
 const AGENTS_DIR: &str = "agents-v1";
+/// Most Agent instance startups or recoveries running concurrently in maintenance.
+const MAX_CONCURRENT_STARTS: usize = 8;
 
 /// In-memory coordination; everything that must survive a restart is in the Store.
 #[derive(Debug, Default)]
 struct Coordination {
     /// The instance generation each Agent's running link follows.
     links: HashMap<AgentId, u64>,
+    /// Agents whose instance startup or recovery task is currently running.
+    starting: HashSet<AgentId>,
     /// When each Agent may start its next instance, and the backoff after that.
     restarts: HashMap<AgentId, (tokio::time::Instant, Duration)>,
     /// Tool calls being executed now.
@@ -77,6 +84,8 @@ struct Inner {
     loopback: OnceLock<IpcPaths>,
     shutdown: CancellationToken,
     tasks: TaskTracker,
+    /// Bounds concurrent background Agent starts in maintenance.
+    start_permits: Arc<tokio::sync::Semaphore>,
     /// Advanced after every change of an Agent, instance, task, or delivery.
     changes: signal::Sender<u64>,
     coordination: Mutex<Coordination>,
@@ -104,6 +113,7 @@ impl AgentManager {
             loopback: OnceLock::new(),
             shutdown,
             tasks: TaskTracker::new(),
+            start_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_STARTS)),
             changes: signal::Sender::new(0),
             coordination: Mutex::new(Coordination::default()),
             blob_lock: tokio::sync::Mutex::new(()),
