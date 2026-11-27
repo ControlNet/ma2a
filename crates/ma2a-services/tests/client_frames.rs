@@ -1865,3 +1865,171 @@ async fn overlapped_in_flight_proxy_writes_accept_early_outcomes_and_reject_exce
     assert!(miscounted(&excess), "{excess:?}");
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn queued_completed_proxy_and_shell_outcomes_reject_interrupted_delivery() -> TestResult {
+    // 1. Proxy with queued Completed outcome after local sink delivery is cancelled.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe();
+    let (_hold_consumer, local_write) = tokio::io::duplex(1);
+    let outcome =
+        ProxyResult::encode_outcome(&Ok(ProxyResult::new(EndReason::Completed, (0, 6), 1)))?;
+    send(
+        &mut target_writer,
+        &[
+            accept(&EMPTY_ACCEPT),
+            Sent::Data(Channel::Input, b"abcdef"),
+            Sent::End(Channel::Input),
+            Sent::Frame(FrameKind::Outcome, outcome),
+        ],
+    )
+    .await?;
+    let relayed = within(proxy::run(
+        (&mut reader, &mut writer),
+        (&b""[..], local_write),
+        (
+            Duration::from_secs(60),
+            tokio::time::sleep(Duration::from_millis(50)),
+        ),
+    ))
+    .await?;
+    assert!(
+        matches!(
+            relayed,
+            Err(ClientError::Local(ref error)) if error.kind() == std::io::ErrorKind::Interrupted
+        ),
+        "{relayed:?}"
+    );
+
+    // 2. Process::run (Shell) with queued Completed outcome after local sink delivery is cancelled.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe();
+    let (_hold_consumer, out_sink) = tokio::io::duplex(1);
+    let completed =
+        ProcessResult::new(Termination::Exited(0), EndReason::Completed, 1).with_bytes(6, 0);
+    send(
+        &mut target_writer,
+        &[
+            accept(&EMPTY_ACCEPT),
+            Sent::Data(Channel::Output, b"abcdef"),
+            Sent::End(Channel::Output),
+            Sent::Frame(
+                FrameKind::Outcome,
+                ProcessResult::encode_outcome(&Ok(completed))?,
+            ),
+        ],
+    )
+    .await?;
+    let ran = within(process::run(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: out_sink,
+            error: None::<Vec<u8>>,
+        },
+        ProcessControl {
+            resizes: None,
+            cancel: tokio::time::sleep(Duration::from_millis(50)),
+        },
+    ))
+    .await?;
+    assert!(
+        matches!(
+            ran,
+            Err(ClientError::Local(ref error)) if error.kind() == std::io::ErrorKind::Interrupted
+        ),
+        "{ran:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_completed_exec_and_service_outcomes_flag_interrupted_delivery() -> TestResult {
+    // 1. Process::run_streamed (Exec) with queued Completed outcome flags `delivery_interrupted`.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe();
+    let (_hold_consumer, out_sink) = tokio::io::duplex(1);
+    let completed =
+        ProcessResult::new(Termination::Exited(0), EndReason::Completed, 1).with_bytes(6, 0);
+    send(
+        &mut target_writer,
+        &[
+            accept(&EMPTY_ACCEPT),
+            Sent::Data(Channel::Output, b"abcdef"),
+            Sent::End(Channel::Output),
+            Sent::Frame(
+                FrameKind::Outcome,
+                ProcessResult::encode_outcome(&Ok(completed))?,
+            ),
+        ],
+    )
+    .await?;
+    let streamed = within(process::run_streamed(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: out_sink,
+            error: None::<Vec<u8>>,
+        },
+        ProcessControl {
+            resizes: None,
+            cancel: tokio::time::sleep(Duration::from_millis(50)),
+        },
+    ))
+    .await??;
+    assert_eq!(streamed.result.reason, EndReason::Completed);
+    assert!(streamed.delivery_interrupted);
+
+    // 2. Service::call with queued Ok outcome after interrupted local delivery flags `delivery_interrupted`.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe();
+    let (_hold_consumer, out_sink) = tokio::io::duplex(1);
+    send(
+        &mut target_writer,
+        &[
+            accept(&encode_call_accept(b"h")?),
+            Sent::Data(Channel::Output, b"abcdef"),
+            Sent::End(Channel::Output),
+            Sent::Frame(FrameKind::Outcome, encode_call_outcome(Ok(b"ok"))?),
+        ],
+    )
+    .await?;
+    let called = within(service::call(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: out_sink,
+            error: None::<Vec<u8>>,
+        },
+        tokio::time::sleep(Duration::from_millis(50)),
+    ))
+    .await??;
+    assert_eq!(called.result, b"ok");
+    assert!(called.delivery_interrupted);
+
+    // 3. Omitting an unused channel (`error: None`) in `service::call` does not flag
+    //    `delivery_interrupted` when only stderr arrives after cancellation.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let target = async {
+        send(&mut target_writer, &[accept(&encode_call_accept(b"h")?)]).await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(
+            &mut target_writer,
+            &[
+                Sent::Data(Channel::Error, b"err"),
+                Sent::End(Channel::Error),
+                Sent::Frame(FrameKind::Outcome, encode_call_outcome(Ok(b"ok"))?),
+            ],
+        )
+        .await
+    };
+    let call_task = service::call(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: Vec::new(),
+            error: None::<Vec<u8>>,
+        },
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (res, scripted) = within(async { tokio::join!(call_task, target) }).await?;
+    scripted?;
+    assert!(!res?.delivery_interrupted);
+    Ok(())
+}

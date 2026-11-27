@@ -10,7 +10,7 @@ use ma2a_core::service::{
     ProcessReply, ProcessSummary, ServiceError,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _},
     sync::Notify,
 };
 use tokio_util::sync::CancellationToken;
@@ -22,7 +22,7 @@ use crate::{
         ClientError, First, Sender, Written, drained, first_or_cancel, next,
         process::ProcessIo,
         send_cancel,
-        sinks::{settled, write_until},
+        sinks::{read_input, settled, write_until},
         unexpected, write_watching,
     },
 };
@@ -37,10 +37,12 @@ pub struct Attached {
     pub reason: EndReason,
     /// The Process as it now is.
     pub summary: ProcessSummary,
-    /// The cursor to continue reading from.
+    /// The cursor to continue reading from: the last output confirmed written locally.
     pub cursor: u64,
     /// Output dropped by retention while attached.
     pub gaps: Gaps,
+    /// Whether local delivery to the caller's sinks was interrupted or discarded.
+    pub delivery_interrupted: bool,
 }
 
 /// Follows Process `id` from `from` until it ends or `detach` completes.
@@ -75,7 +77,7 @@ where
     let (answer, sender) = first_or_cancel((reader, writer), detach.as_mut()).await?;
     let accept = match answer {
         First::Finished(frame) if local.input.is_some() => {
-            return attached((None, &frame), (id, None), Gaps::default());
+            return attached((None, &frame), (id, None), (Gaps::default(), (None, false)));
         }
         First::Finished(_) => return Err(ClientError::Stream(ServiceError::InvalidInput)),
         First::Accepted(frame) => accepted(&frame)?,
@@ -92,7 +94,7 @@ where
     // A failed local read is kept even when the outcome arrives before the detach is sent.
     let mut unread = None;
     // Once detached, nothing but the rest of that `cancel` is sent; the outcome still follows.
-    let (frame, gaps, reached, unwritten) = match sender {
+    let received = match sender {
         Sender::Cancelled(rest) => {
             stop.cancel();
             drained(outbound.as_mut(), rest)
@@ -110,8 +112,15 @@ where
             }
         }
     };
-    let attached = attached((Some(accept), &frame), (id, Some(reached)), gaps);
-    settled((attached, unwritten), unread)
+    let attached = attached(
+        (Some(accept), &received.frame),
+        (id, Some(received.reached)),
+        (
+            received.gaps,
+            (Some(received.delivered), received.interrupted),
+        ),
+    );
+    settled((attached, received.unwritten), unread)
 }
 
 /// Caller → target: stdin until EOF, then at most one `cancel` on detach, lost output, or a
@@ -170,9 +179,16 @@ async fn inbound<W, I, D>(
     }
 }
 
-/// What the target sent until its outcome: the outcome, the gaps, the cursor reached, and the
-/// first local write that failed.
-type Received = (crate::Frame, Gaps, u64, Option<std::io::Error>);
+/// What the target sent until its outcome: the outcome, gaps, protocol cursor, confirmed local
+/// delivery cursor, whether any delivery was interrupted, and the first local write that failed.
+struct Received {
+    frame: crate::Frame,
+    gaps: Gaps,
+    reached: u64,
+    delivered: u64,
+    interrupted: bool,
+    unwritten: Option<std::io::Error>,
+}
 
 /// Target → caller until the outcome, from cursor `start`. A failed local write asks the
 /// inbound side to detach; detaching interrupts any blocked write and discards further output.
@@ -188,26 +204,45 @@ where
 {
     let mut gaps = Gaps::default();
     let mut reached = start;
+    let mut delivered = start;
     let mut unwritten = None;
     let mut discarding = false;
     loop {
         let frame = next(reader).await?;
         match frame.kind() {
-            FrameKind::Outcome => return Ok((frame, gaps, reached, unwritten)),
-            FrameKind::Control => reached = skipped(&mut gaps, &frame, reached)?,
+            FrameKind::Outcome => {
+                return Ok(Received {
+                    frame,
+                    gaps,
+                    reached,
+                    delivered,
+                    interrupted: discarding,
+                    unwritten,
+                });
+            }
+            FrameKind::Control => {
+                reached = skipped(&mut gaps, &frame, reached)?;
+                if !discarding && !stop.is_cancelled() && unwritten.is_none() {
+                    delivered = reached;
+                }
+            }
             FrameKind::Data => {
-                let bytes = match frame.data().map_err(ClientError::Stream)? {
-                    (Channel::Input, _) => {
-                        return Err(ClientError::Stream(ServiceError::InvalidInput));
-                    }
-                    (_, bytes) => bytes,
-                };
+                let (channel, bytes) = frame.data().map_err(ClientError::Stream)?;
+                if channel == Channel::Input {
+                    return Err(ClientError::Stream(ServiceError::InvalidInput));
+                }
                 reached = advanced(reached, bytes.len())?;
+                if channel == Channel::Error && error.is_none() {
+                    if !discarding && !stop.is_cancelled() && unwritten.is_none() {
+                        delivered = reached;
+                    }
+                    continue;
+                }
                 if unwritten.is_some() || discarding || stop.is_cancelled() {
                     discarding = true;
                     continue;
                 }
-                let delivered = async {
+                let wrote = async {
                     deliver(&frame, (&mut output, error.as_mut())).await?;
                     output.flush().await?;
                     if let Some(error) = error.as_mut() {
@@ -215,8 +250,8 @@ where
                     }
                     Ok::<(), ClientError>(())
                 };
-                match write_until(delivered, stop).await {
-                    Some(Ok(())) => {}
+                match write_until(wrote, stop).await {
+                    Some(Ok(())) => delivered = reached,
                     Some(Err(ClientError::Local(failure))) => {
                         unwritten = Some(failure);
                         lost.notify_one();
@@ -230,24 +265,13 @@ where
     }
 }
 
-/// Reads local input; `None` is EOF.
-async fn read_input<I: AsyncRead + Unpin>(
-    input: Option<&mut I>,
-    buffer: &mut [u8],
-) -> std::io::Result<Option<usize>> {
-    let Some(input) = input else {
-        return Ok(None);
-    };
-    Ok(Some(input.read(buffer).await?).filter(|read| *read > 0))
-}
-
 /// Checks that an outcome reports this Process detached at the cursor `reached`, when known.
 /// An attachment completes only once the Process ended and every byte retained when it began
 /// was sent.
 fn attached(
     (accept, frame): (Option<ProcessAccept>, &crate::Frame),
     (id, reached): (ProcessId, Option<u64>),
-    gaps: Gaps,
+    (gaps, (delivered, delivery_interrupted)): (Gaps, (Option<u64>, bool)),
 ) -> Result<Attached, ClientError> {
     if frame.kind() != FrameKind::Outcome {
         return Err(unexpected(frame));
@@ -265,8 +289,9 @@ fn attached(
                 accept,
                 reason,
                 summary,
-                cursor,
+                cursor: delivered.unwrap_or(cursor),
                 gaps,
+                delivery_interrupted,
             })
         }
         _ => Err(ClientError::Stream(ServiceError::InvalidInput)),

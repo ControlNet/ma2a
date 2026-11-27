@@ -21,7 +21,8 @@ use crate::{
 
 /// Destination → local until the outcome; a lost local side asks upstream to cancel, and
 /// explicit cancellation interrupts local delivery and discards remaining output while still
-/// checking frames and byte counts. Returns the answer and the first local write that failed.
+/// checking frames and byte counts. Returns the answer, the first local write that failed, and
+/// whether delivery was interrupted.
 ///
 /// The destination's bytes end once, and the outcome counts exactly the bytes received from it
 /// and at most the `sent` ones as taken to it: an answer with other counts is not this relay.
@@ -31,7 +32,7 @@ pub(super) async fn downstream<R, LW>(
     reader: &mut FrameReader<R>,
     (mut local_write, idle): (LW, Duration),
     (lost, stop, sent): (&Notify, &CancellationToken, &Sent),
-) -> (Result<ProxyResult, ClientError>, Option<io::Error>)
+) -> (Result<ProxyResult, ClientError>, Option<io::Error>, bool)
 where
     R: AsyncRead + Unpin,
     LW: AsyncWrite + Unpin,
@@ -99,5 +100,5 @@ where
         }
     }
     .await;
-    (answer, unwritten)
+    (answer, unwritten, discarding)
 }

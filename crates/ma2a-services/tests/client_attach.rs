@@ -816,7 +816,8 @@ async fn a_detached_attachment_interrupts_a_blocked_local_sink_and_bounds_missin
     scripted?;
     let attached = attached?;
     assert_eq!(attached.reason, EndReason::Cancelled);
-    assert_eq!(attached.cursor, 6);
+    assert_eq!(attached.cursor, 0);
+    assert!(attached.delivery_interrupted);
 
     // 2. Missing terminal after detach is bounded by FRAME_GRACE.
     let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
@@ -858,5 +859,100 @@ async fn a_detached_attachment_interrupts_a_blocked_local_sink_and_bounds_missin
         ),
         "{attached:?}"
     );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_detached_attachment_exposes_a_safe_resume_cursor_and_preserves_omitted_stderr()
+-> TestResult {
+    // 1. Cancel during a partially written stdout frame with trailing frames discarded:
+    //    `cursor` stops at the last complete frame boundary (2), not the protocol cursor (12),
+    //    so resuming from `cursor` returns all omitted bytes. Also verifies omitted stderr
+    //    (`error: None`) still advances the confirmed cursor before interruption.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold, out_sink) = tokio::io::duplex(4);
+    let err_data = (
+        FrameKind::Data,
+        [&[Channel::Error as u8][..], b"eee"].concat(),
+    );
+    let full_log = b"abeee_cdefghijkl";
+    let target = async {
+        let (kind, accept) = reading(0, (0, 0))?;
+        target_writer.frame(kind, &accept).await?;
+        target_writer.data(Channel::Output, b"ab").await?;
+        target_writer.frame(err_data.0, &err_data.1).await?;
+        // 6 bytes into a 4-byte duplex (already holding "ab"): blocks after 2 bytes ("_c").
+        target_writer.data(Channel::Output, b"_cdefg").await?;
+        target_writer.flush().await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        target_writer.data(Channel::Output, b"hijkl").await?;
+        let (kind, outcome) = detached(EndReason::Cancelled, process(1), 16)?;
+        target_writer.frame(kind, &outcome).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (
+            (process(1), LogFrom::Now),
+            ProcessIo {
+                input: None::<&[u8]>,
+                output: out_sink,
+                error: None::<Vec<u8>>,
+            },
+        ),
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (attached, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    let attached = attached?;
+    assert_eq!(attached.reason, EndReason::Cancelled);
+    // Confirmed: 2 ("ab") + 3 (omitted stderr "eee") = 5; partial "_cdefg" + discarded "hijkl" stay unread.
+    assert_eq!(attached.cursor, 5);
+    assert!(attached.delivery_interrupted);
+
+    // Resuming from `attached.cursor` receives the omitted bytes ("_cdefghijkl").
+    let resumed_frames = vec![
+        reading(attached.cursor, (0, 16))?,
+        data(
+            full_log
+                .get(usize::try_from(attached.cursor)?..)
+                .ok_or("tail")?,
+        ),
+        detached(EndReason::Completed, process(1), 16)?,
+    ];
+    let (resumed, resumed_out) =
+        attach(LogFrom::Cursor(attached.cursor), None, resumed_frames).await?;
+    let resumed = resumed?;
+    assert_eq!(resumed.cursor, 16);
+    assert!(!resumed.delivery_interrupted);
+    assert_eq!(resumed_out, b"_cdefghijkl");
+
+    // 2. Queued Completed outcome arriving after cancellation interrupted local delivery still
+    //    exposes the confirmed local cursor (0), not the protocol cursor (6), and flags interruption.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe();
+    let (_hold, out_sink) = tokio::io::duplex(1);
+    let (kind, accept) = reading(0, (0, 6))?;
+    target_writer.frame(kind, &accept).await?;
+    target_writer.data(Channel::Output, b"abcdef").await?;
+    let (kind, outcome) = detached(EndReason::Completed, process(1), 6)?;
+    target_writer.frame(kind, &outcome).await?;
+    target_writer.flush().await?;
+    let attached = within(hosted::attach(
+        (&mut reader, &mut writer),
+        (
+            (process(1), LogFrom::Start),
+            ProcessIo {
+                input: None::<&[u8]>,
+                output: out_sink,
+                error: None::<Vec<u8>>,
+            },
+        ),
+        tokio::time::sleep(Duration::from_millis(50)),
+    ))
+    .await??;
+    assert_eq!(attached.reason, EndReason::Completed);
+    assert_eq!(attached.cursor, 0);
+    assert!(attached.delivery_interrupted);
     Ok(())
 }

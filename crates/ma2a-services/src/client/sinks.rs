@@ -4,7 +4,7 @@ use std::{future::Future, io, time::Duration};
 
 use ma2a_core::service::{Channel, FrameKind, ServiceError};
 use tokio::{
-    io::{AsyncWrite, AsyncWriteExt as _},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     sync::Notify,
 };
 use tokio_util::sync::CancellationToken;
@@ -25,7 +25,7 @@ pub(super) struct Sinks<'a, O, E> {
     /// The first local write that failed; nothing is written after it.
     pub(super) unwritten: Option<io::Error>,
     /// Set once cancellation interrupts local delivery so remaining frames are only validated.
-    discarding: bool,
+    pub(super) discarding: bool,
     /// Told once a write failed, so the inbound side cancels.
     lost: &'a Notify,
     /// Cancelled when the caller cancels or a local read fails.
@@ -90,6 +90,9 @@ where
             return Ok(());
         };
         *count = count.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        if channel == Channel::Error && self.error.is_none() {
+            return Ok(());
+        }
         if self.unwritten.is_some() || self.discarding || self.stop.is_cancelled() {
             self.discarding = true;
             return Ok(());
@@ -179,4 +182,15 @@ pub(super) async fn shutdown_bounded<LW: AsyncWrite + Unpin>(
     tokio::time::timeout(idle, local_write.shutdown())
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local shutdown timed out"))?
+}
+
+/// Reads local input; `None` is EOF.
+pub(super) async fn read_input<I: AsyncRead + Unpin>(
+    input: Option<&mut I>,
+    buffer: &mut [u8],
+) -> io::Result<Option<usize>> {
+    let Some(input) = input else {
+        return Ok(None);
+    };
+    Ok(Some(input.read(buffer).await?).filter(|read| *read > 0))
 }

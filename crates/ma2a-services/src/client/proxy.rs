@@ -4,12 +4,13 @@ mod downstream;
 
 use std::{
     future::Future,
+    io,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
 use downstream::downstream;
-use ma2a_core::service::{Channel, MAX_DATA_CHUNK_LEN, ProxyResult, ServiceError};
+use ma2a_core::service::{Channel, EndReason, MAX_DATA_CHUNK_LEN, ProxyResult, ServiceError};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite},
     sync::Notify,
@@ -17,8 +18,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ClientError, First, Sender, Written, drained, empty_accept, first_or_cancel, send_cancel,
-    sinks::settled, write_watching,
+    ClientError, First, Sender, Written, decoded, drained, empty_accept, first_or_cancel,
+    send_cancel, sinks::settled, write_watching,
 };
 use crate::{FrameReader, FrameWriter};
 
@@ -64,7 +65,7 @@ where
     );
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
-    let answer = {
+    let (answer, unwritten, delivery_interrupted) = {
         let mut downstream = Box::pin(downstream(
             reader,
             (local_write, idle),
@@ -74,9 +75,11 @@ where
         match sender {
             Sender::Cancelled(rest) => {
                 stop.cancel();
-                drained(downstream.as_mut(), rest)
-                    .await
-                    .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None))
+                drained(downstream.as_mut(), rest).await.unwrap_or((
+                    Err(ClientError::Stream(ServiceError::OutcomeUnknown)),
+                    None,
+                    false,
+                ))
             }
             Sender::Open(writer) => {
                 let mut upstream = Box::pin(upstream(
@@ -89,7 +92,7 @@ where
                     () = &mut upstream => if stop.is_cancelled() {
                         drained(downstream.as_mut(), None)
                             .await
-                            .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None))
+                            .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None, false))
                     } else {
                         downstream.await
                     },
@@ -97,7 +100,14 @@ where
             }
         }
     };
-    settled(answer, unread)
+    let result = settled((answer, unwritten), unread)?;
+    if delivery_interrupted && result.reason == EndReason::Completed {
+        return Err(ClientError::Local(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "local output delivery was interrupted",
+        )));
+    }
+    Ok(result)
 }
 
 /// Bytes started and completed toward the destination, and whether `end` started.

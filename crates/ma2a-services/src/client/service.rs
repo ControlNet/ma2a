@@ -31,6 +31,8 @@ pub struct Called {
     pub header: Option<Vec<u8>>,
     /// The result bytes of the outcome.
     pub result: Vec<u8>,
+    /// Whether local delivery to the caller's sinks was interrupted or discarded.
+    pub delivery_interrupted: bool,
 }
 
 /// Reads one discovery page, answering a `describe` after `after`.
@@ -84,6 +86,7 @@ where
             return Ok(Called {
                 header: None,
                 result,
+                delivery_interrupted: false,
             });
         }
         First::Accepted(frame) => decode_call_accept(frame.payload())
@@ -102,12 +105,14 @@ where
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
     // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
-    let answer = match sender {
+    let (answer, unwritten, delivery_interrupted) = match sender {
         Sender::Cancelled(rest) => {
             stop.cancel();
-            drained(outbound.as_mut(), rest)
-                .await
-                .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None))
+            drained(outbound.as_mut(), rest).await.unwrap_or((
+                Err(ClientError::Stream(ServiceError::OutcomeUnknown)),
+                None,
+                false,
+            ))
         }
         Sender::Open(writer) => {
             let control = ProcessControl {
@@ -123,22 +128,23 @@ where
                 answer = &mut outbound => answer,
                 () = &mut inbound => drained(outbound.as_mut(), None)
                     .await
-                    .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None)),
+                    .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None, false)),
             }
         }
     };
     Ok(Called {
         header: Some(header),
-        result: settled(answer, unread)?,
+        result: settled((answer, unwritten), unread)?,
+        delivery_interrupted,
     })
 }
 
 /// Service → caller until the outcome; lost local output asks the inbound side to cancel.
-/// Returns the answer and the first local write that failed.
+/// Returns the answer, the first local write that failed, and whether delivery was interrupted.
 async fn outbound<R, O, E>(
     reader: &mut FrameReader<R>,
     mut sinks: Sinks<'_, O, E>,
-) -> (Result<Vec<u8>, ClientError>, Option<std::io::Error>)
+) -> (Result<Vec<u8>, ClientError>, Option<std::io::Error>, bool)
 where
     R: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
@@ -157,5 +163,5 @@ where
         }
     }
     .await;
-    (answer, sinks.unwritten)
+    (answer, sinks.unwritten, sinks.discarding)
 }

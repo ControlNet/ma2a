@@ -3,10 +3,10 @@
 use std::future::Future;
 
 use ma2a_core::service::{
-    Channel, FrameKind, MAX_DATA_CHUNK_LEN, ProcessResult, ServiceError, TerminalSize,
+    Channel, EndReason, FrameKind, MAX_DATA_CHUNK_LEN, ProcessResult, ServiceError, TerminalSize,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWrite},
+    io::{AsyncRead, AsyncWrite},
     sync::{Notify, mpsc},
 };
 use tokio_util::sync::CancellationToken;
@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     ClientError, First, Sender, Written, decoded, drained, empty_accept, first_or_cancel, next,
     send_cancel,
-    sinks::{Sinks, settled},
+    sinks::{Sinks, read_input, settled},
     write_watching,
 };
 use crate::{FrameReader, FrameWriter};
@@ -48,17 +48,16 @@ pub struct ProcessControl<C> {
 }
 
 /// How one remote process ended, and whether its output reached the caller.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a plain pair a caller destructures"
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Streamed {
     /// The terminal summary.
     pub result: ProcessResult,
     /// Whether the outcome arrived without the run: a replay of an earlier request answers
     /// only its terminal, so none of the process's output was received.
     pub replayed: bool,
+    /// Whether local delivery to the caller's sinks was interrupted or discarded.
+    pub delivery_interrupted: bool,
 }
 
 /// Relays one admitted remote process until its terminal outcome.
@@ -69,7 +68,8 @@ pub struct Streamed {
 ///
 /// # Errors
 /// Returns the refusal (`spawn_failed` when the program cannot start), the failed outcome,
-/// the stream failure, or, once the process was cancelled, the failed local read.
+/// the stream failure, a local I/O or interrupted-delivery failure on a `Completed` outcome,
+/// or, once the process was cancelled, the failed local read.
 pub async fn run<R, W, I, O, E, C>(
     streams: (&mut FrameReader<R>, &mut FrameWriter<W>),
     local: ProcessIo<I, O, E>,
@@ -83,7 +83,14 @@ where
     E: AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
-    Ok(run_streamed(streams, local, control).await?.result)
+    let streamed = run_streamed(streams, local, control).await?;
+    if streamed.delivery_interrupted && streamed.result.reason == EndReason::Completed {
+        return Err(ClientError::Local(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "local output delivery was interrupted",
+        )));
+    }
+    Ok(streamed.result)
 }
 
 /// Like [`run`], and also tells whether the outcome was only replayed, without its output.
@@ -113,6 +120,7 @@ where
             return Ok(Streamed {
                 result,
                 replayed: true,
+                delivery_interrupted: false,
             });
         }
         First::Accepted(frame) => empty_accept(&frame)?,
@@ -131,12 +139,14 @@ where
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
     // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
-    let answer = match sender {
+    let (answer, unwritten, delivery_interrupted) = match sender {
         Sender::Cancelled(rest) => {
             stop.cancel();
-            drained(outbound.as_mut(), rest)
-                .await
-                .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None))
+            drained(outbound.as_mut(), rest).await.unwrap_or((
+                Err(ClientError::Stream(ServiceError::OutcomeUnknown)),
+                None,
+                false,
+            ))
         }
         Sender::Open(writer) => {
             let control = ProcessControl { resizes, cancel };
@@ -149,13 +159,14 @@ where
                 answer = &mut outbound => answer,
                 () = &mut inbound => drained(outbound.as_mut(), None)
                     .await
-                    .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None)),
+                    .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None, false)),
             }
         }
     };
     Ok(Streamed {
-        result: settled(answer, unread)?,
+        result: settled((answer, unwritten), unread)?,
         replayed: false,
+        delivery_interrupted,
     })
 }
 
@@ -257,7 +268,11 @@ pub(super) async fn inbound<W, I, C>(
 async fn outbound<R, O, E>(
     reader: &mut FrameReader<R>,
     mut sinks: Sinks<'_, O, E>,
-) -> (Result<ProcessResult, ClientError>, Option<std::io::Error>)
+) -> (
+    Result<ProcessResult, ClientError>,
+    Option<std::io::Error>,
+    bool,
+)
 where
     R: AsyncRead + Unpin,
     O: AsyncWrite + Unpin,
@@ -278,18 +293,7 @@ where
         }
     }
     .await;
-    (answer, sinks.unwritten)
-}
-
-/// Reads local input; `None` is EOF.
-async fn read_input<I: AsyncRead + Unpin>(
-    input: Option<&mut I>,
-    buffer: &mut [u8],
-) -> std::io::Result<Option<usize>> {
-    let Some(input) = input else {
-        return Ok(None);
-    };
-    Ok(Some(input.read(buffer).await?).filter(|read| *read > 0))
+    (answer, sinks.unwritten, sinks.discarding)
 }
 
 async fn recv(resizes: Option<&mut mpsc::Receiver<TerminalSize>>) -> Option<TerminalSize> {
