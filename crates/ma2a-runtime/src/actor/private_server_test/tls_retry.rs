@@ -36,7 +36,7 @@ MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgAWjxWXi/raqfjSBG\n\
 EQg6KSwCxSc3iOxZzGH8/xssOrG99cDVM/0lEg5MkgrlGIopt82bpbWR\n\
 -----END PRIVATE KEY-----\n";
 
-fn write_tls_fixture(
+pub(super) fn write_tls_fixture(
     state: &TempState,
 ) -> Result<RelayTransportConfiguration, Box<dyn std::error::Error + Send + Sync>> {
     let cert_path = state.0.join("relay.cert.pem");
@@ -50,7 +50,7 @@ fn write_tls_fixture(
     })
 }
 
-fn native_tls_config(
+pub(super) fn native_tls_config(
     space: ma2a_core::SpaceId,
     address: std::net::SocketAddr,
     transport: RelayTransportConfiguration,
@@ -62,7 +62,7 @@ fn native_tls_config(
     desired
 }
 
-async fn wait_for_gate(entered_rx: mpsc::Receiver<()>) -> TestResult {
+pub(super) async fn wait_for_gate(entered_rx: mpsc::Receiver<()>) -> TestResult {
     tokio::time::advance(Duration::from_secs(90)).await;
     tokio::task::yield_now().await;
     tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(2))).await??;

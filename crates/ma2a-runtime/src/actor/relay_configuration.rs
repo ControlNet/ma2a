@@ -67,6 +67,11 @@ impl Actor {
             .set_relay_configuration(configuration.clone())
             .await?;
         self.state.revision = self.state.revision.max(revision);
+        self.maintenance.relay_configuration_generation = self
+            .maintenance
+            .relay_configuration_generation
+            .wrapping_add(1);
+        self.maintenance.relay_tls_loading = None;
         if clear_published {
             self.maintenance.published_relay.clear();
         }
@@ -96,16 +101,17 @@ impl Actor {
             && self.needs_private_relay_restart(Some(provider), mode)
         {
             self.maintenance.relay_configuration = Some(RelayCompletion::Pending(mode));
-            if self.maintenance.relay_tls_loading.as_ref() != Some(tls) {
+            let generation = self.maintenance.relay_configuration_generation;
+            if self.maintenance.relay_tls_loading != Some(generation) {
                 let tls_key = tls.clone();
                 let tls_task = tls.clone();
-                self.maintenance.relay_tls_loading = Some(tls.clone());
+                self.maintenance.relay_tls_loading = Some(generation);
                 self.maintenance.relay_tls_loads.spawn(async move {
                     let result =
                         tokio::task::spawn_blocking(move || load_native_tls_raw(&tls_task))
                             .await
                             .unwrap_or(Err(ma2a_net::RelayTlsError::TlsConfiguration));
-                    (tls_key, result)
+                    (generation, tls_key, result)
                 });
             }
             return Ok(());
@@ -115,12 +121,19 @@ impl Actor {
 
     pub(crate) async fn finish_relay_tls_load(
         &mut self,
-        (loaded_for, loaded): (
+        (loaded_generation, loaded_for, loaded): (
+            u64,
             ma2a_net::NativeRelayTlsConfig,
             Result<ma2a_net::LoadedRelayTls, ma2a_net::RelayTlsError>,
         ),
     ) -> Result<(), RuntimeError> {
-        if self.maintenance.relay_tls_loading.as_ref() == Some(&loaded_for) {
+        #[cfg(test)]
+        super::relay_tls_load::TLS_LOAD_COMPLETIONS
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if loaded_generation != self.maintenance.relay_configuration_generation {
+            return Ok(());
+        }
+        if self.maintenance.relay_tls_loading == Some(loaded_generation) {
             self.maintenance.relay_tls_loading = None;
         }
         let Some((runtime, mode)) = self.pending_desired_relay().await? else {

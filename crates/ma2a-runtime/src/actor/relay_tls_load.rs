@@ -15,6 +15,10 @@ pub(super) static TLS_LOAD_GATE: std::sync::Mutex<Option<TlsLoadGate>> =
 pub(super) static TLS_LOAD_GATE_TEST_LOCK: tokio::sync::Mutex<()> =
     tokio::sync::Mutex::const_new(());
 
+#[cfg(test)]
+pub(super) static TLS_LOAD_COMPLETIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub(super) fn load_native_tls_blocking(
     tls: &ma2a_net::NativeRelayTlsConfig,
 ) -> Result<ma2a_net::LoadedRelayTls, RuntimeError> {
@@ -24,6 +28,7 @@ pub(super) fn load_native_tls_blocking(
 pub(super) fn load_native_tls_raw(
     tls: &ma2a_net::NativeRelayTlsConfig,
 ) -> Result<ma2a_net::LoadedRelayTls, ma2a_net::RelayTlsError> {
+    let result = tls.load_tls();
     #[cfg(test)]
     {
         let gate = TLS_LOAD_GATE
@@ -40,5 +45,5 @@ pub(super) fn load_native_tls_raw(
                 .store(woke, std::sync::atomic::Ordering::SeqCst);
         }
     }
-    tls.load_tls()
+    result
 }

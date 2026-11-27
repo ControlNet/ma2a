@@ -3,6 +3,7 @@ use crate::Runtime;
 use ma2a_store::{Repository, StoreConfig};
 
 mod failures;
+mod tls_generation;
 mod tls_retry;
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
