@@ -25,7 +25,13 @@ impl Actor {
         if let Some(pending) = self.maintenance.enrollment.as_mut() {
             pending.stage = EnrollmentStage::Publications;
         }
-        self.refresh_local_control_publications().await?;
+        if let Err(error) = self.refresh_local_control_publications().await {
+            if error.is_deferred_publication() {
+                Self::absorb_background("enrollment publication", Err(error))?;
+            } else {
+                return Err(error);
+            }
+        }
         // Scheduling is synchronous. It happens once, only after all projections converge.
         for owner in owners {
             self.schedule_control_round(

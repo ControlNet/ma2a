@@ -24,6 +24,8 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 const PROMPT: Duration = Duration::from_secs(10);
 
+mod mutations_test;
+
 #[derive(Debug)]
 struct MutableClock(AtomicI64);
 

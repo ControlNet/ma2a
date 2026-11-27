@@ -148,7 +148,13 @@ impl Actor {
         self.refresh_control_lookup().await?;
         self.refresh_relay_candidates().await?;
         self.refresh_private_relay_access().await?;
-        self.refresh_local_control_publications().await?;
+        if let Err(error) = self.refresh_local_control_publications().await {
+            if error.is_deferred_publication() {
+                Self::absorb_background("membership publication", Err(error))?;
+            } else {
+                return Err(error);
+            }
+        }
         if let Some(trigger) = self.maintenance.membership_pending.take() {
             self.schedule_control_round(trigger, None);
         }
