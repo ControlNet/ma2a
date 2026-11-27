@@ -1,6 +1,6 @@
 //! `ma2a exec` and `ma2a shell`: remote programs bound to local pipes or this terminal.
 
-use std::io::{self, Write as _};
+use std::io;
 
 use ma2a_core::service::{
     EndReason, ExecRequest, MAX_OPERATION_LIFETIME_MS, OpenBody, ProcessResult, ProcessSpec,
@@ -13,7 +13,7 @@ use ma2a_services::client::{
     terminal,
 };
 
-use super::{duration_ms, open};
+use super::{duration_ms, open, stdio::StdioGuard};
 use crate::{
     AppError,
     cli::services::{ExecArgs, ProgramArgs, ShellArgs},
@@ -33,25 +33,29 @@ pub(crate) async fn exec(paths: IpcPaths, arguments: ExecArgs) -> Result<(), App
         .map_err(|_| AppError::Usage("exec request exceeds a protocol bound"))?;
     let (mut reader, mut writer) =
         open(&paths, &arguments.program.endpoint, OpenBody::Exec(request)).await?;
+    let stdio = StdioGuard::default();
     let local = ProcessIo {
         input: arguments.stdin.then(tokio::io::stdin),
-        output: tokio::io::stdout(),
-        error: Some(tokio::io::stderr()),
+        output: stdio.stdout(),
+        error: Some(stdio.stderr()),
     };
     let control = ProcessControl {
         resizes: None,
         cancel: interrupted(),
     };
-    let streamed = client::process::run_streamed((&mut reader, &mut writer), local, control)
-        .await
-        .map_err(AppError::from);
-    let streamed = super::unless_reading_stdin(arguments.stdin, streamed)?;
-    if streamed.replayed {
-        eprintln!(
-            "note: this request already ran; its outcome was replayed, and its output was not retained"
-        );
+    match client::process::run_streamed((&mut reader, &mut writer), local, control).await {
+        Ok(streamed) => {
+            if streamed.replayed {
+                stdio
+                    .note_stderr(
+                        "note: this request already ran; its outcome was replayed, and its output was not retained",
+                    )
+                    .await;
+            }
+            exit_with(&stdio, &streamed.result).await
+        }
+        Err(error) => stdio.exit_error(error.into()).await,
     }
-    exit_with(&streamed.result)
 }
 
 pub(crate) async fn shell(paths: IpcPaths, arguments: ShellArgs) -> Result<(), AppError> {
@@ -79,9 +83,10 @@ pub(crate) async fn shell(paths: IpcPaths, arguments: ShellArgs) -> Result<(), A
     .await?;
     // Raw mode starts only once the session exists, so every earlier error prints normally.
     let raw = terminal::RawMode::enable()?;
+    let stdio = StdioGuard::default();
     let local = ProcessIo::<_, _, tokio::io::Stderr> {
         input: Some(tokio::io::stdin()),
-        output: tokio::io::stdout(),
+        output: stdio.stdout(),
         error: None,
     };
     let control = ProcessControl {
@@ -91,10 +96,10 @@ pub(crate) async fn shell(paths: IpcPaths, arguments: ShellArgs) -> Result<(), A
     };
     let result = client::process::run((&mut reader, &mut writer), local, control).await;
     drop(raw);
-    exit_with(&super::unless_reading_stdin(
-        true,
-        result.map_err(AppError::from),
-    )?)
+    match result {
+        Ok(result) => exit_with(&stdio, &result).await,
+        Err(error) => stdio.exit_error(error.into()).await,
+    }
 }
 
 fn spec(
@@ -124,26 +129,24 @@ pub(super) async fn interrupted() {
 
 /// Exits with the remote program's status, as a local program would.
 ///
-/// The process exits directly because a pending read of stdin cannot be cancelled and
-/// would otherwise hold the runtime open.
-fn exit_with(result: &ProcessResult) -> Result<(), AppError> {
+/// The process exits directly because a pending read of stdin or a blocked stdio worker cannot
+/// be cancelled and would otherwise hold the runtime open.
+async fn exit_with(stdio: &StdioGuard, result: &ProcessResult) -> ! {
     let code = match (result.reason, result.termination) {
         (EndReason::TimedOut, _) => {
-            eprintln!("remote program timed out");
+            stdio.note_stderr("remote program timed out").await;
             124
         }
         (EndReason::Cancelled, _) => 130,
         (EndReason::Shutdown, _) => {
-            eprintln!("target Runtime shut down");
+            stdio.note_stderr("target Runtime shut down").await;
             255
         }
         (_, Termination::Exited(code)) => i32::try_from(code.min(255)).unwrap_or(255),
         (_, Termination::Signaled(signal)) => i32::try_from(128 + signal.min(127)).unwrap_or(255),
         (_, _) => 255,
     };
-    if result.reason == EndReason::Completed {
-        io::stdout().lock().flush()?;
-        io::stderr().lock().flush()?;
-    }
-    std::process::exit(code)
+    stdio
+        .exit_code(code, result.reason == EndReason::Completed)
+        .await
 }

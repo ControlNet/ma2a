@@ -12,5 +12,7 @@ mod lab;
 mod acceptance;
 #[path = "process_e2e/adversarial.rs"]
 mod adversarial;
+#[path = "process_e2e/blocked_pipes.rs"]
+mod blocked_pipes;
 #[path = "process_e2e/recovery.rs"]
 mod recovery;

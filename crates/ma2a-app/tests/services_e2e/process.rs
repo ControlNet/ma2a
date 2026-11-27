@@ -132,3 +132,118 @@ async fn resized_session(lab: &Lab) -> Result<String, Box<dyn std::error::Error 
     assert_eq!(result?.termination, Termination::Exited(0));
     Ok(String::from_utf8_lossy(&output).into_owned())
 }
+
+fn drain_pipe(mut pipe: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+    })
+}
+
+fn wait_pipe_filled(
+    child: &mut std::process::Child,
+    fd: std::os::fd::BorrowedFd<'_>,
+) -> TestResult {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("exec exited before pipe filled: {status}").into());
+        }
+        if rustix::io::ioctl_fionread(fd)? >= 65_536 {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("exec pipe never filled".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn await_exec_exit(
+    child: &mut std::process::Child,
+) -> super::daemon_fixture::TestValue<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("exec hung past 5s with full pipe".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn exec_exits_promptly_on_timeout_and_sigint_with_undrained_pipes() -> TestResult {
+    use std::{
+        os::fd::{AsFd, OwnedFd},
+        process::Stdio,
+    };
+
+    let lab = Lab::start("exec-blocked-pipes", "1")?;
+    let mut child = lab
+        .member
+        .command(&[
+            "exec",
+            "--endpoint",
+            lab.owner.id(),
+            "--timeout",
+            "500ms",
+            "--",
+            "sh",
+            "-c",
+            "head -c 65536 /dev/zero | tr '\\0' e >&2; sleep 30",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout_drain = drain_pipe(child.stdout.take().ok_or("missing stdout")?);
+    let stderr_fd: OwnedFd = child.stderr.take().ok_or("missing stderr")?.into();
+    wait_pipe_filled(&mut child, stderr_fd.as_fd())?;
+    let status = await_exec_exit(&mut child)?;
+    drop(stderr_fd);
+    let _ = stdout_drain.join();
+    assert_eq!(status.code(), Some(124), "expected 124, got {status:?}");
+
+    for (block_stdout, script) in [
+        (true, "head -c 262144 /dev/zero | tr '\\0' a; sleep 30"),
+        (false, "head -c 262144 /dev/zero | tr '\\0' e >&2; sleep 30"),
+    ] {
+        let mut child = lab
+            .member
+            .command(&[
+                "exec",
+                "--endpoint",
+                lab.owner.id(),
+                "--",
+                "sh",
+                "-c",
+                script,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().ok_or("missing stdout")?;
+        let stderr = child.stderr.take().ok_or("missing stderr")?;
+        let (blocked_fd, other): (OwnedFd, _) = if block_stdout {
+            (stdout.into(), drain_pipe(stderr))
+        } else {
+            (stderr.into(), drain_pipe(stdout))
+        };
+        wait_pipe_filled(&mut child, blocked_fd.as_fd())?;
+        let pid = rustix::process::Pid::from_raw(i32::try_from(child.id())?).ok_or("no pid")?;
+        rustix::process::kill_process(pid, rustix::process::Signal::INT)?;
+        let status = await_exec_exit(&mut child)?;
+        drop(blocked_fd);
+        let _ = other.join();
+        assert_eq!(status.code(), Some(130), "expected 130, got {status:?}");
+    }
+    lab.shutdown()
+}

@@ -28,6 +28,7 @@ pub(crate) mod files;
 #[cfg(all(test, unix))]
 mod follow_tests;
 pub(crate) mod hosted;
+mod hosted_logs;
 mod hosted_stream;
 mod hosted_view;
 #[cfg(all(test, unix))]
@@ -37,6 +38,7 @@ pub(crate) mod proxy;
 #[cfg(all(test, unix))]
 mod reply_tests;
 pub(crate) mod service;
+mod stdio;
 mod transfer;
 
 /// The caller's frame halves of one opened operation.
@@ -196,20 +198,9 @@ pub(crate) fn exit(code: i32) -> ! {
 /// Flushes standard error without touching standard output, then ends the process with `code`.
 ///
 /// Used after an output failure or abnormal stop so a full or locked output pipe cannot hang exit.
-pub(crate) fn exit_failed(code: i32) -> ! {
+fn exit_failed(code: i32) -> ! {
     let _flushed = io::Write::flush(&mut io::stderr().lock());
     std::process::exit(code)
-}
-
-/// Passes `result` on, except that an error while stdin is being read ends the process.
-pub(crate) fn unless_reading_stdin<T>(
-    reading: bool,
-    result: Result<T, AppError>,
-) -> Result<T, AppError> {
-    match result {
-        Err(error) if reading => exit_with(Err(error)),
-        other => other,
-    }
 }
 
 /// Parses a `ROOT:/dir/file` remote path.

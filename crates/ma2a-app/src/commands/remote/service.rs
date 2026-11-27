@@ -1,6 +1,13 @@
 //! `ma2a service discover` and `call`: another Endpoint's services, used as this Endpoint.
 
-use std::{io::Write as _, time::Duration};
+use std::{
+    io::Write as _,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use ma2a_core::service::{
     DescribePage, HostedCall, OpenBody, OperationName, ServiceDescriptor, ServiceError,
@@ -9,8 +16,9 @@ use ma2a_core::service::{
 use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client::{ClientError, process::ProcessIo, service};
 use serde_json::{Value, json};
+use tokio::io::AsyncWriteExt as _;
 
-use super::{bounded, open, open_as, process::interrupted};
+use super::{bounded, open, open_as, process::interrupted, stdio::StdioGuard};
 use crate::{AppError, cli::hosted::CallArgs};
 
 fn version_value(version: &ServiceVersion) -> Value {
@@ -128,22 +136,58 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
     let body = OpenBody::Service(ServiceRequest::Call(call));
     let (mut reader, mut writer) =
         open_as(paths, (target.1, arguments.request_id.as_deref()), body).await?;
+    let stdio = StdioGuard::default();
     let local = ProcessIo {
         input: arguments.stdin.then(tokio::io::stdin),
-        output: tokio::io::stdout(),
-        error: Some(tokio::io::stderr()),
+        output: stdio.stdout(),
+        error: Some(stdio.stderr()),
     };
-    let called = service::call((&mut reader, &mut writer), local, interrupted()).await;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancel_flag = Arc::clone(&cancelled);
+    let cancel = async move {
+        interrupted().await;
+        cancel_flag.store(true, Ordering::Release);
+    };
+    let called = service::call((&mut reader, &mut writer), local, cancel).await;
     drop((reader, writer));
-    let printed = called.map_err(AppError::from).and_then(|called| {
-        let mut stdout = std::io::stdout().lock();
-        stdout.write_all(&called.result)?;
-        Ok(stdout.flush()?)
-    });
-    if arguments.stdin {
-        super::exit_with(printed);
+    match called {
+        Ok(called) => {
+            if stdio.stdout_stuck() {
+                stdio
+                    .exit_error(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "standard output delivery was interrupted",
+                    )))
+                    .await;
+            }
+            if cancelled.load(Ordering::Acquire) {
+                let wrote = tokio::time::timeout(super::stdio::DIAGNOSTIC_GRACE, async {
+                    let mut stdout = tokio::io::stdout();
+                    stdout.write_all(&called.result).await?;
+                    stdout.flush().await
+                })
+                .await;
+                if matches!(wrote, Ok(Ok(()))) {
+                    stdio.exit_code(0, false).await;
+                }
+                stdio
+                    .exit_error(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "standard output delivery was interrupted",
+                    )))
+                    .await;
+            }
+            if let Err(error) = write_stdout(&called.result) {
+                stdio.exit_error(error.into()).await;
+            }
+            stdio.exit_code(0, true).await
+        }
+        Err(error) => stdio.exit_error(error.into()).await,
     }
-    printed
+}
+
+fn write_stdout(bytes: &[u8]) -> std::io::Result<()> {
+    std::io::stdout().lock().write_all(bytes)
 }
 
 #[cfg(test)]

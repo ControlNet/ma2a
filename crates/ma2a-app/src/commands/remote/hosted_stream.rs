@@ -1,30 +1,36 @@
 //! `process logs`, `attach`, and `stdin`: output to this terminal, stdin to the Process.
 
-use std::io::Write as _;
-
 use ma2a_core::service::{
-    EndReason, LogFrom, MAX_LOGS_READ, OpenBody, ProcessAccept, ProcessId, ProcessReply,
-    ProcessRequest, ServiceError, Termination,
+    EndReason, LogFrom, OpenBody, ProcessId, ProcessRequest, ServiceError, Termination,
 };
 use ma2a_services::client::{
-    ClientError, answer,
+    ClientError,
     hosted::{self, Attached, Gaps},
     process::ProcessIo,
 };
 
+#[cfg(test)]
+use super::hosted_logs::{MAX_RETAINED_READS, another};
 use super::{
-    READ_DEADLINE, bounded, hosted::Target, hosted_view, open, open_bound, process::interrupted,
+    hosted::Target,
+    hosted_logs::{ended_code, read_retained},
+    hosted_view, open,
+    process::interrupted,
+    stdio::StdioGuard,
 };
 use crate::AppError;
 
 /// Prints retained output from `from`; with `follow`, then attaches until the Process ends.
 pub(super) async fn logs(
     target: Target<'_>,
-    read: (ProcessId, LogFrom),
+    (id, from): (ProcessId, LogFrom),
     follow: bool,
 ) -> Result<(), AppError> {
-    let (code, flush_outputs) = logs_exit(target, read, follow).await?;
-    exit(code, false, flush_outputs)
+    let stdio = StdioGuard::default();
+    match logs_exit(&stdio, target, (id, from, follow)).await {
+        Ok((code, flush_outputs)) => stdio.exit_code(code, flush_outputs).await,
+        Err(error) => stdio.exit_error(error).await,
+    }
 }
 
 /// Prints as [`logs`] does, and returns the exit status for how it ended.
@@ -34,20 +40,21 @@ pub(super) async fn logs(
 )]
 pub(super) async fn logs_code(
     target: Target<'_>,
-    read: (ProcessId, LogFrom),
+    (id, from): (ProcessId, LogFrom),
     follow: bool,
 ) -> Result<i32, AppError> {
-    Ok(logs_exit(target, read, follow).await?.0)
+    let stdio = StdioGuard::default();
+    Ok(logs_exit(&stdio, target, (id, from, follow)).await?.0)
 }
 
 async fn logs_exit(
+    stdio: &StdioGuard,
     target: Target<'_>,
-    (id, from): (ProcessId, LogFrom),
-    follow: bool,
+    (id, from, follow): (ProcessId, LogFrom, bool),
 ) -> Result<(i32, bool), AppError> {
-    let (next, ended) = read_retained(target, (id, from)).await?;
+    let (next, ended) = read_retained(stdio, target, (id, from)).await?;
     if !follow || ended {
-        note(&format!("next cursor {next}"));
+        note(stdio, &format!("next cursor {next}")).await;
         return if ended && follow {
             Ok((ended_code(target, id).await?, true))
         } else {
@@ -57,16 +64,19 @@ async fn logs_exit(
     let (mut reader, mut writer) = open_attach(target, (id, LogFrom::Cursor(next), false)).await?;
     let local = ProcessIo::<tokio::io::Stdin, _, _> {
         input: None,
-        output: tokio::io::stdout(),
-        error: Some(tokio::io::stderr()),
+        output: stdio.stdout(),
+        error: Some(stdio.stderr()),
     };
     let attach = (id, LogFrom::Cursor(next));
     match hosted::attach((&mut reader, &mut writer), (attach, local), interrupted()).await {
-        Ok(attached) => Ok((report(&attached), attached.reason == EndReason::Completed)),
+        Ok(attached) => Ok((
+            report(stdio, &attached).await,
+            attached.reason == EndReason::Completed,
+        )),
         // The Process ended between the read and the attach: print what it wrote last.
         Err(ClientError::Rejected(ServiceError::NotRunning)) => {
-            let (next, ended) = read_retained(target, (id, LogFrom::Cursor(next))).await?;
-            note(&format!("next cursor {next}"));
+            let (next, ended) = read_retained(stdio, target, (id, LogFrom::Cursor(next))).await?;
+            note(stdio, &format!("next cursor {next}")).await;
             if !ended {
                 return Err(ClientError::Rejected(ServiceError::NotRunning).into());
             }
@@ -76,128 +86,31 @@ async fn logs_exit(
     }
 }
 
-/// The exit status of a Process that ended before an attachment saw it, as if it had.
-async fn ended_code(target: Target<'_>, id: ProcessId) -> Result<i32, AppError> {
-    let request = ProcessRequest::Inspect(id);
-    let body = OpenBody::Process(request.clone());
-    let (opened, (accept, reply)) = bounded(READ_DEADLINE, async {
-        let (opened, (mut reader, writer)) = open_bound(target.0, (target.1, None), body).await?;
-        let answer = hosted::call(&mut reader).await?;
-        drop(writer);
-        Ok((opened, answer))
-    })
-    .await?;
-    match &reply {
-        ProcessReply::Details(details)
-            if answer::process((&request, &opened), (accept, &reply)) =>
-        {
-            Ok(exit_code(EndReason::Completed, details.summary.termination))
-        }
-        _ => Err(AppError::Protocol(
-            "the target answered another Process or operation".to_owned(),
-        )),
-    }
-}
-
-/// Reads the output retained when reading began; returns the cursor and whether the
-/// Process ended with everything read.
-///
-/// Output written meanwhile is left to the next read, so a Process writing faster than
-/// one round trip never keeps this from returning.
-async fn read_retained(
-    target: Target<'_>,
-    (id, mut from): (ProcessId, LogFrom),
-) -> Result<(u64, bool), AppError> {
-    let (mut output, mut error) = (tokio::io::stdout(), tokio::io::stderr());
-    let mut reached = match from {
-        LogFrom::Cursor(cursor) => Some(cursor),
-        LogFrom::Start | LogFrom::Now => None,
-    };
-    let (mut until, mut reads) = (None, 0);
-    loop {
-        reads += 1;
-        let request = ProcessRequest::Logs(id, from, MAX_LOGS_READ);
-        let read = bounded(READ_DEADLINE, async {
-            let (mut reader, writer) = open(target.0, target.1, OpenBody::Process(request)).await?;
-            let read = hosted::logs(
-                &mut reader,
-                (&mut output, &mut error),
-                (from, MAX_LOGS_READ),
-            )
-            .await;
-            drop(writer);
-            Ok(read?)
-        })
-        .await?;
-        // The read was checked to start where `from` resolves, so never before `reached`.
-        if let ProcessAccept::Reading {
-            start,
-            window,
-            truncated,
-            ..
-        } = read.accept
-        {
-            reached = Some(start);
-            until.get_or_insert(window.end);
-            if truncated {
-                note(&format!(
-                    "older output was dropped; reading starts at cursor {start}"
-                ));
-            }
-        }
-        gaps(read.gaps);
-        let done = read.ended || until.is_some_and(|until| read.next >= until);
-        if !another((reads, reached), (read.next, done))? {
-            return Ok((read.next, read.ended));
-        }
-        reached = Some(read.next);
-        from = LogFrom::Cursor(read.next);
-    }
-}
-
-/// Most reads of retained output: a Process retains at most 16 MiB, which 16 full reads cover,
-/// so a target that keeps the cursor creeping forward further is not followed.
-const MAX_RETAINED_READS: usize = 64;
-
-/// Whether the `reads`th read, which ended at `next` and is `done` once the Process ended or
-/// the read caught up, is followed by another from `next`.
-///
-/// A cursor that goes back is a faulty reply on every read, the last included, since following
-/// or resuming from it would print output already printed. A cursor that does not move would
-/// only read the same output again. Only a read that needs another may hit
-/// [`MAX_RETAINED_READS`], past which a cursor still moving is a faulty reply too.
-const fn another(
-    (reads, reached): (usize, Option<u64>),
-    (next, done): (u64, bool),
-) -> Result<bool, ClientError> {
-    match reached {
-        Some(reached) if next < reached => Err(ClientError::Stream(ServiceError::InvalidInput)),
-        Some(reached) if next == reached => Ok(false),
-        _ if done => Ok(false),
-        _ if reads >= MAX_RETAINED_READS => Err(ClientError::Stream(ServiceError::InvalidInput)),
-        _ => Ok(true),
-    }
-}
-
 /// Follows live output until the Process ends or Ctrl-C detaches.
 pub(super) async fn attach(
     target: Target<'_>,
     (id, from, stdin): (ProcessId, LogFrom, bool),
 ) -> Result<(), AppError> {
-    let (mut reader, mut writer) = open_attach(target, (id, from, stdin)).await?;
+    let guard = StdioGuard::default();
+    let (mut reader, mut writer) = match open_attach(target, (id, from, stdin)).await {
+        Ok(halves) => halves,
+        Err(error) => guard.exit_error(error).await,
+    };
     let local = ProcessIo {
         input: stdin.then(tokio::io::stdin),
-        output: tokio::io::stdout(),
-        error: Some(tokio::io::stderr()),
+        output: guard.stdout(),
+        error: Some(guard.stderr()),
     };
-    let attached = hosted::attach(
+    match hosted::attach(
         (&mut reader, &mut writer),
         ((id, from), local),
         interrupted(),
     )
     .await
-    .map_err(AppError::from);
-    finish(&super::unless_reading_stdin(stdin, attached)?, stdin)
+    {
+        Ok(attached) => finish(&guard, &attached).await,
+        Err(error) => guard.exit_error(error.into()).await,
+    }
 }
 
 /// Writes this command's stdin to the Process until EOF.
@@ -228,52 +141,39 @@ async fn open_attach(
     open(target.0, target.1, OpenBody::Process(request)).await
 }
 
-/// Reports how the attachment ended and exits: with the Process's own status once it ended,
-/// and successfully after a detach.
-fn finish(attached: &Attached, reading_stdin: bool) -> Result<(), AppError> {
-    exit(
-        report(attached),
-        reading_stdin,
-        attached.reason == EndReason::Completed,
-    )
+/// Reports how the attachment ended and exits directly without waiting on stuck stdio or stdin
+/// workers: with the Process's own status once it ended, and 0 after a detach.
+async fn finish(stdio: &StdioGuard, attached: &Attached) -> ! {
+    let code = report(stdio, attached).await;
+    stdio
+        .exit_code(code, attached.reason == EndReason::Completed)
+        .await
 }
 
 /// Reports how the attachment ended, and returns the exit status for it.
-fn report(attached: &Attached) -> i32 {
-    gaps(attached.gaps);
+async fn report(stdio: &StdioGuard, attached: &Attached) -> i32 {
+    gaps(stdio, attached.gaps).await;
     let process = hosted_view::summary(&attached.summary);
     let state = process.get("state").cloned().unwrap_or_default();
-    note(&format!(
-        "{} at cursor {}; Process {state}",
-        if attached.reason == EndReason::Cancelled {
-            "detached"
-        } else {
-            "ended"
-        },
-        attached.cursor
-    ));
+    note(
+        stdio,
+        &format!(
+            "{} at cursor {}; Process {state}",
+            if attached.reason == EndReason::Cancelled {
+                "detached"
+            } else {
+                "ended"
+            },
+            attached.cursor
+        ),
+    )
+    .await;
     exit_code(attached.reason, attached.summary.termination)
-}
-
-/// Exits with `code` once output is flushed when `flush_outputs`; returns only on success while
-/// stdin is not read.
-///
-/// The process exits directly because a pending read of stdin cannot be cancelled and
-/// would otherwise hold the runtime open.
-fn exit(code: i32, reading_stdin: bool, flush_outputs: bool) -> Result<(), AppError> {
-    if flush_outputs {
-        std::io::stdout().lock().flush()?;
-        std::io::stderr().lock().flush()?;
-    }
-    if reading_stdin || code != 0 {
-        std::process::exit(code);
-    }
-    Ok(())
 }
 
 /// The exit status for how an attachment ended: the Process's own once it ended, as for
 /// `exec`, 255 when it ended without one, and success after a detach.
-fn exit_code(reason: EndReason, termination: Option<Termination>) -> i32 {
+pub(super) fn exit_code(reason: EndReason, termination: Option<Termination>) -> i32 {
     match (reason, termination) {
         (EndReason::Completed, Some(Termination::Exited(code))) => {
             i32::try_from(code.min(255)).unwrap_or(255)
@@ -286,19 +186,23 @@ fn exit_code(reason: EndReason, termination: Option<Termination>) -> i32 {
     }
 }
 
-fn gaps(gaps: Gaps) {
+pub(super) async fn gaps(stdio: &StdioGuard, gaps: Gaps) {
     if gaps.count > 0 {
-        note(&format!(
-            "retention dropped older output {} time(s); reading resumed at cursor {}",
-            gaps.count,
-            gaps.resumed_at.unwrap_or_default()
-        ));
+        note(
+            stdio,
+            &format!(
+                "retention dropped older output {} time(s); reading resumed at cursor {}",
+                gaps.count,
+                gaps.resumed_at.unwrap_or_default()
+            ),
+        )
+        .await;
     }
 }
 
 /// One status line on stderr, apart from the Process's own output on stdout.
-fn note(message: &str) {
-    let _written = writeln!(std::io::stderr().lock(), "ma2a: {message}");
+pub(super) async fn note(stdio: &StdioGuard, message: &str) {
+    stdio.note_stderr(&format!("ma2a: {message}")).await;
 }
 
 #[cfg(test)]

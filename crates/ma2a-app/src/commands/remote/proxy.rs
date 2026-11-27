@@ -9,7 +9,7 @@ use ma2a_runtime::ipc::IpcPaths;
 use ma2a_services::client;
 use tokio::net::TcpListener;
 
-use super::{duration_ms, open};
+use super::{duration_ms, open, stdio::StdioGuard};
 use crate::{
     AppError,
     cli::services::{ProxyCommand, ProxyDestination},
@@ -22,14 +22,15 @@ pub(crate) async fn run(paths: IpcPaths, command: ProxyCommand) -> Result<(), Ap
             let idle = Duration::from_millis(request.idle_timeout_ms());
             let (mut reader, mut writer) =
                 open(&paths, &destination.endpoint, OpenBody::Proxy(request)).await?;
-            let local = (tokio::io::stdin(), tokio::io::stdout());
+            let stdio = StdioGuard::default();
+            let local = (tokio::io::stdin(), stdio.stdout());
             let relayed = client::proxy::run(
                 (&mut reader, &mut writer),
                 local,
                 (idle, super::process::interrupted()),
             )
             .await;
-            exit_with(relayed.map_err(AppError::from))
+            exit_with(&stdio, relayed.map_err(AppError::from)).await
         }
         ProxyCommand::Forward {
             listen,
@@ -40,24 +41,30 @@ pub(crate) async fn run(paths: IpcPaths, command: ProxyCommand) -> Result<(), Ap
 
 /// Exits as `exec` does: 124 after a timeout, 130 after a cancel, and 255 after the target
 /// Runtime shut down, so a script can tell a relay cut short from one that completed.
-fn exit_with(relayed: Result<ProxyResult, AppError>) -> ! {
-    let reason = relayed.as_ref().map(|result| result.reason);
-    let code = match reason {
-        Ok(EndReason::TimedOut) => {
-            eprintln!("proxy connection timed out");
-            124
+async fn exit_with(stdio: &StdioGuard, relayed: Result<ProxyResult, AppError>) -> ! {
+    match relayed {
+        Ok(result) => {
+            let code = match result.reason {
+                EndReason::TimedOut => {
+                    stdio.note_stderr("proxy connection timed out").await;
+                    124
+                }
+                EndReason::Cancelled => {
+                    stdio.note_stderr("proxy connection cancelled").await;
+                    130
+                }
+                EndReason::Shutdown => {
+                    stdio.note_stderr("target Runtime shut down").await;
+                    255
+                }
+                EndReason::Completed => 0,
+            };
+            stdio
+                .exit_code(code, result.reason == EndReason::Completed)
+                .await
         }
-        Ok(EndReason::Cancelled) => {
-            eprintln!("proxy connection cancelled");
-            130
-        }
-        Ok(EndReason::Shutdown) => {
-            eprintln!("target Runtime shut down");
-            255
-        }
-        Ok(EndReason::Completed) | Err(_) => super::exit_with(relayed.map(drop)),
-    };
-    super::exit_failed(code)
+        Err(error) => stdio.exit_error(error).await,
+    }
 }
 
 fn request(destination: &ProxyDestination) -> Result<ProxyRequest, AppError> {

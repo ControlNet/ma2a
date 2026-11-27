@@ -77,7 +77,11 @@ async fn process_reads_give_up_on_a_silent_target() -> TestResult {
         super::hosted::process_id(ID)?,
         ma2a_core::service::LogFrom::Start,
     );
-    times_out(super::hosted_stream::logs(remote, read, false)).await?;
+    times_out(async {
+        super::hosted_stream::logs_code(remote, read, false).await?;
+        Ok(())
+    })
+    .await?;
     Ok(())
 }
 
