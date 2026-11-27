@@ -1,7 +1,7 @@
 import { HTTPError } from "ky"
 import { describe, expect, test } from "vitest"
 
-import { stampedRuntimeSnapshot as runtimeSnapshot } from "./api/test-fixtures"
+import { DEFAULT_BOOT_ID, stampedRuntimeSnapshot as runtimeSnapshot } from "./api/test-fixtures"
 import { RuntimeController, UNCERTAIN_GRACE_MS } from "./runtime-controller"
 import { fakeClient, flushRecovery, ManualScheduler } from "./test/runtime-controller-fakes"
 
@@ -97,6 +97,7 @@ describe("runtime controller recovery", () => {
 
     expect(installed).toBe(2)
     expect(given.baselines).toEqual([10, 20])
+    expect(given.bootIds).toEqual([DEFAULT_BOOT_ID, DEFAULT_BOOT_ID])
     expect(given.callbacks).toHaveLength(2)
     expect(given.closed()).toBe(1)
     expect(scheduler.pending()).toBe(0)
@@ -231,4 +232,27 @@ test("an ordinary revision change never paints the snapshot as uncertain", async
   expect(connections).not.toContain("uncertain")
   expect(connections.at(-1)).toBe("online")
   expect(scheduler.pending()).toBe(0)
+})
+
+test("subscribes with the new boot ID when a restart keeps the same revision", async () => {
+  const scheduler = new ManualScheduler()
+  const bootB = "ff".repeat(16)
+  const snapshots = [
+    Promise.resolve(runtimeSnapshot(10, DEFAULT_BOOT_ID)),
+    Promise.resolve(runtimeSnapshot(10, bootB)),
+  ]
+  const given = fakeClient(() => snapshots.shift() ?? Promise.reject(new TypeError("unexpected")))
+  const controller = new RuntimeController(
+    { onRuntime: () => undefined, onSessionExpired: () => undefined, onError: () => undefined },
+    given.client,
+    scheduler,
+  )
+  await controller.start()
+
+  given.callbacks[0]?.onResyncRequired()
+  await flushRecovery()
+
+  expect(given.baselines).toEqual([10, 10])
+  expect(given.bootIds).toEqual([DEFAULT_BOOT_ID, bootB])
+  controller.stop()
 })

@@ -69,7 +69,7 @@ function scenario(details: SpaceDetails[]) {
       requests.push({ id, pending })
       return pending.promise
     },
-    subscribe: (_revision, callbacks) => {
+    subscribe: (_revision, _bootId, callbacks) => {
       events = callbacks
       return () => undefined
     },

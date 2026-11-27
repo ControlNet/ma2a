@@ -83,7 +83,11 @@ export type RuntimeEventSourceFactory = (url: string, init: EventSourceInit) => 
 export type RuntimeApiClient = {
   readonly fetchSpaceDetails: (spaceId: string) => Promise<SpaceDetails>
   readonly fetchSnapshot: () => Promise<StampedRuntimeSnapshot>
-  readonly subscribe: (revision: number, callbacks: RuntimeEventCallbacks) => () => void
+  readonly subscribe: (
+    revision: number,
+    bootId: string,
+    callbacks: RuntimeEventCallbacks,
+  ) => () => void
 }
 
 const createBrowserEventSource: RuntimeEventSourceFactory = (url, init) =>
@@ -110,8 +114,11 @@ export function createRuntimeApiClient(
     fetchSnapshot: async () => {
       return readSnapshot(await http.get(snapshotPath))
     },
-    subscribe: (revision, callbacks) => {
-      const source = createEventSource(`${eventsPath}?since=${revision}`, { withCredentials: true })
+    subscribe: (revision, bootId, callbacks) => {
+      const params = new URLSearchParams({ since: String(revision), boot_id: bootId })
+      const source = createEventSource(`${eventsPath}?${params.toString()}`, {
+        withCredentials: true,
+      })
       source.addEventListener("open", () => callbacks.onOpen())
       source.addEventListener("message", (message) => {
         if (!(message instanceof MessageEvent)) {

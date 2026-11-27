@@ -137,7 +137,7 @@ describe("runtime API boundary", () => {
         new FakeEventSource(url, init.withCredentials ?? false),
     )
 
-    given.subscribe(41, {
+    given.subscribe(41, "ab".repeat(16), {
       onOpen: () => {
         opened += 1
       },
@@ -153,7 +153,7 @@ describe("runtime API boundary", () => {
     source.dispatch("message", new MessageEvent("message", { data: "{" }))
 
     expect(opened).toBe(1)
-    expect(source.url).toBe("/api/v1/events?since=41")
+    expect(source.url).toBe(`/api/v1/events?since=41&boot_id=${"ab".repeat(16)}`)
     expect(source.withCredentials).toBe(true)
     expect(payloadErrors).toHaveLength(1)
     expect(recoveries).toBe(1)
@@ -171,7 +171,7 @@ describe("runtime API boundary", () => {
       (url: string, init: EventSourceInit) =>
         new FakeEventSource(url, init.withCredentials ?? false),
     )
-    given.subscribe(10, {
+    given.subscribe(10, "ab".repeat(16), {
       onOpen: () => undefined,
       onEvent: () => {
         throw callbackError

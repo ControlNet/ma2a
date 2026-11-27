@@ -41,6 +41,8 @@ pub(super) struct EventCursor {
 #[derive(Deserialize)]
 pub(crate) struct EventsQuery {
     since: u64,
+    #[serde(default)]
+    boot_id: Option<String>,
 }
 
 pub(crate) async fn events(
@@ -66,7 +68,11 @@ pub(crate) async fn events(
         Err(status) => return status.into_response(),
     };
     let (sender, receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-    if baseline.revision == query.since {
+    let boot_matches = query
+        .boot_id
+        .as_deref()
+        .is_none_or(|boot_id| boot_id == baseline.boot_id);
+    if baseline.revision == query.since && boot_matches {
         tokio::spawn(
             EventProducer {
                 state,

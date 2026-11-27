@@ -167,7 +167,7 @@ export class RuntimeController {
     // only losing one reconnects at once. A refused stream missed no event, so the details
     // being loaded for this snapshot still stand.
     let opened = false
-    this.closeEvents = this.client.subscribe(snapshot.revision, {
+    this.closeEvents = this.client.subscribe(snapshot.revision, stamped.bootId, {
       onOpen: () => {
         opened = true
         this.retryAttempt = 0
