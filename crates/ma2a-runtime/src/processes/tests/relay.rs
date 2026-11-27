@@ -275,3 +275,70 @@ async fn a_caller_cancel_or_eof_while_stdin_write_is_blocked_ends_at_once() -> T
     }
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_caller_cancel_or_eof_while_attach_stdin_write_is_blocked_ends_at_once() -> TestResult {
+    use ma2a_core::service::ServiceError;
+    use ma2a_services::{FrameReader, FrameWriter};
+    use tokio::io::AsyncWriteExt as _;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Mode {
+        Cancel,
+        Eof,
+        EndThenCancel,
+    }
+
+    for mode in [Mode::Cancel, Mode::Eof, Mode::EndThenCancel] {
+        let (caller, host) = tokio::io::duplex(4_096);
+        let (_caller_read, caller_write) = tokio::io::split(caller);
+        let (host_read, host_write) = tokio::io::split(host);
+        let mut writer = FrameWriter::new(caller_write);
+        let mut reader = FrameReader::new(host_read);
+        let mut host_writer = FrameWriter::new(host_write);
+
+        // Tiny supervisor pipe so the very first 128-byte Data frame blocks `to_supervisor.data`.
+        let (supervisor, pipe_sup) = tokio::io::duplex(64);
+        let (sup_read, _sup_write) = tokio::io::split(supervisor);
+        let (pipe_read, pipe_write) = tokio::io::split(pipe_sup);
+        let from_sup = FrameReader::new(pipe_read);
+        let to_sup = FrameWriter::new(pipe_write);
+        let stop = CancellationToken::new();
+
+        let relay = crate::processes::relay::relay(
+            (from_sup, to_sup),
+            (&mut reader, &mut host_writer),
+            ((true, 0), &stop),
+        );
+        let caller_task = async {
+            writer.data(Channel::Input, &[b'x'; 128]).await?;
+            writer.flush().await?;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            match mode {
+                Mode::Cancel => {
+                    writer.frame(FrameKind::Cancel, &[]).await?;
+                    writer.flush().await?;
+                }
+                Mode::Eof => writer.get_mut().shutdown().await?,
+                Mode::EndThenCancel => {
+                    writer.end(Channel::Input).await?;
+                    writer.frame(FrameKind::Cancel, &[]).await?;
+                    writer.flush().await?;
+                }
+            }
+            TestResult::Ok(())
+        };
+
+        let started = tokio::time::Instant::now();
+        let (relayed, sent) = tokio::join!(relay, caller_task);
+        sent?;
+        drop(sup_read);
+        assert_eq!(relayed, Err(ServiceError::Cancelled), "mode={mode:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "mode={mode:?} waited {:?}",
+            started.elapsed()
+        );
+    }
+    Ok(())
+}
