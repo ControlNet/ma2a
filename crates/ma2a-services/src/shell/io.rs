@@ -108,6 +108,25 @@ pub(super) struct Ended {
     pub(super) stream_error: Option<ServiceError>,
 }
 
+async fn stop_reason(
+    deadline: Instant,
+    shutdown: &CancellationToken,
+    cancelled: oneshot::Receiver<ServiceError>,
+) -> (EndReason, Option<ServiceError>) {
+    let cancelled = async {
+        match cancelled.await {
+            Ok(ServiceError::Cancelled) => None,
+            Ok(error) => Some(error),
+            Err(_) => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        () = shutdown.cancelled() => (EndReason::Shutdown, None),
+        () = tokio::time::sleep_until(deadline) => (EndReason::TimedOut, None),
+        error = cancelled => (EndReason::Cancelled, error),
+    }
+}
+
 /// Streams terminal output until exit plus a short drain, or until a stop condition.
 pub(super) async fn outbound<W: AsyncWrite + Unpin>(
     outbound: Outbound<'_>,
@@ -121,20 +140,7 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
         cancelled,
         done,
     } = outbound;
-    let stop = async {
-        let cancelled = async {
-            match cancelled.await {
-                Ok(ServiceError::Cancelled) => None,
-                Ok(error) => Some(error),
-                Err(_) => std::future::pending().await,
-            }
-        };
-        tokio::select! {
-            () = shutdown.cancelled() => (EndReason::Shutdown, None),
-            () = tokio::time::sleep_until(deadline) => (EndReason::TimedOut, None),
-            error = cancelled => (EndReason::Cancelled, error),
-        }
-    };
+    let stop = stop_reason(deadline, shutdown, cancelled);
     tokio::pin!(stop);
     let mut ended = Ended {
         reason: EndReason::Completed,
@@ -197,7 +203,12 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
                     exit = Some(termination.unwrap_or(Termination::Unknown));
                     drain_until = Some(Instant::now() + EXIT_DRAIN_GRACE);
                 }
-                () = tokio::time::sleep_until(drain_until.unwrap_or_else(Instant::now)), if drain_until.is_some() => break 'session,
+                () = tokio::time::sleep_until(drain_until.unwrap_or_else(Instant::now)), if drain_until.is_some() => {
+                    if reply::finish_frame(&mut write).await {
+                        ended.output_bytes += len64(chunk.len());
+                    }
+                    break 'session;
+                }
                 written = &mut write => break written,
             }
         };

@@ -81,6 +81,64 @@ async fn stop_reason(
     }
 }
 
+struct RunState<'a> {
+    run: &'a mut Run,
+    exit: &'a mut Option<std::io::Result<ExitStatus>>,
+    drain_until: &'a mut Option<Instant>,
+}
+
+async fn write_chunk<W, S>(
+    (spawned, writer): (&mut Spawned, &mut FrameWriter<W>),
+    (stop, state): (&mut std::pin::Pin<&mut S>, RunState<'_>),
+    (channel, bytes): (Channel, &[u8]),
+) -> bool
+where
+    W: AsyncWrite + Unpin,
+    S: Future<Output = (EndReason, Option<ServiceError>)>,
+{
+    let RunState {
+        run,
+        exit,
+        drain_until,
+    } = state;
+    let write = writer.data(channel, bytes);
+    tokio::pin!(write);
+    // A caller that stops reading cannot hold the run open past the drain after exit.
+    let written = loop {
+        tokio::select! {
+            biased;
+            (reason, error) = &mut *stop => {
+                (run.reason, run.stream_error) = (reason, error);
+                if error.is_none() {
+                    spawned.kill_all();
+                    if reply::finish_frame(&mut write).await {
+                        count_output(run, channel, bytes.len());
+                    }
+                }
+                return false;
+            }
+            status = spawned.child.wait(), if exit.is_none() => {
+                *exit = Some(status);
+                *drain_until = Some(Instant::now() + EXIT_DRAIN_GRACE);
+            }
+            () = tokio::time::sleep_until(drain_until.unwrap_or_else(Instant::now)), if drain_until.is_some() => {
+                spawned.kill_all();
+                if reply::finish_frame(&mut write).await {
+                    count_output(run, channel, bytes.len());
+                }
+                return false;
+            }
+            written = &mut write => break written,
+        }
+    };
+    if let Err(error) = written {
+        (run.reason, run.stream_error) = (EndReason::Cancelled, Some(error));
+        return false;
+    }
+    count_output(run, channel, bytes.len());
+    true
+}
+
 /// Streams output until exit plus a short drain, or until a stop condition; then kills.
 pub(super) async fn outbound<W: AsyncWrite + Unpin>(
     (spawned, writer): (&mut Spawned, &mut FrameWriter<W>),
@@ -103,7 +161,7 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
     };
     let mut exit: Option<std::io::Result<ExitStatus>> = None;
     let mut drain_until: Option<Instant> = None;
-    'run: loop {
+    loop {
         if exit.is_some() && stdout.is_none() && stderr.is_none() {
             break;
         }
@@ -147,35 +205,14 @@ pub(super) async fn outbound<W: AsyncWrite + Unpin>(
             }
             () = std::future::ready(()) => {}
         }
-        let write = writer.data(channel, bytes);
-        tokio::pin!(write);
-        // A caller that stops reading cannot hold the run open past the drain after exit.
-        let written = loop {
-            tokio::select! {
-                biased;
-                (reason, error) = &mut stop => {
-                    (run.reason, run.stream_error) = (reason, error);
-                    if error.is_none() {
-                        spawned.kill_all();
-                        if reply::finish_frame(&mut write).await {
-                            count_output(&mut run, channel, read);
-                        }
-                    }
-                    break 'run;
-                }
-                status = spawned.child.wait(), if exit.is_none() => {
-                    exit = Some(status);
-                    drain_until = Some(Instant::now() + EXIT_DRAIN_GRACE);
-                }
-                () = tokio::time::sleep_until(drain_until.unwrap_or_else(Instant::now)), if drain_until.is_some() => break 'run,
-                written = &mut write => break written,
-            }
+        let state = RunState {
+            run: &mut run,
+            exit: &mut exit,
+            drain_until: &mut drain_until,
         };
-        if let Err(error) = written {
-            (run.reason, run.stream_error) = (EndReason::Cancelled, Some(error));
+        if !write_chunk((spawned, writer), (&mut stop, state), (channel, bytes)).await {
             break;
         }
-        count_output(&mut run, channel, read);
     }
     // Process-group IDs are not reused while any member lives, and PIDs are allocated
     // sequentially, so killing the group right after the leader exits cannot reach an

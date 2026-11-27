@@ -11,7 +11,7 @@ use ma2a_core::service::{
     TerminalSize, Termination,
 };
 use ma2a_services::{Frame, OperationEnd, OperationReport, serve_shell};
-use support::{ClientIo, TestResult, drain, pipe_with};
+use support::{ClientIo, TestResult, drain, pipe_blocked, pipe_with};
 use tokio_util::sync::CancellationToken;
 
 fn session(program: &str, args: &[&str], lifetime_ms: u64) -> TestResult<ShellRequest> {
@@ -376,5 +376,49 @@ async fn a_stop_during_backpressured_output_finishes_the_frame_and_sends_outcome
         assert_eq!(report.end, expected_end, "{expected_reason:?}");
         assert_eq!(report.bytes_out, received, "{expected_reason:?}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn exit_drain_expiry_mid_frame_finishes_the_frame_and_sends_completed_outcome() -> TestResult
+{
+    let shutdown = CancellationToken::new();
+    let request = session("sh", &["-c", "head -c 2048 /dev/zero; exit 0"], 60_000)?;
+    let ((mut reader, _writer), (mut server_reader, mut server_writer), blocked) =
+        pipe_blocked(256);
+    let stop = shutdown.clone();
+    let server = tokio::spawn(async move {
+        let report = serve_shell(request, &stop, (&mut server_reader, &mut server_writer)).await;
+        (
+            report,
+            server_writer.is_torn(),
+            server_writer.terminal_sent(),
+        )
+    });
+
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    tokio::time::timeout(Duration::from_secs(5), blocked.notified()).await?;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let frames = tokio::time::timeout(Duration::from_secs(5), drain(&mut reader)).await??;
+    let received = u64::try_from(
+        frames
+            .iter()
+            .filter(|frame| frame.kind() == FrameKind::Data)
+            .map(|frame| frame.data().expect("data").1.len())
+            .sum::<usize>(),
+    )?;
+    assert!(received > 0);
+    let result = outcome(&frames)?;
+    assert_eq!(
+        (result.termination, result.reason, result.output_bytes),
+        (Termination::Exited(0), EndReason::Completed, received)
+    );
+    let (report, torn, terminal_sent) =
+        tokio::time::timeout(Duration::from_secs(5), server).await??;
+    assert!(!torn, "writer was torn");
+    assert!(terminal_sent, "terminal not sent");
+    assert_eq!(report.end, OperationEnd::Completed);
+    assert_eq!(report.bytes_out, received);
     Ok(())
 }

@@ -13,7 +13,7 @@ use ma2a_core::service::{
     ServiceError, Termination,
 };
 use ma2a_services::{Frame, OperationEnd, OperationReport, serve_exec};
-use support::{ClientIo, TestResult, drain, pipe_with};
+use support::{ClientIo, TestResult, drain, pipe_blocked, pipe_with};
 use tokio_util::sync::CancellationToken;
 
 fn script(script: &str) -> TestResult<ProcessSpec> {
@@ -429,5 +429,43 @@ async fn a_stop_during_backpressured_output_finishes_the_frame_and_sends_outcome
     assert!(torn);
     assert!(!terminal_sent);
     assert_eq!(report.end, OperationEnd::Failed(ServiceError::TimedOut));
+    Ok(())
+}
+
+#[tokio::test]
+async fn exit_drain_expiry_mid_frame_finishes_the_frame_and_sends_completed_outcome() -> TestResult
+{
+    let shutdown = CancellationToken::new();
+    let request = ExecRequest::new(script("head -c 32768 /dev/zero; exit 0")?, false, 60_000)?;
+    let ((mut reader, _writer), (mut server_reader, mut server_writer), blocked) =
+        pipe_blocked(256);
+    let stop = shutdown.clone();
+    let server = tokio::spawn(async move {
+        let report = serve_exec(request, &stop, (&mut server_reader, &mut server_writer)).await;
+        (
+            report,
+            server_writer.is_torn(),
+            server_writer.terminal_sent(),
+        )
+    });
+
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    tokio::time::timeout(Duration::from_secs(5), blocked.notified()).await?;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let frames = tokio::time::timeout(Duration::from_secs(5), drain(&mut reader)).await??;
+    let received = u64::try_from(channel_bytes(&frames, Channel::Output)?.len())?;
+    assert!(received > 0);
+    let result = process_outcome(&frames)?;
+    assert_eq!(
+        (result.termination, result.reason, result.output_bytes),
+        (Termination::Exited(0), EndReason::Completed, received)
+    );
+    let (report, torn, terminal_sent) =
+        tokio::time::timeout(Duration::from_secs(5), server).await??;
+    assert!(!torn, "writer was torn");
+    assert!(terminal_sent, "terminal not sent");
+    assert_eq!(report.end, OperationEnd::Completed);
+    assert_eq!(report.bytes_out, received);
     Ok(())
 }

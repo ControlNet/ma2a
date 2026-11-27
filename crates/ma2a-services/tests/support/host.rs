@@ -42,6 +42,78 @@ pub(crate) fn pipe_with(capacity: usize) -> (ClientIo, ServerIo) {
     )
 }
 
+/// A writer wrapper that signals once a write hits backpressure (`Poll::Pending`).
+pub(crate) struct BlockedWrite<W> {
+    inner: W,
+    blocked: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for BlockedWrite<W> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_write(context, buffer);
+        if poll.is_pending() {
+            self.blocked.notify_one();
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_flush(context);
+        if poll.is_pending() {
+            self.blocked.notify_one();
+        }
+        poll
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(context)
+    }
+}
+
+/// Server-side frame halves whose writer signals when it stalls on backpressure.
+pub(crate) type BlockedServerIo = (
+    FrameReader<ReadHalf<DuplexStream>>,
+    FrameWriter<BlockedWrite<WriteHalf<DuplexStream>>>,
+);
+
+/// Returns connected halves and a notification that fires once a server write stalls.
+pub(crate) fn pipe_blocked(
+    capacity: usize,
+) -> (
+    ClientIo,
+    BlockedServerIo,
+    std::sync::Arc<tokio::sync::Notify>,
+) {
+    let blocked = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (client, server) = tokio::io::duplex(capacity);
+    let (client_read, client_write) = tokio::io::split(client);
+    let (server_read, server_write) = tokio::io::split(server);
+    (
+        (
+            FrameReader::new(client_read),
+            FrameWriter::new(client_write),
+        ),
+        (
+            FrameReader::new(server_read),
+            FrameWriter::new(BlockedWrite {
+                inner: server_write,
+                blocked: std::sync::Arc::clone(&blocked),
+            }),
+        ),
+        blocked,
+    )
+}
+
 /// Reads every frame until the server half-closes.
 pub(crate) async fn drain(
     reader: &mut FrameReader<ReadHalf<DuplexStream>>,

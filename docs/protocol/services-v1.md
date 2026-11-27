@@ -211,8 +211,9 @@ waiting 30 seconds after such a frame arrived ends the run as `cancelled`, so a 
 further back waits no longer than that.
 On Unix the child runs in its own process group, and the whole group is killed at the end of every
 run: after exit (with a 250 ms output drain), on timeout, cancellation, loss, and Runtime shutdown.
-The drain also bounds a caller that is not reading: output it has not taken 250 ms after the exit
-is dropped, and so is a frame still being written, which leaves the stream without an outcome.
+The drain also bounds a caller that is not reading: output not yet started 250 ms after the exit
+is dropped, while a frame already being written gets 5 seconds to finish before the stream is
+dropped without an outcome.
 The group ID is captured at spawn. On Windows only the direct child is killed; this is a documented
 limitation.
 
