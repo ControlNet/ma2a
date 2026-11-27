@@ -10,6 +10,7 @@ pub(super) fn reject_secret_argv(arguments: &[OsString]) -> Result<(), clap::Err
         .collect::<Vec<_>>();
     let password_secret = values
         .iter()
+        .take_while(|value| *value != "--")
         .any(|value| value == "--password" || value.starts_with("--password="));
     // An invitation is bearer material wherever it appears, including as an inline `--flag=` value.
     let invite_ticket = values.iter().any(|value| {
@@ -148,5 +149,41 @@ mod tests {
             ]))
             .is_ok()
         );
+        assert!(
+            reject_secret_argv(&args(&[
+                "exec",
+                "--endpoint",
+                "peer",
+                "--",
+                "psql",
+                "--password",
+            ]))
+            .is_ok()
+        );
+        assert!(
+            reject_secret_argv(&args(&[
+                "process",
+                "start",
+                "--endpoint",
+                "peer",
+                "--",
+                "tool",
+                "--password=1",
+            ]))
+            .is_ok()
+        );
+        assert!(
+            reject_secret_argv(&args(&[
+                "agent",
+                "define",
+                "bot",
+                "--",
+                "bot",
+                "--password",
+            ]))
+            .is_ok()
+        );
+        assert!(reject_secret_argv(&args(&["ui", "init", "--", "--password", "x"])).is_err());
+        assert!(reject_secret_argv(&args(&["status", "--password=x"])).is_err());
     }
 }
