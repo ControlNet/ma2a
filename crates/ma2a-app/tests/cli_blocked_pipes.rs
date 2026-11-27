@@ -486,6 +486,82 @@ fn process_logs_exits_0_when_diagnostic_note_blocks_full_stderr() -> TestResult 
 }
 
 #[test]
+fn process_logs_exits_0_when_diagnostic_newline_blocks_full_stderr() -> TestResult {
+    let (stderr_read, stderr_write, capacity) = open_probed_pipe()?;
+    let mut fill = capacity.saturating_sub(32);
+    loop {
+        let text_len = format!("ma2a: next cursor {fill}").len();
+        let target_fill = capacity
+            .checked_sub(text_len)
+            .ok_or("pipe smaller than diagnostic note")?;
+        if target_fill == fill {
+            break;
+        }
+        fill = target_fill;
+    }
+    let expected_line = format!("ma2a: next cursor {fill}\n");
+
+    // 1. On a draining pipe, the complete diagnostic line including its newline arrives.
+    let draining = start_standin("logs-stderr-nl-drain", Mode::LogsStderrFill(fill))?;
+    let output = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(&draining.state_dir)
+        .args([
+            "process",
+            "logs",
+            "--endpoint",
+            &draining.endpoint,
+            "03030303030303030303030303030303",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(0), "expected exit 0: {output:?}");
+    assert!(
+        output.stderr.ends_with(expected_line.as_bytes()),
+        "expected stderr to end with {expected_line:?}"
+    );
+
+    // 2. On an undrained pipe with room for the cursor text but not its trailing newline,
+    // exit must still complete within the bound rather than deadlocking in flush_outputs().
+    let standin = start_standin("logs-stderr-nl-full", Mode::LogsStderrFill(fill))?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(&standin.state_dir)
+        .args([
+            "process",
+            "logs",
+            "--endpoint",
+            &standin.endpoint,
+            "03030303030303030303030303030303",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr_write))
+        .spawn()?;
+    let stdout_drain = drain(child.stdout.take().ok_or("missing stdout")?);
+    let exit_deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(
+                "process logs deadlocked after note_stderr newline blocked on full pipe".into(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(stderr_read);
+    let _ = stdout_drain.join();
+    assert_eq!(status.code(), Some(0), "expected exit 0, got {status:?}");
+    Ok(())
+}
+
+#[test]
 fn service_call_sigint_interrupts_delayed_result_on_full_stdout() -> TestResult {
     // 1. Drainable stdout receives exact output and exits 0.
     let standin = start_standin("delayed-ok-drain", Mode::DelayedOk)?;

@@ -64,10 +64,14 @@ impl StdioGuard {
         if self.stderr_stuck() {
             return;
         }
+        let mut bytes = Vec::with_capacity(line.len().saturating_add(1));
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
         let _written = tokio::time::timeout(DIAGNOSTIC_GRACE, async {
             let mut stderr = self.stderr();
-            let _ = stderr.write_all(line.as_bytes()).await;
-            let _ = stderr.write_all(b"\n").await;
+            if stderr.write_all(&bytes).await.is_ok() {
+                let _ = stderr.flush().await;
+            }
         })
         .await;
     }
