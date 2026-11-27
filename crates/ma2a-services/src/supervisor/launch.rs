@@ -105,6 +105,35 @@ impl Launch {
     }
 }
 
+/// Owns a spawned supervisor until it proves ownership; any pre-proof failure or
+/// cancellation terminates and reaps it instead of leaving an unproven process behind.
+struct UnprovenChild(Option<tokio::process::Child>);
+
+impl UnprovenChild {
+    async fn terminate(mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _killed = child.kill().await;
+        }
+    }
+
+    fn into_child(mut self) -> Option<tokio::process::Child> {
+        self.0.take()
+    }
+}
+
+impl Drop for UnprovenChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _killed = child.start_kill();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _reaped = child.wait().await;
+                });
+            }
+        }
+    }
+}
+
 /// Starts a detached supervisor and waits until it proves ownership.
 ///
 /// On Unix the supervisor makes itself a session leader; on Windows it is created detached
@@ -132,15 +161,30 @@ pub async fn spawn(
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
-    let mut child = command.spawn().map_err(|_| ServiceError::Unavailable)?;
-    let mut stdin = child.stdin.take().ok_or(ServiceError::Internal)?;
-    stdin
-        .write_all(&record)
-        .await
-        .map_err(|_| ServiceError::Unavailable)?;
+    let deadline = tokio::time::Instant::now() + READY_DEADLINE;
+    let mut child = UnprovenChild(Some(
+        command.spawn().map_err(|_| ServiceError::Unavailable)?,
+    ));
+    let Some(mut stdin) = child.0.as_mut().and_then(|child| child.stdin.take()) else {
+        child.terminate().await;
+        return Err(ServiceError::Internal);
+    };
+    let written = tokio::time::timeout_at(deadline, stdin.write_all(&record)).await;
     drop(stdin);
-    let channel = ready(&launch.address, &launch.credentials).await?;
-    Ok((child, channel))
+    let channel = match written {
+        Ok(Ok(())) => ready_until(&launch.address, &launch.credentials, deadline).await,
+        Ok(Err(_)) | Err(_) => Err(ServiceError::Unavailable),
+    };
+    match channel {
+        Ok(channel) => child
+            .into_child()
+            .map(|child| (child, channel))
+            .ok_or(ServiceError::Internal),
+        Err(error) => {
+            child.terminate().await;
+            Err(error)
+        }
+    }
 }
 
 /// Connects to a supervisor that is starting, retrying until [`READY_DEADLINE`].
@@ -152,7 +196,19 @@ pub async fn ready(
     address: &SupervisorAddress,
     credentials: &Credentials,
 ) -> Result<Channel, ServiceError> {
-    let deadline = tokio::time::Instant::now() + READY_DEADLINE;
+    ready_until(
+        address,
+        credentials,
+        tokio::time::Instant::now() + READY_DEADLINE,
+    )
+    .await
+}
+
+async fn ready_until(
+    address: &SupervisorAddress,
+    credentials: &Credentials,
+    deadline: tokio::time::Instant,
+) -> Result<Channel, ServiceError> {
     loop {
         match address.connect(credentials).await {
             Err(ServiceError::Unavailable | ServiceError::Unreachable)
