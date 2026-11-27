@@ -365,3 +365,74 @@ fn a_blocked_proxy_write_past_30s_still_exits_124() -> TestResult {
     );
     lab.shutdown()
 }
+
+#[test]
+fn a_proxy_connect_with_a_full_stdout_pipe_exits_after_idle_timeout() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let lab = Lab::start("proxy-full-stdout", &port.to_string())?;
+    let port_text = port.to_string();
+
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let server = std::thread::spawn(move || -> TestValue<()> {
+        let (mut socket, _) = listener.accept()?;
+        let chunk = vec![b'z'; 65_536];
+        while stop_rx.try_recv().is_err() && socket.write_all(&chunk).is_ok() {}
+        Ok(())
+    });
+
+    let mut child = lab
+        .member
+        .command(&[
+            "proxy",
+            "connect",
+            "--endpoint",
+            lab.owner.id(),
+            "--idle",
+            "400ms",
+            "127.0.0.1",
+            &port_text,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().ok_or("missing stdout")?;
+    let mut stderr = child.stderr.take().ok_or("missing stderr")?;
+    let stderr_reader = std::thread::spawn(move || -> std::io::Result<String> {
+        let mut text = String::new();
+        stderr.read_to_string(&mut text)?;
+        Ok(text)
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stop_tx.send(());
+            drop(stdout);
+            let _ = stderr_reader.join();
+            let _ = server.join();
+            let _ = lab.shutdown();
+            return Err("proxy connect hung past 5s with a full stdout pipe".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+
+    let _ = stop_tx.send(());
+    drop(stdout);
+    let stderr_text = stderr_reader
+        .join()
+        .map_err(|_| "stderr reader panicked")??;
+    server.join().map_err(|_| "flood server panicked")??;
+    assert!(!status.success(), "expected failure exit, got {status:?}");
+    assert!(
+        stderr_text.contains("timed out"),
+        "expected timeout diagnostic on stderr, got: {stderr_text:?}"
+    );
+    lab.shutdown()
+}

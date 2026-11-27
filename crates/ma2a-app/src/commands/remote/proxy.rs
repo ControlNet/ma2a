@@ -57,7 +57,7 @@ fn exit_with(relayed: Result<ProxyResult, AppError>) -> ! {
         }
         Ok(EndReason::Completed) | Err(_) => super::exit_with(relayed.map(drop)),
     };
-    super::exit(code)
+    super::exit_failed(code)
 }
 
 fn request(destination: &ProxyDestination) -> Result<ProxyRequest, AppError> {

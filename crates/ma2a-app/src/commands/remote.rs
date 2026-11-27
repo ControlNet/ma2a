@@ -177,19 +177,26 @@ pub(crate) fn endpoint_id(hex: &str) -> Option<EndpointId> {
 /// would hold the runtime open after `main` returned. So does the daemon, once it closed its
 /// Runtime: a blocking job stuck on a hung file system would hold it open just the same.
 pub(crate) fn exit_with(outcome: Result<(), AppError>) -> ! {
-    let code = match outcome {
-        Ok(()) => 0,
+    match outcome {
+        Ok(()) => exit(0),
         Err(error) => {
             eprintln!("{error}");
-            i32::from(error.exit_code())
+            exit_failed(i32::from(error.exit_code()))
         }
-    };
-    exit(code)
+    }
 }
 
 /// Flushes standard output and error, then ends the process with `code`.
 pub(crate) fn exit(code: i32) -> ! {
     let _flushed = io::Write::flush(&mut io::stdout().lock());
+    let _flushed = io::Write::flush(&mut io::stderr().lock());
+    std::process::exit(code)
+}
+
+/// Flushes standard error without touching standard output, then ends the process with `code`.
+///
+/// Used after an output failure or abnormal stop so a full or locked output pipe cannot hang exit.
+pub(crate) fn exit_failed(code: i32) -> ! {
     let _flushed = io::Write::flush(&mut io::stderr().lock());
     std::process::exit(code)
 }

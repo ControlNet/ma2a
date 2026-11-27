@@ -141,7 +141,9 @@ fn exit_with(result: &ProcessResult) -> Result<(), AppError> {
         (_, Termination::Signaled(signal)) => i32::try_from(128 + signal.min(127)).unwrap_or(255),
         (_, _) => 255,
     };
-    io::stdout().lock().flush()?;
-    io::stderr().lock().flush()?;
+    if result.reason == EndReason::Completed {
+        io::stdout().lock().flush()?;
+        io::stderr().lock().flush()?;
+    }
     std::process::exit(code)
 }

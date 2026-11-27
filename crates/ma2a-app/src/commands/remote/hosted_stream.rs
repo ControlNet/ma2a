@@ -23,23 +23,35 @@ pub(super) async fn logs(
     read: (ProcessId, LogFrom),
     follow: bool,
 ) -> Result<(), AppError> {
-    let code = logs_code(target, read, follow).await?;
-    exit(code, false)
+    let (code, flush_outputs) = logs_exit(target, read, follow).await?;
+    exit(code, false, flush_outputs)
 }
 
 /// Prints as [`logs`] does, and returns the exit status for how it ended.
+#[cfg_attr(
+    not(all(test, unix)),
+    expect(dead_code, reason = "called by Unix test suite")
+)]
 pub(super) async fn logs_code(
+    target: Target<'_>,
+    read: (ProcessId, LogFrom),
+    follow: bool,
+) -> Result<i32, AppError> {
+    Ok(logs_exit(target, read, follow).await?.0)
+}
+
+async fn logs_exit(
     target: Target<'_>,
     (id, from): (ProcessId, LogFrom),
     follow: bool,
-) -> Result<i32, AppError> {
+) -> Result<(i32, bool), AppError> {
     let (next, ended) = read_retained(target, (id, from)).await?;
     if !follow || ended {
         note(&format!("next cursor {next}"));
         return if ended && follow {
-            ended_code(target, id).await
+            Ok((ended_code(target, id).await?, true))
         } else {
-            Ok(0)
+            Ok((0, true))
         };
     }
     let (mut reader, mut writer) = open_attach(target, (id, LogFrom::Cursor(next), false)).await?;
@@ -50,7 +62,7 @@ pub(super) async fn logs_code(
     };
     let attach = (id, LogFrom::Cursor(next));
     match hosted::attach((&mut reader, &mut writer), (attach, local), interrupted()).await {
-        Ok(attached) => Ok(report(&attached)),
+        Ok(attached) => Ok((report(&attached), attached.reason == EndReason::Completed)),
         // The Process ended between the read and the attach: print what it wrote last.
         Err(ClientError::Rejected(ServiceError::NotRunning)) => {
             let (next, ended) = read_retained(target, (id, LogFrom::Cursor(next))).await?;
@@ -58,7 +70,7 @@ pub(super) async fn logs_code(
             if !ended {
                 return Err(ClientError::Rejected(ServiceError::NotRunning).into());
             }
-            ended_code(target, id).await
+            Ok((ended_code(target, id).await?, true))
         }
         Err(error) => Err(error.into()),
     }
@@ -219,7 +231,11 @@ async fn open_attach(
 /// Reports how the attachment ended and exits: with the Process's own status once it ended,
 /// and successfully after a detach.
 fn finish(attached: &Attached, reading_stdin: bool) -> Result<(), AppError> {
-    exit(report(attached), reading_stdin)
+    exit(
+        report(attached),
+        reading_stdin,
+        attached.reason == EndReason::Completed,
+    )
 }
 
 /// Reports how the attachment ended, and returns the exit status for it.
@@ -239,13 +255,16 @@ fn report(attached: &Attached) -> i32 {
     exit_code(attached.reason, attached.summary.termination)
 }
 
-/// Exits with `code` once output is flushed; returns only on success while stdin is not read.
+/// Exits with `code` once output is flushed when `flush_outputs`; returns only on success while
+/// stdin is not read.
 ///
 /// The process exits directly because a pending read of stdin cannot be cancelled and
 /// would otherwise hold the runtime open.
-fn exit(code: i32, reading_stdin: bool) -> Result<(), AppError> {
-    std::io::stdout().lock().flush()?;
-    std::io::stderr().lock().flush()?;
+fn exit(code: i32, reading_stdin: bool, flush_outputs: bool) -> Result<(), AppError> {
+    if flush_outputs {
+        std::io::stdout().lock().flush()?;
+        std::io::stderr().lock().flush()?;
+    }
     if reading_stdin || code != 0 {
         std::process::exit(code);
     }
