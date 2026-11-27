@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 pub(crate) struct PendingControl {
     changes: ControlChanges,
     peers: BTreeSet<EndpointId>,
+    generation: u64,
     announced: bool,
 }
 
@@ -19,13 +20,26 @@ impl Actor {
         changes: ControlChanges,
         peers: BTreeSet<EndpointId>,
     ) {
+        if changes.manifest && peers.is_empty() {
+            // A manifest error committed outside a round invalidates in-flight rounds immediately.
+            self.synchronized_control_peers.clear();
+        }
+        let generation = self.synchronized_control_peers.generation();
         let pending = self
             .maintenance
             .control_completion
-            .get_or_insert_with(PendingControl::default);
+            .get_or_insert_with(|| PendingControl {
+                generation,
+                ..PendingControl::default()
+            });
         pending.changes.merge(changes);
+        if pending.generation != generation {
+            pending.peers.clear();
+            pending.generation = generation;
+        }
         if changes.manifest {
             pending.announced = false;
+            pending.peers.clear();
         }
         pending.peers.extend(peers);
     }
@@ -34,7 +48,11 @@ impl Actor {
         let Some(pending) = &self.maintenance.control_completion else {
             return Ok(());
         };
-        let peers = pending.peers.clone();
+        let peers = if pending.generation == self.synchronized_control_peers.generation() {
+            pending.peers.clone()
+        } else {
+            BTreeSet::new()
+        };
         let manifest_advanced = pending.changes.manifest;
         let already_announced = pending.announced;
         // A completed task may be older than a local departure. Read one current
@@ -45,7 +63,18 @@ impl Actor {
         self.state.memberships = projection.into_value();
         if changed || manifest_advanced {
             self.synchronized_control_peers.clear();
+            if let Some(pending) = self.maintenance.control_completion.as_mut() {
+                pending.generation = self.synchronized_control_peers.generation();
+                if !manifest_advanced {
+                    pending.peers.clear();
+                }
+            }
         }
+        let peers = if changed && !manifest_advanced {
+            BTreeSet::new()
+        } else {
+            peers
+        };
         if changed || (manifest_advanced && !already_announced) {
             if let Some(pending) = self.maintenance.control_completion.as_mut() {
                 pending.announced = true;

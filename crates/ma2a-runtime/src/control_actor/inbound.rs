@@ -10,6 +10,7 @@ pub(crate) enum InboundControlCompletion {
     NoResponse,
     Response {
         remote_endpoint_id: EndpointId,
+        membership_generation: u64,
         responder: ControlResponder,
         result: Result<ControlRespondOutcome, ControlFailure>,
     },
@@ -21,6 +22,7 @@ struct InboundControlInput {
     clock: std::sync::Arc<dyn crate::RuntimeClock>,
     local_endpoint_id: EndpointId,
     remote_endpoint_id: EndpointId,
+    membership_generation: u64,
 }
 
 impl Actor {
@@ -44,12 +46,14 @@ impl Actor {
             ControlChanges::default(),
             std::collections::BTreeSet::new(),
         );
+        let membership_generation = self.synchronized_control_peers.generation();
         self.control_tasks.spawn(run_inbound(InboundControlInput {
             store: self.store.clone(),
             call,
             clock: std::sync::Arc::clone(&self.clock),
             local_endpoint_id: self.state.endpoint_id,
             remote_endpoint_id: peer,
+            membership_generation,
         }));
         Ok(())
     }
@@ -64,6 +68,7 @@ impl Actor {
         );
         let InboundControlCompletion::Response {
             remote_endpoint_id,
+            membership_generation,
             responder,
             result,
         } = completion
@@ -81,8 +86,13 @@ impl Actor {
                 return Self::control_failure(error);
             }
         };
+        let peers = if membership_generation == self.synchronized_control_peers.generation() {
+            [remote_endpoint_id].into()
+        } else {
+            std::collections::BTreeSet::new()
+        };
         self.state.revision = self.state.revision.max(outcome.revision);
-        self.retain_control_completion(outcome.changes, [remote_endpoint_id].into());
+        self.retain_control_completion(outcome.changes, peers);
         match self.reconcile_control_completion().await {
             Ok(()) => responder.respond(Ok(outcome.response)),
             Err(error) => {
@@ -106,6 +116,7 @@ async fn run_inbound(input: InboundControlInput) -> InboundControlCompletion {
         Err(error) => {
             return InboundControlCompletion::Response {
                 remote_endpoint_id: input.remote_endpoint_id,
+                membership_generation: input.membership_generation,
                 responder,
                 result: Err(error.into()),
             };
@@ -122,6 +133,7 @@ async fn run_inbound(input: InboundControlInput) -> InboundControlCompletion {
         .await;
     InboundControlCompletion::Response {
         remote_endpoint_id: input.remote_endpoint_id,
+        membership_generation: input.membership_generation,
         responder,
         result,
     }

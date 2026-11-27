@@ -14,7 +14,7 @@ use crate::{
 pub(crate) mod completion;
 pub(crate) mod inbound;
 mod queue;
-pub(crate) use queue::{ControlRoundQueue, ScheduledControlRound};
+pub(crate) use queue::{ControlRoundQueue, ScheduledControlRound, SynchronizedControlPeers};
 
 #[cfg(test)]
 mod fairness_tests;
@@ -93,16 +93,23 @@ impl Actor {
     ) -> Result<(), RuntimeError> {
         let (scheduled, outcome) = result.map_err(RuntimeError::from)?;
         let round_id = scheduled.id();
+        let current_round =
+            scheduled.membership_generation() == self.synchronized_control_peers.generation();
         let mut failure = None;
         let (peers, dialed) = match outcome {
             Ok(Some(outcome)) => {
                 self.state.revision = self.state.revision.max(outcome.revision);
-                self.retain_control_completion(outcome.changes, outcome.synchronized_peers.clone());
+                let peers = if current_round {
+                    outcome.synchronized_peers
+                } else {
+                    BTreeSet::new()
+                };
+                self.retain_control_completion(outcome.changes, peers.clone());
                 if outcome.incomplete {
                     // Every dialed peer left a request unanswered; its committed part stays.
                     failure = Some(ma2a_net::ControlRejection::Unavailable.into());
                 }
-                (outcome.synchronized_peers, Some(outcome.dialed_peers))
+                (peers, Some(outcome.dialed_peers))
             }
             Ok(None) => (BTreeSet::new(), Some(BTreeSet::new())),
             Err(error) => {

@@ -22,6 +22,8 @@ mod construction;
 #[cfg(test)]
 mod control_completion_test;
 #[cfg(test)]
+mod control_stale_test;
+#[cfg(test)]
 mod departure_authority_test;
 #[cfg(test)]
 mod departure_test;
@@ -106,7 +108,7 @@ pub(crate) struct Actor {
         >,
     )>,
     pub(crate) control_queue: crate::control_actor::ControlRoundQueue,
-    pub(crate) synchronized_control_peers: BTreeSet<ma2a_core::EndpointId>,
+    pub(crate) synchronized_control_peers: crate::control_actor::SynchronizedControlPeers,
     pub(crate) control_round_history: std::collections::VecDeque<crate::api::ControlRoundView>,
     #[cfg(test)]
     pub(crate) control_schedule_events:

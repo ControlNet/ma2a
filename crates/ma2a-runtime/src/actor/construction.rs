@@ -49,6 +49,7 @@ impl Actor {
             #[cfg(test)]
             Arc::clone(&maintenance.candidate_refresh_attempts),
         );
+        let control_sync_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let actor = Self {
             state,
             endpoint,
@@ -74,8 +75,12 @@ impl Actor {
             private_relay_server,
             maintenance,
             control_rounds: tokio::task::JoinSet::new(),
-            control_queue: crate::control_actor::ControlRoundQueue::default(),
-            synchronized_control_peers: std::collections::BTreeSet::new(),
+            control_queue: crate::control_actor::ControlRoundQueue::with_generation(Arc::clone(
+                &control_sync_generation,
+            )),
+            synchronized_control_peers: crate::control_actor::SynchronizedControlPeers::new(
+                control_sync_generation,
+            ),
             control_round_history: std::collections::VecDeque::new(),
             #[cfg(test)]
             control_schedule_events,
