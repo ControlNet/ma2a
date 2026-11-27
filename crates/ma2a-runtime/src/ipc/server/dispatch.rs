@@ -146,12 +146,18 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
         if let Some(answer) = replayed_or_reserved(context, request).await? {
             return Ok((answer, false));
         }
-        // Remote network mutations wait on another Endpoint for up to thirty seconds. They keep
-        // their durable reservation, which already refuses the same request as pending, but give
-        // up the lock so other local mutations are still answered meanwhile.
+        // Remote network mutations and blocking Process/Agent supervisor waits can hold for up
+        // to 70 s. They keep their durable reservation, which already refuses the same request as
+        // pending, but release the lock so other local mutations are still answered meanwhile.
         if matches!(
             command.operation(),
-            "space_leave" | "space_redeem" | "echo_call" | "control_sync_trigger"
+            "space_leave"
+                | "space_redeem"
+                | "echo_call"
+                | "control_sync_trigger"
+                | "process_terminate"
+                | "agent_stop"
+                | "agent_start"
         ) {
             drop(replay.take());
         }
