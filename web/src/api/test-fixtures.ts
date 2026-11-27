@@ -2,9 +2,10 @@ import type { RuntimeSnapshot, StampedRuntimeSnapshot } from "./client"
 
 export const DEFAULT_BOOT_ID = "aa".repeat(16)
 
-export function runtimeSnapshot(revision: number): RuntimeSnapshot {
+export function runtimeSnapshot(revision: number, viewSequence = 0): RuntimeSnapshot {
   return {
     revision,
+    view_sequence: viewSequence,
     endpoint: {
       endpoint_id: "00".repeat(32),
       runtime_version: "0.1.0",
@@ -29,8 +30,9 @@ export function runtimeSnapshot(revision: number): RuntimeSnapshot {
 export function stampedRuntimeSnapshot(
   revision: number,
   bootId = DEFAULT_BOOT_ID,
+  viewSequence = 0,
 ): StampedRuntimeSnapshot {
-  return { snapshot: runtimeSnapshot(revision), bootId }
+  return { snapshot: runtimeSnapshot(revision, viewSequence), bootId }
 }
 
 export function deferredRuntimeSnapshot(): {

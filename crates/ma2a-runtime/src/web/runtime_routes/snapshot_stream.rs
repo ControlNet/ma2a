@@ -51,6 +51,7 @@ mod tests {
         let response = response(
             SnapshotStamp {
                 revision: 9,
+                view_sequence: 0,
                 boot_id: "ab".repeat(16),
             },
             payload.clone(),
@@ -93,6 +94,7 @@ mod tests {
         let response = response(
             SnapshotStamp {
                 revision: 5,
+                view_sequence: 0,
                 boot_id: boot.clone(),
             },
             payload.clone(),

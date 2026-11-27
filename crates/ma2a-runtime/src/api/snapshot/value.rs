@@ -11,6 +11,7 @@ impl RuntimeSnapshot {
     pub(crate) fn to_value(&self) -> Value {
         json!({
             "revision": self.revision,
+            "view_sequence": self.view_sequence,
             "endpoint": endpoint_value(&self.endpoint),
             "spaces": self.spaces.iter().map(snapshot_space_value).collect::<Vec<_>>(),
             "control_sync": {"peer_endpoint_ids": self.control_sync.peers.iter().map(|id| encode_hex(id.as_bytes())).collect::<Vec<_>>()},
@@ -128,6 +129,10 @@ impl super::SpaceDetailsView {
 }
 impl super::SnapshotStampView {
     pub(crate) fn to_value(self) -> Value {
-        json!({"revision": self.revision, "runtime_boot_id": encode_hex(&self.runtime_boot_id)})
+        json!({
+            "revision": self.revision,
+            "view_sequence": self.view_sequence,
+            "runtime_boot_id": encode_hex(&self.runtime_boot_id),
+        })
     }
 }

@@ -109,7 +109,7 @@ pub(crate) fn results() -> FixtureResult<Vec<CommandResult>> {
             snapshot_space,
             vec![SpaceMemberView::new(endpoint_id, "operator", true, false)?],
         )?),
-        CommandResult::snapshot_stamp(ma2a_runtime::api::SnapshotStampView::new(7, [0x51; 16])),
+        CommandResult::snapshot_stamp(ma2a_runtime::api::SnapshotStampView::new(7, 1, [0x51; 16])),
         CommandResult::shutting_down(),
         CommandResult::space_granted(
             SpaceMemberView::new(endpoint_id, "operator", true, false)?
@@ -347,8 +347,12 @@ fn snapshot(fixture: SnapshotFixture) -> FixtureResult<RuntimeSnapshot> {
         ),
         ClientSnapshotState::new(EchoSummaryView::new(4, 1), fixture.ui_auth),
     );
-    RuntimeSnapshot::new(SnapshotHeader::new(7, fixture.endpoint), collections, state)
-        .map_err(Into::into)
+    RuntimeSnapshot::new(
+        SnapshotHeader::new(7, 1, fixture.endpoint),
+        collections,
+        state,
+    )
+    .map_err(Into::into)
 }
 
 fn snapshot_endpoint() -> FixtureResult<EndpointView> {

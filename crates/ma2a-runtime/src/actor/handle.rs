@@ -33,6 +33,9 @@ pub struct RuntimeHandle {
         std::sync::Arc<std::sync::Mutex<Vec<(super::maintenance::FaultPoint, RuntimeError)>>>,
     #[cfg(test)]
     candidate_refresh_attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    control_round_gate:
+        std::sync::Arc<std::sync::Mutex<Option<super::maintenance::ControlRoundGate>>>,
 }
 
 impl RuntimeHandle {
@@ -89,6 +92,9 @@ impl RuntimeHandle {
             std::sync::Mutex<Vec<(super::maintenance::FaultPoint, RuntimeError)>>,
         >,
         #[cfg(test)] candidate_refresh_attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        #[cfg(test)] control_round_gate: std::sync::Arc<
+            std::sync::Mutex<Option<super::maintenance::ControlRoundGate>>,
+        >,
     ) -> Self {
         Self {
             commands,
@@ -106,6 +112,8 @@ impl RuntimeHandle {
             maintenance_faults,
             #[cfg(test)]
             candidate_refresh_attempts,
+            #[cfg(test)]
+            control_round_gate,
         }
     }
 

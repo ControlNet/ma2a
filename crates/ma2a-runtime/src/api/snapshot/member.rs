@@ -171,18 +171,20 @@ impl SpaceDetailsView {
     }
 }
 
-/// Lightweight durable revision and process identity for event polling.
+/// Lightweight durable revision, view counter, and process identity for event polling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapshotStampView {
     pub(crate) revision: u64,
+    pub(crate) view_sequence: u64,
     pub(crate) runtime_boot_id: [u8; 16],
 }
 
 impl SnapshotStampView {
     /// Creates a revision stamp for this Runtime boot.
-    pub const fn new(revision: u64, runtime_boot_id: [u8; 16]) -> Self {
+    pub const fn new(revision: u64, view_sequence: u64, runtime_boot_id: [u8; 16]) -> Self {
         Self {
             revision,
+            view_sequence,
             runtime_boot_id,
         }
     }

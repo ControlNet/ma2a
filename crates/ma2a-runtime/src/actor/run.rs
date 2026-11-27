@@ -90,7 +90,7 @@ impl Actor {
                     Some(Command::ControlSyncStatus { peer, reply }) => {
                         let revision = self.refresh_revision().await;
                         let _unsent = reply.send(ma2a_store::Committed::new(
-                            self.snapshot_revision(revision),
+                            revision,
                             self.synchronized_control_peers.contains(&peer),
                         ));
                     }

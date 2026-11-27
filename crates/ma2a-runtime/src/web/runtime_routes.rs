@@ -25,6 +25,7 @@ use events::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SnapshotStamp {
     revision: u64,
+    view_sequence: u64,
     boot_id: String,
 }
 
@@ -67,7 +68,18 @@ async fn fetch_snapshot(state: &WebState) -> Result<(SnapshotStamp, Value), Stat
         .pointer("/result/payload")
         .cloned()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok((SnapshotStamp { revision, boot_id }, payload))
+    let view_sequence = payload
+        .get("view_sequence")
+        .and_then(Value::as_u64)
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((
+        SnapshotStamp {
+            revision,
+            view_sequence,
+            boot_id,
+        },
+        payload,
+    ))
 }
 
 pub(super) async fn space_details(

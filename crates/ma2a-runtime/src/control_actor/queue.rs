@@ -38,6 +38,10 @@ impl SynchronizedControlPeers {
         self.peers.iter()
     }
 
+    pub(crate) const fn peers(&self) -> &BTreeSet<EndpointId> {
+        &self.peers
+    }
+
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }
@@ -156,12 +160,6 @@ impl ControlRoundQueue {
     #[cfg(test)]
     pub(crate) const fn is_synchronized(&self) -> bool {
         self.healthy && self.active.is_none() && self.pending.is_none()
-    }
-
-    pub(super) fn has_waiter(&self, round_id: ControlRoundId) -> bool {
-        self.waiters
-            .iter()
-            .any(|waiter| waiter.round_id == Some(round_id))
     }
 
     pub(super) fn complete(

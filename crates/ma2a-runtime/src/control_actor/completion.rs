@@ -45,6 +45,15 @@ impl Actor {
     }
 
     pub(crate) async fn reconcile_control_completion(&mut self) -> Result<(), RuntimeError> {
+        let before_peers = self.synchronized_control_peers.peers().clone();
+        let result = self.reconcile_control_completion_inner().await;
+        if self.synchronized_control_peers.peers() != &before_peers {
+            self.view_sequence = self.view_sequence.saturating_add(1);
+        }
+        result
+    }
+
+    async fn reconcile_control_completion_inner(&mut self) -> Result<(), RuntimeError> {
         let Some(pending) = &self.maintenance.control_completion else {
             return Ok(());
         };

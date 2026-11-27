@@ -47,6 +47,10 @@ async fn empty_control_round_invalidates_sse_and_updates_snapshot_history()
         .get("revision")
         .and_then(serde_json::Value::as_u64)
         .ok_or("missing before revision")?;
+    let before_view_sequence = before
+        .get("view_sequence")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("missing before view_sequence")?;
     let before_rounds = before
         .get("control_rounds")
         .and_then(serde_json::Value::as_array)
@@ -58,7 +62,7 @@ async fn empty_control_round_invalidates_sse_and_updates_snapshot_history()
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/api/v1/events?since={before_revision}&boot_id={boot_id}"
+                    "/api/v1/events?since={before_revision}&view_sequence={before_view_sequence}&boot_id={boot_id}"
                 ))
                 .header("host", "127.0.0.1:43212")
                 .header("cookie", &cookie)
@@ -98,14 +102,19 @@ async fn empty_control_round_invalidates_sse_and_updates_snapshot_history()
         .get("revision")
         .and_then(serde_json::Value::as_u64)
         .ok_or("missing after revision")?;
+    let after_view_sequence = after
+        .get("view_sequence")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("missing after view_sequence")?;
     let after_rounds = after
         .get("control_rounds")
         .and_then(serde_json::Value::as_array)
         .ok_or("missing after control_rounds")?;
 
+    assert_eq!(after_revision, before_revision);
     assert!(
-        after_revision > before_revision,
-        "expected revision to advance ({before_revision} -> {after_revision})"
+        after_view_sequence > before_view_sequence,
+        "expected view_sequence to advance ({before_view_sequence} -> {after_view_sequence})"
     );
     assert_eq!(after_rounds.len(), before_rounds + 1);
     assert_eq!(

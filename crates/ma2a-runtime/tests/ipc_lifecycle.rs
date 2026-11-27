@@ -183,6 +183,109 @@ async fn password_set_updates_daemon_handshake_and_authoritative_revision() -> T
     Ok(())
 }
 
+async fn call_raw_command(
+    client: &LocalApiClient,
+    payload: &[u8],
+) -> TestResult<serde_json::Value> {
+    let command = decode_command(payload)?;
+    Ok(serde_json::from_slice(&client.call(&command).await?)?)
+}
+
+fn json_u64(value: &serde_json::Value, pointer: &str) -> TestResult<u64> {
+    value
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("missing u64 at {pointer}").into())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_control_sync_keeps_handshake_password_and_receipt_revisions_durable() -> TestResult
+{
+    // Given
+    let state = TempState::new()?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server =
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;
+    let cancellation = CancellationToken::new();
+    let server_task = tokio::spawn(server.serve(cancellation.child_token()));
+    let client = LocalApiClient::new(paths);
+
+    // Run two explicit control rounds before any local mutation.
+    runtime.handle().sync_control().await?;
+    runtime.handle().sync_control().await?;
+
+    // When: ui_password_set followed by handshake.
+    let set_command =
+        Command::ui_password_set(Zeroizing::new("durable-revision-sync-pass-9!".to_owned()))?;
+    let set_response: serde_json::Value =
+        serde_json::from_slice(&client.call(&set_command).await?)?;
+    let password_revision = json_u64(&set_response, "/revision")?;
+    let handshake_response =
+        call_raw_command(&client, br#"{"version":1,"operation":"handshake"}"#).await?;
+
+    // Then: handshake and password-set revisions agree after explicit control syncs.
+    assert_eq!(
+        json_u64(&handshake_response, "/revision")?,
+        password_revision
+    );
+    assert_eq!(
+        json_u64(&handshake_response, "/result/payload/revision")?,
+        password_revision
+    );
+
+    // When: snapshot_fetch followed by space_create, status, and space_details_fetch.
+    let snapshot_before =
+        call_raw_command(&client, br#"{"version":1,"operation":"snapshot_fetch"}"#).await?;
+    let snapshot_revision = json_u64(&snapshot_before, "/result/payload/revision")?;
+    assert_eq!(json_u64(&snapshot_before, "/revision")?, snapshot_revision);
+    assert!(json_u64(&snapshot_before, "/result/payload/view_sequence")? >= 2);
+
+    let space_create_response = call_raw_command(
+        &client,
+        br#"{"version":1,"operation":"space_create","request_id":"a00102030405060708090a0b0c0d0e0f","name":"durable-check"}"#,
+    )
+    .await?;
+    let created_revision = json_u64(&space_create_response, "/revision")?;
+    let space_id = space_create_response
+        .pointer("/result/payload/space_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("space_id missing")?;
+
+    let status_response =
+        call_raw_command(&client, br#"{"version":1,"operation":"status"}"#).await?;
+    let status_revision = json_u64(&status_response, "/result/payload/revision")?;
+
+    let details_payload =
+        format!(r#"{{"version":1,"operation":"space_details_fetch","space_id":"{space_id}"}}"#);
+    let details_response = call_raw_command(&client, details_payload.as_bytes()).await?;
+    let details_revision = json_u64(&details_response, "/result/payload/revision")?;
+
+    // Then: no receipt or query returns a lower revision than the prior snapshot in the same boot.
+    assert!(
+        created_revision > snapshot_revision,
+        "space_create receipt ({created_revision}) regressed below earlier snapshot ({snapshot_revision})"
+    );
+    assert!(
+        status_revision >= created_revision,
+        "status ({status_revision}) regressed below space_create ({created_revision})"
+    );
+    assert!(
+        details_revision >= created_revision,
+        "space_details ({details_revision}) regressed below space_create ({created_revision})"
+    );
+    cancellation.cancel();
+    server_task.await??;
+    runtime.shutdown().await?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn snapshot_fetch_returns_the_authoritative_runtime_projection() -> TestResult {
     // Given

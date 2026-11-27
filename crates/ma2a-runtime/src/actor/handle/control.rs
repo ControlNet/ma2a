@@ -53,4 +53,19 @@ impl RuntimeHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
+
+    #[cfg(test)]
+    pub(crate) fn arm_control_round_gate(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        *self
+            .control_round_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(crate::actor::maintenance::ControlRoundGate {
+                entered: entered_tx,
+                release: release_rx,
+            });
+        (entered_rx, release_tx)
+    }
 }

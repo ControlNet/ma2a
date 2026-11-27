@@ -48,6 +48,8 @@ impl Actor {
             Arc::clone(&maintenance.faults),
             #[cfg(test)]
             Arc::clone(&maintenance.candidate_refresh_attempts),
+            #[cfg(test)]
+            Arc::clone(&maintenance.control_round_gate),
         );
         let control_sync_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let actor = Self {
@@ -82,7 +84,7 @@ impl Actor {
                 control_sync_generation,
             ),
             control_round_history: std::collections::VecDeque::new(),
-            control_round_revision_bumps: 0,
+            view_sequence: 0,
             #[cfg(test)]
             control_schedule_events,
             cancellation: cancellation.child_token(),

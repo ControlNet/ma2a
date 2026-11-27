@@ -50,19 +50,22 @@ export function fakeClient(fetchSnapshot: RuntimeApiClient["fetchSnapshot"]): {
   readonly client: RuntimeApiClient
   readonly callbacks: RuntimeEventCallbacks[]
   readonly baselines: number[]
+  readonly viewSequences: (number | undefined)[]
   readonly bootIds: string[]
   readonly closed: () => number
 } {
   const callbacks: RuntimeEventCallbacks[] = []
   const baselines: number[] = []
+  const viewSequences: (number | undefined)[] = []
   const bootIds: string[] = []
   let closed = 0
   return {
     client: {
       fetchSnapshot,
       fetchSpaceDetails: () => Promise.reject(new Error("No Space details in this fixture")),
-      subscribe: (revision, bootId, eventCallbacks) => {
+      subscribe: (revision, bootId, eventCallbacks, viewSequence) => {
         baselines.push(revision)
+        viewSequences.push(viewSequence)
         bootIds.push(bootId)
         callbacks.push(eventCallbacks)
         let active = true
@@ -75,6 +78,7 @@ export function fakeClient(fetchSnapshot: RuntimeApiClient["fetchSnapshot"]): {
     },
     callbacks,
     baselines,
+    viewSequences,
     bootIds,
     closed: () => closed,
   }

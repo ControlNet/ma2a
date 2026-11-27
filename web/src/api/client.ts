@@ -87,6 +87,7 @@ export type RuntimeApiClient = {
     revision: number,
     bootId: string,
     callbacks: RuntimeEventCallbacks,
+    viewSequence?: number,
   ) => () => void
 }
 
@@ -114,8 +115,11 @@ export function createRuntimeApiClient(
     fetchSnapshot: async () => {
       return readSnapshot(await http.get(snapshotPath))
     },
-    subscribe: (revision, bootId, callbacks) => {
+    subscribe: (revision, bootId, callbacks, viewSequence) => {
       const params = new URLSearchParams({ since: String(revision), boot_id: bootId })
+      if (viewSequence !== undefined) {
+        params.set("view_sequence", String(viewSequence))
+      }
       const source = createEventSource(`${eventsPath}?${params.toString()}`, {
         withCredentials: true,
       })

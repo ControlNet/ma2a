@@ -22,7 +22,11 @@ fn sixty_four_full_space_summaries_and_one_complete_detail_fit_separate_frames()
     }
     let first = spaces.first().ok_or("missing Space")?.clone();
     let snapshot = RuntimeSnapshot::new(
-        SnapshotHeader::new(u64::MAX, EndpointView::new(local, "ma2a-runtime", true)?),
+        SnapshotHeader::new(
+            u64::MAX,
+            u64::MAX,
+            EndpointView::new(local, "ma2a-runtime", true)?,
+        ),
         SnapshotCollections::new(
             spaces,
             ControlSyncView::new(Vec::new())?,
@@ -96,7 +100,11 @@ fn complete_large_snapshot_can_be_encoded_for_bounded_streaming() -> TestResult 
         })
         .collect::<Result<Vec<_>, _>>()?;
     let snapshot = RuntimeSnapshot::new(
-        SnapshotHeader::new(u64::MAX, EndpointView::new(local, "ma2a-runtime", true)?),
+        SnapshotHeader::new(
+            u64::MAX,
+            u64::MAX,
+            EndpointView::new(local, "ma2a-runtime", true)?,
+        ),
         SnapshotCollections::new(
             spaces,
             ControlSyncView::new(Vec::new())?,

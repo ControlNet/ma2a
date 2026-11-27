@@ -75,6 +75,7 @@ export type SpaceDetailsView = {
 
 export type SnapshotStampView = {
   readonly revision: number
+  readonly view_sequence: number
   readonly runtime_boot_id: string
 }
 
@@ -166,6 +167,7 @@ export type EchoSummaryView = { readonly successes: number; readonly failures: n
 
 export type RuntimeSnapshot = {
   readonly revision: number
+  readonly view_sequence: number
   readonly endpoint: EndpointView
   readonly spaces: readonly SnapshotSpaceView[]
   readonly control_sync: ControlSyncView

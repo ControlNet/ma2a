@@ -25,6 +25,15 @@ pub(crate) struct Maintenance {
     pub(crate) candidate_refresh_attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
     pub(crate) relay_map_apply_attempts: usize,
+    #[cfg(test)]
+    pub(crate) control_round_gate: std::sync::Arc<std::sync::Mutex<Option<ControlRoundGate>>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ControlRoundGate {
+    pub(crate) entered: tokio::sync::oneshot::Sender<()>,
+    pub(crate) release: tokio::sync::oneshot::Receiver<()>,
 }
 
 pub(crate) struct PublishedRelaySpace {

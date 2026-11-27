@@ -157,6 +157,7 @@ impl UiAuthView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSnapshot {
     revision: u64,
+    view_sequence: u64,
     endpoint: EndpointView,
     spaces: Vec<SnapshotSpaceView>,
     control_sync: ControlSyncView,
@@ -182,6 +183,7 @@ impl RuntimeSnapshot {
     ) -> Result<Self, ApiError> {
         Ok(Self {
             revision: header.revision,
+            view_sequence: header.view_sequence,
             endpoint: header.endpoint,
             spaces: collections.spaces,
             control_sync: collections.control_sync,
@@ -205,23 +207,33 @@ impl RuntimeSnapshot {
         self.revision
     }
 
+    /// Returns the boot-scoped in-memory view counter.
+    pub const fn view_sequence(&self) -> u64 {
+        self.view_sequence
+    }
+
     /// Returns every Space this Endpoint is a verified member of.
     pub fn spaces(&self) -> &[SnapshotSpaceView] {
         &self.spaces
     }
 }
 
-/// Revision and Endpoint header for snapshot construction.
+/// Revision, view counter, and Endpoint header for snapshot construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotHeader {
     revision: u64,
+    view_sequence: u64,
     endpoint: EndpointView,
 }
 
 impl SnapshotHeader {
     /// Creates a snapshot header.
-    pub const fn new(revision: u64, endpoint: EndpointView) -> Self {
-        Self { revision, endpoint }
+    pub const fn new(revision: u64, view_sequence: u64, endpoint: EndpointView) -> Self {
+        Self {
+            revision,
+            view_sequence,
+            endpoint,
+        }
     }
 }
 

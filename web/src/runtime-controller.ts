@@ -6,6 +6,12 @@ import {
   type StampedRuntimeSnapshot,
 } from "./api/client"
 import type { SpaceDetails } from "./api/codec"
+import {
+  browserRetryScheduler,
+  isSnapshotAtLeast,
+  RETRY_DELAYS_MS,
+  type RuntimeRetryScheduler,
+} from "./runtime-controller-support"
 import { runtimeViewFromSnapshot } from "./runtime-view"
 import type { ConnectionState, RuntimeViewData } from "./view-model"
 
@@ -15,11 +21,7 @@ export type RuntimeControllerCallbacks = {
   readonly onError: (error: unknown) => void
 }
 
-export type RuntimeRetryScheduler = {
-  readonly schedule: (delayMs: number, task: () => void) => () => void
-}
-
-const RETRY_DELAYS_MS = [250, 1_000, 4_000] as const
+export type { RuntimeRetryScheduler }
 
 /**
  * How long a resync may run before the console reports the state as uncertain.
@@ -32,13 +34,6 @@ const RETRY_DELAYS_MS = [250, 1_000, 4_000] as const
  * long enough to act on; a slow or failing resync still surfaces.
  */
 export const UNCERTAIN_GRACE_MS = 400
-
-const browserRetryScheduler: RuntimeRetryScheduler = {
-  schedule: (delayMs, task) => {
-    const timeout = window.setTimeout(task, delayMs)
-    return () => window.clearTimeout(timeout)
-  },
-}
 
 export class RuntimeController {
   private readonly coordinator: RuntimeStateCoordinator
@@ -78,11 +73,7 @@ export class RuntimeController {
     try {
       const stamped = await this.client.fetchSnapshot()
       if (this.stopped) return
-      if (
-        this.latest === undefined ||
-        stamped.bootId !== this.latest.bootId ||
-        stamped.snapshot.revision >= this.latest.snapshot.revision
-      ) {
+      if (isSnapshotAtLeast(stamped, this.latest)) {
         this.coordinator.install(stamped)
       }
     } catch (error) {
@@ -167,24 +158,29 @@ export class RuntimeController {
     // only losing one reconnects at once. A refused stream missed no event, so the details
     // being loaded for this snapshot still stand.
     let opened = false
-    this.closeEvents = this.client.subscribe(snapshot.revision, stamped.bootId, {
-      onOpen: () => {
-        opened = true
-        this.retryAttempt = 0
-      },
-      onEvent: () => void this.refresh(),
-      onResyncRequired: () => {
-        this.clearDetails()
-        void this.refresh()
-      },
-      onDisconnect: () => {
-        if (opened) {
+    this.closeEvents = this.client.subscribe(
+      snapshot.revision,
+      stamped.bootId,
+      {
+        onOpen: () => {
+          opened = true
+          this.retryAttempt = 0
+        },
+        onEvent: () => void this.refresh(),
+        onResyncRequired: () => {
           this.clearDetails()
           void this.refresh()
-        } else this.scheduleRetry()
+        },
+        onDisconnect: () => {
+          if (opened) {
+            this.clearDetails()
+            void this.refresh()
+          } else this.scheduleRetry()
+        },
+        onPayloadError: (error) => this.handleError(error),
       },
-      onPayloadError: (error) => this.handleError(error),
-    })
+      snapshot.view_sequence,
+    )
   }
 
   private clearDetails(): void {

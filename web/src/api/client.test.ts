@@ -190,4 +190,31 @@ describe("runtime API boundary", () => {
     expect(when).toThrow(callbackError)
     expect(payloadErrors).toEqual([])
   })
+
+  test("includes view_sequence when subscribing to events with a snapshot view counter", () => {
+    const given = createRuntimeApiClient(
+      {
+        snapshot: "/api/v1/snapshot",
+        events: "/api/v1/events",
+      },
+      (url: string, init: EventSourceInit) =>
+        new FakeEventSource(url, init.withCredentials ?? false),
+    )
+
+    given.subscribe(
+      41,
+      "ab".repeat(16),
+      {
+        onOpen: () => undefined,
+        onEvent: () => undefined,
+        onResyncRequired: () => undefined,
+        onDisconnect: () => undefined,
+        onPayloadError: () => undefined,
+      },
+      7,
+    )
+
+    const source = FakeEventSource.latest()
+    expect(source.url).toBe(`/api/v1/events?since=41&boot_id=${"ab".repeat(16)}&view_sequence=7`)
+  })
 })

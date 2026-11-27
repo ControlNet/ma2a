@@ -34,6 +34,7 @@ async fn revocation_during_snapshot_read_prevents_notification()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         Ok(SnapshotStamp {
             revision: 7,
+            view_sequence: 0,
             boot_id: "00112233445566778899aabbccddeeff".to_owned(),
         })
     })
@@ -42,7 +43,7 @@ async fn revocation_during_snapshot_read_prevents_notification()
     Ok(())
 }
 
-pub(super) struct TestState(std::path::PathBuf);
+pub(super) struct TestState(pub(super) std::path::PathBuf);
 
 impl Drop for TestState {
     fn drop(&mut self) {

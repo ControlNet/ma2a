@@ -35,12 +35,15 @@ pub(super) enum SnapshotChange {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct EventCursor {
     pub(super) revision: u64,
+    pub(super) view_sequence: u64,
     pub(super) boot_id: String,
 }
 
 #[derive(Deserialize)]
 pub(crate) struct EventsQuery {
     since: u64,
+    #[serde(default)]
+    view_sequence: Option<u64>,
     #[serde(default)]
     boot_id: Option<String>,
 }
@@ -72,13 +75,17 @@ pub(crate) async fn events(
         .boot_id
         .as_deref()
         .is_none_or(|boot_id| boot_id == baseline.boot_id);
-    if baseline.revision == query.since && boot_matches {
+    let view_matches = query
+        .view_sequence
+        .is_none_or(|view_sequence| view_sequence == baseline.view_sequence);
+    if baseline.revision == query.since && view_matches && boot_matches {
         tokio::spawn(
             EventProducer {
                 state,
                 bearer,
                 cursor: EventCursor {
                     revision: baseline.revision,
+                    view_sequence: baseline.view_sequence,
                     boot_id: baseline.boot_id,
                 },
                 sender,
@@ -120,11 +127,13 @@ impl EventProducer {
 
 impl EventCursor {
     pub(super) fn classify(&self, current: &SnapshotStamp) -> SnapshotChange {
-        if current.boot_id != self.boot_id {
+        if current.boot_id != self.boot_id || current.view_sequence < self.view_sequence {
             SnapshotChange::Resync
-        } else if current.revision == self.revision {
+        } else if current.revision == self.revision && current.view_sequence == self.view_sequence {
             SnapshotChange::Unchanged
-        } else if self.revision.checked_add(1) == Some(current.revision) {
+        } else if self.revision.checked_add(1) == Some(current.revision)
+            || (current.revision == self.revision && current.view_sequence > self.view_sequence)
+        {
             SnapshotChange::Consecutive
         } else {
             SnapshotChange::Resync
@@ -159,6 +168,7 @@ impl EventCursor {
             return false;
         }
         self.revision = current.revision;
+        self.view_sequence = current.view_sequence;
         true
     }
 }
@@ -198,6 +208,10 @@ async fn fetch_stamp(state: &WebState) -> Result<SnapshotStamp, StatusCode> {
             .get("revision")
             .and_then(Value::as_u64)
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
+        view_sequence: payload
+            .get("view_sequence")
+            .and_then(Value::as_u64)
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?,
         boot_id: payload
             .get("runtime_boot_id")
             .and_then(Value::as_str)
@@ -222,8 +236,14 @@ async fn authenticated_stamp(
 }
 
 #[cfg(test)]
+#[path = "events_control_round_test.rs"]
+mod control_round_tests;
+#[cfg(test)]
 #[path = "events_control_test.rs"]
 mod control_tests;
+#[cfg(test)]
+#[path = "events_periodic_test.rs"]
+mod periodic_tests;
 #[cfg(test)]
 #[path = "events_test.rs"]
 mod tests;

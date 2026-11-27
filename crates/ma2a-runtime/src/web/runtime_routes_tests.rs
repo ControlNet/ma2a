@@ -13,34 +13,57 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 use super::*;
 
 #[test]
-fn snapshot_change_classifies_consecutive_gap_and_restart() {
+fn snapshot_change_classifies_consecutive_gap_view_and_restart() {
     // Given
     let cursor = EventCursor {
         revision: 7,
+        view_sequence: 3,
         boot_id: "00112233445566778899aabbccddeeff".to_owned(),
     };
 
     // When
     let unchanged = cursor.classify(&SnapshotStamp {
         revision: 7,
+        view_sequence: 3,
         boot_id: cursor.boot_id.clone(),
     });
     let consecutive = cursor.classify(&SnapshotStamp {
         revision: 8,
+        view_sequence: 3,
+        boot_id: cursor.boot_id.clone(),
+    });
+    let view_step = cursor.classify(&SnapshotStamp {
+        revision: 7,
+        view_sequence: 4,
+        boot_id: cursor.boot_id.clone(),
+    });
+    let view_jump = cursor.classify(&SnapshotStamp {
+        revision: 7,
+        view_sequence: 6,
+        boot_id: cursor.boot_id.clone(),
+    });
+    let view_rollback = cursor.classify(&SnapshotStamp {
+        revision: 7,
+        view_sequence: 2,
         boot_id: cursor.boot_id.clone(),
     });
     let gap = cursor.classify(&SnapshotStamp {
         revision: 9,
+        view_sequence: 3,
         boot_id: cursor.boot_id.clone(),
     });
     let restart = cursor.classify(&SnapshotStamp {
         revision: 8,
+        view_sequence: 0,
         boot_id: "ffeeddccbbaa99887766554433221100".to_owned(),
     });
 
     // Then
     assert_eq!(unchanged, SnapshotChange::Unchanged);
     assert_eq!(consecutive, SnapshotChange::Consecutive);
+    assert_eq!(view_step, SnapshotChange::Consecutive);
+    assert_eq!(view_jump, SnapshotChange::Consecutive);
+    assert_eq!(view_rollback, SnapshotChange::Resync);
     assert_eq!(gap, SnapshotChange::Resync);
     assert_eq!(restart, SnapshotChange::Resync);
 }
@@ -51,6 +74,7 @@ async fn queue_overflow_reserves_terminal_resync_event() {
     let boot_id = "00112233445566778899aabbccddeeff".to_owned();
     let mut cursor = EventCursor {
         revision: 10,
+        view_sequence: 0,
         boot_id: boot_id.clone(),
     };
     let (sender, receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
@@ -61,6 +85,7 @@ async fn queue_overflow_reserves_terminal_resync_event() {
             &sender,
             &SnapshotStamp {
                 revision,
+                view_sequence: 0,
                 boot_id: boot_id.clone(),
             }
         ));
@@ -69,6 +94,7 @@ async fn queue_overflow_reserves_terminal_resync_event() {
         &sender,
         &SnapshotStamp {
             revision: 19,
+            view_sequence: 0,
             boot_id,
         },
     );

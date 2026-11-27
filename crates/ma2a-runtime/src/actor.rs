@@ -24,6 +24,8 @@ mod control_completion_test;
 #[cfg(test)]
 mod control_stale_test;
 #[cfg(test)]
+mod control_view_sequence_test;
+#[cfg(test)]
 mod departure_authority_test;
 #[cfg(test)]
 mod departure_test;
@@ -111,7 +113,7 @@ pub(crate) struct Actor {
     pub(crate) control_queue: crate::control_actor::ControlRoundQueue,
     pub(crate) synchronized_control_peers: crate::control_actor::SynchronizedControlPeers,
     pub(crate) control_round_history: std::collections::VecDeque<crate::api::ControlRoundView>,
-    pub(crate) control_round_revision_bumps: u64,
+    pub(crate) view_sequence: u64,
     #[cfg(test)]
     pub(crate) control_schedule_events:
         Arc<std::sync::Mutex<Vec<crate::control_sync::ControlRoundTrigger>>>,
@@ -119,12 +121,6 @@ pub(crate) struct Actor {
 }
 
 impl Actor {
-    /// Returns the observable snapshot revision for a Store revision, accounting for
-    /// in-memory control-round history updates that do not persist to the Store.
-    pub(crate) const fn snapshot_revision(&self, store_revision: u64) -> u64 {
-        store_revision.saturating_add(self.control_round_revision_bumps)
-    }
-
     pub(crate) fn absorb_background(
         step: &str,
         result: Result<(), RuntimeError>,

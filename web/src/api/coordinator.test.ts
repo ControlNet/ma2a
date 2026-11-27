@@ -173,4 +173,24 @@ describe("runtime state coordinator", () => {
       expect(given.currentState()).toEqual({ kind: "ready", revision: 5, bootId: bootB })
     },
   )
+
+  test("resnapshots on view-only snapshot_invalidated at the same revision and keeps revision gaps for revision only", async () => {
+    const applied: Array<readonly [number, number]> = []
+    const given = new RuntimeStateCoordinator({
+      fetchSnapshot: () => Promise.resolve(stampedRuntimeSnapshot(10, DEFAULT_BOOT_ID, 2)),
+      onIncremental: () => undefined,
+      onSnapshot: (value) => applied.push([value.snapshot.revision, value.snapshot.view_sequence]),
+      onRecoveryError: () => undefined,
+    })
+    given.install(stampedRuntimeSnapshot(10, DEFAULT_BOOT_ID, 1))
+
+    await given.receiveEvent({ type: "snapshot_invalidated", revision: 10, changed: {} })
+
+    expect(applied).toEqual([
+      [10, 1],
+      [10, 2],
+    ])
+    expect(await given.receiveRevision(11)).toBe(true)
+    expect(given.currentState()).toEqual({ kind: "ready", revision: 11, bootId: DEFAULT_BOOT_ID })
+  })
 })

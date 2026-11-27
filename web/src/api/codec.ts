@@ -100,6 +100,7 @@ const ControlRoundViewSchema = z.strictObject({
 const RuntimeSnapshotSchema = z
   .strictObject({
     revision: RevisionSchema,
+    view_sequence: RevisionSchema,
     endpoint: EndpointViewSchema,
     spaces: z.array(SpaceViewSchema).readonly(),
     control_sync: ControlSyncViewSchema,
