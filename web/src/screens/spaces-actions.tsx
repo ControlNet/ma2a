@@ -106,7 +106,7 @@ export function SpacesInspector({
               <Button
                 disabled={disabled}
                 onClick={() => {
-                  actions?.discardPendingSpaceCreation()
+                  actions?.discardPendingSpaceCreation(pendingSpaceCreation.requestId)
                   setStatus((current) => ({ ...current, create: undefined }))
                 }}
               >

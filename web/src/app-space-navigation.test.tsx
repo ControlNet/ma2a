@@ -173,3 +173,63 @@ test("late Alpha success from a previous session never erases the new session's 
   expect(idsByName.Beta).toHaveLength(2)
   expect(idsByName.Beta[1]).toBe(idsByName.Beta[0])
 })
+
+// C07: discarding the displayed pending creation keeps any earlier hidden request so it surfaces
+// and retries under its original request ID.
+test("discarding a displayed pending creation reveals the hidden one and preserves its ID", async () => {
+  setCsrfCookie()
+  const idsByName: { Alpha: string[]; Beta: string[] } = { Alpha: [], Beta: [] }
+  const rejectors: { Alpha?: (reason?: unknown) => void; Beta?: (reason?: unknown) => void } = {}
+  let failAlphaOnce = true
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+    const command = (await new Request(input, init).json()) as {
+      request_id: string
+      name: "Alpha" | "Beta"
+    }
+    idsByName[command.name].push(command.request_id)
+    if (command.name === "Alpha" && failAlphaOnce) {
+      failAlphaOnce = false
+      return new Promise<Response>((_resolve, reject) => {
+        rejectors.Alpha = reject
+      })
+    }
+    if (command.name === "Beta") {
+      return new Promise<Response>((_resolve, reject) => {
+        rejectors.Beta = reject
+      })
+    }
+    return spaceCreatedResponse(command.request_id, command.name, 1)
+  })
+  window.history.replaceState(null, "", "/spaces")
+  holdControllers()
+  const user = userEvent.setup()
+
+  render(<App />)
+  act(() => controllers[0]?.onRuntime(ONE_RUNTIME_FIXTURE))
+  const firstForm = within(screen.getByRole("form", { name: "Create a Space" }))
+  await user.type(firstForm.getByLabelText("Name"), "Alpha")
+  await user.click(firstForm.getByRole("button", { name: "Create" }))
+  await waitFor(() => expect(rejectors.Alpha).toBeDefined())
+
+  // Remount SpacesInspector by visiting Map and returning before Alpha answers.
+  await user.click(screen.getByRole("link", { name: "Map" }))
+  await user.click(screen.getByRole("link", { name: "Spaces" }))
+  const secondForm = within(screen.getByRole("form", { name: "Create a Space" }))
+  await user.type(secondForm.getByLabelText("Name"), "Beta")
+  await user.click(secondForm.getByRole("button", { name: "Create" }))
+  await waitFor(() => expect(rejectors.Beta).toBeDefined())
+
+  // Lose both replies; Beta is displayed last.
+  await act(async () => rejectors.Alpha?.(new TypeError("Failed to fetch")))
+  await act(async () => rejectors.Beta?.(new TypeError("Failed to fetch")))
+  expect(await screen.findByText(/Unresolved request for “Beta”/)).toBeInTheDocument()
+
+  // Discard Beta; Alpha must remain and become visible for retry with its original ID.
+  await user.click(screen.getByRole("button", { name: "Start new creation" }))
+  expect(await screen.findByText(/Unresolved request for “Alpha”/)).toBeInTheDocument()
+  await user.click(screen.getByRole("button", { name: "Retry pending creation" }))
+  const retriedForm = within(screen.getByRole("form", { name: "Create a Space" }))
+  expect(await retriedForm.findByText("Space created by the Runtime.")).toBeInTheDocument()
+  expect(idsByName.Alpha).toHaveLength(2)
+  expect(idsByName.Alpha[1]).toBe(idsByName.Alpha[0])
+})

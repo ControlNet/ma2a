@@ -83,7 +83,7 @@ export function mutationFailureText(error: unknown, unknown: string, rejected: s
 
 export type RuntimeMutationClient = {
   readonly createSpace: (name: string) => Promise<MutationSpaceView>
-  readonly discardPendingSpaceCreation: () => void
+  readonly discardPendingSpaceCreation: (requestId: RequestId) => void
   readonly createInvitation: (
     spaceId: string,
     ttlMs: number,
@@ -189,7 +189,7 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
       pendingSpace.settle(requestId)
       return result.payload
     },
-    discardPendingSpaceCreation: () => pendingSpace.discard(),
+    discardPendingSpaceCreation: (requestId) => pendingSpace.discard(requestId),
     createInvitation: async (spaceId, ttlMs, outputPath) => {
       const result = await mutate("/api/v1/spaces/invite", {
         version: LOCAL_API_VERSION,

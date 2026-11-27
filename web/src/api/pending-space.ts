@@ -119,7 +119,7 @@ export type PendingSpaceTracker = {
   ) => { readonly requestId: RequestId; readonly reused: boolean }
   readonly markUnsettled: (requestId: RequestId) => void
   readonly settle: (requestId: RequestId) => void
-  readonly discard: () => void
+  readonly discard: (requestId: RequestId) => void
 }
 
 type MemoryPendingSpace = {
@@ -209,11 +209,6 @@ export function createPendingSpaceTracker(
       }
     },
     settle: remove,
-    discard: () => {
-      if (!active()) return
-      const scope = options.endpointId?.()
-      persist(scope, [])
-      notify(scope, undefined)
-    },
+    discard: remove,
   }
 }
