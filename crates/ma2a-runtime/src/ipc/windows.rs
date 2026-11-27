@@ -240,22 +240,19 @@ mod tests {
         };
         assert_eq!(line.as_deref(), Some("ready"));
 
-        let still_open = tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            super::peer_disconnected(&server),
-        )
-        .await;
-        assert!(
-            still_open.is_err(),
-            "live peer process falsely reported disconnected"
-        );
+        let closed = {
+            let mut watcher = std::pin::pin!(super::peer_disconnected(&server));
+            let still_open =
+                tokio::time::timeout(std::time::Duration::from_millis(250), &mut watcher).await;
+            assert!(
+                still_open.is_err(),
+                "live peer process falsely reported disconnected"
+            );
 
-        child.kill().await?;
-        let closed = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            super::peer_disconnected(&server),
-        )
-        .await;
+            child.start_kill()?;
+            tokio::time::timeout(std::time::Duration::from_secs(3), &mut watcher).await
+        };
+        let _status = child.wait().await?;
         drop(server);
         drop(listener);
         std::fs::remove_dir_all(&base)?;

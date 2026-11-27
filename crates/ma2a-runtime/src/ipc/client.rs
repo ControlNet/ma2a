@@ -35,6 +35,14 @@ impl LocalApiClient {
         Self { paths }
     }
 
+    #[cfg(all(test, windows))]
+    pub(crate) fn pipe_name(&self) -> String {
+        format!(
+            "ma2a-{}",
+            super::directory_identity(self.paths.state_dir()).to_hex()
+        )
+    }
+
     /// Performs a handshake when required and sends one typed command.
     ///
     /// # Errors

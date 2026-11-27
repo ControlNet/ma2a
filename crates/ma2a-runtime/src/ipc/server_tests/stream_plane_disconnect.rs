@@ -1,23 +1,31 @@
 //! Verifies out-of-band IPC peer disconnect when lookahead holds a frame behind a stalled Proxy.
 
-use ma2a_core::ServiceKind;
+#[cfg(unix)]
+use ma2a_core::service::{Channel, FrameKind, MAX_DATA_CHUNK_LEN};
 use ma2a_core::service::{
-    Channel, FrameKind, MAX_DATA_CHUNK_LEN, OpenBody, OpenHeader, ProxyHost, ProxyHostPattern,
-    ProxyRequest, ProxyRule,
+    OpenBody, OpenHeader, ProxyHost, ProxyHostPattern, ProxyRequest, ProxyRule,
 };
+use ma2a_core::{RequestId, ServiceKind};
 use ma2a_store::LocalExposure;
 
+#[cfg(unix)]
+use super::stream_plane::{Halves, halves};
 use super::{
     TestResult, api,
-    stream_plane::{Halves, Pair, halves, id},
+    stream_plane::{Pair, id},
 };
+#[cfg(unix)]
 use crate::ipc::StreamUpgrade;
 
-async fn open_backpressured_proxy(
+#[cfg(windows)]
+#[path = "stream_plane_disconnect_windows.rs"]
+mod windows;
+
+async fn expose_sink_proxy(
     pair: &Pair,
     request_byte: u8,
     idle_ms: u64,
-) -> TestResult<(Halves, tokio::task::JoinHandle<TestResult>)> {
+) -> TestResult<(RequestId, Vec<u8>, tokio::task::JoinHandle<TestResult>)> {
     let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = tcp_listener.local_addr()?.port();
     let rule = ProxyRule::new(
@@ -33,19 +41,33 @@ async fn open_backpressured_proxy(
         std::future::pending::<TestResult>().await
     });
     let request_id = id(request_byte)?;
-    let upgrade = api::decode_command(&serde_json::to_vec(&serde_json::json!({
+    let request = ProxyRequest::new(ProxyHost::new("127.0.0.1")?, port, idle_ms)?;
+    let open = OpenHeader::new(request_id, pair.target_id, OpenBody::Proxy(request)).encode()?;
+    Ok((request_id, open, sink_task))
+}
+
+fn stream_open_payload(pair: &Pair, request_id: RequestId) -> TestResult<Vec<u8>> {
+    Ok(serde_json::to_vec(&serde_json::json!({
         "version": 1,
         "operation": "stream_open",
         "request_id": api::encode_hex(request_id.as_bytes()),
         "target_endpoint_id": api::encode_hex(pair.target_id.as_bytes()),
         "service": ServiceKind::Proxy.name(),
-    }))?)?;
+    }))?)
+}
+
+#[cfg(unix)]
+async fn open_backpressured_proxy(
+    pair: &Pair,
+    request_byte: u8,
+    idle_ms: u64,
+) -> TestResult<(Halves, tokio::task::JoinHandle<TestResult>)> {
+    let (request_id, open, sink_task) = expose_sink_proxy(pair, request_byte, idle_ms).await?;
+    let upgrade = api::decode_command(&stream_open_payload(pair, request_id)?)?;
     let StreamUpgrade::Opened(stream) = pair.client.open_stream(&upgrade).await? else {
         return Err("stream_open refused".into());
     };
     let (mut reader, mut writer) = halves(stream);
-    let request = ProxyRequest::new(ProxyHost::new("127.0.0.1")?, port, idle_ms)?;
-    let open = OpenHeader::new(request_id, pair.target_id, OpenBody::Proxy(request)).encode()?;
     writer.frame(FrameKind::Open, &open).await?;
     writer.flush().await?;
     assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
@@ -70,6 +92,7 @@ async fn open_backpressured_proxy(
     Ok(((reader, writer), sink_task))
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_dropped_proxy_ipc_client_cancels_within_cancel_grace_even_with_lookahead_buffered()
 -> TestResult {
