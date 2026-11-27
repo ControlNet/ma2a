@@ -40,13 +40,30 @@ use crate::{RuntimeClock, store::StoreClient};
 /// Name of the directory holding one subdirectory per Process.
 const PROCESSES_DIR: &str = "processes-v1";
 
+/// In-flight termination state for one Process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Terminating {
+    reason: ProcessReason,
+    in_flight: usize,
+}
+
+impl Terminating {
+    #[cfg(all(test, unix))]
+    const fn new(reason: ProcessReason) -> Self {
+        Self {
+            reason,
+            in_flight: 0,
+        }
+    }
+}
+
 /// In-memory coordination; everything that must survive a restart is in the Store.
 #[derive(Debug, Default)]
 struct Coordination {
     /// Processes with a running follower.
     followed: HashSet<ProcessId>,
     /// Why this Runtime asked a Process to terminate, until that end is recorded.
-    terminating: HashMap<ProcessId, ProcessReason>,
+    terminating: HashMap<ProcessId, Terminating>,
     /// Attached readers per Process.
     readers: HashMap<ProcessId, usize>,
 }
@@ -71,7 +88,65 @@ struct Inner {
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessManager(Arc<Inner>);
 
+/// Tracks one in-flight `terminate` call so a failing concurrent call does not drop the
+/// reason of a call still waiting, while clearing an unended Process once all calls finish.
+pub(super) struct TerminateGuard<'a> {
+    manager: &'a ProcessManager,
+    id: ProcessId,
+    keep_on_drop: bool,
+}
+
+impl TerminateGuard<'_> {
+    pub(super) const fn keep(&mut self) {
+        self.keep_on_drop = true;
+    }
+}
+
+impl Drop for TerminateGuard<'_> {
+    fn drop(&mut self) {
+        let mut coordination = self.manager.coordination();
+        let Some(entry) = coordination.terminating.get_mut(&self.id) else {
+            return;
+        };
+        entry.in_flight = entry.in_flight.saturating_sub(1);
+        if entry.in_flight == 0 && !self.keep_on_drop {
+            coordination.terminating.remove(&self.id);
+        }
+    }
+}
+
 impl ProcessManager {
+    pub(super) fn enter_terminating(
+        &self,
+        id: ProcessId,
+        reason: ProcessReason,
+    ) -> TerminateGuard<'_> {
+        let mut coordination = self.coordination();
+        match coordination.terminating.get_mut(&id) {
+            Some(entry) => {
+                entry.in_flight += 1;
+                if reason == ProcessReason::Unauthorized {
+                    entry.reason = ProcessReason::Unauthorized;
+                }
+            }
+            None => {
+                coordination.terminating.insert(
+                    id,
+                    Terminating {
+                        reason,
+                        in_flight: 1,
+                    },
+                );
+            }
+        }
+        drop(coordination);
+        TerminateGuard {
+            manager: self,
+            id,
+            keep_on_drop: false,
+        }
+    }
+
     /// Creates the manager for one state directory; without `hosting`, `start` is refused
     /// but existing Processes are still followed, read, and managed.
     pub(crate) fn new(

@@ -14,7 +14,7 @@ use super::{Harness, TestResult, reaches, request_id, start, started};
 use crate::processes::ProcessManager;
 
 /// Records a Process and walks it to `state` without ever launching a supervisor.
-async fn recorded(
+pub(super) async fn recorded(
     harness: &Harness,
     manager: &ProcessManager,
     (byte, state): (u8, ProcessState),
@@ -174,10 +174,10 @@ async fn a_termination_reason_outlives_a_store_failure_of_the_end() -> TestResul
     let harness = Harness::new("reason-kept").await?;
     let (manager, shutdown) = harness.manager();
     let id = recorded(&harness, &manager, (17, ProcessState::Running)).await?;
-    manager
-        .coordination()
-        .terminating
-        .insert(id, ProcessReason::Unauthorized);
+    manager.coordination().terminating.insert(
+        id,
+        crate::processes::Terminating::new(ProcessReason::Unauthorized),
+    );
     let ended = SupervisorStatus::Ended(Termination::Signaled(15), EndCause::Terminated, 5);
     let config = ma2a_store::StoreConfig::new(&harness.state.0);
     let sql = rusqlite::Connection::open(config.database_path())?;

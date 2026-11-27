@@ -106,7 +106,13 @@ impl ProcessManager {
             self.follow(record.id, None);
             // The local Endpoint's own Processes depend on no grant.
             if record.creator == self.0.local
-                || self.coordination().terminating.contains_key(&record.id)
+                || self
+                    .coordination()
+                    .terminating
+                    .get(&record.id)
+                    .is_some_and(|entry| {
+                        entry.reason == ProcessReason::Unauthorized && entry.in_flight > 0
+                    })
             {
                 continue;
             }

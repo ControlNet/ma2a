@@ -111,8 +111,7 @@ impl ProcessManager {
             .coordination()
             .terminating
             .get(&id)
-            .copied()
-            .unwrap_or(ProcessReason::Requested);
+            .map_or(ProcessReason::Requested, |entry| entry.reason);
         match step_for(current.value().state, reported, requested) {
             Some(transition) => self.transition(id, transition).await,
             None => Ok(current),

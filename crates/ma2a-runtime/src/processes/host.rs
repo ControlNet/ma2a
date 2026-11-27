@@ -9,7 +9,7 @@ use ma2a_core::{
 };
 use ma2a_services::{
     FrameReader, FrameWriter, OperationEnd, OperationReport,
-    supervisor::{SupervisorRequest, protocol::ACKNOWLEDGED},
+    supervisor::{EndCause, SupervisorRequest, SupervisorStatus, protocol::ACKNOWLEDGED},
 };
 use ma2a_store::{Committed, ProcessArchive, ProcessRecord};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -220,7 +220,7 @@ impl ProcessManager {
         let credentials = credentials(&record)
             .filter(|_| record.state != ProcessState::Created)
             .ok_or(ServiceError::NotRunning)?;
-        self.coordination().terminating.entry(id).or_insert(reason);
+        let mut guard = self.enter_terminating(id, reason);
         let reported = match self.address(id).connect(&credentials).await {
             Ok(channel) => request(channel, SupervisorRequest::Terminate(grace_ms)).await,
             Err(error) => Err(error),
@@ -232,13 +232,15 @@ impl ProcessManager {
             }
             Err(_) => Err(ServiceError::Unavailable),
         };
-        // A termination that did not end the Process leaves nothing behind, so convergence
-        // and later requests try again.
-        if !ended
-            .as_ref()
-            .is_ok_and(|record| record.value().state.is_terminal())
+        // If the supervisor already reported an end whose Store commit failed, keep the
+        // termination reason until the follower retries it.
+        if ended.is_err()
+            && matches!(
+                reported,
+                Ok(SupervisorStatus::Ended(_, EndCause::Terminated, _))
+            )
         {
-            self.coordination().terminating.remove(&id);
+            guard.keep();
         }
         ended
     }

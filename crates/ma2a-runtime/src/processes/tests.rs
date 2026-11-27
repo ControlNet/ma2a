@@ -7,6 +7,7 @@ mod logs;
 mod recovery;
 mod relay;
 mod supervisor_loss;
+mod terminating;
 mod watch;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
