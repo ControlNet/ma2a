@@ -100,6 +100,15 @@ impl ProcessManager {
         answer
     }
 
+    /// Keeps an active withdrawal reason across a failed call until a terminal state commits.
+    pub(super) fn keep_terminating(&self, id: ProcessId) {
+        if let Some(entry) = self.coordination().terminating.get_mut(&id)
+            && entry.reason == ProcessReason::Unauthorized
+        {
+            entry.keep = true;
+        }
+    }
+
     /// Applies what an authenticated supervisor, or its status record, reported.
     pub(super) async fn apply(
         &self,
@@ -114,9 +123,8 @@ impl ProcessManager {
                 reported,
                 SupervisorStatus::Ended(_, EndCause::Terminated, _)
             )
-            && let Some(entry) = self.coordination().terminating.get_mut(&id)
         {
-            entry.keep = true;
+            self.keep_terminating(id);
         }
         result
     }
@@ -126,7 +134,14 @@ impl ProcessManager {
         id: ProcessId,
         reported: SupervisorStatus,
     ) -> Result<Committed<ProcessRecord>, ServiceError> {
-        let current = found(self.record_at(id).await?)?;
+        let Ok(current) = found(self.record_at(id).await?) else {
+            self.coordination().terminating.remove(&id);
+            return Err(ServiceError::UnknownProcess);
+        };
+        if current.value().state.is_terminal() {
+            self.coordination().terminating.remove(&id);
+            return Ok(current);
+        }
         let requested = self
             .coordination()
             .terminating
@@ -147,12 +162,18 @@ impl ProcessManager {
         record: &ProcessRecord,
     ) -> Result<Committed<ProcessRecord>, ServiceError> {
         let directory = self.directory(record.id);
-        let recorded = tokio::task::spawn_blocking(move || status::read(&directory))
+        let decided = tokio::task::spawn_blocking(move || status::read(&directory))
             .await
-            .map_err(|_| ServiceError::Internal)?;
-        match concluded(recorded, record.state)? {
-            Concluded::Reported(reported) => self.apply(record.id, reported).await,
-            Concluded::Ended(ended) => self.step(record.id, ended).await,
+            .map_or(Err(ServiceError::Internal), |recorded| {
+                concluded(recorded, record.state)
+            });
+        match decided {
+            Ok(Concluded::Reported(reported)) => self.apply(record.id, reported).await,
+            Ok(Concluded::Ended(ended)) => self.step(record.id, ended).await,
+            Err(error) => {
+                self.keep_terminating(record.id);
+                Err(error)
+            }
         }
     }
 }

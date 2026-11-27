@@ -221,12 +221,16 @@ impl ProcessManager {
             .filter(|_| record.state != ProcessState::Created)
             .ok_or(ServiceError::NotRunning)?;
         let _guard = self.enter_terminating(id, reason);
-        let reported = match self.address(id).connect(&credentials).await {
-            Ok(channel) => request(channel, SupervisorRequest::Terminate(grace_ms)).await,
-            Err(error) => Err(error),
-        };
-        match reported {
-            Ok(reported) => self.apply(id, reported).await,
+        match self.address(id).connect(&credentials).await {
+            Ok(channel) => {
+                if let Ok(reported) = request(channel, SupervisorRequest::Terminate(grace_ms)).await
+                {
+                    self.apply(id, reported).await
+                } else {
+                    self.keep_terminating(id);
+                    Err(ServiceError::Unavailable)
+                }
+            }
             Err(ServiceError::Unreachable | ServiceError::Unauthorized) => {
                 self.conclude(&record).await
             }
