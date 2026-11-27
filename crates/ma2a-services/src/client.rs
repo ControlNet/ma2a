@@ -191,6 +191,25 @@ pub(crate) async fn send_cancel<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<
     .await;
 }
 
+/// Sends and flushes `cancel`, or stops once `reader` answers or closes, within
+/// [`crate::reply::FRAME_GRACE`].
+pub(crate) async fn cancel_or_terminal<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut FrameReader<R>,
+    writer: &mut FrameWriter<W>,
+) {
+    let cancel = async {
+        writer.frame(FrameKind::Cancel, &[]).await?;
+        writer.flush().await
+    };
+    let _cancelled = tokio::time::timeout(crate::reply::FRAME_GRACE, async {
+        tokio::select! {
+            _ = cancel => {}
+            _ = reader.next() => {}
+        }
+    })
+    .await;
+}
+
 /// Outcome of an upstream frame write watched for cancellation or a lost local sink.
 pub(crate) enum Written {
     /// The write finished with this result before any cancellation.

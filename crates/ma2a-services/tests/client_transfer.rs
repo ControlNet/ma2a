@@ -293,3 +293,71 @@ async fn an_upload_is_committed_and_verified_and_a_short_source_publishes_nothin
     assert!(!root.path().join("short").exists());
     Ok(())
 }
+
+/// A reader that yields one slice, then fails with `BrokenPipe`.
+struct FailsAfter(Option<&'static [u8]>);
+
+impl tokio::io::AsyncRead for FailsAfter {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.0.take() {
+            Some(chunk) => {
+                let take = chunk.len().min(buffer.remaining());
+                buffer.put_slice(chunk.get(..take).unwrap_or_default());
+                if take < chunk.len() {
+                    self.0 = chunk.get(take..);
+                }
+                std::task::Poll::Ready(Ok(()))
+            }
+            None => std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into())),
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_local_read_bounds_upload_cancel_and_terminal_wait() -> TestResult {
+    use ma2a_core::service::{FrameKind, TransferAccept};
+
+    let grace = ma2a_services::reply::FRAME_GRACE;
+    let put_accept = TransferAccept::Put.encode()?;
+
+    // (a) Small full duplex (64 B = 5 B header + 1 B channel + 58 B data) whose peer never reads:
+    // sending Cancel blocks on the full write buffer, so upload must return within FRAME_GRACE.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe_with(64);
+    target_writer.frame(FrameKind::Accept, &put_accept).await?;
+    target_writer.flush().await?;
+    let mut source = FailsAfter(Some(&[b'x'; 58]));
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        client::transfer::upload((&mut reader, &mut writer), (&mut source, 128)),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), grace);
+    assert!(matches!(result, Err(ClientError::Local(_))), "{result:?}");
+
+    // (b) Peer reads Cancel and stays silent without closing or sending a terminal frame:
+    // upload must still return within FRAME_GRACE.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(1 << 12);
+    target_writer.frame(FrameKind::Accept, &put_accept).await?;
+    target_writer.flush().await?;
+    let peer = tokio::spawn(async move {
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Data);
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        std::future::pending::<TestResult>().await
+    });
+    let mut source = FailsAfter(Some(b"hello"));
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        client::transfer::upload((&mut reader, &mut writer), (&mut source, 128)),
+    )
+    .await?;
+    assert!(started.elapsed() <= grace, "{:?}", started.elapsed());
+    assert!(matches!(result, Err(ClientError::Local(_))), "{result:?}");
+    peer.abort();
+    Ok(())
+}

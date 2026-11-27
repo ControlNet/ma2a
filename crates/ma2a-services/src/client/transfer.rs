@@ -111,7 +111,7 @@ where
     if TransferAccept::decode(frame.payload()) != Ok(TransferAccept::Put) {
         return Err(ClientError::Stream(ServiceError::InvalidInput));
     }
-    // `Ok` holds the hash of everything sent; `Err(None)` is a broken stream, after which
+    // `Some` holds the hash of everything sent; `None` is a broken stream, after which
     // the target can only report failure because it never received a commitment.
     let local = match send_content(writer, (source, size)).await {
         Ok(Ok(hash)) => {
@@ -125,22 +125,14 @@ where
             // A commitment that was not sent is a broken stream too: a target that stopped
             // reading still reports its terminal, which explains why.
             let committed: Result<(), ServiceError> = committed.await;
-            committed.map(|()| hash).map_err(|_| None)
+            committed.ok().map(|()| hash)
         }
         Ok(Err(error)) => {
-            let _cancelled = cancel(writer).await;
-            Err(Some(error))
-        }
-        Err(_stream) => Err(None),
-    };
-    let local = match local {
-        Ok(hash) => Some(hash),
-        Err(None) => None,
-        Err(Some(error)) => {
             // A cancelled upload publishes nothing and may end without a terminal frame.
-            let _terminal = reader.next().await;
+            crate::client::cancel_or_terminal(reader, writer).await;
             return Err(ClientError::Local(error));
         }
+        Err(_stream) => None,
     };
     let frame = next(reader).await?;
     if frame.kind() != FrameKind::Outcome {
@@ -210,9 +202,4 @@ where
     }
     writer.end(Channel::Input).await?;
     Ok(Ok(*hasher.finalize().as_bytes()))
-}
-
-async fn cancel<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>) -> Result<(), ServiceError> {
-    writer.frame(FrameKind::Cancel, &[]).await?;
-    writer.flush().await
 }

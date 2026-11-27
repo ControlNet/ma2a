@@ -61,17 +61,7 @@ where
         // Local input failed: cancel the write within the grace so the target releases its
         // writer lease even if the caller keeps this stream open.
         Err(Err(error)) => {
-            let cancel = async {
-                writer.frame(FrameKind::Cancel, &[]).await?;
-                writer.flush().await
-            };
-            let _cancelled = tokio::time::timeout(crate::reply::FRAME_GRACE, async {
-                tokio::select! {
-                    _ = cancel => {}
-                    _ = reader.next() => {}
-                }
-            })
-            .await;
+            crate::client::cancel_or_terminal(reader, writer).await;
             return Err(error);
         }
     };
