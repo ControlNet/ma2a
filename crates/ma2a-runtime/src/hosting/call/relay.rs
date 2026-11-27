@@ -82,7 +82,6 @@ where
     let (mut pumping, mut cancelling) = ((true, true), false);
     loop {
         tokio::select! {
-            biased;
             relayed = &mut relaying => return relayed,
             () = &mut pump, if pumping.0 => pumping.0 = false,
             () = &mut checking, if pumping.1 => pumping.1 = false,

@@ -161,3 +161,61 @@ async fn a_stopped_call_ends_when_its_caller_stopped_reading() {
         "ending the call hung on a caller that stopped reading"
     );
 }
+
+#[tokio::test]
+async fn a_continuous_output_flood_never_starves_stop_or_stuck_grace() {
+    use tokio::io::AsyncWriteExt as _;
+
+    let (caller, host) = tokio::io::duplex(1 << 16);
+    let (host_read, _host_write) = tokio::io::split(host);
+    let mut reader = FrameReader::new(host_read);
+    let mut writer = FrameWriter::new(tokio::io::sink());
+    let (_caller_read, caller_write) = tokio::io::split(caller);
+    let input_flood = tokio::spawn(async move {
+        let mut input = FrameWriter::new(caller_write);
+        while input.data(Channel::Input, &[7; 16_384]).await.is_ok() && input.flush().await.is_ok()
+        {
+        }
+    });
+
+    let (service, hosted) = tokio::io::duplex(1 << 14);
+    let mut batch = FrameWriter::new(Vec::new());
+    for _ in 0..256 {
+        batch
+            .data(Channel::Output, &[b'x'; 64])
+            .await
+            .expect("output data");
+    }
+    let batch = batch.into_inner();
+    let output_flood = tokio::spawn(async move {
+        let mut output = FrameWriter::new(service);
+        let accept = ma2a_core::service::encode_call_accept(b"").expect("accept");
+        output
+            .frame(FrameKind::Accept, &accept)
+            .await
+            .expect("accept");
+        output.flush().await.expect("flush accept");
+        while output.get_mut().write_all(&batch).await.is_ok() {}
+    });
+
+    let (stop, service_stop) = (CancellationToken::new(), CancellationToken::new());
+    let stopping = async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        service_stop.cancel();
+    };
+    let started = tokio::time::Instant::now();
+    let calling = relay_call(
+        (&mut reader, &mut writer),
+        Box::new(hosted),
+        (&stop, &service_stop),
+    );
+    let (relayed, ()) = tokio::join!(
+        tokio::time::timeout(STUCK_GRACE + Duration::from_secs(3), calling),
+        stopping
+    );
+    input_flood.abort();
+    output_flood.abort();
+    let relayed = relayed.expect("stopped call starved under continuous output");
+    assert_eq!(relayed.terminal, Terminal::Lost);
+    assert!(started.elapsed() <= STUCK_GRACE + Duration::from_secs(2));
+}
