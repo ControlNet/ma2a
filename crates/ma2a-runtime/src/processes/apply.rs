@@ -106,6 +106,26 @@ impl ProcessManager {
         id: ProcessId,
         reported: SupervisorStatus,
     ) -> Result<Committed<ProcessRecord>, ServiceError> {
+        let result = self.apply_reported(id, reported).await;
+        // If a reported termination could not be stored, keep the shared reason until the
+        // follower records the terminal state.
+        if result.is_err()
+            && matches!(
+                reported,
+                SupervisorStatus::Ended(_, EndCause::Terminated, _)
+            )
+            && let Some(entry) = self.coordination().terminating.get_mut(&id)
+        {
+            entry.keep = true;
+        }
+        result
+    }
+
+    async fn apply_reported(
+        &self,
+        id: ProcessId,
+        reported: SupervisorStatus,
+    ) -> Result<Committed<ProcessRecord>, ServiceError> {
         let current = found(self.record_at(id).await?)?;
         let requested = self
             .coordination()

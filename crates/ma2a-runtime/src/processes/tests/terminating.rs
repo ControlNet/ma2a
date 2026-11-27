@@ -140,3 +140,113 @@ async fn withdrawn_authorization_shortens_long_requested_terminate() -> TestResu
     shutdown.cancel();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kept_unauthorized_reason_survives_second_failing_terminate() -> TestResult {
+    // Given: a running Process with two concurrent terminate calls: Call 1 (Unauthorized) gets
+    // Ended(Terminated) while the Store fails, then Call 2 (Requested) loses its supervisor reply.
+    let harness = Harness::new("term-keep").await?;
+    let (manager, shutdown) = harness.manager();
+    let id = recorded(&harness, &manager, (52, ProcessState::Running)).await?;
+    let record = manager.record(id).await?.ok_or("missing record")?;
+    let secret = record.secret.ok_or("missing secret")?;
+    let credentials = ma2a_services::supervisor::Credentials::new(id, secret);
+    let address = manager.address(id);
+    if let Some(parent) = std::path::Path::new(address.as_str()).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = address.bind()?;
+    let first_connected = std::sync::Arc::new(Notify::new());
+    let second_connected = std::sync::Arc::new(Notify::new());
+    let release_first = std::sync::Arc::new(Notify::new());
+    let release_second = std::sync::Arc::new(Notify::new());
+    let ended_status = SupervisorStatus::Ended(Termination::Signaled(15), EndCause::Terminated, 5);
+    let server = tokio::spawn({
+        let first_connected = std::sync::Arc::clone(&first_connected);
+        let second_connected = std::sync::Arc::clone(&second_connected);
+        let release_first = std::sync::Arc::clone(&release_first);
+        let release_second = std::sync::Arc::clone(&release_second);
+        async move {
+            let mut stream_one = listener.accept().await?;
+            let challenge_one = read_challenge(&mut FrameReader::new(&mut stream_one)).await?;
+            let (recv_one, send_one) = stream_one.split();
+            let (mut reader_one, mut writer_one) =
+                (FrameReader::new(recv_one), FrameWriter::new(send_one));
+            prove_supervisor(
+                challenge_one,
+                (&mut reader_one, &mut writer_one),
+                &credentials,
+            )
+            .await?;
+            let _req_one = reader_one.expect().await?;
+            first_connected.notify_one();
+
+            let mut stream_two = listener.accept().await?;
+            let challenge_two = read_challenge(&mut FrameReader::new(&mut stream_two)).await?;
+            let (recv_two, send_two) = stream_two.split();
+            let (mut reader_two, mut writer_two) =
+                (FrameReader::new(recv_two), FrameWriter::new(send_two));
+            prove_supervisor(
+                challenge_two,
+                (&mut reader_two, &mut writer_two),
+                &credentials,
+            )
+            .await?;
+            let _req_two = reader_two.expect().await?;
+            second_connected.notify_one();
+
+            release_first.notified().await;
+            writer_one
+                .frame(FrameKind::Outcome, &ended_status.to_bytes())
+                .await?;
+            writer_one.shutdown().await?;
+
+            release_second.notified().await;
+            drop((reader_two, writer_two));
+            TestResult::Ok(())
+        }
+    });
+
+    let first_manager = manager.clone();
+    let first = tokio::spawn(async move {
+        first_manager
+            .terminate((None, id), (5_000, ProcessReason::Unauthorized))
+            .await
+    });
+    first_connected.notified().await;
+
+    let second_manager = manager.clone();
+    let second = tokio::spawn(async move {
+        second_manager
+            .terminate((None, id), (5_000, ProcessReason::Requested))
+            .await
+    });
+    second_connected.notified().await;
+
+    let config = ma2a_store::StoreConfig::new(&harness.state.0);
+    let sql = rusqlite::Connection::open(config.database_path())?;
+    sql.execute_batch(
+        "CREATE TRIGGER test_process_end_failure BEFORE UPDATE ON processes
+         BEGIN SELECT RAISE(ABORT, 'injected process end failure'); END;",
+    )?;
+
+    // When: Call 1 observes Ended(Terminated), fails to commit, and drops its guard before Call 2 fails.
+    release_first.notify_one();
+    let first_res = tokio::time::timeout(Duration::from_secs(5), first).await??;
+    assert_eq!(first_res.err(), Some(ServiceError::Unavailable));
+
+    release_second.notify_one();
+    let second_res = tokio::time::timeout(Duration::from_secs(5), second).await??;
+    assert_eq!(second_res.err(), Some(ServiceError::Unavailable));
+
+    sql.execute_batch("DROP TRIGGER test_process_end_failure;")?;
+    server.await??;
+
+    // Then: after the Store recovers, the follower commits the observed exit with Unauthorized.
+    let committed = manager.apply(id, ended_status).await?;
+    assert_eq!(committed.value().state, ProcessState::Terminated);
+    assert_eq!(committed.value().reason, Some(ProcessReason::Unauthorized));
+    assert!(!manager.coordination().terminating.contains_key(&id));
+    shutdown.cancel();
+    Ok(())
+}

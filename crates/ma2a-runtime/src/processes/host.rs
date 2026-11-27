@@ -9,7 +9,7 @@ use ma2a_core::{
 };
 use ma2a_services::{
     FrameReader, FrameWriter, OperationEnd, OperationReport,
-    supervisor::{EndCause, SupervisorRequest, SupervisorStatus, protocol::ACKNOWLEDGED},
+    supervisor::{SupervisorRequest, protocol::ACKNOWLEDGED},
 };
 use ma2a_store::{Committed, ProcessArchive, ProcessRecord};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -220,29 +220,18 @@ impl ProcessManager {
         let credentials = credentials(&record)
             .filter(|_| record.state != ProcessState::Created)
             .ok_or(ServiceError::NotRunning)?;
-        let mut guard = self.enter_terminating(id, reason);
+        let _guard = self.enter_terminating(id, reason);
         let reported = match self.address(id).connect(&credentials).await {
             Ok(channel) => request(channel, SupervisorRequest::Terminate(grace_ms)).await,
             Err(error) => Err(error),
         };
-        let ended = match reported {
+        match reported {
             Ok(reported) => self.apply(id, reported).await,
             Err(ServiceError::Unreachable | ServiceError::Unauthorized) => {
                 self.conclude(&record).await
             }
             Err(_) => Err(ServiceError::Unavailable),
-        };
-        // If the supervisor already reported an end whose Store commit failed, keep the
-        // termination reason until the follower retries it.
-        if ended.is_err()
-            && matches!(
-                reported,
-                Ok(SupervisorStatus::Ended(_, EndCause::Terminated, _))
-            )
-        {
-            guard.keep();
         }
-        ended
     }
 
     /// Archives one terminal Process and removes its output; a tombstone keeps its binding.
