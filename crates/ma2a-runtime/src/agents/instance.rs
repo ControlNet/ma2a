@@ -74,15 +74,16 @@ impl AgentManager {
             self.link(agent, instance.generation);
             return;
         }
-        if !self.previous_instance_terminal(&record).await {
-            return;
-        }
         let waiting = self
             .coordination()
             .restarts
             .get(agent)
             .is_some_and(|(not_before, _)| Instant::now() < *not_before);
         if waiting {
+            return;
+        }
+        if !self.previous_instance_terminal(&record).await {
+            self.schedule_backoff(agent, false);
             return;
         }
         let (id, at_ms) = (agent.clone(), self.now_ms());
@@ -225,11 +226,19 @@ impl AgentManager {
             self.task_ended(task);
         }
         let uptime = at_ms.saturating_sub(instance.started_ms);
+        self.schedule_backoff(agent, uptime >= STABLE_UPTIME_MS);
+    }
+
+    /// Schedules the next restart or predecessor-termination attempt with exponential backoff.
+    fn schedule_backoff(&self, agent: &AgentId, reset: bool) {
         let mut coordination = self.coordination();
-        let previous = coordination.restarts.get(agent).map(|(_, next)| *next);
-        let pause = match previous {
-            Some(next) if uptime < STABLE_UPTIME_MS => next,
-            _ => BACKOFF.0,
+        let pause = if reset {
+            BACKOFF.0
+        } else {
+            coordination
+                .restarts
+                .get(agent)
+                .map_or(BACKOFF.0, |(_, next)| *next)
         };
         let next = (pause * 2).min(BACKOFF.1);
         coordination

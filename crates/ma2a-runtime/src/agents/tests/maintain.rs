@@ -263,3 +263,345 @@ async fn slow_agent_startups_do_not_delay_cancellation_expiry() -> TestResult {
     );
     Ok(())
 }
+
+type FailingAgent = (AgentId, ProcessId, [u8; 32]);
+
+fn seed_failing_predecessor_agents(
+    config: &StoreConfig,
+    local: EndpointId,
+    state: ProcessState,
+) -> TestResult<Vec<FailingAgent>> {
+    let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
+    let start_bytes = ProcessStart::new(spec, true, MAX_LOG_LIMIT)?.to_bytes()?;
+    let mut repository = Repository::open(config)?;
+    let mut failing = Vec::with_capacity(8);
+    for index in 1_u8..=8 {
+        let id = AgentId::new(&format!("fail-{index}"))?;
+        repository.define_agent(
+            &AgentDefinition {
+                id: id.clone(),
+                description: String::new(),
+                start: start_bytes.clone(),
+                tools: 0,
+                max_tasks: 1,
+            },
+            1,
+        )?;
+        repository.set_agent_enabled(&id, (true, 2))?;
+        let generation = repository
+            .begin_agent_instance(&id, 3)?
+            .into_value()
+            .and_then(|record| record.instance)
+            .ok_or("no failing instance")?
+            .generation;
+        let pid = ProcessId::from_bytes([0x90 + index; 16]);
+        let secret = [0xA0 + index; 32];
+        repository.create_process(&NewProcess {
+            id: pid,
+            binding: (local, RequestId::random()?),
+            fingerprint: [0xB0 + index; 32],
+            start: (&start_bytes, None),
+            secret,
+            created_ms: 4,
+        })?;
+        if state == ProcessState::Running {
+            for (to, at_ms) in [(ProcessState::Starting, 5), (ProcessState::Running, 6)] {
+                repository.transition_process(
+                    pid,
+                    ProcessTransition {
+                        to,
+                        reason: None,
+                        termination: None,
+                        at_ms,
+                    },
+                )?;
+            }
+        }
+        repository.bind_agent_process((&id, generation), pid)?;
+        repository.set_agent_enabled(&id, (false, 7))?;
+        repository.set_agent_enabled(&id, (true, 8))?;
+        failing.push((id, pid, secret));
+    }
+    let healthy = AgentId::new("healthy")?;
+    repository.define_agent(
+        &AgentDefinition {
+            id: healthy.clone(),
+            description: String::new(),
+            start: start_bytes,
+            tools: 0,
+            max_tasks: 1,
+        },
+        1,
+    )?;
+    repository.set_agent_enabled(&healthy, (true, 2))?;
+    Ok(failing)
+}
+
+#[tokio::test(start_paused = true)]
+async fn eight_failing_predecessor_recoveries_do_not_starve_ninth_healthy_agent() -> TestResult {
+    // Given: eight enabled Agents (`fail-1`..`fail-8`) whose previous Processes cannot be
+    // confirmed terminal, ahead in name order of a ninth healthy Agent (`healthy`).
+    let mut nonce = [0_u8; 8];
+    getrandom::fill(&mut nonce)?;
+    let dir = std::env::temp_dir().join(format!("ma2a-starve-{}", u64::from_le_bytes(nonce)));
+    std::fs::create_dir(&dir)?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let config = StoreConfig::new(&dir);
+    let backend = StoreBackend::open(&config)?;
+    let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
+    let store_task = tokio::task::spawn_blocking(move || backend.run(receiver));
+    let store = StoreClient::new(sender);
+    let local = store.initialize().await?.endpoint_id;
+    let failing = seed_failing_predecessor_agents(&config, local, ProcessState::Created)?;
+
+    let clock: Arc<dyn RuntimeClock> = Arc::new(TokioClock::new(1_000_000));
+    let shutdown = CancellationToken::new();
+    let processes = ProcessManager::new(
+        (local, store.clone(), Arc::clone(&clock)),
+        (&dir, None),
+        shutdown.clone(),
+    );
+    let manager = AgentManager::new(
+        (local, store.clone(), clock),
+        (&dir, processes),
+        shutdown.clone(),
+    );
+
+    // When: maintenance runs for 5 ticks.
+    let runner = tokio::spawn(crate::agents::run(manager.clone()));
+    for _ in 0..8 {
+        let _rev = store.revision().await?;
+        tokio::task::yield_now().await;
+    }
+    for _ in 0..5 {
+        for _ in 0..50 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            tokio::task::yield_now().await;
+        }
+        for _ in 0..8 {
+            let _rev = store.revision().await?;
+            tokio::task::yield_now().await;
+        }
+    }
+
+    let healthy = Repository::open(&config)?.agent(&AgentId::new("healthy")?)?;
+    let backoffs: Vec<_> = {
+        let coordination = manager.coordination();
+        failing
+            .iter()
+            .map(|(id, _, _)| {
+                (
+                    id.clone(),
+                    coordination.restarts.get(id).map(|(_, next)| *next),
+                )
+            })
+            .collect()
+    };
+
+    shutdown.cancel();
+    for _ in 0..20 {
+        let _rev = store.revision().await?;
+        tokio::task::yield_now().await;
+        if runner.is_finished() {
+            break;
+        }
+    }
+    if !runner.is_finished() {
+        runner.abort();
+    }
+    let _joined = runner.await;
+    drop(manager);
+    store.stop().await?;
+    store_task.await?;
+    let _cleanup = std::fs::remove_dir_all(&dir);
+
+    // Then: `healthy` claimed a start slot and began its first instance, while each failing
+    // predecessor recovery was backed off rather than hammering every tick.
+    let healthy = healthy.ok_or("healthy agent missing")?;
+    assert!(
+        healthy.instance.is_some(),
+        "healthy agent starved behind eight failing predecessor recoveries: {healthy:?}"
+    );
+    for (id, next_backoff) in backoffs {
+        assert!(
+            next_backoff.is_some_and(|next| next >= Duration::from_secs(2)),
+            "failing predecessor recovery for {id} did not schedule retry backoff: {next_backoff:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn run_dropping_supervisor(
+    (address, credentials): (
+        ma2a_services::supervisor::SupervisorAddress,
+        ma2a_services::supervisor::Credentials,
+    ),
+    (connected, mut release, shutdown): (
+        Arc<std::sync::atomic::AtomicUsize>,
+        tokio::sync::watch::Receiver<bool>,
+        CancellationToken,
+    ),
+) -> TestResult {
+    use interprocess::local_socket::tokio::prelude::*;
+    use ma2a_services::{
+        FrameReader, FrameWriter,
+        supervisor::proof::{prove_supervisor, read_challenge},
+    };
+
+    let listener = address.bind()?;
+    loop {
+        let mut stream = tokio::select! {
+            () = shutdown.cancelled() => return Ok(()),
+            accepted = listener.accept() => accepted?,
+        };
+        let challenge = read_challenge(&mut FrameReader::new(&mut stream)).await?;
+        let (recv, send) = stream.split();
+        let (mut reader, mut writer) = (FrameReader::new(recv), FrameWriter::new(send));
+        prove_supervisor(challenge, (&mut reader, &mut writer), &credentials).await?;
+        let _request = reader.expect().await?;
+        connected.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _released = tokio::select! {
+            () = shutdown.cancelled() => return Ok(()),
+            res = release.wait_for(|open| *open) => res,
+        };
+        drop((reader, writer));
+    }
+}
+
+fn spawn_dropping_supervisors(
+    (sockets_dir, failing): (&std::path::Path, &[FailingAgent]),
+    (connected, release, shutdown): (
+        &Arc<std::sync::atomic::AtomicUsize>,
+        &tokio::sync::watch::Receiver<bool>,
+        &CancellationToken,
+    ),
+) -> Vec<tokio::task::JoinHandle<TestResult>> {
+    use ma2a_services::supervisor::{Credentials, SupervisorAddress};
+
+    failing
+        .iter()
+        .map(|(_, pid, secret)| {
+            let address = SupervisorAddress::new(
+                sockets_dir
+                    .join(format!("{pid}.sock"))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            tokio::spawn(run_dropping_supervisor(
+                (address, Credentials::new(*pid, *secret)),
+                (Arc::clone(connected), release.clone(), shutdown.clone()),
+            ))
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ninth_healthy_agent_claims_slot_when_failing_supervisor_releases_permit() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Given: eight enabled Agents (`fail-1`..`fail-8`) whose running predecessors have mock
+    // supervisors that accept Terminate and drop without answering, plus a ninth healthy Agent.
+    let mut nonce = [0_u8; 8];
+    getrandom::fill(&mut nonce)?;
+    let dir = std::env::temp_dir().join(format!("ma2a-slot-{}", u64::from_le_bytes(nonce)));
+    std::fs::create_dir(&dir)?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let sockets_dir = dir.join("run-v1").join("p");
+    std::fs::create_dir_all(&sockets_dir)?;
+    let config = StoreConfig::new(&dir);
+    let backend = StoreBackend::open(&config)?;
+    let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
+    let store_task = tokio::task::spawn_blocking(move || backend.run(receiver));
+    let store = StoreClient::new(sender);
+    let local = store.initialize().await?.endpoint_id;
+    let failing = seed_failing_predecessor_agents(&config, local, ProcessState::Running)?;
+
+    let shutdown = CancellationToken::new();
+    let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+    let connected = Arc::new(AtomicUsize::new(0));
+    let servers = spawn_dropping_supervisors(
+        (&sockets_dir, &failing),
+        (&connected, &release_rx, &shutdown),
+    );
+
+    let clock: Arc<dyn RuntimeClock> = Arc::new(crate::clock::SystemClock);
+    let processes = ProcessManager::new(
+        (local, store.clone(), Arc::clone(&clock)),
+        (&dir, None),
+        shutdown.clone(),
+    );
+    let manager = AgentManager::new(
+        (local, store.clone(), clock),
+        (&dir, processes),
+        shutdown.clone(),
+    );
+
+    // When: maintenance fills all 8 start permits with the 8 failing predecessor recoveries,
+    // then the supervisors drop their Terminate connections to free the permits.
+    let runner = tokio::spawn(crate::agents::run(manager.clone()));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while connected.load(Ordering::SeqCst) < 8 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "not all 8 failing recoveries reached their mock supervisors"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(manager.0.start_permits.available_permits(), 0);
+    let healthy_id = AgentId::new("healthy")?;
+    let before_release = Repository::open(&config)?
+        .agent(&healthy_id)?
+        .ok_or("healthy missing")?;
+    assert_eq!(before_release.instance, None);
+
+    let _sent = release_tx.send(true);
+    let healthy_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut healthy_started = false;
+    while tokio::time::Instant::now() < healthy_deadline {
+        if Repository::open(&config)?
+            .agent(&healthy_id)?
+            .and_then(|record| record.instance)
+            .is_some()
+        {
+            healthy_started = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let backoffs: Vec<_> = {
+        let coordination = manager.coordination();
+        failing
+            .iter()
+            .map(|(id, _, _)| (id.clone(), coordination.restarts.contains_key(id)))
+            .collect()
+    };
+
+    shutdown.cancel();
+    let _joined = tokio::time::timeout(Duration::from_secs(5), runner).await;
+    for server in servers {
+        let _joined = tokio::time::timeout(Duration::from_secs(2), server).await;
+    }
+    drop(manager);
+    store.stop().await?;
+    store_task.await?;
+    let _cleanup = std::fs::remove_dir_all(&dir);
+
+    // Then: `healthy` claimed a slot as soon as one freed up, and failing predecessors backed off.
+    assert!(
+        healthy_started,
+        "healthy agent never claimed a start slot after failing supervisors dropped Terminate"
+    );
+    for (id, backed_off) in backoffs {
+        assert!(
+            backed_off,
+            "failing predecessor recovery for {id} did not record retry backoff"
+        );
+    }
+    Ok(())
+}
