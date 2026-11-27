@@ -19,26 +19,13 @@ impl Actor {
             call.respond(1, Vec::new());
             return Ok(());
         };
-        let now_ms = match self.clock.now_ms() {
-            Ok(now_ms) => now_ms,
-            Err(error) => {
-                call.respond(255, Vec::new());
-                return Err(error);
-            }
-        };
-        let Ok(now_u64) = u64::try_from(now_ms) else {
-            call.respond(255, Vec::new());
-            return Err(crate::RuntimeError::new(
-                crate::error::RuntimeErrorKind::Clock,
-            ));
-        };
-        let authorized =
-            ma2a_store::AuthorizedEnrollmentRedemption::new(ticket, redemption, now_ms)
-                .requiring_owner_address(self.state.endpoint_id);
-        let outcome = match self.store.redeem_enrollment(authorized.clone()).await {
+        let outcome = match self
+            .redeem_at_current_clock(ticket.clone(), redemption.clone())
+            .await
+        {
             Ok(EnrollmentOutcome::OwnerAddressUnavailable) => {
                 match self.publish_local_address().await {
-                    Ok(_) => self.store.redeem_enrollment(authorized).await,
+                    Ok(_) => self.redeem_at_current_clock(ticket, redemption).await,
                     Err(error) => {
                         let status = if error.is_deferred_publication() {
                             6
@@ -74,7 +61,7 @@ impl Actor {
                     ),
                     projected,
                 )? {
-                    self.respond_with_bootstrap(call, (&chain, now_u64)).await?;
+                    self.respond_with_bootstrap(call, &chain).await?;
                 }
             }
             Ok(EnrollmentOutcome::Retry { chain }) => {
@@ -84,7 +71,7 @@ impl Actor {
                     ("owner enrollment retry", "owner_retry_publication"),
                     published,
                 )? {
-                    self.respond_with_bootstrap(call, (&chain, now_u64)).await?;
+                    self.respond_with_bootstrap(call, &chain).await?;
                 }
             }
             Ok(EnrollmentOutcome::Expired) => call.respond(2, Vec::new()),
@@ -122,10 +109,29 @@ impl Actor {
         }
     }
 
+    async fn redeem_at_current_clock(
+        &self,
+        ticket: ma2a_core::SignedInviteTicket,
+        redemption: ma2a_store::EnrollmentRedemption,
+    ) -> Result<EnrollmentOutcome, crate::RuntimeError> {
+        let (now_ms, _) = self.enrollment_now_ms()?;
+        let authorized =
+            ma2a_store::AuthorizedEnrollmentRedemption::new(ticket, redemption, now_ms)
+                .requiring_owner_address(self.state.endpoint_id);
+        self.store.redeem_enrollment(authorized).await
+    }
+
+    fn enrollment_now_ms(&self) -> Result<(i64, u64), crate::RuntimeError> {
+        let now_ms = self.clock.now_ms()?;
+        let now_u64 = u64::try_from(now_ms)
+            .map_err(|_| crate::RuntimeError::new(crate::error::RuntimeErrorKind::Clock))?;
+        Ok((now_ms, now_u64))
+    }
+
     async fn respond_with_bootstrap(
         &self,
         call: EnrollmentCall,
-        (bytes, now_ms): (&[u8], u64),
+        bytes: &[u8],
     ) -> Result<(), crate::RuntimeError> {
         let bootstrap = async {
             let chain = ma2a_core::SpaceChain::import_public(bytes)
@@ -139,6 +145,7 @@ impl Actor {
                         crate::error::RuntimeErrorKind::AddressObservationUnavailable,
                     )
                 })?;
+            let (_, now_ms) = self.enrollment_now_ms()?;
             let authorization = ma2a_core::SpaceAuthorizationView::from_chain(&chain);
             let owner_address = ma2a_store::ValidatedAddressRecord::parse(
                 persisted.signed_record(),
@@ -176,3 +183,7 @@ impl Actor {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "owner_stepping_clock_test.rs"]
+mod stepping_clock_test;
