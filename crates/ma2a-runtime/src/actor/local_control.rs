@@ -39,14 +39,6 @@ impl Actor {
                 .store
                 .relay_authorizations(self.state.endpoint_id)
                 .await?;
-            if self
-                .maintenance
-                .published_relay
-                .as_ref()
-                .is_some_and(|published| issued_at_ms < published.issued_at_ms)
-            {
-                return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
-            }
             let current = self
                 .maintenance
                 .published_relay
@@ -164,16 +156,20 @@ impl Actor {
         }
         let publication_result = write_result?;
         self.state.revision = self.state.revision.max(publication_result.revision);
-        self.maintenance.published_relay = Some(super::maintenance::PublishedRelay {
-            config,
-            authorizations,
-            issued_at_ms: publication_result.issued_at_ms,
-            expires_at_ms: publication_result.expires_at_ms,
-        });
+        self.maintenance.published_relay =
+            (!publication_result.clock_behind).then_some(super::maintenance::PublishedRelay {
+                config,
+                authorizations,
+                issued_at_ms: publication_result.issued_at_ms,
+                expires_at_ms: publication_result.expires_at_ms,
+            });
         if publication_result.changed {
             self.maintenance.relay_followup_pending = true;
         }
         self.finish_relay_publication().await?;
+        if publication_result.clock_behind {
+            return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
+        }
         Ok(publication_result.revision)
     }
 

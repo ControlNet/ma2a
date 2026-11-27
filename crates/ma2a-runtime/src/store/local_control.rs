@@ -5,6 +5,8 @@ pub(super) struct PendingRelayPublication {
     config: ma2a_net::PrivateRelayProviderConfig,
     authorizations: Vec<ma2a_core::SpaceAuthorizationView>,
     advertisements: Vec<ma2a_core::SignedPrivateRelayAdvertisementV1>,
+    active_spaces: Vec<ma2a_core::SpaceId>,
+    clock_behind: bool,
     issued_at_ms: u64,
     expires_at_ms: u64,
 }
@@ -171,8 +173,8 @@ impl StoreBackend {
             // safely fresh publication. The signed replacement becomes pending
             // before any per-Space write.
             self.pending_relay_publication = None;
-            let advertisements = publisher
-                .advertisements(
+            let (advertisements, active_spaces, clock_behind) = publisher
+                .advertisement_batch(
                     &mut self.repository,
                     ma2a_net::AdvertisementPublicationRequest::new(
                         &authorizations,
@@ -185,6 +187,8 @@ impl StoreBackend {
                 config: publisher.config().clone(),
                 authorizations: authorizations.clone(),
                 advertisements,
+                active_spaces,
+                clock_behind,
                 issued_at_ms,
                 expires_at_ms,
             });
@@ -194,11 +198,9 @@ impl StoreBackend {
             .as_ref()
             .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::Control))?;
         let advertisements = &pending.advertisements;
+        let active_spaces = &pending.active_spaces;
+        let clock_behind = pending.clock_behind;
         let (effective_issued_at_ms, effective_expires_at_ms) = pending.effective_window()?;
-        let active_spaces = advertisements
-            .iter()
-            .map(|advertisement| advertisement.advertisement().space_id())
-            .collect::<Vec<_>>();
         let mut advanced = false;
         for (committed_spaces, advertisement) in advertisements.iter().enumerate() {
             #[cfg(test)]
@@ -236,11 +238,12 @@ impl StoreBackend {
         }
         let (revision, activity_changed) = self
             .repository
-            .reconcile_private_relay_activity(local_endpoint_id, &active_spaces)?;
+            .reconcile_private_relay_activity(local_endpoint_id, active_spaces)?;
         self.pending_relay_publication = None;
         Ok(RelayPublicationResult {
             revision,
             changed: advanced || activity_changed,
+            clock_behind,
             issued_at_ms: effective_issued_at_ms,
             expires_at_ms: effective_expires_at_ms,
         })

@@ -64,6 +64,32 @@ impl PrivateRelayAdvertisementPublisher {
         repository: &mut Repository,
         request: AdvertisementPublicationRequest<'_>,
     ) -> Result<Vec<SignedPrivateRelayAdvertisementV1>, PrivateRelayAdvertisementPublishError> {
+        let (advertisements, _active_spaces, clock_behind) =
+            self.advertisement_batch(repository, request)?;
+        if advertisements.is_empty() && clock_behind {
+            return Err(PrivateRelayAdvertisementPublishError::ClockRollback);
+        }
+        Ok(advertisements)
+    }
+
+    /// Partitions effective served Spaces into publishable and clock-behind sets, reserving one
+    /// sequence only for the publishable Spaces and keeping already-active clock-behind Spaces in
+    /// the active set.
+    ///
+    /// # Errors
+    /// Returns [`PrivateRelayAdvertisementPublishError`] when persistence or signing fails.
+    pub fn advertisement_batch(
+        &self,
+        repository: &mut Repository,
+        request: AdvertisementPublicationRequest<'_>,
+    ) -> Result<
+        (
+            Vec<SignedPrivateRelayAdvertisementV1>,
+            Vec<ma2a_core::SpaceId>,
+            bool,
+        ),
+        PrivateRelayAdvertisementPublishError,
+    > {
         let provider_endpoint_id = self.secret.endpoint_id();
         let effective_spaces = request
             .authorizations
@@ -77,20 +103,30 @@ impl PrivateRelayAdvertisementPublisher {
             .map(SpaceAuthorizationView::space_id)
             .collect::<Vec<_>>();
         if effective_spaces.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new(), false));
         }
-        // Check persisted issue times before reserving a sequence, even if the stored bytes no
-        // longer decode, so a clock step back never advances or backdates an advertisement.
-        for &space_id in &effective_spaces {
-            if repository
-                .relay_advertisement(space_id, provider_endpoint_id)?
-                .is_some_and(|current| {
-                    u64::try_from(current.issued_at_ms())
-                        .is_ok_and(|issued| request.issued_at_ms < issued)
-                })
-            {
-                return Err(PrivateRelayAdvertisementPublishError::ClockRollback);
+        let mut publishable_spaces = Vec::with_capacity(effective_spaces.len());
+        let mut active_spaces = Vec::with_capacity(effective_spaces.len());
+        let mut clock_behind = false;
+        // Check persisted issue times per Space before reserving a sequence, even if the stored
+        // bytes no longer decode, so a clock step back never advances or backdates that Space.
+        for space_id in effective_spaces {
+            let current = repository.relay_advertisement(space_id, provider_endpoint_id)?;
+            if current.as_ref().is_some_and(|current| {
+                u64::try_from(current.issued_at_ms())
+                    .is_ok_and(|issued| request.issued_at_ms < issued)
+            }) {
+                clock_behind = true;
+                if current.is_some_and(|current| current.is_active()) {
+                    active_spaces.push(space_id);
+                }
+            } else {
+                publishable_spaces.push(space_id);
+                active_spaces.push(space_id);
             }
+        }
+        if publishable_spaces.is_empty() {
+            return Ok((Vec::new(), active_spaces, clock_behind));
         }
         let sequence = repository.reserve_private_relay_sequence()?;
         let validity = PrivateRelayAdvertisementValidity::new(
@@ -98,7 +134,7 @@ impl PrivateRelayAdvertisementPublisher {
             request.issued_at_ms,
             request.expires_at_ms,
         )?;
-        effective_spaces
+        let advertisements = publishable_spaces
             .into_iter()
             .map(|space_id| {
                 PrivateRelayAdvertisementV1::new(
@@ -109,7 +145,8 @@ impl PrivateRelayAdvertisementPublisher {
                 .sign(self.secret.iroh_secret())
             })
             .collect::<Result<Vec<_>, _>>()
-            .map_err(PrivateRelayAdvertisementPublishError::Protocol)
+            .map_err(PrivateRelayAdvertisementPublishError::Protocol)?;
+        Ok((advertisements, active_spaces, clock_behind))
     }
 }
 

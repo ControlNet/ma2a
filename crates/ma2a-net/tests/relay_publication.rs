@@ -419,3 +419,75 @@ fn publisher_refuses_a_clock_behind_a_stored_advertisement() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn advertisement_batch_skips_clock_behind_space_while_signing_unaffected_spaces() -> TestResult {
+    let secret_bytes = [0x3b; 32];
+    let provider = SecretKey::from_bytes(&secret_bytes);
+    let (blocked_genesis, blocked_auth) = authorization(&provider, 0x51, true)?;
+    let (fresh_genesis, fresh_auth) = authorization(&provider, 0x52, true)?;
+    let blocked_space = blocked_auth.space_id();
+    let fresh_space = fresh_auth.space_id();
+    let config = PrivateRelayProviderConfig::new(
+        PrivateRelayProviderLocation::new(
+            "127.0.0.1:0".parse()?,
+            "https://relay.example.invalid".parse()?,
+        ),
+        vec![blocked_space, fresh_space],
+        PrivateRelayTransport::ExternalTlsTermination,
+    )?;
+    let publisher = PrivateRelayAdvertisementPublisher::new(
+        ma2a_net::EndpointSecret::parse(&secret_bytes)?,
+        config,
+    );
+    let state = TempState::new("relay-batch-partial-rollback")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    for genesis in [&blocked_genesis, &fresh_genesis] {
+        repository.create_space(&SpaceRecord::new(
+            genesis.space_id(),
+            genesis.canonical_bytes().to_vec(),
+        ))?;
+    }
+    let initial = publisher.advertisements(
+        &mut repository,
+        AdvertisementPublicationRequest::new(
+            &[blocked_auth.clone(), fresh_auth.clone()],
+            NOW_MS + 10_000,
+            NOW_MS + 610_000,
+        ),
+    )?;
+    for (ad, auth) in initial.iter().zip([&blocked_auth, &fresh_auth]) {
+        PrivateRelayAdvertisementValidator::validate_and_store(
+            &mut repository,
+            ad.canonical_bytes(),
+            AdvertisementValidationContext::new(auth, NOW_MS + 10_000),
+        )?;
+    }
+
+    // Roll clock back behind `blocked` only; `fresh` stays at NOW_MS.
+    drop(repository);
+    rusqlite::Connection::open(StoreConfig::new(state.path()).database_path())?.execute(
+        "UPDATE relay_advertisement_state SET issued_at_ms = ?1 WHERE space_id = ?2",
+        (NOW_MS, fresh_space.as_bytes().as_slice()),
+    )?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let (batch, active_spaces, clock_behind) = publisher.advertisement_batch(
+        &mut repository,
+        AdvertisementPublicationRequest::new(
+            &[blocked_auth, fresh_auth],
+            NOW_MS + 5_000,
+            NOW_MS + 605_000,
+        ),
+    )?;
+
+    assert!(clock_behind);
+    let signed_fresh = batch.first().ok_or("missing fresh batch advertisement")?;
+    assert_eq!(batch.len(), 1);
+    assert_eq!(signed_fresh.advertisement().space_id(), fresh_space);
+    assert_eq!(signed_fresh.advertisement().sequence(), 2);
+    assert_eq!(
+        active_spaces.into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([blocked_space, fresh_space])
+    );
+    Ok(())
+}

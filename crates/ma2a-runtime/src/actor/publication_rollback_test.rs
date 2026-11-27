@@ -13,6 +13,8 @@ use crate::{Runtime, RuntimeClock, control_sync::ControlRoundTrigger, error::Run
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+mod relay_rollback_test;
+
 #[derive(Debug)]
 struct MutableClock(AtomicI64);
 

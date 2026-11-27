@@ -50,6 +50,7 @@ pub(crate) struct AddressPublicationResult {
 pub(crate) struct RelayPublicationResult {
     pub(crate) revision: u64,
     pub(crate) changed: bool,
+    pub(crate) clock_behind: bool,
     pub(crate) issued_at_ms: u64,
     pub(crate) expires_at_ms: u64,
 }
