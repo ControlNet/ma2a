@@ -47,6 +47,11 @@ impl Filter<'_> {
     }
 }
 
+/// Whether a task disappeared before its details or events could be read.
+fn vanished(refusal: &Refusal) -> bool {
+    matches!(refusal.0.as_str(), "not_found" | "unknown_task")
+}
+
 /// Most task pages read: a Runtime retains at most 256 unfinished and 1,024 finished tasks,
 /// 32 to a page, so a target paging further is not believed.
 const MAX_TASK_PAGES: usize = (256 + 1_024) / ma2a_core::service::MAX_TASK_PAGE + 1;
@@ -123,7 +128,7 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
         let task = if needs_details {
             let details = match served.backend.details(served.route, &id).await {
                 Ok(details) => details,
-                Err(refusal) if matches!(refusal.0.as_str(), "not_found" | "unknown_task") => {
+                Err(refusal) if vanished(&refusal) => {
                     dropped += 1;
                     continue;
                 }
@@ -133,7 +138,14 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
                 dropped += 1;
                 continue;
             }
-            view::of(served, &details, detail).await.map_err(refused)?
+            match view::of(served, &details, detail).await {
+                Ok(task) => task,
+                Err(refusal) if vanished(&refusal) => {
+                    dropped += 1;
+                    continue;
+                }
+                Err(refusal) => return Err(refused(refusal)),
+            }
         } else {
             let bare = Detail {
                 history: Some(0),
@@ -157,6 +169,9 @@ pub(super) async fn list(served: Served<'_>, params: &Value) -> Result<Value, Rp
     }))
 }
 
+#[cfg(all(test, unix))]
+#[path = "list_local_tests.rs"]
+mod local_tests;
 #[cfg(test)]
 #[path = "list_tests.rs"]
 mod tests;
