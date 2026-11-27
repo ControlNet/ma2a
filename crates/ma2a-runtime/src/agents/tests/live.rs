@@ -1085,6 +1085,7 @@ async fn a_transient_log_read_failure_during_ended_drain_retries_before_concludi
     Ok(())
 }
 
+#[cfg(unix)]
 fn seed_exited_local_process(
     repository: &mut Repository,
     (local, seed, ended_ms): (ma2a_core::EndpointId, u8, u64),
@@ -1123,6 +1124,7 @@ fn seed_exited_local_process(
     Ok(id)
 }
 
+#[cfg(unix)]
 async fn wait_local_exit(hosted: &ProcessManager, id: ProcessId) -> TestResult {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -1271,6 +1273,7 @@ async fn a_permanently_unusable_log_concludes_instead_of_looping_forever() -> Te
     Ok(())
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retention_pressure_refuses_new_start_when_every_ended_process_is_bound() -> TestResult {
     use ma2a_store::MAX_RETAINED_PROCESSES_PER_CREATOR;
