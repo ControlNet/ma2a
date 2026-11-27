@@ -35,28 +35,11 @@ impl Actor {
             let expires_at_ms = issued_at_ms
                 .checked_add(ma2a_core::MAX_PRIVATE_RELAY_ADVERTISEMENT_VALIDITY_MS)
                 .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::Clock))?;
-            let authorizations = self
-                .store
-                .relay_authorizations(self.state.endpoint_id)
+            // One clock reading gives the renewal both its issue time and its expiry, so a
+            // clock step between two readings cannot leave it an invalid window. Always reconcile
+            // durable activity against `effective`, skipping signing only for current Spaces.
+            self.publish_local_relay(provider.clone(), (issued_at_ms, expires_at_ms))
                 .await?;
-            let effective = self.effective_relay_spaces(provider, &authorizations);
-            let removed_cached = self
-                .maintenance
-                .published_relay
-                .keys()
-                .any(|space_id| !effective.contains(space_id));
-            let skip_spaces = self.current_relay_spaces(
-                (provider.public_relay_url().as_str(), issued_at_ms),
-                &effective,
-            );
-            if !removed_cached && skip_spaces.len() == effective.len() {
-                self.finish_relay_publication().await?;
-            } else {
-                // One clock reading gives the renewal both its issue time and its expiry, so a
-                // clock step between two readings cannot leave it an invalid window.
-                self.publish_local_relay(provider.clone(), (issued_at_ms, expires_at_ms))
-                    .await?;
-            }
         } else {
             self.maintenance.published_relay.clear();
             let reconciled = self

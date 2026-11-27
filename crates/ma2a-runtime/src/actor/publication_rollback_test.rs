@@ -13,6 +13,8 @@ use crate::{Runtime, RuntimeClock, control_sync::ControlRoundTrigger, error::Run
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+mod clock_behind_drop_test;
+mod empty_effective_test;
 mod relay_rollback_test;
 
 #[derive(Debug)]

@@ -8,7 +8,7 @@ use ma2a_store::{Repository, StoreConfig};
 use super::{MutableClock, NOW_MS, TempState, TestResult, enabled_configuration};
 use crate::{Runtime, control_sync::ControlRoundTrigger};
 
-fn push_relay_issued_at(
+pub(super) fn push_relay_issued_at(
     config: &StoreConfig,
     (space, endpoint_id): (ma2a_core::SpaceId, ma2a_core::EndpointId),
     issued_at_ms: i64,
