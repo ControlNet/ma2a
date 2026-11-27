@@ -53,6 +53,7 @@ pub(crate) struct RelayPublicationResult {
     pub(crate) clock_behind: bool,
     pub(crate) issued_at_ms: u64,
     pub(crate) expires_at_ms: u64,
+    pub(crate) published_spaces: Vec<ma2a_core::SpaceId>,
 }
 
 pub(crate) const STORE_CAPACITY: usize = 8;

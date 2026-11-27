@@ -15,7 +15,7 @@ pub(crate) struct Maintenance {
     pub(crate) pending_observation: Option<IrohRelayObservation>,
     pub(crate) address_lookup_pending: bool,
     pub(crate) relay_followup_pending: bool,
-    pub(crate) published_relay: Option<PublishedRelay>,
+    pub(crate) published_relay: std::collections::BTreeMap<ma2a_core::SpaceId, PublishedRelaySpace>,
     #[cfg(test)]
     pub(crate) faults:
         std::sync::Arc<std::sync::Mutex<Vec<(FaultPoint, crate::error::RuntimeError)>>>,
@@ -25,9 +25,8 @@ pub(crate) struct Maintenance {
     pub(crate) relay_map_apply_attempts: usize,
 }
 
-pub(crate) struct PublishedRelay {
-    pub(crate) config: ma2a_net::PrivateRelayProviderConfig,
-    pub(crate) authorizations: Vec<ma2a_core::SpaceAuthorizationView>,
+pub(crate) struct PublishedRelaySpace {
+    pub(crate) relay_url: String,
     pub(crate) issued_at_ms: u64,
     pub(crate) expires_at_ms: u64,
 }

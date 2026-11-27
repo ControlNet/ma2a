@@ -92,8 +92,14 @@ impl Actor {
         configuration: ma2a_store::RelayConfiguration,
         (mode, preloaded_tls): (PrivateRelayApply, Option<ma2a_net::LoadedRelayTls>),
     ) -> Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError> {
-        let _runtime = RuntimeRelayConfiguration::try_from(configuration.clone())
+        let runtime = RuntimeRelayConfiguration::try_from(configuration.clone())
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let clear_published = mode == PrivateRelayApply::Reload
+            || self
+                .private_relay_server
+                .as_ref()
+                .map(PrivateRelayServer::configuration)
+                != runtime.private_provider();
         // Every URL parsed, so it is saved and reported as parsed, as startup would save it.
         let configuration = crate::store::with_parsed_relay_urls(configuration);
         let revision = self
@@ -101,6 +107,9 @@ impl Actor {
             .set_relay_configuration(configuration.clone())
             .await?;
         self.state.revision = self.state.revision.max(revision);
+        if clear_published {
+            self.maintenance.published_relay.clear();
+        }
         self.maintenance.relay_configuration = Some(RelayCompletion::Pending(mode));
         self.reconcile_relay_configuration_with(preloaded_tls)
             .await

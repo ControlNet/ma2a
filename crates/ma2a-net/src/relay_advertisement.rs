@@ -1,8 +1,8 @@
-use std::{error::Error, fmt};
+use std::{collections::BTreeSet, error::Error, fmt};
 
 use ma2a_core::{
     PrivateRelayAdvertisementScope, PrivateRelayAdvertisementV1, PrivateRelayAdvertisementValidity,
-    SignedPrivateRelayAdvertisementV1, SpaceAuthorizationView,
+    SignedPrivateRelayAdvertisementV1, SpaceAuthorizationView, SpaceId,
 };
 use ma2a_store::{Repository, StoreError};
 
@@ -20,6 +20,7 @@ pub struct AdvertisementPublicationRequest<'a> {
     authorizations: &'a [SpaceAuthorizationView],
     issued_at_ms: u64,
     expires_at_ms: u64,
+    skip_spaces: Option<&'a BTreeSet<SpaceId>>,
 }
 
 impl<'a> AdvertisementPublicationRequest<'a> {
@@ -33,7 +34,15 @@ impl<'a> AdvertisementPublicationRequest<'a> {
             authorizations,
             issued_at_ms,
             expires_at_ms,
+            skip_spaces: None,
         }
+    }
+
+    /// Keeps active Spaces in `skip_spaces` active without signing replacement advertisements.
+    #[must_use]
+    pub const fn skipping_current(mut self, skip_spaces: &'a BTreeSet<SpaceId>) -> Self {
+        self.skip_spaces = Some(skip_spaces);
+        self
     }
 }
 
@@ -120,6 +129,12 @@ impl PrivateRelayAdvertisementPublisher {
                 if current.is_some_and(|current| current.is_active()) {
                     active_spaces.push(space_id);
                 }
+            } else if request
+                .skip_spaces
+                .is_some_and(|skip| skip.contains(&space_id))
+                && current.is_some_and(|current| current.is_active())
+            {
+                active_spaces.push(space_id);
             } else {
                 publishable_spaces.push(space_id);
                 active_spaces.push(space_id);

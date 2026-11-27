@@ -195,6 +195,7 @@ impl StoreClient {
         local_endpoint_id: ma2a_core::EndpointId,
         issued_at_ms: u64,
         expires_at_ms: u64,
+        skip_spaces: std::collections::BTreeSet<ma2a_core::SpaceId>,
     ) -> Result<crate::store::RelayPublicationResult, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PublishRelayAdvertisements {
@@ -202,6 +203,7 @@ impl StoreClient {
             local_endpoint_id,
             issued_at_ms,
             expires_at_ms,
+            skip_spaces,
             reply,
         })
         .await?;

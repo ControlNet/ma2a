@@ -39,20 +39,17 @@ impl Actor {
                 .store
                 .relay_authorizations(self.state.endpoint_id)
                 .await?;
-            let current = self
+            let effective = self.effective_relay_spaces(provider, &authorizations);
+            let removed_cached = self
                 .maintenance
                 .published_relay
-                .as_ref()
-                .is_some_and(|published| {
-                    published.config == *provider
-                        && published.authorizations == authorizations
-                        && crate::relay_publication::is_current(
-                            issued_at_ms,
-                            published.issued_at_ms,
-                            published.expires_at_ms,
-                        )
-                });
-            if current {
+                .keys()
+                .any(|space_id| !effective.contains(space_id));
+            let skip_spaces = self.current_relay_spaces(
+                (provider.public_relay_url().as_str(), issued_at_ms),
+                &effective,
+            );
+            if !removed_cached && skip_spaces.len() == effective.len() {
                 self.finish_relay_publication().await?;
             } else {
                 // One clock reading gives the renewal both its issue time and its expiry, so a
@@ -61,7 +58,7 @@ impl Actor {
                     .await?;
             }
         } else {
-            self.maintenance.published_relay = None;
+            self.maintenance.published_relay.clear();
             let reconciled = self
                 .store
                 .reconcile_relay_activity(self.state.endpoint_id, Vec::new())
@@ -137,6 +134,11 @@ impl Actor {
             .store
             .relay_authorizations(self.state.endpoint_id)
             .await?;
+        let effective = self.effective_relay_spaces(&config, &authorizations);
+        let skip_spaces = self.current_relay_spaces(
+            (config.public_relay_url().as_str(), issued_at_ms),
+            &effective,
+        );
         let publisher = self
             .endpoint
             .private_relay_advertisement_publisher(config.clone());
@@ -147,6 +149,7 @@ impl Actor {
                 self.state.endpoint_id,
                 issued_at_ms,
                 expires_at_ms,
+                skip_spaces.clone(),
             )
             .await;
         if write_result.is_err() {
@@ -156,13 +159,20 @@ impl Actor {
         }
         let publication_result = write_result?;
         self.state.revision = self.state.revision.max(publication_result.revision);
-        self.maintenance.published_relay =
-            (!publication_result.clock_behind).then_some(super::maintenance::PublishedRelay {
-                config,
-                authorizations,
-                issued_at_ms: publication_result.issued_at_ms,
-                expires_at_ms: publication_result.expires_at_ms,
-            });
+        self.maintenance
+            .published_relay
+            .retain(|space_id, _| skip_spaces.contains(space_id));
+        let relay_url = config.public_relay_url().as_str();
+        for space_id in publication_result.published_spaces {
+            self.maintenance.published_relay.insert(
+                space_id,
+                super::maintenance::PublishedRelaySpace {
+                    relay_url: relay_url.to_owned(),
+                    issued_at_ms: publication_result.issued_at_ms,
+                    expires_at_ms: publication_result.expires_at_ms,
+                },
+            );
+        }
         if publication_result.changed {
             self.maintenance.relay_followup_pending = true;
         }
@@ -171,6 +181,42 @@ impl Actor {
             return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
         }
         Ok(publication_result.revision)
+    }
+
+    fn effective_relay_spaces(
+        &self,
+        config: &ma2a_net::PrivateRelayProviderConfig,
+        authorizations: &[ma2a_core::SpaceAuthorizationView],
+    ) -> std::collections::BTreeSet<ma2a_core::SpaceId> {
+        authorizations
+            .iter()
+            .filter(|authorization| {
+                config.served_spaces().contains(&authorization.space_id())
+                    && authorization.allows_private_relay_provider(self.state.endpoint_id)
+            })
+            .map(ma2a_core::SpaceAuthorizationView::space_id)
+            .collect()
+    }
+
+    fn current_relay_spaces(
+        &self,
+        (relay_url, issued_at_ms): (&str, u64),
+        effective: &std::collections::BTreeSet<ma2a_core::SpaceId>,
+    ) -> std::collections::BTreeSet<ma2a_core::SpaceId> {
+        self.maintenance
+            .published_relay
+            .iter()
+            .filter(|(space_id, published)| {
+                effective.contains(space_id)
+                    && published.relay_url == relay_url
+                    && crate::relay_publication::is_current(
+                        issued_at_ms,
+                        published.issued_at_ms,
+                        published.expires_at_ms,
+                    )
+            })
+            .map(|(space_id, _)| *space_id)
+            .collect()
     }
 
     async fn finish_relay_publication(&mut self) -> Result<(), RuntimeError> {

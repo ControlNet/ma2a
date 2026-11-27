@@ -4,6 +4,7 @@ use crate::error::{RuntimeError, RuntimeErrorKind};
 pub(super) struct PendingRelayPublication {
     config: ma2a_net::PrivateRelayProviderConfig,
     authorizations: Vec<ma2a_core::SpaceAuthorizationView>,
+    skip_spaces: std::collections::BTreeSet<ma2a_core::SpaceId>,
     advertisements: Vec<ma2a_core::SignedPrivateRelayAdvertisementV1>,
     active_spaces: Vec<ma2a_core::SpaceId>,
     clock_behind: bool,
@@ -17,16 +18,18 @@ impl PendingRelayPublication {
         desired: (
             &ma2a_net::PrivateRelayProviderConfig,
             &[ma2a_core::SpaceAuthorizationView],
+            &std::collections::BTreeSet<ma2a_core::SpaceId>,
         ),
         now_ms: u64,
     ) -> Result<bool, RuntimeError> {
-        let (config, authorizations) = desired;
+        let (config, authorizations, skip_spaces) = desired;
         let (issued_at_ms, expires_at_ms) = self.effective_window()?;
         if now_ms < issued_at_ms {
             return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
         }
         Ok(self.config == *config
             && self.authorizations == authorizations
+            && self.skip_spaces == *skip_spaces
             && crate::relay_publication::is_current(now_ms, issued_at_ms, expires_at_ms))
     }
 
@@ -155,6 +158,7 @@ impl StoreBackend {
         local_endpoint_id: ma2a_core::EndpointId,
         issued_at_ms: u64,
         expires_at_ms: u64,
+        skip_spaces: &std::collections::BTreeSet<ma2a_core::SpaceId>,
     ) -> Result<RelayPublicationResult, RuntimeError> {
         let authorizations = self
             .repository
@@ -166,26 +170,29 @@ impl StoreBackend {
             .pending_relay_publication
             .as_ref()
             .map_or(Ok(false), |pending| {
-                pending.can_reuse((publisher.config(), &authorizations), issued_at_ms)
+                pending.can_reuse(
+                    (publisher.config(), &authorizations, skip_spaces),
+                    issued_at_ms,
+                )
             })?;
         if !reuse {
             // A changed or renewal-due retained batch cannot complete as a
             // safely fresh publication. The signed replacement becomes pending
             // before any per-Space write.
             self.pending_relay_publication = None;
+            let request = ma2a_net::AdvertisementPublicationRequest::new(
+                &authorizations,
+                issued_at_ms,
+                expires_at_ms,
+            )
+            .skipping_current(skip_spaces);
             let (advertisements, active_spaces, clock_behind) = publisher
-                .advertisement_batch(
-                    &mut self.repository,
-                    ma2a_net::AdvertisementPublicationRequest::new(
-                        &authorizations,
-                        issued_at_ms,
-                        expires_at_ms,
-                    ),
-                )
+                .advertisement_batch(&mut self.repository, request)
                 .map_err(RuntimeError::from)?;
             self.pending_relay_publication = Some(PendingRelayPublication {
                 config: publisher.config().clone(),
                 authorizations: authorizations.clone(),
+                skip_spaces: skip_spaces.clone(),
                 advertisements,
                 active_spaces,
                 clock_behind,
@@ -239,6 +246,10 @@ impl StoreBackend {
         let (revision, activity_changed) = self
             .repository
             .reconcile_private_relay_activity(local_endpoint_id, active_spaces)?;
+        let published_spaces = advertisements
+            .iter()
+            .map(|advertisement| advertisement.advertisement().space_id())
+            .collect::<Vec<_>>();
         self.pending_relay_publication = None;
         Ok(RelayPublicationResult {
             revision,
@@ -246,6 +257,7 @@ impl StoreBackend {
             clock_behind,
             issued_at_ms: effective_issued_at_ms,
             expires_at_ms: effective_expires_at_ms,
+            published_spaces,
         })
     }
 }

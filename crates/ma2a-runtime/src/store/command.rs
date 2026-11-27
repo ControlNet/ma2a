@@ -127,6 +127,7 @@ pub(crate) enum StoreCommand {
         local_endpoint_id: ma2a_core::EndpointId,
         issued_at_ms: u64,
         expires_at_ms: u64,
+        skip_spaces: std::collections::BTreeSet<ma2a_core::SpaceId>,
         reply: oneshot::Sender<Result<super::RelayPublicationResult, RuntimeError>>,
     },
     #[cfg(test)]
