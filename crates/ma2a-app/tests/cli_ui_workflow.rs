@@ -35,7 +35,18 @@ async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> Tes
         "{}",
         String::from_utf8_lossy(&started.stderr)
     );
-    assert!(!fixture.run(&["ui", "start", "--json"])?.status.success());
+    let uninitialized = fixture.run(&["ui", "start", "--json"])?;
+    assert_eq!(
+        uninitialized.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&uninitialized.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&uninitialized.stderr).contains("conflict"),
+        "{}",
+        String::from_utf8_lossy(&uninitialized.stderr)
+    );
     let control = CurrentUserRuntime::open_at(
         fixture.state_dir(),
         Arc::new(FixedClock),
@@ -47,6 +58,21 @@ async fn ui_start_requires_password_and_returns_the_daemon_loopback_url() -> Tes
             "secure-process-test-password".to_owned(),
         ))?)
         .await?;
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let occupied_port = occupied.local_addr()?.port().to_string();
+    let busy = fixture.run(&["ui", "start", "--port", &occupied_port, "--json"])?;
+    assert_eq!(
+        busy.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&busy.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&busy.stderr).contains("unavailable"),
+        "{}",
+        String::from_utf8_lossy(&busy.stderr)
+    );
+    drop(occupied);
     // When
     let output = fixture.run(&["ui", "start", "--json"])?;
 
