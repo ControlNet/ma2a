@@ -469,3 +469,395 @@ async fn cancelling_a_proxy_before_or_after_accept_returns_cancelled() -> TestRe
     assert_eq!(result?.reason, EndReason::Cancelled);
     Ok(())
 }
+
+/// Local sink that fails on every write.
+struct BrokenWrite;
+
+impl tokio::io::AsyncWrite for BrokenWrite {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+async fn drain_until_cancel(
+    reader: &mut ma2a_services::FrameReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+) -> TestResult<u64> {
+    let mut bytes = 0_u64;
+    loop {
+        let frame = reader.expect().await?;
+        match frame.kind() {
+            FrameKind::Data => {
+                let (channel, chunk) = frame.data()?;
+                assert_eq!(channel, ma2a_core::service::Channel::Input);
+                bytes += u64::try_from(chunk.len())?;
+            }
+            FrameKind::Cancel => return Ok(bytes),
+            other => return Err(format!("unexpected frame while draining: {other:?}").into()),
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_backpressured_upstream_write_interrupts_on_cancel_and_lost_sink() -> TestResult {
+    use ma2a_core::service::ProcessResult;
+
+    let grace = ma2a_services::reply::FRAME_GRACE;
+
+    // 1. Proxy cancelled at 50 ms while writer.data is backpressured; peer unblocks at 200 ms.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(256);
+    let target = async {
+        target_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        target_writer.flush().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let seen = drain_until_cancel(&mut target_reader).await?;
+        let cancelled = ProxyResult::new(EndReason::Cancelled, (seen, 0), 1);
+        target_writer
+            .frame(
+                FrameKind::Outcome,
+                &ProxyResult::encode_outcome(&Ok(cancelled))?,
+            )
+            .await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = client::proxy::run(
+        (&mut reader, &mut writer),
+        (tokio::io::repeat(b'x'), Vec::new()),
+        (
+            Duration::from_secs(60),
+            tokio::time::sleep(Duration::from_millis(50)),
+        ),
+    );
+    let (result, scripted) =
+        tokio::time::timeout(grace, async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert_eq!(result?.reason, EndReason::Cancelled);
+
+    // 2. Proxy local sink failure (`lost`) interrupts backpressured writer.data.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(256);
+    let target = async {
+        target_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        target_writer
+            .data(ma2a_core::service::Channel::Input, b"hello")
+            .await?;
+        target_writer.flush().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let seen = drain_until_cancel(&mut target_reader).await?;
+        let cancelled = ProxyResult::new(EndReason::Cancelled, (seen, 5), 1);
+        target_writer
+            .frame(
+                FrameKind::Outcome,
+                &ProxyResult::encode_outcome(&Ok(cancelled))?,
+            )
+            .await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = client::proxy::run(
+        (&mut reader, &mut writer),
+        (tokio::io::repeat(b'x'), BrokenWrite),
+        (Duration::from_secs(60), std::future::pending()),
+    );
+    let (result, scripted) =
+        tokio::time::timeout(grace, async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert!(matches!(result, Err(ClientError::Local(_))), "{result:?}");
+
+    // 3. Exec (`process::run_streamed`) interrupted during backpressured writer.data.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(256);
+    let target = async {
+        target_writer
+            .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+            .await?;
+        target_writer.flush().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drain_until_cancel(&mut target_reader).await?;
+        let cancelled = ProcessResult::new(Termination::Unknown, EndReason::Cancelled, 1);
+        target_writer
+            .frame(
+                FrameKind::Outcome,
+                &ProcessResult::encode_outcome(&Ok(cancelled))?,
+            )
+            .await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = client::process::run_streamed(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: Some(tokio::io::repeat(b'x')),
+            output: Vec::new(),
+            error: Some(Vec::new()),
+        },
+        ProcessControl {
+            resizes: None,
+            cancel: tokio::time::sleep(Duration::from_millis(50)),
+        },
+    );
+    let (result, scripted) =
+        tokio::time::timeout(grace, async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert_eq!(result?.result.reason, EndReason::Cancelled);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_backpressured_service_or_attach_write_interrupts_on_cancel() -> TestResult {
+    use ma2a_core::service::{
+        LogFrom, LogWindow, ProcessAccept, ProcessId, ProcessReply, ProcessState, ProcessSummary,
+        encode_call_accept, encode_call_outcome,
+    };
+    use ma2a_services::client::{hosted, service};
+
+    let grace = ma2a_services::reply::FRAME_GRACE;
+
+    // Hosted service call (`service::call`) interrupted during backpressured writer.data.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(256);
+    let target = async {
+        target_writer
+            .frame(FrameKind::Accept, &encode_call_accept(b"")?)
+            .await?;
+        target_writer.flush().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drain_until_cancel(&mut target_reader).await?;
+        target_writer
+            .frame(
+                FrameKind::Outcome,
+                &encode_call_outcome(Err(ServiceError::Cancelled))?,
+            )
+            .await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = service::call(
+        (&mut reader, &mut writer),
+        ProcessIo {
+            input: Some(tokio::io::repeat(b'x')),
+            output: Vec::new(),
+            error: Some(Vec::new()),
+        },
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (result, scripted) =
+        tokio::time::timeout(grace, async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert!(
+        matches!(result, Err(ClientError::Failed(ServiceError::Cancelled))),
+        "{result:?}"
+    );
+
+    // 5. Hosted attach (`hosted::attach`) interrupted during backpressured writer.data.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe_with(256);
+    let id = ProcessId::from_bytes([1; 16]);
+    let target = async {
+        let accept = ProcessAccept::Reading {
+            state: ProcessState::Running,
+            start: 0,
+            window: LogWindow::new(0, 0),
+            truncated: false,
+        };
+        target_writer
+            .frame(FrameKind::Accept, &accept.encode()?)
+            .await?;
+        target_writer.flush().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drain_until_cancel(&mut target_reader).await?;
+        let summary = ProcessSummary::new(
+            id,
+            ma2a_core::RequestId::try_from([7_u8; 16].as_slice())?,
+            0,
+        )
+        .with_state(ProcessState::Running, (None, None));
+        let outcome = ProcessReply::encode_outcome(&Ok(ProcessReply::Detached(
+            EndReason::Cancelled,
+            summary,
+            0,
+        )))?;
+        target_writer.frame(FrameKind::Outcome, &outcome).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (
+            (id, LogFrom::Now),
+            ProcessIo {
+                input: Some(tokio::io::repeat(b'x')),
+                output: Vec::new(),
+                error: None::<Vec<u8>>,
+            },
+        ),
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (result, scripted) =
+        tokio::time::timeout(grace, async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    assert_eq!(result?.reason, EndReason::Cancelled);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_upstream_write_bounds_frame_grace_and_terminal_wait() -> TestResult {
+    let grace = ma2a_services::reply::FRAME_GRACE;
+    let cancel_at = Duration::from_millis(50);
+
+    // Proxy stays blocked inside writer.data; stops waiting after FRAME_GRACE + terminal FRAME_GRACE.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe_with(256);
+    target_writer
+        .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+        .await?;
+    target_writer.flush().await?;
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        client::proxy::run(
+            (&mut reader, &mut writer),
+            (tokio::io::repeat(b'x'), Vec::new()),
+            (Duration::from_secs(60), tokio::time::sleep(cancel_at)),
+        ),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), cancel_at + grace * 2);
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+
+    // Exec stays blocked inside writer.data; stops waiting after FRAME_GRACE + terminal FRAME_GRACE.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe_with(256);
+    target_writer
+        .frame(FrameKind::Accept, &EMPTY_ACCEPT)
+        .await?;
+    target_writer.flush().await?;
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        client::process::run_streamed(
+            (&mut reader, &mut writer),
+            ProcessIo {
+                input: Some(tokio::io::repeat(b'x')),
+                output: Vec::new(),
+                error: Some(Vec::new()),
+            },
+            ProcessControl {
+                resizes: None,
+                cancel: tokio::time::sleep(cancel_at),
+            },
+        ),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), cancel_at + grace * 2);
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_service_or_attach_upstream_write_bounds_frame_grace_and_terminal_wait()
+-> TestResult {
+    use ma2a_core::service::{
+        LogFrom, LogWindow, ProcessAccept, ProcessId, ProcessState, encode_call_accept,
+    };
+    use ma2a_services::client::{hosted, service};
+
+    let grace = ma2a_services::reply::FRAME_GRACE;
+    let cancel_at = Duration::from_millis(50);
+
+    // Hosted service call stays blocked inside writer.data.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe_with(256);
+    target_writer
+        .frame(FrameKind::Accept, &encode_call_accept(b"")?)
+        .await?;
+    target_writer.flush().await?;
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        service::call(
+            (&mut reader, &mut writer),
+            ProcessIo {
+                input: Some(tokio::io::repeat(b'x')),
+                output: Vec::new(),
+                error: Some(Vec::new()),
+            },
+            tokio::time::sleep(cancel_at),
+        ),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), cancel_at + grace * 2);
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+
+    // Hosted attach stays blocked inside writer.data.
+    let ((mut reader, mut writer), (_target_reader, mut target_writer)) = pipe_with(256);
+    let accept = ProcessAccept::Reading {
+        state: ProcessState::Running,
+        start: 0,
+        window: LogWindow::new(0, 0),
+        truncated: false,
+    };
+    target_writer
+        .frame(FrameKind::Accept, &accept.encode()?)
+        .await?;
+    target_writer.flush().await?;
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        grace * 3,
+        hosted::attach(
+            (&mut reader, &mut writer),
+            (
+                (ProcessId::from_bytes([1; 16]), LogFrom::Now),
+                ProcessIo {
+                    input: Some(tokio::io::repeat(b'x')),
+                    output: Vec::new(),
+                    error: None::<Vec<u8>>,
+                },
+            ),
+            tokio::time::sleep(cancel_at),
+        ),
+    )
+    .await?;
+    assert_eq!(started.elapsed(), cancel_at + grace * 2);
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+    Ok(())
+}

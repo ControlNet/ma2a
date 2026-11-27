@@ -191,6 +191,42 @@ pub(crate) async fn send_cancel<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<
     .await;
 }
 
+/// Outcome of an upstream frame write watched for cancellation or a lost local sink.
+pub(crate) enum Written {
+    /// The write finished with this result before any cancellation.
+    Done(Result<(), ServiceError>),
+    /// Cancellation or local sink loss fired; `finished` tells whether the started frame
+    /// completed within [`crate::reply::FRAME_GRACE`].
+    Cancelled { finished: bool },
+}
+
+/// Runs an upstream frame write while watching `lost` and `cancel`.
+///
+/// When interrupted, `stop` is cancelled at once so local sinks stop waiting, and the started
+/// frame is given [`crate::reply::FRAME_GRACE`] to finish intact before `Cancel` can follow.
+pub(crate) async fn write_watching<C: Future<Output = ()>>(
+    write: impl Future<Output = Result<(), ServiceError>>,
+    (lost, mut cancel, stop): (
+        &tokio::sync::Notify,
+        Pin<&mut C>,
+        &tokio_util::sync::CancellationToken,
+    ),
+) -> Written {
+    tokio::pin!(write);
+    tokio::select! {
+        biased;
+        () = lost.notified() => {}
+        () = cancel.as_mut() => {}
+        result = &mut write => return Written::Done(result),
+    }
+    stop.cancel();
+    let finished = matches!(
+        tokio::time::timeout(crate::reply::FRAME_GRACE, write).await,
+        Ok(Ok(()))
+    );
+    Written::Cancelled { finished }
+}
+
 /// Reads one frame, treating a stream that ends without a terminal as an unknown outcome.
 pub(crate) async fn next<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,

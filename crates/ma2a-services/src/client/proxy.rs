@@ -17,9 +17,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next, send_cancel,
+    ClientError, First, Sender, Written, decoded, drained, empty_accept, first_or_cancel, next,
+    send_cancel,
     sinks::{settled, shutdown_bounded, write_bounded, write_until},
-    unexpected,
+    unexpected, write_watching,
 };
 use crate::{FrameReader, FrameWriter};
 
@@ -148,29 +149,37 @@ async fn upstream<W, LR, C>(
                 writer.end(Channel::Input).await?;
                 input_ended.store(true, Ordering::Relaxed);
                 writer.flush().await
-            }
-            .await;
-            if ended.is_ok() {
-                // The destination may keep sending; a lost local side or a caller cancel still
-                // cancels it.
-                tokio::select! {
-                    biased;
-                    () = lost.notified() => {}
-                    () = &mut cancel => {}
+            };
+            match write_watching(ended, (lost, cancel.as_mut(), stop)).await {
+                Written::Done(Ok(())) => {
+                    // The destination may keep sending; a lost local side or a caller cancel still
+                    // cancels it.
+                    tokio::select! {
+                        biased;
+                        () = lost.notified() => {}
+                        () = &mut cancel => {}
+                    }
+                    stop.cancel();
+                    send_cancel(writer).await;
                 }
-                stop.cancel();
-                send_cancel(writer).await;
+                Written::Done(Err(_)) | Written::Cancelled { finished: false } => {}
+                Written::Cancelled { finished: true } => send_cancel(writer).await,
             }
             return;
         }
-        let forwarded = writer
-            .data(Channel::Input, buffer.get(..read).unwrap_or_default())
-            .await;
-        if forwarded.is_ok() {
+        let chunk = buffer.get(..read).unwrap_or_default();
+        let forwarded = async {
+            writer.data(Channel::Input, chunk).await?;
             sent.fetch_add(u64::try_from(read).unwrap_or(u64::MAX), Ordering::Relaxed);
-        }
-        if forwarded.and(writer.flush().await).is_err() {
-            return;
+            writer.flush().await
+        };
+        match write_watching(forwarded, (lost, cancel.as_mut(), stop)).await {
+            Written::Done(Ok(())) => {}
+            Written::Done(Err(_)) | Written::Cancelled { finished: false } => return,
+            Written::Cancelled { finished: true } => {
+                send_cancel(writer).await;
+                return;
+            }
         }
     }
 }

@@ -19,11 +19,11 @@ use super::{Gaps, accepted, advanced, deliver, reading, reply, skipped, until};
 use crate::{
     FrameReader, FrameWriter,
     client::{
-        ClientError, First, Sender, drained, first_or_cancel, next,
+        ClientError, First, Sender, Written, drained, first_or_cancel, next,
         process::ProcessIo,
         send_cancel,
         sinks::{settled, write_until},
-        unexpected,
+        unexpected, write_watching,
     },
 };
 
@@ -129,33 +129,45 @@ async fn inbound<W, I, D>(
     let mut buffer = vec![0_u8; MAX_DATA_CHUNK_LEN];
     loop {
         let reading = input.is_some();
-        tokio::select! {
+        let send_cancel_frame = tokio::select! {
             biased;
-            () = lost.notified() => break,
-            () = &mut detach => break,
+            () = lost.notified() => true,
+            () = &mut detach => true,
             read = read_input(input.as_mut(), &mut buffer), if reading => {
                 // Only EOF ends the Process stdin, which is for good; a failed read detaches.
-                let read = match read {
-                    Ok(read) => read,
+                match read {
+                    Ok(read) => {
+                        let write = async {
+                            match read.and_then(|length| buffer.get(..length)) {
+                                Some(chunk) => writer.data(Channel::Input, chunk).await?,
+                                None => writer.end(Channel::Input).await?,
+                            }
+                            // Flushed after the `end` too, which a buffered stream would keep.
+                            writer.flush().await
+                        };
+                        match write_watching(write, (lost, detach.as_mut(), stop)).await {
+                            Written::Done(res) => {
+                                if read.is_none() || res.is_err() {
+                                    input = None;
+                                }
+                                continue;
+                            }
+                            Written::Cancelled { finished } => finished,
+                        }
+                    }
                     Err(error) => {
                         *unread = Some(error);
-                        break;
+                        true
                     }
-                };
-                let forwarded = match read.and_then(|length| buffer.get(..length)) {
-                    Some(chunk) => writer.data(Channel::Input, chunk).await,
-                    None => writer.end(Channel::Input).await,
-                };
-                // Flushed after the `end` too, which a buffered stream would keep.
-                let flushed = forwarded.and(writer.flush().await);
-                if read.is_none() || flushed.is_err() {
-                    input = None;
                 }
             }
+        };
+        stop.cancel();
+        if send_cancel_frame {
+            send_cancel(writer).await;
         }
+        return;
     }
-    stop.cancel();
-    send_cancel(writer).await;
 }
 
 /// What the target sent until its outcome: the outcome, the gaps, the cursor reached, and the

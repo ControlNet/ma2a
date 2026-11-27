@@ -12,8 +12,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next, send_cancel,
+    ClientError, First, Sender, Written, decoded, drained, empty_accept, first_or_cancel, next,
+    send_cancel,
     sinks::{Sinks, settled},
+    write_watching,
 };
 use crate::{FrameReader, FrameWriter};
 
@@ -157,6 +159,12 @@ where
     })
 }
 
+enum InboundStop {
+    None,
+    SendCancel,
+    SkipCancel,
+}
+
 /// Caller → target: input, resizes, and at most one `cancel`, until nothing is left to send;
 /// a failed local read cancels instead of ending input, and is kept in `unread` first.
 pub(super) async fn inbound<W, I, C>(
@@ -180,41 +188,63 @@ pub(super) async fn inbound<W, I, C>(
         let resizing = resizes.is_some();
         let stop = tokio::select! {
             biased;
-            () = lost.notified(), if !cancelled => true,
-            () = &mut cancel, if !cancelled => true,
+            () = lost.notified(), if !cancelled => InboundStop::SendCancel,
+            () = &mut cancel, if !cancelled => InboundStop::SendCancel,
             read = read_input(input.as_mut(), &mut buffer), if reading => match read {
                 Ok(read) => {
-                    let forwarded = match read.and_then(|length| buffer.get(..length)) {
-                        Some(chunk) => writer.data(Channel::Input, chunk).await,
-                        None => writer.end(Channel::Input).await,
+                    let write = async {
+                        match read.and_then(|length| buffer.get(..length)) {
+                            Some(chunk) => writer.data(Channel::Input, chunk).await?,
+                            None => writer.end(Channel::Input).await?,
+                        }
+                        // Flushed after the `end` too, which a buffered stream would keep.
+                        writer.flush().await
                     };
-                    // Flushed after the `end` too, which a buffered stream would keep.
-                    let flushed = forwarded.and(writer.flush().await);
-                    if read.is_none() || flushed.is_err() {
-                        input = None;
+                    match write_watching(write, (lost, cancel.as_mut(), stop_signal)).await {
+                        Written::Done(res) => {
+                            if read.is_none() || res.is_err() {
+                                input = None;
+                            }
+                            InboundStop::None
+                        }
+                        Written::Cancelled { finished: true } => InboundStop::SendCancel,
+                        Written::Cancelled { finished: false } => InboundStop::SkipCancel,
                     }
-                    false
                 }
                 Err(error) => {
                     *unread = Some(error);
-                    true
+                    InboundStop::SendCancel
                 }
             },
             size = recv(resizes.as_mut()), if resizing => {
                 match size.map(TerminalSize::encode_resize) {
-                    Some(Ok(resize)) => send(writer, FrameKind::Control, &resize).await,
-                    Some(Err(_)) => {}
-                    None => resizes = None,
+                    Some(Ok(resize)) => {
+                        let write = async {
+                            writer.frame(FrameKind::Control, &resize).await?;
+                            writer.flush().await
+                        };
+                        match write_watching(write, (lost, cancel.as_mut(), stop_signal)).await {
+                            Written::Done(_) => InboundStop::None,
+                            Written::Cancelled { finished: true } => InboundStop::SendCancel,
+                            Written::Cancelled { finished: false } => InboundStop::SkipCancel,
+                        }
+                    }
+                    Some(Err(_)) => InboundStop::None,
+                    None => {
+                        resizes = None;
+                        InboundStop::None
+                    }
                 }
-                false
             }
         };
-        if stop {
+        if !matches!(stop, InboundStop::None) {
             stop_signal.cancel();
             cancelled = true;
             input = None;
             resizes = None;
-            send_cancel(writer).await;
+            if matches!(stop, InboundStop::SendCancel) {
+                send_cancel(writer).await;
+            }
         }
     }
 }
@@ -264,13 +294,4 @@ async fn read_input<I: AsyncRead + Unpin>(
 
 async fn recv(resizes: Option<&mut mpsc::Receiver<TerminalSize>>) -> Option<TerminalSize> {
     resizes?.recv().await
-}
-
-/// Sends one control frame; a failed write is answered by the target's terminal anyway.
-async fn send<W: AsyncWrite + Unpin>(writer: &mut FrameWriter<W>, kind: FrameKind, payload: &[u8]) {
-    let _sent = async {
-        writer.frame(kind, payload).await?;
-        writer.flush().await
-    }
-    .await;
 }
