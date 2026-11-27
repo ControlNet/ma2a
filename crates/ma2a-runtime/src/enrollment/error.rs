@@ -29,6 +29,7 @@ enum EnrollmentErrorKind {
     Cancelled,
     Conflict,
     SpaceFull,
+    AddressUnavailable,
     Busy,
     Internal,
 }
@@ -49,6 +50,9 @@ impl EnrollmentErrorCode {
     /// The Space already has as many members as its policy allows; the invitation stayed unused
     /// and the same redemption can be retried once a member leaves.
     pub const SPACE_FULL: Self = Self(EnrollmentErrorKind::SpaceFull);
+    /// The Space owner has no usable published address yet; the invitation stayed unused and
+    /// the same redemption can be retried once publication recovers.
+    pub const ADDRESS_UNAVAILABLE: Self = Self(EnrollmentErrorKind::AddressUnavailable);
     /// Too many redemptions are already waiting on their Space owners, or the owner was serving
     /// as many enrollments as it allows; nothing was done, so the same redemption can be retried
     /// once one of them ends.
@@ -78,6 +82,7 @@ impl EnrollmentError {
                 3 => EnrollmentErrorKind::Cancelled,
                 4 => EnrollmentErrorKind::Conflict,
                 5 => EnrollmentErrorKind::SpaceFull,
+                6 => EnrollmentErrorKind::AddressUnavailable,
                 _ => EnrollmentErrorKind::Internal,
             },
             None,
@@ -128,6 +133,9 @@ impl fmt::Display for EnrollmentError {
             }
             EnrollmentErrorKind::SpaceFull => {
                 "Space already has as many members as its policy allows"
+            }
+            EnrollmentErrorKind::AddressUnavailable => {
+                "Space owner address is not published yet; retry once available"
             }
             EnrollmentErrorKind::Busy => {
                 "too many invitation redemptions are pending; retry once one ends"

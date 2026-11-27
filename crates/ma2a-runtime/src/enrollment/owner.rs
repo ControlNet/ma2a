@@ -26,9 +26,36 @@ impl Actor {
                 return Err(error);
             }
         };
+        let Ok(now_u64) = u64::try_from(now_ms) else {
+            call.respond(255, Vec::new());
+            return Err(crate::RuntimeError::new(
+                crate::error::RuntimeErrorKind::Clock,
+            ));
+        };
         let authorized =
-            ma2a_store::AuthorizedEnrollmentRedemption::new(ticket, redemption, now_ms);
-        match self.store.redeem_enrollment(authorized).await {
+            ma2a_store::AuthorizedEnrollmentRedemption::new(ticket, redemption, now_ms)
+                .requiring_owner_address(self.state.endpoint_id);
+        let outcome = match self.store.redeem_enrollment(authorized.clone()).await {
+            Ok(EnrollmentOutcome::OwnerAddressUnavailable) => {
+                match self.publish_local_address().await {
+                    Ok(_) => self.store.redeem_enrollment(authorized).await,
+                    Err(error) => {
+                        let status = if error.is_deferred_publication() {
+                            6
+                        } else {
+                            255
+                        };
+                        call.respond(status, Vec::new());
+                        return Self::absorb_background(
+                            "owner pre-enrollment address publication",
+                            Err(error),
+                        );
+                    }
+                }
+            }
+            other => other,
+        };
+        match outcome {
             Ok(EnrollmentOutcome::Redeemed { revision, chain }) => {
                 self.state.revision = revision;
                 // The Space has a new member, so no peer is synchronized with it yet.
@@ -47,7 +74,7 @@ impl Actor {
                     ),
                     projected,
                 )? {
-                    self.respond_with_bootstrap(call, &chain).await?;
+                    self.respond_with_bootstrap(call, (&chain, now_u64)).await?;
                 }
             }
             Ok(EnrollmentOutcome::Retry { chain }) => {
@@ -57,12 +84,13 @@ impl Actor {
                     ("owner enrollment retry", "owner_retry_publication"),
                     published,
                 )? {
-                    self.respond_with_bootstrap(call, &chain).await?;
+                    self.respond_with_bootstrap(call, (&chain, now_u64)).await?;
                 }
             }
             Ok(EnrollmentOutcome::Expired) => call.respond(2, Vec::new()),
             Ok(EnrollmentOutcome::Cancelled) => call.respond(3, Vec::new()),
             Ok(EnrollmentOutcome::Conflict) => call.respond(4, Vec::new()),
+            Ok(EnrollmentOutcome::OwnerAddressUnavailable) => call.respond(6, Vec::new()),
             Ok(EnrollmentOutcome::NotFound) => call.respond(1, Vec::new()),
             Err(error) if error.is_space_members_full() => call.respond(5, Vec::new()),
             Err(error) => {
@@ -97,7 +125,7 @@ impl Actor {
     async fn respond_with_bootstrap(
         &self,
         call: EnrollmentCall,
-        bytes: &[u8],
+        (bytes, now_ms): (&[u8], u64),
     ) -> Result<(), crate::RuntimeError> {
         let bootstrap = async {
             let chain = ma2a_core::SpaceChain::import_public(bytes)
@@ -111,10 +139,22 @@ impl Actor {
                         crate::error::RuntimeErrorKind::AddressObservationUnavailable,
                     )
                 })?;
-            let owner_address = ma2a_core::SignedSpaceAddressRecordV1::parse_canonical_bytes(
+            let authorization = ma2a_core::SpaceAuthorizationView::from_chain(&chain);
+            let owner_address = ma2a_store::ValidatedAddressRecord::parse(
                 persisted.signed_record(),
+                ma2a_store::AddressRecordValidation::new(
+                    ma2a_store::AddressRecordTarget::new(chain.space_id(), self.state.endpoint_id),
+                    &authorization,
+                    now_ms,
+                ),
             )
-            .map_err(ma2a_store::StoreError::from)?;
+            .map_err(|_| {
+                crate::RuntimeError::new(
+                    crate::error::RuntimeErrorKind::AddressObservationUnavailable,
+                )
+            })?
+            .record()
+            .clone();
             ma2a_core::EnrollmentBootstrap::new(chain, owner_address)
                 .and_then(|bootstrap| bootstrap.encode_frames())
                 .map_err(|error| crate::RuntimeError::from(ma2a_store::StoreError::from(error)))
@@ -123,8 +163,13 @@ impl Actor {
         match bootstrap {
             Ok(frames) => call.respond(0, frames),
             Err(error) => {
+                let status = if error.is_deferred_publication() {
+                    6
+                } else {
+                    255
+                };
                 eprintln!("enrollment failed at owner_bootstrap_construction: {error}");
-                call.respond(255, Vec::new());
+                call.respond(status, Vec::new());
                 Self::absorb_background("owner bootstrap construction", Err(error))?;
             }
         }

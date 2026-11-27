@@ -155,14 +155,10 @@ pub(super) async fn redeem(
         .await
         .map_err(|error| {
             let api = ApiError::new(enrollment_protocol_error(&error));
-            if error.code() == crate::EnrollmentErrorCode::BUSY
-                || error.code() == crate::EnrollmentErrorCode::SPACE_FULL
-            {
-                return api.without_effects();
-            }
-            error
-                .committed_revision()
-                .map_or(api, |revision| api.after_commit(revision))
+            error.committed_revision().map_or_else(
+                || api.without_effects(),
+                |revision| api.after_commit(revision),
+            )
         })?;
     Ok(
         CommandResult::space_redeemed(committed_space(committed.chain())?)
@@ -209,7 +205,9 @@ fn enrollment_protocol_error(error: &crate::EnrollmentError) -> ProtocolError {
         || error.code() == crate::EnrollmentErrorCode::SPACE_FULL
     {
         ProtocolError::CONFLICT
-    } else if error.code() == crate::EnrollmentErrorCode::BUSY {
+    } else if error.code() == crate::EnrollmentErrorCode::BUSY
+        || error.code() == crate::EnrollmentErrorCode::ADDRESS_UNAVAILABLE
+    {
         ProtocolError::UNAVAILABLE
     } else {
         ProtocolError::INTERNAL

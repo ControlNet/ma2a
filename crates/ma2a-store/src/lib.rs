@@ -23,12 +23,13 @@ mod committed;
 mod config;
 mod control_batch;
 mod control_state;
+mod departure_receipts;
 mod enrollment;
+mod enrollment_invite;
+mod enrollment_models;
 mod enrollment_projection;
 mod hosted_services;
 pub use enrollment_projection::EnrollmentProjection;
-mod departure_receipts;
-mod enrollment_models;
 mod error;
 mod key_store;
 mod migrations;
@@ -84,7 +85,7 @@ pub use config::StoreConfig;
 pub use control_batch::ControlBatch;
 pub use control_state::ControlSpaceState;
 pub use departure_receipts::{DepartureRequest, MAX_BOUND_DEPARTURES};
-pub use enrollment::CreatedEnrollmentInvite;
+pub use enrollment_invite::CreatedEnrollmentInvite;
 pub use enrollment_models::{
     AuthorizedEnrollmentRedemption, EnrollmentOutcome, EnrollmentRedemption,
 };

@@ -21,6 +21,7 @@ pub struct AuthorizedEnrollmentRedemption {
     pub(crate) ticket: SignedInviteTicket,
     pub(crate) candidate: EnrollmentRedemption,
     pub(crate) owner_now_ms: i64,
+    pub(crate) owner_address_check: Option<EndpointId>,
 }
 
 impl AuthorizedEnrollmentRedemption {
@@ -34,7 +35,15 @@ impl AuthorizedEnrollmentRedemption {
             ticket,
             candidate,
             owner_now_ms,
+            owner_address_check: None,
         }
+    }
+
+    /// Requires a usable persisted owner address record before consuming a first-use invitation.
+    #[must_use]
+    pub const fn requiring_owner_address(mut self, owner_id: EndpointId) -> Self {
+        self.owner_address_check = Some(owner_id);
+        self
     }
 }
 
@@ -65,4 +74,6 @@ pub enum EnrollmentOutcome {
     Cancelled,
     /// The invitation was already consumed by a different candidate or request.
     Conflict,
+    /// A first-use invitation stayed unused because the owner has no usable address record yet.
+    OwnerAddressUnavailable,
 }

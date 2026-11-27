@@ -6,7 +6,7 @@ use super::{
     enrollment_test::{has_member, invite, redeem, start_with_clock},
 };
 use crate::{
-    EnrollmentStage,
+    EnrollmentErrorCode, EnrollmentStage,
     actor::maintenance::FaultPoint,
     error::{RuntimeError, RuntimeErrorKind},
 };
@@ -48,16 +48,18 @@ async fn owner_enrollment_without_published_address_answers_retryable_and_keeps_
     let error = redeem(&candidate, ticket.clone(), 0xa5)
         .await?
         .expect_err("enrollment without owner address record must return a retryable failure");
+    assert_eq!(error.code(), EnrollmentErrorCode::ADDRESS_UNAVAILABLE);
     assert_eq!(error.stage(), Some(EnrollmentStage::OwnerRedemption));
     assert!(
         owner.handle().status().await?.is_ready(),
         "owner Runtime must stay alive after missing-address enrollment"
     );
 
-    // Once the owner publishes an address record, retrying with the same RequestId succeeds.
+    // Once the owner publishes an address record, even a fresh RequestId succeeds because the
+    // first attempt never consumed the invitation.
     owner.handle().clear_background_faults();
     owner.handle().publish_address().await?;
-    let joined = redeem(&candidate, ticket, 0xa5).await??;
+    let joined = redeem(&candidate, ticket, 0xa6).await??;
     let candidate_id = candidate.handle().status().await?.endpoint_id();
     assert!(has_member(joined.chain(), candidate_id));
     assert!(

@@ -273,3 +273,20 @@ fn commit_address_advance(
     transaction.commit()?;
     Ok(AddressRecordOutcome::Advanced { revision })
 }
+
+pub(crate) fn has_usable_address(
+    transaction: &rusqlite::Transaction<'_>,
+    validation: AddressRecordValidation<'_>,
+) -> Result<bool, StoreError> {
+    let record = transaction
+        .query_row(
+            "SELECT signed_record FROM address_state WHERE space_id = ?1 AND endpoint_id = ?2",
+            (
+                validation.target.space_id.as_bytes().as_slice(),
+                validation.target.endpoint_id.as_bytes().as_slice(),
+            ),
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()?;
+    Ok(record.is_some_and(|signed| ValidatedAddressRecord::parse(&signed, validation).is_ok()))
+}
