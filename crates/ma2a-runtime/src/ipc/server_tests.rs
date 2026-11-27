@@ -56,6 +56,8 @@ mod space_leave_outcomes;
 mod space_redeem_full;
 #[path = "server_tests/stream_plane.rs"]
 mod stream_plane;
+#[path = "server_tests/stream_plane_disconnect.rs"]
+mod stream_plane_disconnect;
 #[path = "server_tests/support.rs"]
 mod support;
 

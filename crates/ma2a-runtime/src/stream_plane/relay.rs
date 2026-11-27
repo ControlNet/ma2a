@@ -156,8 +156,8 @@ mod upstream;
 /// `writing` tells an owner that drops this future whether a client frame was cut short, and
 /// `stall` bounds how long one non-terminal frame may wait for room in either direction.
 pub(crate) async fn relay<CR, CW, TR, TW>(
-    (client_reader, client_writer): (&mut FrameReader<CR>, &mut FrameWriter<CW>),
-    (target_reader, target_writer): (&mut FrameReader<TR>, &mut FrameWriter<TW>),
+    client: (&mut FrameReader<CR>, &mut FrameWriter<CW>),
+    target: (&mut FrameReader<TR>, &mut FrameWriter<TW>),
     (before_outcome, writing, stall): (fn(), &ClientWrite, Duration),
 ) -> Relayed
 where
@@ -166,6 +166,28 @@ where
     TR: AsyncRead + Unpin,
     TW: AsyncWrite + Unpin,
 {
+    relay_watching(
+        client,
+        target,
+        (before_outcome, writing, stall, std::future::pending()),
+    )
+    .await
+}
+
+/// Like [`relay`], and also raises `client_lost` if `disconnected` resolves out of band (for
+/// example when an IPC socket closes while one lookahead frame is held).
+pub(crate) async fn relay_watching<CR, CW, TR, TW, D>(
+    (client_reader, client_writer): (&mut FrameReader<CR>, &mut FrameWriter<CW>),
+    (target_reader, target_writer): (&mut FrameReader<TR>, &mut FrameWriter<TW>),
+    (before_outcome, writing, stall, disconnected): (fn(), &ClientWrite, Duration, D),
+) -> Relayed
+where
+    CR: AsyncRead + Unpin,
+    CW: AsyncWrite + Unpin,
+    TR: AsyncRead + Unpin,
+    TW: AsyncWrite + Unpin,
+    D: Future<Output = ()>,
+{
     let shared = Shared::default();
     let downstream = downstream(
         (target_reader, client_writer),
@@ -173,11 +195,17 @@ where
     );
     let upstream = upstream::run((client_reader, target_writer), (&shared, stall));
     let grace = tokio::time::sleep(Duration::MAX);
-    tokio::pin!(downstream, upstream, grace);
+    tokio::pin!(downstream, upstream, grace, disconnected);
     let mut cancelling = false;
+    let mut peer_gone = false;
     let terminal = loop {
         tokio::select! {
             terminal = &mut downstream => break terminal,
+            () = &mut disconnected, if !peer_gone => {
+                peer_gone = true;
+                shared.client_gone.store(true, Ordering::Relaxed);
+                shared.client_lost.notify_one();
+            }
             wait = &mut upstream, if !cancelling => {
                 // A target that took no write within its bound has used up the grace already.
                 if !wait {
@@ -273,3 +301,7 @@ mod tests;
 #[cfg(test)]
 #[path = "relay_grace_tests.rs"]
 mod grace_tests;
+
+#[cfg(test)]
+#[path = "relay_disconnect_tests.rs"]
+mod disconnect_tests;

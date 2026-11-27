@@ -8,7 +8,10 @@ use std::{
 mod client;
 mod framing;
 mod lifecycle;
+#[cfg(windows)]
+mod pipe_windows;
 mod server;
+mod shared_stream;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
@@ -22,6 +25,7 @@ pub use lifecycle::{
     random_launch_nonce,
 };
 pub use server::{LocalApiServer, ServerExit};
+pub(crate) use shared_stream::SharedStream;
 #[cfg(windows)]
 pub(crate) use windows::directory_identity;
 

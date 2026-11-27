@@ -72,6 +72,24 @@ pub(crate) fn remove_stale_endpoint(paths: &IpcPaths) -> Result<(), IpcError> {
     }
 }
 
+/// Resolves once the connected Unix socket peer disconnects or closes its write half, even when
+/// unread bytes remain buffered in the kernel socket receive queue.
+pub(crate) async fn peer_disconnected(stream: &PlatformStream) {
+    let PlatformStream::UdSocket(uds) = stream;
+    let socket = uds.inner();
+    loop {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let readiness = socket.ready(tokio::io::Interest::PRIORITY).await;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let readiness = socket.ready(tokio::io::Interest::READABLE).await;
+        match readiness {
+            Ok(ready) if ready.is_read_closed() || ready.is_error() => return,
+            Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            Err(_) => return,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +139,50 @@ mod tests {
             !link_created,
             "run-v1 was created through a symlinked state dir"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn peer_disconnected_fires_with_unread_bytes_buffered()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::AsyncWriteExt as _;
+
+        let base = std::env::temp_dir().join(format!("ma2a-ipc-hup-{}", std::process::id()));
+        let _stale = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base)?;
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700))?;
+        let paths = IpcPaths::new(&base)?;
+        let listener = bind(&paths)?;
+        let connect_fut = connect(&paths);
+        let accept_fut = accept(&listener);
+        let (client_res, server_res) = tokio::join!(connect_fut, accept_fut);
+        let mut client = client_res?;
+        let server = server_res?;
+
+        // Write unread bytes to the socket so READABLE is set, and verify the watcher waits
+        // while the client stays connected.
+        client.write_all(&[b'z'; 16_384]).await?;
+        let still_open = tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            peer_disconnected(&server),
+        )
+        .await;
+        assert!(
+            still_open.is_err(),
+            "live peer falsely reported disconnected"
+        );
+
+        // Now drop the client while those bytes remain unread.
+        drop(client);
+        let closed = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            peer_disconnected(&server),
+        )
+        .await;
+        drop(server);
+        drop(listener);
+        fs::remove_dir_all(&base)?;
+        assert!(closed.is_ok(), "disconnected peer was not detected");
         Ok(())
     }
 }

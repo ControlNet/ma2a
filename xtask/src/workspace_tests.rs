@@ -11,7 +11,7 @@ const EXPECTED_MEMBERS: [&str; 9] = [
     "ma2a-store",
     "xtask",
 ];
-const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 12] = [
+const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 13] = [
     (
         "crates/ma2a-services/src/client/terminal_windows.rs",
         concat!(
@@ -45,6 +45,13 @@ const AUDITED_UNSAFE_BOUNDARIES: [(&str, &str); 12] = [
         concat!(
             "allow(unsafe",
             "_code, reason = \"audited Windows process-times FFI boundary\")"
+        ),
+    ),
+    (
+        "crates/ma2a-runtime/src/ipc/pipe_windows.rs",
+        concat!(
+            "allow(unsafe",
+            "_code, reason = \"audited Windows named-pipe FFI boundary\")"
         ),
     ),
     (

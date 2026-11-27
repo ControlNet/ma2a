@@ -49,6 +49,9 @@ where
         if let Some(stop) = lookahead.queued.take() {
             return finish_stop(target_writer, shared, stop).await;
         }
+        if shared.client_gone.load(Ordering::Relaxed) {
+            return finish_stop(target_writer, shared, Queued::Stop { gone: true }).await;
+        }
         let next = if let Some(frame) = lookahead.ended.take().or_else(|| lookahead.ahead.take()) {
             Some(Ok(Some(frame)))
         } else {

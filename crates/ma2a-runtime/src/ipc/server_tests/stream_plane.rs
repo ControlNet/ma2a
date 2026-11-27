@@ -16,20 +16,21 @@ use crate::{
     ipc::{LocalStream, StreamUpgrade},
 };
 
-struct Pair {
-    target: Runtime,
-    caller: Runtime,
+pub(super) struct Pair {
+    pub(super) target: Runtime,
+    pub(super) caller: Runtime,
     live_server: LiveServer,
-    client: LocalApiClient,
+    pub(super) client: LocalApiClient,
     hooks: super::super::mutation_test_hooks::MutationTestHooks,
-    target_id: EndpointId,
+    pub(super) target_id: EndpointId,
+    pub(super) space: ma2a_core::SpaceId,
     root: TempState,
     _states: (TempState, TempState),
 }
 
 impl Pair {
     /// Joins a caller to the target's Space, grants it Files, and exposes one root.
-    async fn start(label: &str) -> TestResult<Self> {
+    pub(super) async fn start(label: &str) -> TestResult<Self> {
         let target_state = TempState::new_named(&format!("{label}-target"))?;
         let caller_state = TempState::new_named(&format!("{label}-caller"))?;
         let root = TempState::new_named(&format!("{label}-root"))?;
@@ -55,10 +56,7 @@ impl Pair {
         let caller_id = caller.handle().status().await?.endpoint_id();
         let granted = target
             .handle()
-            .grant_owned_space_member(
-                (space, caller_id),
-                [true, true, false, false, false, false, false, false],
-            )
+            .grant_owned_space_member((space, caller_id), [true; 8])
             .await?;
         assert!(granted.is_ok());
         let canonical = std::fs::canonicalize(&root.0)?
@@ -83,6 +81,7 @@ impl Pair {
         let hooks = server.mutation_hooks.clone();
         Ok(Self {
             target_id: target.handle().status().await?.endpoint_id(),
+            space,
             target,
             caller,
             live_server: LiveServer::spawn(server),
@@ -117,7 +116,7 @@ impl Pair {
         snapshot.recent.len() + snapshot.active.len()
     }
 
-    async fn stop(self) -> TestResult {
+    pub(super) async fn stop(self) -> TestResult {
         assert_eq!(self.live_server.cancel().await?, ServerExit::Cancelled);
         self.caller.shutdown().await?;
         self.target.shutdown().await?;
@@ -125,17 +124,17 @@ impl Pair {
     }
 }
 
-type Halves = (
+pub(super) type Halves = (
     FrameReader<tokio::io::ReadHalf<LocalStream>>,
     FrameWriter<tokio::io::WriteHalf<LocalStream>>,
 );
 
-fn halves(stream: LocalStream) -> Halves {
+pub(super) fn halves(stream: LocalStream) -> Halves {
     let (read, write) = tokio::io::split(stream);
     (FrameReader::new(read), FrameWriter::new(write))
 }
 
-fn id(byte: u8) -> TestResult<RequestId> {
+pub(super) fn id(byte: u8) -> TestResult<RequestId> {
     Ok(RequestId::try_from([byte; 16].as_slice())?)
 }
 

@@ -122,6 +122,14 @@ pub(crate) const fn remove_stale_endpoint(_paths: &IpcPaths) -> Result<(), IpcEr
     Ok(())
 }
 
+/// Resolves once the connected named-pipe peer closes its handle, even when unread bytes remain
+/// buffered in the pipe or internal read buffer.
+/// Resolves once the connected named-pipe peer process exits, even when unread bytes remain
+/// buffered in the pipe or internal read buffer.
+pub(crate) async fn peer_disconnected(stream: &PlatformStream) {
+    super::pipe_windows::wait_peer_disconnect(stream).await;
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -175,6 +183,85 @@ mod tests {
         assert_eq!(named(format!("{spelled}\\"))?, name);
         assert_eq!(named(spelled.replace('\\', "/"))?, name);
         std::fs::remove_dir_all(&base)?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn peer_disconnected_fires_with_unread_bytes_buffered()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::AsyncBufReadExt as _;
+
+        let base = std::env::temp_dir().join(format!("ma2a-ipc-pipe-hup-{}", std::process::id()));
+        let _stale = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base)?;
+        let state = base.join("state");
+        let paths = super::IpcPaths::new(&state)?;
+        let listener = super::bind(&paths)?;
+
+        let pipe_short = format!("ma2a-{}", super::directory_identity(&state).to_hex());
+        let script = format!(
+            "try {{ \
+                $p = [System.IO.Pipes.NamedPipeClientStream]::new('.', '{pipe_short}', [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous); \
+                $p.Connect(5000); \
+                $b = [byte[]]::new(8192); \
+                $null = $p.WriteAsync($b, 0, $b.Length).Wait(2000); \
+                [Console]::Out.WriteLine('ready'); \
+                [Console]::Out.Flush(); \
+                $null = [Console]::In.ReadLine(); \
+            }} catch {{ \
+                [Console]::Error.WriteLine($_.Exception.ToString()); \
+                exit 1; \
+            }}"
+        );
+        let mut child = tokio::process::Command::new("pwsh")
+            .args(["-NoProfile", "-Command", &script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        let _stdin = child.stdin.take();
+        let stdout = child.stdout.take().ok_or("missing child stdout")?;
+        let stderr = child.stderr.take().ok_or("missing child stderr")?;
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+
+        let accept_and_ready = async {
+            let server = super::accept(&listener).await?;
+            let line = lines.next_line().await?;
+            Ok::<_, super::IpcError>((server, line))
+        };
+        let (server, line) = tokio::select! {
+            res = tokio::time::timeout(std::time::Duration::from_secs(15), accept_and_ready) => res??,
+            status = child.wait() => {
+                use tokio::io::AsyncReadExt as _;
+                let mut err = String::new();
+                let mut err_reader = stderr;
+                let _read = err_reader.read_to_string(&mut err).await;
+                return Err(format!("pwsh exited early ({status:?}): {err}").into());
+            }
+        };
+        assert_eq!(line.as_deref(), Some("ready"));
+
+        let still_open = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            super::peer_disconnected(&server),
+        )
+        .await;
+        assert!(
+            still_open.is_err(),
+            "live peer process falsely reported disconnected"
+        );
+
+        child.kill().await?;
+        let closed = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            super::peer_disconnected(&server),
+        )
+        .await;
+        drop(server);
+        drop(listener);
+        std::fs::remove_dir_all(&base)?;
+        assert!(closed.is_ok(), "terminated peer process was not detected");
         Ok(())
     }
 }

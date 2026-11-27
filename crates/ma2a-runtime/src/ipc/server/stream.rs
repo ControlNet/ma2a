@@ -15,11 +15,14 @@ use tokio::{
 
 use crate::{
     api::{self, ApiError, ApiResponse, Command, CommandResult},
-    ipc::framing::{FrameRef, write_frame},
+    ipc::{
+        SharedStream,
+        framing::{FrameRef, write_frame},
+    },
     stream_host::operations::{Direction, OperationKey, operation_name},
     stream_plane::{
         fingerprint,
-        relay::{ClientWrite, Relayed, Terminal, bounded, relay},
+        relay::{ClientWrite, Relayed, Terminal, bounded, relay_watching},
     },
 };
 
@@ -46,8 +49,11 @@ pub(super) async fn open(
     else {
         return Ok(());
     };
-    let (read, write) = tokio::io::split(stream);
-    let mut client = (FrameReader::new(read), FrameWriter::new(write));
+    let shared = SharedStream::new(stream);
+    let mut client = (
+        FrameReader::new(shared.clone()),
+        FrameWriter::new(shared.clone()),
+    );
     let Ok(Ok(frame)) = tokio::time::timeout(OPEN_DEADLINE, client.0.expect()).await else {
         drop(stream_permit);
         return Ok(());
@@ -82,7 +88,7 @@ pub(super) async fn open(
     };
     let stall = crate::stream_plane::stall_for(header.body());
     let operation = ((key, frame.payload(), stall), reservation);
-    run(context, operation, (&mut client.0, &mut client.1)).await;
+    run(context, operation, (&mut client.0, &mut client.1, &shared)).await;
     drop(stream_permit);
     Ok(())
 }
@@ -181,7 +187,11 @@ async fn run<R, W>(
         (OperationKey, &[u8], Duration),
         Option<replay::Reservation>,
     ),
-    (client_reader, client_writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
+    (client_reader, client_writer, shared): (
+        &mut FrameReader<R>,
+        &mut FrameWriter<W>,
+        &SharedStream,
+    ),
 ) where
     R: tokio::io::AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -223,10 +233,15 @@ async fn run<R, W>(
         Ok(Ok(()))
     ) && !injected_loss(context);
     let relayed = if opened {
-        relay(
+        relay_watching(
             (client_reader, client_writer),
             (&mut target.0, &mut target.1),
-            (|| (), &ClientWrite::default(), stall),
+            (
+                || (),
+                &ClientWrite::default(),
+                stall,
+                shared.peer_disconnected(),
+            ),
         )
         .await
     } else {
