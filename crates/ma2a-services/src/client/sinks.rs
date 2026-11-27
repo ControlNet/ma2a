@@ -1,6 +1,6 @@
 //! A target's output and errors on their way to the caller's local sinks.
 
-use std::{future::Future, io};
+use std::{future::Future, io, time::Duration};
 
 use ma2a_core::service::{Channel, FrameKind, ServiceError};
 use tokio::{
@@ -144,4 +144,39 @@ pub(super) fn settled<T>(
 async fn write_flushed<T: AsyncWrite + Unpin>(sink: &mut T, bytes: &[u8]) -> io::Result<()> {
     sink.write_all(bytes).await?;
     sink.flush().await
+}
+
+/// Writes `bytes` and flushes `local_write`, allowing up to `idle` without progress on each
+/// step so a slow consumer still draining receives every byte while a stalled one times out.
+pub(super) async fn write_bounded<LW: AsyncWrite + Unpin>(
+    local_write: &mut LW,
+    bytes: &[u8],
+    idle: Duration,
+) -> io::Result<()> {
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let written = tokio::time::timeout(idle, local_write.write(rest))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local write timed out"))??;
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "local write returned zero bytes",
+            ));
+        }
+        rest = rest.get(written..).unwrap_or_default();
+    }
+    tokio::time::timeout(idle, local_write.flush())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local flush timed out"))?
+}
+
+/// Shuts down `local_write`, allowing up to `idle` without progress before timing out.
+pub(super) async fn shutdown_bounded<LW: AsyncWrite + Unpin>(
+    local_write: &mut LW,
+    idle: Duration,
+) -> io::Result<()> {
+    tokio::time::timeout(idle, local_write.shutdown())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local shutdown timed out"))?
 }

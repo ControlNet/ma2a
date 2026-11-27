@@ -11,13 +11,15 @@ use ma2a_core::service::{
     Channel, EndReason, FrameKind, MAX_DATA_CHUNK_LEN, ProxyResult, ServiceError,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite},
     sync::Notify,
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{
-    ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next,
-    sinks::settled, unexpected,
+    ClientError, First, Sender, decoded, drained, empty_accept, first_or_cancel, next, send_cancel,
+    sinks::{settled, shutdown_bounded, write_bounded, write_until},
+    unexpected,
 };
 use crate::{FrameReader, FrameWriter};
 
@@ -52,23 +54,42 @@ where
         First::Finished(frame) => return decoded(ProxyResult::decode_outcome(frame.payload())),
         First::Accepted(frame) => empty_accept(&frame)?,
     }
-    let (lost, sent) = (Notify::new(), (AtomicU64::new(0), AtomicBool::new(false)));
+    let (lost, stop, sent) = (
+        Notify::new(),
+        CancellationToken::new(),
+        (AtomicU64::new(0), AtomicBool::new(false)),
+    );
     // A failed local read is kept even when the outcome arrives before the cancel is sent.
     let mut unread = None;
     let answer = {
-        let downstream = downstream(reader, (local_write, idle), (&lost, &sent));
-        tokio::pin!(downstream);
+        let mut downstream = Box::pin(downstream(
+            reader,
+            (local_write, idle),
+            (&lost, &stop, &sent),
+        ));
         // Once cancelled, nothing but the rest of that `cancel` is sent; the outcome still follows.
         match sender {
-            Sender::Cancelled(rest) => drained(downstream.as_mut(), rest)
-                .await
-                .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None)),
+            Sender::Cancelled(rest) => {
+                stop.cancel();
+                drained(downstream.as_mut(), rest)
+                    .await
+                    .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None))
+            }
             Sender::Open(writer) => {
-                let upstream = upstream(writer, (local_read, cancel), (&lost, &sent, &mut unread));
-                tokio::pin!(upstream);
+                let mut upstream = Box::pin(upstream(
+                    writer,
+                    (local_read, cancel),
+                    (&lost, &stop, &sent, &mut unread),
+                ));
                 tokio::select! {
                     answer = &mut downstream => answer,
-                    () = &mut upstream => downstream.await,
+                    () = &mut upstream => if stop.is_cancelled() {
+                        drained(downstream.as_mut(), None)
+                            .await
+                            .unwrap_or((Err(ClientError::Stream(ServiceError::OutcomeUnknown)), None))
+                    } else {
+                        downstream.await
+                    },
                 }
             }
         }
@@ -84,7 +105,12 @@ type Sent = (AtomicU64, AtomicBool);
 async fn upstream<W, LR, C>(
     writer: &mut FrameWriter<W>,
     (mut local_read, cancel): (LR, C),
-    (lost, (sent, input_ended), unread): (&Notify, &Sent, &mut Option<std::io::Error>),
+    (lost, stop, (sent, input_ended), unread): (
+        &Notify,
+        &CancellationToken,
+        &Sent,
+        &mut Option<std::io::Error>,
+    ),
 ) where
     W: AsyncWrite + Unpin,
     LR: AsyncRead + Unpin,
@@ -96,11 +122,13 @@ async fn upstream<W, LR, C>(
         let read = tokio::select! {
             biased;
             () = lost.notified() => {
-                let _cancelled = send_cancel(writer).await;
+                stop.cancel();
+                send_cancel(writer).await;
                 return;
             }
             () = &mut cancel => {
-                let _cancelled = send_cancel(writer).await;
+                stop.cancel();
+                send_cancel(writer).await;
                 return;
             }
             read = local_read.read(&mut buffer) => read,
@@ -110,7 +138,8 @@ async fn upstream<W, LR, C>(
             Ok(read) => read,
             Err(error) => {
                 *unread = Some(error);
-                let _cancelled = send_cancel(writer).await;
+                stop.cancel();
+                send_cancel(writer).await;
                 return;
             }
         };
@@ -129,7 +158,8 @@ async fn upstream<W, LR, C>(
                     () = lost.notified() => {}
                     () = &mut cancel => {}
                 }
-                let _cancelled = send_cancel(writer).await;
+                stop.cancel();
+                send_cancel(writer).await;
             }
             return;
         }
@@ -145,8 +175,9 @@ async fn upstream<W, LR, C>(
     }
 }
 
-/// Destination → local until the outcome; a lost local side asks upstream to cancel. Returns
-/// the answer and the first local write that failed.
+/// Destination → local until the outcome; a lost local side asks upstream to cancel, and
+/// explicit cancellation interrupts local delivery and discards remaining output while still
+/// checking frames and byte counts. Returns the answer and the first local write that failed.
 ///
 /// The destination's bytes end once, and the outcome counts exactly the bytes received from it
 /// and at most the `sent` ones as taken to it: an answer with other counts is not this relay.
@@ -155,13 +186,14 @@ async fn upstream<W, LR, C>(
 async fn downstream<R, LW>(
     reader: &mut FrameReader<R>,
     (mut local_write, idle): (LW, Duration),
-    (lost, (sent, input_ended)): (&Notify, &Sent),
+    (lost, stop, (sent, input_ended)): (&Notify, &CancellationToken, &Sent),
 ) -> (Result<ProxyResult, ClientError>, Option<io::Error>)
 where
     R: AsyncRead + Unpin,
     LW: AsyncWrite + Unpin,
 {
     let mut unwritten = None;
+    let mut discarding = false;
     let answer = async {
         let invalid = || ClientError::Stream(ServiceError::InvalidInput);
         let (mut ended, mut received) = (false, 0_u64);
@@ -192,70 +224,39 @@ where
                     (Channel::Input, bytes) => {
                         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                         received = received.saturating_add(length);
-                        match unwritten {
-                            None => write_bounded(&mut local_write, bytes, idle).await,
-                            Some(_) => Ok(()),
+                        if unwritten.is_some() {
+                            Some(Ok(()))
+                        } else if discarding || stop.is_cancelled() {
+                            None
+                        } else {
+                            write_until(write_bounded(&mut local_write, bytes, idle), stop).await
                         }
                     }
                     _ => return Err(invalid()),
                 },
                 FrameKind::End if !ended && frame.end() == Ok(Channel::Input) => {
                     ended = true;
-                    match unwritten {
-                        None => shutdown_bounded(&mut local_write, idle).await,
-                        Some(_) => Ok(()),
+                    if unwritten.is_some() {
+                        Some(Ok(()))
+                    } else if discarding || stop.is_cancelled() {
+                        None
+                    } else {
+                        write_until(shutdown_bounded(&mut local_write, idle), stop).await
                     }
                 }
                 FrameKind::Data | FrameKind::End => return Err(invalid()),
                 _ => return Err(unexpected(&frame)),
             };
-            if let Err(failure) = delivered {
-                unwritten = Some(failure);
-                lost.notify_one();
+            match delivered {
+                Some(Ok(())) => {}
+                Some(Err(failure)) => {
+                    unwritten = Some(failure);
+                    lost.notify_one();
+                }
+                None => discarding = true,
             }
         }
     }
     .await;
     (answer, unwritten)
-}
-
-/// Writes `bytes` and flushes `local_write`, allowing up to `idle` without progress on each
-/// step so a slow consumer still draining receives every byte while a stalled one times out.
-async fn write_bounded<LW: AsyncWrite + Unpin>(
-    local_write: &mut LW,
-    bytes: &[u8],
-    idle: Duration,
-) -> io::Result<()> {
-    let mut rest = bytes;
-    while !rest.is_empty() {
-        let written = tokio::time::timeout(idle, local_write.write(rest))
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local write timed out"))??;
-        if written == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "local write returned zero bytes",
-            ));
-        }
-        rest = rest.get(written..).unwrap_or_default();
-    }
-    tokio::time::timeout(idle, local_write.flush())
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local flush timed out"))?
-}
-
-async fn shutdown_bounded<LW: AsyncWrite + Unpin>(
-    local_write: &mut LW,
-    idle: Duration,
-) -> io::Result<()> {
-    tokio::time::timeout(idle, local_write.shutdown())
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "local shutdown timed out"))?
-}
-
-async fn send_cancel<W: AsyncWrite + Unpin>(
-    writer: &mut FrameWriter<W>,
-) -> Result<(), ServiceError> {
-    writer.frame(FrameKind::Cancel, &[]).await?;
-    writer.flush().await
 }

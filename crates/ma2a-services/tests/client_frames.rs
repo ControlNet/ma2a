@@ -1524,3 +1524,179 @@ async fn a_cancelled_hosted_call_interrupts_blocked_local_sinks_and_bounds_missi
     );
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_proxy_with_a_blocked_sink_or_shutdown_returns_cancelled_promptly()
+-> TestResult {
+    let outcome = |reason, from_target| -> TestResult<Vec<u8>> {
+        let result = ProxyResult::new(reason, (0, from_target), 1);
+        Ok(ProxyResult::encode_outcome(&Ok(result))?)
+    };
+
+    // 1. Full one-byte local sink under a 60 s idle budget, cancelled at 1 s.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold_consumer, local_write) = tokio::io::duplex(1);
+    let (_hold_input, local_read) = tokio::io::duplex(64);
+    let target = async {
+        send(
+            &mut target_writer,
+            &[accept(&EMPTY_ACCEPT), Sent::Data(Channel::Input, b"abcdef")],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(
+            &mut target_writer,
+            &[Sent::Frame(
+                FrameKind::Outcome,
+                outcome(EndReason::Cancelled, 6)?,
+            )],
+        )
+        .await
+    };
+    let started = tokio::time::Instant::now();
+    let caller = proxy::run(
+        (&mut reader, &mut writer),
+        (local_read, local_write),
+        (
+            Duration::from_secs(60),
+            tokio::time::sleep(Duration::from_secs(1)),
+        ),
+    );
+    let (result, scripted) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+    assert_eq!(result?.reason, EndReason::Cancelled);
+
+    // 2. Stalled local shutdown under a 60 s idle budget, cancelled at 1 s.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let target = async {
+        send(
+            &mut target_writer,
+            &[
+                accept(&EMPTY_ACCEPT),
+                Sent::Data(Channel::Input, b"abc"),
+                Sent::End(Channel::Input),
+            ],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::End);
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(
+            &mut target_writer,
+            &[Sent::Frame(
+                FrameKind::Outcome,
+                outcome(EndReason::Cancelled, 3)?,
+            )],
+        )
+        .await
+    };
+    let started = tokio::time::Instant::now();
+    let caller = proxy::run(
+        (&mut reader, &mut writer),
+        (&b""[..], StalledShutdown),
+        (
+            Duration::from_secs(60),
+            tokio::time::sleep(Duration::from_secs(1)),
+        ),
+    );
+    let (result, scripted) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+    assert_eq!(result?.reason, EndReason::Cancelled);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_proxy_bounds_missing_terminal_and_preserves_prior_io_error() -> TestResult {
+    let outcome = |reason, from_target| -> TestResult<Vec<u8>> {
+        let result = ProxyResult::new(reason, (0, from_target), 1);
+        Ok(ProxyResult::encode_outcome(&Ok(result))?)
+    };
+
+    // 1. Missing terminal after cancelling a blocked proxy sink is bounded by FRAME_GRACE.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold_consumer, local_write) = tokio::io::duplex(1);
+    let (_hold_input, local_read) = tokio::io::duplex(64);
+    let target = async {
+        send(
+            &mut target_writer,
+            &[accept(&EMPTY_ACCEPT), Sent::Data(Channel::Input, b"abcdef")],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        TestResult::Ok(())
+    };
+    let started = tokio::time::Instant::now();
+    let caller = proxy::run(
+        (&mut reader, &mut writer),
+        (local_read, local_write),
+        (
+            Duration::from_secs(60),
+            tokio::time::sleep(Duration::from_secs(1)),
+        ),
+    );
+    let (result, scripted) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_secs(1) + ma2a_services::reply::FRAME_GRACE
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        ),
+        "{result:?}"
+    );
+
+    // 2. A local idle timeout before cancellation preserves the local I/O error.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let (_hold_consumer, local_write) = tokio::io::duplex(1);
+    let (_hold_input, local_read) = tokio::io::duplex(64);
+    let target = async {
+        send(
+            &mut target_writer,
+            &[accept(&EMPTY_ACCEPT), Sent::Data(Channel::Input, b"abcdef")],
+        )
+        .await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        send(
+            &mut target_writer,
+            &[Sent::Frame(
+                FrameKind::Outcome,
+                outcome(EndReason::Cancelled, 6)?,
+            )],
+        )
+        .await
+    };
+    let caller = proxy::run(
+        (&mut reader, &mut writer),
+        (local_read, local_write),
+        (
+            Duration::from_secs(1),
+            tokio::time::sleep(Duration::from_secs(5)),
+        ),
+    );
+    let (result, scripted) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(caller, target)
+    })
+    .await?;
+    scripted?;
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Local(ref error)) if error.kind() == std::io::ErrorKind::TimedOut
+        ),
+        "{result:?}"
+    );
+    Ok(())
+}
