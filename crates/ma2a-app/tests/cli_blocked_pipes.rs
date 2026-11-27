@@ -58,7 +58,7 @@ enum Mode {
     OkStdoutOnCancel(usize),
     DropChannelOnCancel(Channel, usize),
     LogsStderrFill(usize),
-    DelayedOk,
+    DelayedOk(&'static [u8]),
 }
 
 fn start_standin(label: &str, mode: Mode) -> TestResult<Standin> {
@@ -132,6 +132,39 @@ async fn serve(listener: UnixListener, mode: Mode, ipc_closed: Arc<AtomicBool>) 
     }
 }
 
+async fn write_logs_stderr_fill(
+    writer: &mut FrameWriter<tokio::net::unix::OwnedWriteHalf>,
+    fill: usize,
+) {
+    let end = u64::try_from(fill).unwrap_or(u64::MAX);
+    let Ok(accept) = (ProcessAccept::Reading {
+        state: ProcessState::Exited,
+        start: 0,
+        window: LogWindow::new(0, end),
+        truncated: false,
+    })
+    .encode() else {
+        return;
+    };
+    if writer.frame(FrameKind::Accept, &accept).await.is_err() {
+        return;
+    }
+    let mut remaining = fill;
+    while remaining > 0 {
+        let step = remaining.min(8_192);
+        let chunk = vec![b'e'; step];
+        if writer.data(Channel::Error, &chunk).await.is_err() {
+            return;
+        }
+        remaining -= step;
+    }
+    let Ok(outcome) = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(end, true))) else {
+        return;
+    };
+    let _ = writer.frame(FrameKind::Outcome, &outcome).await;
+    let _ = writer.flush().await;
+}
+
 async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>) {
     let (read, write) = stream.into_split();
     let mut reader = FrameReader::new(read);
@@ -143,37 +176,11 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
         return;
     }
     if let Mode::LogsStderrFill(fill) = mode {
-        let end = u64::try_from(fill).unwrap_or(u64::MAX);
-        let Ok(accept) = (ProcessAccept::Reading {
-            state: ProcessState::Exited,
-            start: 0,
-            window: LogWindow::new(0, end),
-            truncated: false,
-        })
-        .encode() else {
-            return;
-        };
-        if writer.frame(FrameKind::Accept, &accept).await.is_err() {
-            return;
-        }
-        let mut remaining = fill;
-        while remaining > 0 {
-            let step = remaining.min(8_192);
-            let chunk = vec![b'e'; step];
-            if writer.data(Channel::Error, &chunk).await.is_err() {
-                return;
-            }
-            remaining -= step;
-        }
-        let Ok(outcome) = ProcessReply::encode_outcome(&Ok(ProcessReply::Logs(end, true))) else {
-            return;
-        };
-        let _ = writer.frame(FrameKind::Outcome, &outcome).await;
-        let _ = writer.flush().await;
+        write_logs_stderr_fill(&mut writer, fill).await;
         return;
     }
     let accept = match mode {
-        Mode::CancelChannel(..) | Mode::OkStdoutOnCancel(_) | Mode::DelayedOk => {
+        Mode::CancelChannel(..) | Mode::OkStdoutOnCancel(_) | Mode::DelayedOk(_) => {
             encode_call_accept(&[]).unwrap_or_default()
         }
         Mode::DropChannelOnCancel(..) => EMPTY_ACCEPT.to_vec(),
@@ -182,9 +189,9 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
     if writer.frame(FrameKind::Accept, &accept).await.is_err() {
         return;
     }
-    if matches!(mode, Mode::DelayedOk) {
+    if let Mode::DelayedOk(result) = mode {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let Ok(outcome) = encode_call_outcome(Ok(b"done\n")) else {
+        let Ok(outcome) = encode_call_outcome(Ok(result)) else {
             return;
         };
         if writer.frame(FrameKind::Outcome, &outcome).await.is_err() {
@@ -202,7 +209,7 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
             (channel, cap.saturating_mul(2))
         }
         Mode::OkStdoutOnCancel(cap) => (Channel::Output, cap.saturating_mul(2)),
-        Mode::LogsStderrFill(_) | Mode::DelayedOk => return,
+        Mode::LogsStderrFill(_) | Mode::DelayedOk(_) => return,
     };
     let mut remaining = fill;
     while remaining > 0 {
@@ -221,7 +228,9 @@ async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>
             let outcome = match mode {
                 Mode::CancelChannel(..) => encode_call_outcome(Err(ServiceError::Cancelled)),
                 Mode::OkStdoutOnCancel(_) => encode_call_outcome(Ok(b"{\"ok\":true}")),
-                Mode::DropChannelOnCancel(..) | Mode::LogsStderrFill(_) | Mode::DelayedOk => return,
+                Mode::DropChannelOnCancel(..) | Mode::LogsStderrFill(_) | Mode::DelayedOk(_) => {
+                    return;
+                }
             };
             let Ok(payload) = outcome else {
                 return;
@@ -563,68 +572,79 @@ fn process_logs_exits_0_when_diagnostic_newline_blocks_full_stderr() -> TestResu
 
 #[test]
 fn service_call_sigint_interrupts_delayed_result_on_full_stdout() -> TestResult {
-    // 1. Drainable stdout receives exact output and exits 0.
-    let standin = start_standin("delayed-ok-drain", Mode::DelayedOk)?;
-    let output = spawn_service_call(&standin, false, (None, None))?.wait_with_output()?;
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "expected exit 0, got {:?}; stderr={}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(output.stdout, b"done\n");
+    for (label, payload) in [
+        ("delayed-ok", &b"done\n"[..]),
+        ("delayed-ok-json", &b"{\"ok\":true}"[..]),
+    ] {
+        // 1. Drainable stdout receives exact output and exits 0.
+        let standin = start_standin(&format!("{label}-drain"), Mode::DelayedOk(payload))?;
+        let output = spawn_service_call(&standin, false, (None, None))?.wait_with_output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{label}: expected exit 0, got {:?}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, payload, "{label}: stdout mismatch");
 
-    // 2. Prefilled stdout blocks final result delivery; SIGINT must still interrupt promptly.
-    let (stdout_read, mut stdout_write) = std::io::pipe()?;
-    let _filled = fill_nonblocking(&mut stdout_write)?;
-    let standin = start_standin("delayed-ok-blocked", Mode::DelayedOk)?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
-        .arg("--state-dir")
-        .arg(&standin.state_dir)
-        .args([
-            "service",
-            "call",
-            "--endpoint",
-            &standin.endpoint,
-            "--version",
-            "1",
-            "example",
-            "stream",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout_write))
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let stderr_drain = drain(child.stderr.take().ok_or("missing stderr")?);
-    let ipc_deadline = Instant::now() + Duration::from_secs(5);
-    while !standin.ipc_closed.load(Ordering::Acquire) {
-        if let Some(status) = child.try_wait()? {
-            return Err(format!("service call exited before IPC closed: {status}").into());
+        // 2. Prefilled stdout blocks final result delivery; SIGINT must still interrupt promptly.
+        let (stdout_read, mut stdout_write) = std::io::pipe()?;
+        let _filled = fill_nonblocking(&mut stdout_write)?;
+        let standin = start_standin(&format!("{label}-blocked"), Mode::DelayedOk(payload))?;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+            .arg("--state-dir")
+            .arg(&standin.state_dir)
+            .args([
+                "service",
+                "call",
+                "--endpoint",
+                &standin.endpoint,
+                "--version",
+                "1",
+                "example",
+                "stream",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout_write))
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stderr_drain = drain(child.stderr.take().ok_or("missing stderr")?);
+        let ipc_deadline = Instant::now() + Duration::from_secs(5);
+        while !standin.ipc_closed.load(Ordering::Acquire) {
+            if let Some(status) = child.try_wait()? {
+                return Err(format!("{label}: exited before IPC closed: {status}").into());
+            }
+            if Instant::now() >= ipc_deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label}: never closed IPC after replying").into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        if Instant::now() >= ipc_deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("service call never closed IPC after replying".into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
+        let pid = Pid::from_raw(i32::try_from(child.id())?).ok_or("no pid")?;
+        kill_process(pid, Signal::INT)?;
+        let exit_deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= exit_deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(
+                    format!("{label}: hung past 2s after SIGINT on final stdout write").into(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        drop(stdout_read);
+        let _ = stderr_drain.join();
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "{label}: expected exit 1, got {status:?}"
+        );
     }
-    let pid = Pid::from_raw(i32::try_from(child.id())?).ok_or("no pid")?;
-    kill_process(pid, Signal::INT)?;
-    let exit_deadline = Instant::now() + Duration::from_secs(2);
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= exit_deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("service call hung past 2s after SIGINT on final stdout write".into());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    drop(stdout_read);
-    let _ = stderr_drain.join();
-    assert_eq!(status.code(), Some(1), "expected exit 1, got {status:?}");
     Ok(())
 }

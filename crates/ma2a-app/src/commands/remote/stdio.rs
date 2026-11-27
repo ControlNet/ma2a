@@ -32,9 +32,9 @@ pub(super) struct StdioGuard {
 }
 
 impl StdioGuard {
-    pub(super) fn stdout(&self) -> TrackedWrite<tokio::io::Stdout> {
+    pub(super) fn stdout(&self) -> TrackedWrite<LocalStdout> {
         TrackedWrite {
-            inner: tokio::io::stdout(),
+            inner: LocalStdout::open(),
             in_flight: Arc::clone(&self.stdout_stuck),
         }
     }
@@ -101,6 +101,69 @@ fn flush_outputs() -> io::Result<()> {
     io::stderr().lock().flush()
 }
 
+/// Unbuffered local `stdout` handle so cancellable writes never populate `std::io::stdout()`'s
+/// line buffer and cannot hang Rust's exit cleanup on a full pipe.
+#[derive(Debug)]
+pub(super) enum LocalStdout {
+    Unbuffered(tokio::fs::File),
+    Buffered(tokio::io::Stdout),
+}
+
+impl LocalStdout {
+    fn open() -> Self {
+        #[cfg(unix)]
+        let cloned = {
+            use std::os::fd::AsFd as _;
+            io::stdout()
+                .as_fd()
+                .try_clone_to_owned()
+                .map(std::fs::File::from)
+        };
+        #[cfg(windows)]
+        let cloned = {
+            use std::os::windows::io::AsHandle as _;
+            io::stdout()
+                .as_handle()
+                .try_clone_to_owned()
+                .map(std::fs::File::from)
+        };
+        #[cfg(not(any(unix, windows)))]
+        let cloned: io::Result<std::fs::File> = Err(io::Error::from(io::ErrorKind::Unsupported));
+
+        cloned.map_or_else(
+            |_| Self::Buffered(tokio::io::stdout()),
+            |file| Self::Unbuffered(tokio::fs::File::from_std(file)),
+        )
+    }
+}
+
+impl AsyncWrite for LocalStdout {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match &mut *self {
+            Self::Unbuffered(file) => Pin::new(file).poll_write(cx, buf),
+            Self::Buffered(stdout) => Pin::new(stdout).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Unbuffered(file) => Pin::new(file).poll_flush(cx),
+            Self::Buffered(stdout) => Pin::new(stdout).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Unbuffered(file) => Pin::new(file).poll_shutdown(cx),
+            Self::Buffered(stdout) => Pin::new(stdout).poll_shutdown(cx),
+        }
+    }
+}
+
 /// [`AsyncWrite`] wrapper that leaves `in_flight` true whenever dropped while a write or flush
 /// is still pending in `spawn_blocking`.
 #[derive(Debug)]
@@ -141,3 +204,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for TrackedWrite<W> {
         poll
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "stdio_tests.rs"]
+mod tests;
