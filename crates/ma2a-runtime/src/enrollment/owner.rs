@@ -38,20 +38,27 @@ impl Actor {
                     .send(crate::state::RuntimeEvent::memberships_changed(revision));
                 self.maintenance.membership_pending =
                     Some(crate::control_sync::ControlRoundTrigger::EnrollmentCompleted);
-                if let Err(error) = self.reconcile_membership_completion().await {
-                    eprintln!("enrollment failed at owner_post_commit_projection: {error}");
-                    call.respond(255, Vec::new());
-                    return Self::absorb_background("owner enrollment completion", Err(error));
+                let projected = self.reconcile_membership_completion().await;
+                if let Some(call) = Self::accept_enrollment_projection(
+                    call,
+                    (
+                        "owner enrollment completion",
+                        "owner_post_commit_projection",
+                    ),
+                    projected,
+                )? {
+                    self.respond_with_bootstrap(call, &chain).await?;
                 }
-                self.respond_with_bootstrap(call, &chain).await?;
             }
             Ok(EnrollmentOutcome::Retry { chain }) => {
-                if let Err(error) = self.refresh_local_control_publications().await {
-                    eprintln!("enrollment failed at owner_retry_publication: {error}");
-                    call.respond(255, Vec::new());
-                    return Self::absorb_background("owner enrollment retry", Err(error));
+                let published = self.refresh_local_control_publications().await;
+                if let Some(call) = Self::accept_enrollment_projection(
+                    call,
+                    ("owner enrollment retry", "owner_retry_publication"),
+                    published,
+                )? {
+                    self.respond_with_bootstrap(call, &chain).await?;
                 }
-                self.respond_with_bootstrap(call, &chain).await?;
             }
             Ok(EnrollmentOutcome::Expired) => call.respond(2, Vec::new()),
             Ok(EnrollmentOutcome::Cancelled) => call.respond(3, Vec::new()),
@@ -65,6 +72,26 @@ impl Actor {
             }
         }
         Ok(())
+    }
+
+    fn accept_enrollment_projection(
+        call: EnrollmentCall,
+        (context, label): (&str, &str),
+        result: Result<(), crate::RuntimeError>,
+    ) -> Result<Option<EnrollmentCall>, crate::RuntimeError> {
+        match result {
+            Ok(()) => Ok(Some(call)),
+            Err(error) if error.is_deferred_publication() => {
+                Self::absorb_background(context, Err(error))?;
+                Ok(Some(call))
+            }
+            Err(error) => {
+                eprintln!("enrollment failed at {label}: {error}");
+                call.respond(255, Vec::new());
+                Self::absorb_background(context, Err(error))?;
+                Ok(None)
+            }
+        }
     }
 
     async fn respond_with_bootstrap(
