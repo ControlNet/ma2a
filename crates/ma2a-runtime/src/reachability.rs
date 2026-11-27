@@ -168,16 +168,9 @@ impl Actor {
         self.endpoint.replace_relay_map(&candidates).await?;
         let before_revision = self.state.revision;
         let observed_revision = self.persist_relay_observations(&staged).await?;
-        let address_result = self.publish_local_address().await;
-        self.state.revision = before_revision;
-        let address_revision = match address_result {
-            Ok(revision) => revision,
-            Err(error) if error.is_deferred_publication() => {
-                Self::absorb_background("relay candidate address publication", Err(error))?;
-                before_revision
-            }
-            Err(error) => return Err(error),
-        };
+        let address_revision = self
+            .publish_background_address("relay candidate address publication", before_revision)
+            .await?;
         let mut revision = observed_revision.max(address_revision);
         if revision <= before_revision {
             revision = self.store.advance_revision().await?;
@@ -185,6 +178,24 @@ impl Actor {
         self.state.relay = staged;
         self.state.revision = revision;
         Ok(true)
+    }
+
+    async fn publish_background_address(
+        &mut self,
+        context: &str,
+        before_revision: u64,
+    ) -> Result<u64, RuntimeError> {
+        let address_result = self.publish_local_address().await;
+        let published_revision = self.state.revision;
+        self.state.revision = before_revision;
+        match address_result {
+            Ok(revision) => Ok(revision),
+            Err(error) if error.is_deferred_publication() => {
+                Self::absorb_background(context, Err(error))?;
+                Ok(published_revision)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) async fn observe_iroh_relay(
@@ -217,9 +228,13 @@ impl Actor {
             let metadata_revision = self.store.observe_if_changed(&staged).await?;
             let mut revision = observed_revision.max(metadata_revision);
             if endpoint_changed {
-                let address_result = self.publish_local_address().await;
-                self.state.revision = before_revision;
-                revision = revision.max(address_result?);
+                revision = revision.max(
+                    self.publish_background_address(
+                        "endpoint observation address publication",
+                        before_revision,
+                    )
+                    .await?,
+                );
             }
             if revision <= before_revision {
                 revision = self.store.advance_revision().await?;

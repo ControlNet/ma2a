@@ -26,6 +26,7 @@ const PROMPT: Duration = Duration::from_secs(10);
 
 mod enrollment_test;
 mod mutations_test;
+mod observation_test;
 
 #[derive(Debug)]
 struct MutableClock(AtomicI64);
