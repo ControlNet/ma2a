@@ -108,6 +108,7 @@ export function clearPendingSpaceCreation(storage: Storage | undefined): void {
 export type PendingSpaceTrackerOptions = {
   readonly endpointId?: (() => string | undefined) | undefined
   readonly storage?: Storage | undefined
+  readonly isActive?: (() => boolean) | undefined
   readonly onChange?: ((pending: PendingSpaceCreation | undefined) => void) | undefined
 }
 
@@ -169,6 +170,7 @@ export function createPendingSpaceTracker(
       }
     }
   }
+  const active = (): boolean => options.isActive?.() ?? true
   const notify = (scope: string | undefined, entry: MemoryPendingSpace | undefined): void => {
     options.onChange?.(
       scope !== undefined && entry !== undefined
@@ -176,8 +178,18 @@ export function createPendingSpaceTracker(
         : undefined,
     )
   }
+  const remove = (requestId: RequestId): void => {
+    if (!active()) return
+    const scope = options.endpointId?.()
+    const current = load(scope)
+    if (!current.some((entry) => entry.requestId === requestId)) return
+    const remaining = current.filter((entry) => entry.requestId !== requestId)
+    persist(scope, remaining)
+    notify(scope, remaining.at(-1))
+  }
   return {
     begin: (name, nextId) => {
+      if (!active()) return { requestId: nextId(), reused: false }
       const scope = options.endpointId?.()
       const current = load(scope)
       const existing = current.find((entry) => entry.name === name)
@@ -189,21 +201,16 @@ export function createPendingSpaceTracker(
       return { requestId, reused: false }
     },
     markUnsettled: (requestId) => {
+      if (!active()) return
       const scope = options.endpointId?.()
       const matched = load(scope).find((entry) => entry.requestId === requestId)
       if (scope !== undefined && matched !== undefined) {
         notify(scope, matched)
       }
     },
-    settle: (requestId) => {
-      const scope = options.endpointId?.()
-      const current = load(scope)
-      if (!current.some((entry) => entry.requestId === requestId)) return
-      const remaining = current.filter((entry) => entry.requestId !== requestId)
-      persist(scope, remaining)
-      notify(scope, remaining.at(-1))
-    },
+    settle: remove,
     discard: () => {
+      if (!active()) return
       const scope = options.endpointId?.()
       persist(scope, [])
       notify(scope, undefined)

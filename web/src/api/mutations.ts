@@ -17,7 +17,11 @@ import {
   RequestIdSchema,
   SpaceIdSchema,
 } from "./mutations-schema"
-import { createPendingSpaceTracker, type PendingSpaceCreation } from "./pending-space"
+import {
+  createPendingSpaceTracker,
+  type PendingSpaceCreation,
+  type PendingSpaceTracker,
+} from "./pending-space"
 
 export type {
   MutationControlSyncView,
@@ -105,6 +109,8 @@ type MutationClientOptions = {
   readonly storage?: Storage | undefined
   /** Called when the unresolved Space creation settles, fails unsettled, or is discarded. */
   readonly onPendingSpaceCreation?: (pending: PendingSpaceCreation | undefined) => void
+  /** Optional session-scoped tracker shared across controller replacements. */
+  readonly pendingSpace?: PendingSpaceTracker | undefined
 }
 
 function browserRequestId(): string {
@@ -150,11 +156,13 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
   // storage and Runtime identity are provided, the unresolved record also survives a page reload.
   // Only the Runtime's answer for that ID settles it: an HTTP refusal of a retry says nothing
   // about the earlier attempt, and `unavailable` means the Runtime is still running it.
-  const pendingSpace = createPendingSpaceTracker({
-    endpointId: options.endpointId,
-    storage: options.storage,
-    onChange: options.onPendingSpaceCreation,
-  })
+  const pendingSpace =
+    options.pendingSpace ??
+    createPendingSpaceTracker({
+      endpointId: options.endpointId,
+      storage: options.storage,
+      onChange: options.onPendingSpaceCreation,
+    })
 
   return {
     createSpace: async (name) => {

@@ -3,6 +3,7 @@ import { createRuntimeMutationClient, mutationFailureText } from "./api/mutation
 import {
   browserSessionStorage,
   clearPendingSpaceCreation,
+  createPendingSpaceTracker,
   type PendingSpaceCreation,
   readPendingSpaceCreation,
 } from "./api/pending-space"
@@ -41,6 +42,13 @@ export function App({
   const [session, setSession] = useState<WebSession | undefined>(currentWebSession)
   // The session signed in now, read when a request another session sent is answered.
   const sessionRef = useRef(session)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
   const [liveRuntime, setLiveRuntime] = useState<RuntimeViewData | undefined>(runtime)
   const [runtimeLoadFailed, setRuntimeLoadFailed] = useState(false)
   const [controller, setController] = useState<RuntimeController | undefined>()
@@ -126,20 +134,30 @@ export function App({
     [signedOut],
   )
 
+  const pendingSpace = useMemo(() => {
+    if (session === undefined) return undefined
+    const active = (): boolean => mountedRef.current && sessionRef.current === session
+    return createPendingSpaceTracker({
+      endpointId: () => (active() ? runtimeRef.current?.endpoint.id : undefined),
+      storage: browserSessionStorage(),
+      isActive: active,
+      onChange: (pending) => {
+        if (active()) setPendingSpaceCreation(pending)
+      },
+    })
+  }, [session])
+
   const actions = useMemo(() => {
-    if (session === undefined || controller === undefined) return undefined
+    if (session === undefined || controller === undefined || pendingSpace === undefined) {
+      return undefined
+    }
     const csrfToken = (): string => currentWebSession()?.csrfToken ?? session.csrfToken
     return createRuntimeActions(
-      createRuntimeMutationClient({
-        csrfToken,
-        endpointId: () => runtimeRef.current?.endpoint.id,
-        storage: browserSessionStorage(),
-        onPendingSpaceCreation: setPendingSpaceCreation,
-      }),
+      createRuntimeMutationClient({ csrfToken, pendingSpace }),
       () => controller.refresh(),
       () => endSession(session),
     )
-  }, [controller, endSession, session])
+  }, [controller, endSession, pendingSpace, session])
 
   useEffect(() => {
     if (controlled || session === undefined || !consoleShown) return
