@@ -144,50 +144,47 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
     };
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancel_flag = Arc::clone(&cancelled);
-    let cancel = async move {
+    let mut interrupt = Box::pin(async move {
         interrupted().await;
         cancel_flag.store(true, Ordering::Release);
-    };
-    let called = service::call((&mut reader, &mut writer), local, cancel).await;
+    });
+    let called = service::call((&mut reader, &mut writer), local, interrupt.as_mut()).await;
     drop((reader, writer));
     match called {
         Ok(called) => {
             if stdio.stdout_stuck() {
-                stdio
-                    .exit_error(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        "standard output delivery was interrupted",
-                    )))
-                    .await;
+                stdio.exit_error(interrupted_io().into()).await;
             }
-            if cancelled.load(Ordering::Acquire) {
-                let wrote = tokio::time::timeout(super::stdio::DIAGNOSTIC_GRACE, async {
-                    let mut stdout = tokio::io::stdout();
-                    stdout.write_all(&called.result).await?;
-                    stdout.flush().await
-                })
-                .await;
-                if matches!(wrote, Ok(Ok(()))) {
-                    stdio.exit_code(0, false).await;
+            let was_cancelled = cancelled.load(Ordering::Acquire);
+            let deliver = async {
+                let mut stdout = stdio.stdout();
+                stdout.write_all(&called.result).await?;
+                stdout.flush().await
+            };
+            let outcome = if was_cancelled {
+                tokio::time::timeout(super::stdio::DIAGNOSTIC_GRACE, deliver)
+                    .await
+                    .unwrap_or_else(|_| Err(interrupted_io()))
+            } else {
+                tokio::select! {
+                    result = deliver => result,
+                    () = interrupt.as_mut() => Err(interrupted_io()),
                 }
-                stdio
-                    .exit_error(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        "standard output delivery was interrupted",
-                    )))
-                    .await;
+            };
+            match outcome {
+                Ok(()) => stdio.exit_code(0, !was_cancelled).await,
+                Err(error) => stdio.exit_error(error.into()).await,
             }
-            if let Err(error) = write_stdout(&called.result) {
-                stdio.exit_error(error.into()).await;
-            }
-            stdio.exit_code(0, true).await
         }
         Err(error) => stdio.exit_error(error.into()).await,
     }
 }
 
-fn write_stdout(bytes: &[u8]) -> std::io::Result<()> {
-    std::io::stdout().lock().write_all(bytes)
+fn interrupted_io() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "standard output delivery was interrupted",
+    )
 }
 
 #[cfg(test)]

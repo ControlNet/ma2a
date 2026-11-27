@@ -9,6 +9,10 @@ use std::{
     os::fd::{AsFd, OwnedFd},
     path::PathBuf,
     process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -37,6 +41,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 struct Standin {
     state_dir: PathBuf,
     endpoint: String,
+    ipc_closed: Arc<AtomicBool>,
     _lock: File,
     _runtime: Runtime,
 }
@@ -53,6 +58,7 @@ enum Mode {
     OkStdoutOnCancel,
     DropChannelOnCancel(Channel),
     LogsStderrFill(usize),
+    DelayedOk,
 }
 
 fn start_standin(label: &str, mode: Mode) -> TestResult<Standin> {
@@ -82,16 +88,18 @@ fn start_standin(label: &str, mode: Mode) -> TestResult<Standin> {
     for byte in iroh::SecretKey::generate().public().as_bytes() {
         let _written = write!(endpoint, "{byte:02x}");
     }
-    runtime.spawn(serve(listener, mode));
+    let ipc_closed = Arc::new(AtomicBool::new(false));
+    runtime.spawn(serve(listener, mode, Arc::clone(&ipc_closed)));
     Ok(Standin {
         state_dir,
         endpoint,
+        ipc_closed,
         _lock: lock,
         _runtime: runtime,
     })
 }
 
-async fn serve(listener: UnixListener, mode: Mode) {
+async fn serve(listener: UnixListener, mode: Mode, ipc_closed: Arc<AtomicBool>) {
     while let Ok((mut stream, _)) = listener.accept().await {
         let Ok((correlation, request)) = read_frame(&mut stream).await else {
             continue;
@@ -119,12 +127,12 @@ async fn serve(listener: UnixListener, mode: Mode) {
             continue;
         }
         if answer.pointer("/result/type") == Some(&json!("stream_opened")) {
-            tokio::spawn(handle_call(stream, mode));
+            tokio::spawn(handle_call(stream, mode, Arc::clone(&ipc_closed)));
         }
     }
 }
 
-async fn handle_call(stream: UnixStream, mode: Mode) {
+async fn handle_call(stream: UnixStream, mode: Mode, ipc_closed: Arc<AtomicBool>) {
     let (read, write) = stream.into_split();
     let mut reader = FrameReader::new(read);
     let mut writer = FrameWriter::new(write);
@@ -165,7 +173,7 @@ async fn handle_call(stream: UnixStream, mode: Mode) {
         return;
     }
     let accept = match mode {
-        Mode::CancelChannel(_) | Mode::OkStdoutOnCancel => {
+        Mode::CancelChannel(_) | Mode::OkStdoutOnCancel | Mode::DelayedOk => {
             encode_call_accept(&[]).unwrap_or_default()
         }
         Mode::DropChannelOnCancel(_) => EMPTY_ACCEPT.to_vec(),
@@ -174,10 +182,25 @@ async fn handle_call(stream: UnixStream, mode: Mode) {
     if writer.frame(FrameKind::Accept, &accept).await.is_err() {
         return;
     }
+    if matches!(mode, Mode::DelayedOk) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let Ok(outcome) = encode_call_outcome(Ok(b"done\n")) else {
+            return;
+        };
+        if writer.frame(FrameKind::Outcome, &outcome).await.is_err() {
+            return;
+        }
+        if writer.flush().await.is_err() {
+            return;
+        }
+        while let Ok(Some(_)) = reader.next().await {}
+        ipc_closed.store(true, Ordering::Release);
+        return;
+    }
     let channel = match mode {
         Mode::CancelChannel(channel) | Mode::DropChannelOnCancel(channel) => channel,
         Mode::OkStdoutOnCancel => Channel::Output,
-        Mode::LogsStderrFill(_) => return,
+        Mode::LogsStderrFill(_) | Mode::DelayedOk => return,
     };
     let chunk = vec![b'x'; 8_192];
     for _ in 0..32 {
@@ -193,7 +216,7 @@ async fn handle_call(stream: UnixStream, mode: Mode) {
             let outcome = match mode {
                 Mode::CancelChannel(_) => encode_call_outcome(Err(ServiceError::Cancelled)),
                 Mode::OkStdoutOnCancel => encode_call_outcome(Ok(b"{\"ok\":true}")),
-                Mode::DropChannelOnCancel(_) | Mode::LogsStderrFill(_) => return,
+                Mode::DropChannelOnCancel(_) | Mode::LogsStderrFill(_) | Mode::DelayedOk => return,
             };
             let Ok(payload) = outcome else {
                 return;
@@ -431,5 +454,73 @@ fn process_logs_exits_0_when_diagnostic_note_blocks_full_stderr() -> TestResult 
     drop(stderr_read);
     let _ = stdout_drain.join();
     assert_eq!(status.code(), Some(0), "expected exit 0, got {status:?}");
+    Ok(())
+}
+
+#[test]
+fn service_call_sigint_interrupts_delayed_result_on_full_stdout() -> TestResult {
+    // 1. Drainable stdout receives exact output and exits 0.
+    let standin = start_standin("delayed-ok-drain", Mode::DelayedOk)?;
+    let output = spawn_service_call(&standin, false)?.wait_with_output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit 0, got {:?}; stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"done\n");
+
+    // 2. Prefilled stdout blocks final result delivery; SIGINT must still interrupt promptly.
+    let (stdout_read, mut stdout_write) = std::io::pipe()?;
+    let _filled = fill_nonblocking(&mut stdout_write)?;
+    let standin = start_standin("delayed-ok-blocked", Mode::DelayedOk)?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .arg("--state-dir")
+        .arg(&standin.state_dir)
+        .args([
+            "service",
+            "call",
+            "--endpoint",
+            &standin.endpoint,
+            "--version",
+            "1",
+            "example",
+            "stream",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout_write))
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stderr_drain = drain(child.stderr.take().ok_or("missing stderr")?);
+    let ipc_deadline = Instant::now() + Duration::from_secs(5);
+    while !standin.ipc_closed.load(Ordering::Acquire) {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("service call exited before IPC closed: {status}").into());
+        }
+        if Instant::now() >= ipc_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("service call never closed IPC after replying".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pid = Pid::from_raw(i32::try_from(child.id())?).ok_or("no pid")?;
+    kill_process(pid, Signal::INT)?;
+    let exit_deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= exit_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("service call hung past 2s after SIGINT on final stdout write".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(stdout_read);
+    let _ = stderr_drain.join();
+    assert_eq!(status.code(), Some(1), "expected exit 1, got {status:?}");
     Ok(())
 }
