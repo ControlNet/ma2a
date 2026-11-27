@@ -1015,3 +1015,107 @@ async fn a_watch_hears_caller_cancel_and_eof_while_event_write_is_blocked() -> T
     }
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transient_log_read_failure_during_ended_drain_retries_before_concluding() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    struct RestorePermissions(PathBuf);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _restored =
+                std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    // Given: an ended instance with an unread `completed` line while its log directory is
+    // temporarily unreadable.
+    let live = Live::new().await?;
+    let completed = serde_json::json!({
+        "t": "state",
+        "task": live.task.to_string(),
+        "state": "completed",
+        "message": {"role": "agent", "parts": [{"kind": "text", "text": "retried log result"}]},
+    });
+    let mut payload = serde_json::to_vec(&completed)?;
+    payload.push(b'\n');
+    write_ended_instance_log(
+        &live,
+        &[
+            (ma2a_core::service::Channel::Output, b"\n"),
+            (ma2a_core::service::Channel::Output, &payload),
+        ],
+    )?;
+    let log_dir = ma2a_services::supervisor::log_directory(
+        &live
+            .dir
+            .join("processes-v1")
+            .join(ProcessId::from_bytes([4; 16]).to_string()),
+    );
+    std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o000))?;
+    let restore = RestorePermissions(log_dir.clone());
+    let restoring = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o700))
+    });
+
+    // When: the link follows the instance through the transient filesystem failure.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        live.manager.follow_instance(&live.agent, live.generation),
+    )
+    .await?;
+    restoring.await??;
+    drop(restore);
+
+    // Then: the link retried from the durable cursor instead of concluding early, and the task completed.
+    let record = Repository::open(&live.config)?
+        .agent_task(live.task)?
+        .ok_or("missing task")?;
+    live.finish().await?;
+    assert_eq!(record.summary.state, AgentTaskState::Completed);
+    assert_eq!(
+        record.result,
+        Some(AgentMessage::text(
+            MessageRole::Agent,
+            "retried log result"
+        )?)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_permanently_unusable_log_concludes_instead_of_looping_forever() -> TestResult {
+    // Given: an ended instance whose log directory was replaced by a regular file.
+    let live = Live::new().await?;
+    write_ended_instance_log(&live, &[])?;
+    let log_dir = ma2a_services::supervisor::log_directory(
+        &live
+            .dir
+            .join("processes-v1")
+            .join(ProcessId::from_bytes([4; 16]).to_string()),
+    );
+    std::fs::remove_dir_all(&log_dir)?;
+    std::fs::write(&log_dir, b"not a directory")?;
+
+    // When: the link follows the ended instance.
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        live.manager.follow_instance(&live.agent, live.generation),
+    )
+    .await?;
+
+    // Then: the instance concluded cleanly instead of retrying forever.
+    let repository = Repository::open(&live.config)?;
+    let record = repository.agent_task(live.task)?.ok_or("missing task")?;
+    let instance = repository
+        .agent(&live.agent)?
+        .and_then(|agent| agent.instance)
+        .ok_or("missing instance")?;
+    live.finish().await?;
+    assert_eq!(record.summary.state, AgentTaskState::Failed);
+    assert_eq!(record.summary.reason, Some(AgentTaskReason::AgentLost));
+    assert!(!instance.is_live());
+    Ok(())
+}

@@ -32,9 +32,8 @@ impl AgentManager {
     /// Drains complete stdout lines past `instance.cursor` from `record`'s durable log
     /// before the instance is concluded.
     ///
-    /// A transient Store failure while applying a line returns [`Linked::Broken`] so the
-    /// link retries from the updated cursor instead of concluding early and failing tasks
-    /// with `agent_lost`.
+    /// A transient log-read or Store-apply failure returns [`Linked::Broken`] so the link retries
+    /// from the updated cursor instead of concluding early and failing tasks with `agent_lost`.
     async fn drain_ended(
         &self,
         (agent, instance): (&AgentId, AgentInstanceRecord),
@@ -43,13 +42,28 @@ impl AgentManager {
         let mut cursor = instance.cursor;
         let mut lines = Lines::new(cursor);
         loop {
-            let Ok(Some(read)) = self
+            let read = match self
                 .0
                 .processes
                 .read_local_log(record, (cursor, DRAIN_BATCH))
                 .await
-            else {
-                return Linked::Ended;
+            {
+                Ok(Some(read)) => read,
+                Ok(None) => return Linked::Ended,
+                Err(error @ (ServiceError::NotADirectory | ServiceError::IsADirectory)) => {
+                    eprintln!(
+                        "agent {agent} instance {} log is unusable ({error}); concluding",
+                        instance.generation
+                    );
+                    return Linked::Ended;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "agent {agent} instance {} log read failed ({error}); retrying",
+                        instance.generation
+                    );
+                    return Linked::Broken;
+                }
             };
             if read.start > cursor {
                 lines.skipped(read.start);

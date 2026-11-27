@@ -104,6 +104,12 @@ impl ProcessManager {
         match read {
             Ok(read) => Ok(Some(read)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+                Err(ServiceError::NotADirectory)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
+                Err(ServiceError::IsADirectory)
+            }
             Err(_) => Err(ServiceError::Io),
         }
     }
