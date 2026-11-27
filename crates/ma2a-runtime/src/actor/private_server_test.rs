@@ -137,6 +137,10 @@ async fn occupied_listener_retains_desired_state_and_retries_without_republicati
     Ok(())
 }
 
+use super::partial_relay_publication_test::activity_reconciliation_test::{
+    add_peer, respond_has_relay_advertisement,
+};
+
 #[tokio::test(start_paused = true)]
 async fn restart_with_temporarily_occupied_private_listener_retains_pending_role() -> TestResult {
     let state = TempState::new("restart-pending-role")?;
@@ -147,19 +151,50 @@ async fn restart_with_temporarily_occupied_private_listener_retains_pending_role
     let space = handle
         .create_owned_space("restart-pending".to_owned())
         .await?;
+    let peer_id = ma2a_core::EndpointId::from(iroh::SecretKey::from_bytes(&[0x44; 32]).public());
+    add_peer(&config, space, peer_id)?;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let address = listener.local_addr()?;
     drop(listener);
     let mut desired = super::relay_lifecycle_test::enabled_configuration(vec![space]);
     desired.listener_address = Some(address.to_string());
     handle.set_relay_configuration(desired).await?;
+    let initial_ad = Repository::open(&config)?
+        .relay_advertisement(space, endpoint)?
+        .ok_or("initial advertisement missing")?;
+    assert!(initial_ad.is_active());
+    let now_ms = u64::try_from(initial_ad.issued_at_ms())?;
+    assert!(respond_has_relay_advertisement(
+        &config,
+        (endpoint, peer_id, space),
+        now_ms
+    )?);
     runtime.shutdown().await?;
+
     let occupied = std::net::TcpListener::bind(address)?;
-    let restarted = Runtime::start(config).await?;
+    let restarted = Runtime::start(config.clone()).await?;
     let handle = restarted.handle();
     assert_eq!(handle.status().await?.endpoint_id(), endpoint);
     assert!(handle.relay_status().await?.convergence_pending);
     assert!(handle.relay_status().await?.applied_private.is_none());
+    let while_occupied = Repository::open(&config)?
+        .relay_advertisement(space, endpoint)?
+        .ok_or("persisted advertisement disappeared")?;
+    assert!(!while_occupied.is_active());
+    assert!(!respond_has_relay_advertisement(
+        &config,
+        (endpoint, peer_id, space),
+        now_ms
+    )?);
+    assert_eq!(
+        handle
+            .snapshot()
+            .await?
+            .to_value()
+            .pointer("/private_relay_candidates"),
+        Some(&serde_json::json!([]))
+    );
+
     drop(occupied);
     tick(&handle).await;
     assert_eq!(
@@ -167,6 +202,16 @@ async fn restart_with_temporarily_occupied_private_listener_retains_pending_role
         Some(address)
     );
     assert!(!handle.relay_status().await?.convergence_pending);
+    let recovered = Repository::open(&config)?
+        .relay_advertisement(space, endpoint)?
+        .ok_or("recovered advertisement missing")?;
+    assert!(recovered.is_active());
+    assert!(recovered.sequence() > initial_ad.sequence());
+    assert!(respond_has_relay_advertisement(
+        &config,
+        (endpoint, peer_id, space),
+        u64::try_from(recovered.issued_at_ms())?
+    )?);
     restarted.shutdown().await?;
     Ok(())
 }

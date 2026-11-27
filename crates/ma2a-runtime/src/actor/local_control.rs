@@ -16,20 +16,11 @@ impl Actor {
     }
 
     pub(crate) async fn refresh_local_relay_publication(&mut self) -> Result<(), RuntimeError> {
-        let configuration = self.store.relay_configuration().await?;
-        let runtime = ma2a_net::RuntimeRelayConfiguration::try_from(configuration)
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-        if let Some(provider) = runtime.private_provider() {
-            if self
-                .private_relay_server
-                .as_ref()
-                .map(ma2a_net::PrivateRelayServer::configuration)
-                != Some(provider)
-            {
-                // Desired provider state is not publishable until its server is applied.
-                // Server reconciliation owns this pending work and retries on maintenance.
-                return Ok(());
-            }
+        if let Some(provider) = self
+            .private_relay_server
+            .as_ref()
+            .map(|server| server.configuration().clone())
+        {
             let issued_at_ms = u64::try_from(self.clock.now_ms()?)
                 .map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))?;
             let expires_at_ms = issued_at_ms
@@ -39,7 +30,7 @@ impl Actor {
             // clock step between two readings cannot leave it an invalid window. Always reconcile
             // durable activity against `effective`, skipping signing only for current Spaces.
             self.publish_local_relay(
-                provider.clone(),
+                provider,
                 (
                     issued_at_ms,
                     expires_at_ms,

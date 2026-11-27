@@ -1,7 +1,4 @@
-use super::{
-    AddressPublicationResult, RelayExpiryPolicy, RelayPublicationResult, StoreBackend,
-    pending_relay::PendingRelayPublication,
-};
+use super::{AddressPublicationResult, RelayExpiryPolicy, RelayPublicationResult, StoreBackend};
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
 #[cfg(test)]
@@ -65,6 +62,7 @@ impl StoreBackend {
         local_endpoint_id: ma2a_core::EndpointId,
         active_spaces: &[ma2a_core::SpaceId],
     ) -> Result<(u64, bool), RuntimeError> {
+        self.pending_relay_publication = None;
         self.repository
             .reconcile_private_relay_activity(local_endpoint_id, active_spaces)
             .map_err(Into::into)
@@ -116,40 +114,10 @@ impl StoreBackend {
             .iter()
             .map(ma2a_store::ControlSpaceState::authorization)
             .collect::<Vec<_>>();
-        let reuse = self
-            .pending_relay_publication
-            .as_ref()
-            .map_or(Ok(false), |pending| {
-                pending.can_reuse(
-                    (publisher.config(), &authorizations, skip_spaces),
-                    (issued_at_ms, expires_at_ms, expiry_policy),
-                )
-            })?;
-        if !reuse {
-            // A changed or renewal-due retained batch cannot complete as a
-            // safely fresh publication. The signed replacement becomes pending
-            // before any per-Space write.
-            self.pending_relay_publication = None;
-            let request = ma2a_net::AdvertisementPublicationRequest::new(
-                &authorizations,
-                issued_at_ms,
-                expires_at_ms,
-            )
-            .skipping_current(skip_spaces);
-            let (advertisements, active_spaces, clock_behind) = publisher
-                .advertisement_batch(&mut self.repository, request)
-                .map_err(RuntimeError::from)?;
-            self.pending_relay_publication = Some(PendingRelayPublication {
-                config: publisher.config().clone(),
-                authorizations: authorizations.clone(),
-                skip_spaces: skip_spaces.clone(),
-                advertisements,
-                active_spaces,
-                clock_behind,
-                issued_at_ms,
-                expires_at_ms,
-            });
-        }
+        self.prepare_pending_relay_publication(
+            (publisher, local_endpoint_id, &authorizations),
+            (issued_at_ms, expires_at_ms, expiry_policy, skip_spaces),
+        )?;
         let pending = self
             .pending_relay_publication
             .as_ref()

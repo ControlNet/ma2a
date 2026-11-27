@@ -10,6 +10,7 @@ use crate::{Runtime, RuntimeClock, error::RuntimeError};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+pub(super) mod activity_reconciliation_test;
 mod explicit_expiry_test;
 mod freshness_test;
 
