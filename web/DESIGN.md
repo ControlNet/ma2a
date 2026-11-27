@@ -126,8 +126,10 @@ WCAG 2.2 AA, with zero serious or critical axe findings on all nine routes asser
 `src/app.test.tsx`. Targets are at least `--target-min` (44px). Focus is a 3px `--accent` outline at
 3px offset and is never colour alone. Layout is usable at 375px, 768px, 1280px and 200% zoom.
 
-The theme preference is the only thing this console writes to browser storage. Reads and writes are
-wrapped, because blocked storage must degrade to `system` rather than throw.
+Only the theme preference (`localStorage`) and unresolved Space creation request IDs
+(`sessionStorage`, scoped to the Endpoint and cleared on sign-out) touch browser storage; neither
+is a secret. Reads and writes are wrapped, because blocked storage must degrade to `system` (or
+in-memory tracking) rather than throw.
 
 ## 8. What the snapshot now carries
 
