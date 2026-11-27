@@ -39,6 +39,7 @@ export class RuntimeMutationRejectedError extends Error {
   constructor(
     readonly code: string,
     readonly remediation?: string,
+    readonly outcomeUnknown = code === "unavailable" && remediation === undefined,
   ) {
     super(remediation ? `${code}: ${remediation}` : code)
   }
@@ -54,7 +55,7 @@ export class RuntimeMutationRejectedError extends Error {
 export function mutationOutcomeUnknown(error: unknown): boolean {
   if (error instanceof z.ZodError) return false
   if (error instanceof RuntimeMutationRejectedError) {
-    return error.code === "unavailable" && error.remediation === undefined
+    return error.outcomeUnknown
   }
   return !(
     error instanceof HTTPError &&
@@ -210,6 +211,17 @@ export function createRuntimeMutationClient(options: MutationClientOptions): Run
         operation: "control_sync_trigger",
         request_id: id(),
         peer_endpoint_id: endpoint(endpointId),
+      }).catch((error: unknown) => {
+        // Control sync uses a fresh request ID per trigger and never replays a pending entry, so
+        // bare `unavailable` means no peer was dialed (no-effect refusal) rather than pending.
+        if (
+          error instanceof RuntimeMutationRejectedError &&
+          error.code === "unavailable" &&
+          error.remediation === undefined
+        ) {
+          throw new RuntimeMutationRejectedError(error.code, error.remediation, false)
+        }
+        throw error
       })
       if (result.type !== "control_sync_triggered") throw new RuntimeMutationPayloadError()
       return result.payload

@@ -51,3 +51,22 @@ test("bare unavailable keeps the outcome unsettled while preserving explicit rem
   expect(mutationOutcomeUnknown(advised)).toBe(false)
   expect(mutationFailureText(advised, "Outcome unsettled.", "Rejected.")).toBe("Try later.")
 })
+
+test("bare unavailable from triggerSync is treated as a no-effect refusal", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    Response.json({
+      version: 1,
+      error: "unavailable",
+      remediation: null,
+    }),
+  )
+  const client = createRuntimeMutationClient({
+    csrfToken: () => "cd".repeat(32),
+    requestId: () => "01".repeat(16),
+  })
+
+  const error: unknown = await client.triggerSync("ef".repeat(32)).catch((caught) => caught)
+
+  expect(mutationOutcomeUnknown(error)).toBe(false)
+  expect(mutationFailureText(error, "No answer came back.", "Rejected.")).toBe("Rejected.")
+})
