@@ -57,6 +57,17 @@ pub(super) async fn follow(
     (agent, task): (AgentId, AgentTaskId),
     after: Option<u32>,
 ) -> Result<AgentReply, AppError> {
+    follow_with(target, (agent, task), (after, print)).await
+}
+
+pub(super) async fn follow_with(
+    target: Target<'_>,
+    (agent, task): (AgentId, AgentTaskId),
+    (after, mut emit): (
+        Option<u32>,
+        impl FnMut(&serde_json::Value) -> Result<(), AppError>,
+    ),
+) -> Result<AgentReply, AppError> {
     let (print_events, mut seen) = (after.is_some(), after.unwrap_or(0));
     // The task's end once taken, which a reconnected watch must end with and nothing follow.
     let mut ended = None;
@@ -66,18 +77,29 @@ pub(super) async fn follow(
         let request = AgentRequest::Watch(agent.clone(), task, seen);
         let watched = match open(target.0, target.1, OpenBody::Agent(request)).await {
             Ok((mut reader, _writer)) => {
+                let stop = tokio::sync::Notify::new();
+                let stopped = stop.notified();
+                tokio::pin!(stopped);
                 let mut printed = Ok(());
-                let outcome = client::agent::watch(
-                    &mut reader,
-                    ((&caller, &agent, task), (seen, ended)),
-                    |event| {
-                        (seen, ended) = (event.seq, client::agent::end_of(&event));
-                        if print_events && printed.is_ok() {
-                            printed = print(&agent_event_value(&event));
-                        }
-                    },
-                )
-                .await;
+                let outcome = tokio::select! {
+                    biased;
+                    () = &mut stopped => Err(client::ClientError::Local(std::io::Error::from(
+                        std::io::ErrorKind::BrokenPipe,
+                    ))),
+                    outcome = client::agent::watch(
+                        &mut reader,
+                        ((&caller, &agent, task), (seen, ended)),
+                        |event| {
+                            (seen, ended) = (event.seq, client::agent::end_of(&event));
+                            if print_events && printed.is_ok() {
+                                printed = emit(&agent_event_value(&event));
+                                if printed.is_err() {
+                                    stop.notify_one();
+                                }
+                            }
+                        },
+                    ) => outcome,
+                };
                 printed?;
                 outcome
             }

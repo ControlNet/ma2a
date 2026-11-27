@@ -1,7 +1,8 @@
 //! `agent watch` reconnecting after its watch was interrupted.
 
 use ma2a_core::service::{
-    AgentAccept, AgentEvent, AgentEventBody, AgentReply, AgentTaskId, AgentTaskState, FrameKind,
+    AgentAccept, AgentEvent, AgentEventBody, AgentId, AgentReply, AgentTaskId, AgentTaskState,
+    FrameKind,
 };
 
 use crate::{
@@ -164,6 +165,47 @@ async fn a_watch_is_not_reopened_when_the_ipc_path_denies_permission() -> TestRe
     let outcome = ended.map_err(|_| "watch kept retrying after PermissionDenied")?;
     assert!(
         matches!(&outcome, Err(AppError::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied),
+        "{outcome:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_stops_promptly_when_printing_fails_with_broken_pipe() -> TestResult {
+    // Given: a running watch whose stream stays open after emitting one event.
+    let mut event = vec![1];
+    let running = AgentEventBody::State(AgentTaskState::Running, None);
+    event.extend(AgentEvent::new(2, 1_000, running).to_bytes()?);
+    let watch = vec![
+        (
+            FrameKind::Accept,
+            AgentAccept::Watching(AgentTaskState::Running, 2).encode()?,
+        ),
+        (FrameKind::Data, event),
+    ];
+    let daemon = Daemon::start("watch-broken-pipe", watch)?;
+    let remote = (&daemon.paths, daemon.endpoint.as_str());
+    let agent = AgentId::new("worker")?;
+
+    // When: writing the event to stdout fails with BrokenPipe while the task is still open.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        super::agent_follow::follow_with(
+            remote,
+            (agent, TASK),
+            (Some(1), |_| {
+                Err(AppError::Io(std::io::Error::from(
+                    std::io::ErrorKind::BrokenPipe,
+                )))
+            }),
+        ),
+    )
+    .await
+    .map_err(|_| "watch kept reading after print failed with BrokenPipe")?;
+
+    // Then: watch exits promptly with BrokenPipe instead of waiting for the remote task to end.
+    assert!(
+        matches!(&outcome, Err(AppError::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe),
         "{outcome:?}"
     );
     Ok(())
