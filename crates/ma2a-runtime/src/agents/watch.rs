@@ -2,7 +2,7 @@
 //! the task ended and every event before its end was sent.
 
 use ma2a_core::service::{AgentAccept, AgentReply, AgentTaskId, Channel, FrameKind, ServiceError};
-use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport};
+use ma2a_services::{FrameReader, FrameWriter, OperationEnd, OperationReport, reply::FRAME_GRACE};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 
@@ -17,17 +17,67 @@ const EVENT_BATCH: u32 = 64;
 /// Longest wait for one event frame or flush to leave the stream.
 const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
-async fn write_bounded<F>(stop: &CancellationToken, work: F) -> Result<(), ServiceError>
+/// How one bounded event write ended.
+enum EventWrite {
+    Done,
+    /// Interrupted by `stop` or `caller_gone`; the flag reports whether the started frame finished
+    /// intact so its bytes can be counted and an `outcome` can follow.
+    Stopped(ServiceError, bool),
+    /// The stream write itself failed or timed out.
+    Broken(ServiceError),
+}
+
+/// Writes one event `data` frame within [`WRITE_DEADLINE`] while watching `stop` and
+/// `caller_gone`.
+///
+/// When interrupted while the frame is already in progress, the frame gets [`FRAME_GRACE`] to
+/// finish so a live caller receives an intact frame followed by the terminal `outcome` rather
+/// than a torn stream.
+async fn write_event<W, G>(
+    writer: &mut FrameWriter<W>,
+    bytes: &[u8],
+    (stop, caller_gone): (&CancellationToken, std::pin::Pin<&mut G>),
+) -> EventWrite
 where
-    F: std::future::Future<Output = Result<(), ServiceError>>,
+    W: AsyncWrite + Unpin + Send,
+    G: std::future::Future<Output = ServiceError>,
+{
+    let write = writer.data(Channel::Output, bytes);
+    let deadline = tokio::time::sleep(WRITE_DEADLINE);
+    tokio::pin!(write, deadline);
+    let reason = tokio::select! {
+        biased;
+        () = stop.cancelled() => ServiceError::Unavailable,
+        error = caller_gone => error,
+        done = &mut write => return match done {
+            Ok(()) => EventWrite::Done,
+            Err(_) => EventWrite::Broken(ServiceError::Cancelled),
+        },
+        () = &mut deadline => return EventWrite::Broken(ServiceError::TimedOut),
+    };
+    let finished = matches!(tokio::time::timeout(FRAME_GRACE, write).await, Ok(Ok(())));
+    EventWrite::Stopped(reason, finished)
+}
+
+/// Flushes buffered event frames within [`WRITE_DEADLINE`] while watching `stop` and
+/// `caller_gone`; the boolean tells whether a terminal `outcome` may follow.
+async fn flush_bounded<W, G>(
+    writer: &mut FrameWriter<W>,
+    stop: &CancellationToken,
+    caller_gone: std::pin::Pin<&mut G>,
+) -> Result<(), (ServiceError, bool)>
+where
+    W: AsyncWrite + Unpin + Send,
+    G: std::future::Future<Output = ServiceError>,
 {
     tokio::select! {
         biased;
-        () = stop.cancelled() => Err(ServiceError::Unavailable),
-        done = tokio::time::timeout(WRITE_DEADLINE, work) => match done {
+        () = stop.cancelled() => Err((ServiceError::Unavailable, true)),
+        error = caller_gone => Err((error, true)),
+        done = tokio::time::timeout(WRITE_DEADLINE, writer.flush()) => match done {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) => Err(ServiceError::Cancelled),
-            Err(_) => Err(ServiceError::TimedOut),
+            Ok(Err(_)) => Err((ServiceError::Cancelled, false)),
+            Err(_) => Err((ServiceError::TimedOut, false)),
         },
     }
 }
@@ -52,18 +102,6 @@ async fn ended<W: AsyncWrite + Unpin + Send>(
 ) -> OperationReport {
     if !writer.is_torn() {
         let _ended = finish(writer, Err(error)).await;
-    }
-    OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent)
-}
-
-/// Ends a watch whose event write failed: a Runtime stop still answers `unavailable`.
-async fn unwritten<W: AsyncWrite + Unpin + Send>(
-    writer: &mut FrameWriter<W>,
-    sent: u64,
-    error: ServiceError,
-) -> OperationReport {
-    if error == ServiceError::Unavailable {
-        return ended(writer, sent, error).await;
     }
     OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent)
 }
@@ -132,12 +170,22 @@ impl AgentManager {
                         .await
                         .with_bytes(0, sent);
                 };
-                if let Err(error) = write_bounded(stop, writer.data(Channel::Output, &bytes)).await
-                {
-                    return unwritten(writer, sent, error).await;
+                match write_event(writer, &bytes, (stop, caller_gone.as_mut())).await {
+                    EventWrite::Done => {
+                        sent += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                        after = event.seq;
+                    }
+                    EventWrite::Stopped(error, finished) => {
+                        if finished {
+                            sent += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                        }
+                        return ended(writer, sent, error).await;
+                    }
+                    EventWrite::Broken(error) => {
+                        return OperationReport::new(OperationEnd::Failed(error))
+                            .with_bytes(0, sent);
+                    }
                 }
-                sent += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                after = event.seq;
             }
             if read > 0 {
                 continue;
@@ -146,8 +194,13 @@ impl AgentManager {
                 let ended = finish(writer, Ok(AgentReply::Summary(record.summary))).await;
                 return ended.with_bytes(0, sent);
             }
-            if let Err(error) = write_bounded(stop, writer.flush()).await {
-                return unwritten(writer, sent, error).await;
+            if let Err((error, send_outcome)) =
+                flush_bounded(writer, stop, caller_gone.as_mut()).await
+            {
+                if send_outcome {
+                    return ended(writer, sent, error).await;
+                }
+                return OperationReport::new(OperationEnd::Failed(error)).with_bytes(0, sent);
             }
             tokio::select! {
                 biased;

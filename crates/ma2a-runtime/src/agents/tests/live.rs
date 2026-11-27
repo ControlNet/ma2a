@@ -839,3 +839,179 @@ async fn a_transient_store_failure_during_ended_drain_retries_before_concluding(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_watch_stopped_mid_event_frame_finishes_the_frame_and_sends_unavailable() -> TestResult {
+    use tokio::io::AsyncReadExt as _;
+
+    // Given: a running task with enough queued events to block `writer.data` over a small pipe.
+    let live = Live::new().await?;
+    let mut repository = Repository::open(&live.config)?;
+    let body = "x".repeat(512);
+    for cursor in 100..116 {
+        let note = AgentMessage::text(MessageRole::Agent, &body)?;
+        repository.apply_agent_output(
+            &AgentOutput {
+                agent: live.agent.clone(),
+                generation: live.generation,
+                cursor,
+                at_ms: 3_000,
+            },
+            AgentOutputEffect::Message(live.task, note),
+        )?;
+    }
+
+    let (caller, host) = tokio::io::duplex(256);
+    let (caller_read, caller_write) = tokio::io::split(caller);
+    let (mut caller_reader, _caller_writer) = (
+        FrameReader::new(caller_read),
+        FrameWriter::new(caller_write),
+    );
+    let (host_read, host_write) = tokio::io::split(host);
+    let (mut host_reader, mut host_writer) =
+        (FrameReader::new(host_read), FrameWriter::new(host_write));
+    let stop = CancellationToken::new();
+    let watched = async {
+        let report = live
+            .manager
+            .watch(
+                ((None, None), &stop, (live.task, 0)),
+                (&mut host_reader, &mut host_writer),
+            )
+            .await;
+        drop((host_reader, host_writer));
+        report
+    };
+
+    // When: the caller reads `accept` and the start of the first `data` frame, then Runtime
+    // stops while the rest of that frame is still blocked, and the caller drains the stream.
+    let caller = async {
+        let accept = caller_reader.next().await?.ok_or("no accept")?;
+        assert_eq!(accept.kind(), FrameKind::Accept);
+        let mut caller_read = caller_reader.into_inner();
+        let mut head = [0_u8; 8];
+        caller_read.read_exact(&mut head).await?;
+        stop.cancel();
+        let mut bytes = head.to_vec();
+        caller_read.read_to_end(&mut bytes).await?;
+        let mut frames = FrameReader::new(bytes.as_slice());
+        let first = frames.next().await?.ok_or("missing first data frame")?;
+        assert_eq!(first.kind(), FrameKind::Data);
+        let mut outcome = None;
+        while let Some(frame) = frames.next().await? {
+            if frame.kind() == FrameKind::Outcome {
+                outcome = Some(AgentReply::decode_outcome(frame.payload())?);
+            }
+        }
+        TestResult::Ok(outcome)
+    };
+    let (report, outcome) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(watched, caller)
+    })
+    .await?;
+
+    // Then: the started frame finished cleanly and `Outcome(Unavailable)` followed.
+    live.finish().await?;
+    assert_eq!(
+        report.end,
+        ma2a_services::OperationEnd::Failed(ServiceError::Unavailable)
+    );
+    assert_eq!(outcome?, Some(Err(ServiceError::Unavailable)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_watch_hears_caller_cancel_and_eof_while_event_write_is_blocked() -> TestResult {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    for send_cancel in [true, false] {
+        let live = Live::new().await?;
+        let after = {
+            let mut repository = Repository::open(&live.config)?;
+            let initial = repository.agent_task_events(live.task, (0, 64))?;
+            let after = initial.last().map_or(0, |event| event.seq);
+            let body = "y".repeat(512);
+            for cursor in 100..116 {
+                let note = AgentMessage::text(MessageRole::Agent, &body)?;
+                repository.apply_agent_output(
+                    &AgentOutput {
+                        agent: live.agent.clone(),
+                        generation: live.generation,
+                        cursor,
+                        at_ms: 3_000,
+                    },
+                    AgentOutputEffect::Message(live.task, note),
+                )?;
+            }
+            after
+        };
+
+        let (caller, host) = tokio::io::duplex(256);
+        let (caller_read, caller_write) = tokio::io::split(caller);
+        let (mut caller_reader, mut caller_writer) = (
+            FrameReader::new(caller_read),
+            FrameWriter::new(caller_write),
+        );
+        let (host_read, host_write) = tokio::io::split(host);
+        let (mut host_reader, mut host_writer) =
+            (FrameReader::new(host_read), FrameWriter::new(host_write));
+        let stop = CancellationToken::new();
+        let watched = async {
+            let report = live
+                .manager
+                .watch(
+                    ((None, None), &stop, (live.task, after)),
+                    (&mut host_reader, &mut host_writer),
+                )
+                .await;
+            drop((host_reader, host_writer));
+            report
+        };
+
+        let caller = async {
+            let accept = caller_reader.next().await?.ok_or("no accept")?;
+            assert_eq!(accept.kind(), FrameKind::Accept);
+            let mut caller_read = caller_reader.into_inner();
+            let mut head = [0_u8; 8];
+            caller_read.read_exact(&mut head).await?;
+            if send_cancel {
+                caller_writer.frame(FrameKind::Cancel, &[]).await?;
+                caller_writer.flush().await?;
+            } else {
+                caller_writer.get_mut().shutdown().await?;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut bytes = head.to_vec();
+            caller_read.read_to_end(&mut bytes).await?;
+            let mut frames = FrameReader::new(bytes.as_slice());
+            let mut data_frames = 0_usize;
+            let mut outcome = None;
+            while let Some(frame) = frames.next().await? {
+                match frame.kind() {
+                    FrameKind::Data => data_frames += 1,
+                    FrameKind::Outcome => {
+                        outcome = Some(AgentReply::decode_outcome(frame.payload())?);
+                    }
+                    other => return Err(format!("unexpected frame {other:?}").into()),
+                }
+            }
+            TestResult::Ok((data_frames, outcome))
+        };
+        let (report, caller_res) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(watched, caller)
+        })
+        .await?;
+        let (data_frames, outcome) = caller_res?;
+        live.finish().await?;
+        assert_eq!(
+            report.end,
+            ma2a_services::OperationEnd::Failed(ServiceError::Cancelled)
+        );
+        assert_eq!(
+            data_frames, 1,
+            "watch kept sending {data_frames} events after caller cancel/EOF"
+        );
+        assert_eq!(outcome, Some(Err(ServiceError::Cancelled)));
+    }
+    Ok(())
+}
