@@ -250,3 +250,63 @@ async fn a_definition_whose_instance_start_outgrows_a_header_frame_is_refused() 
     assert!(fitting.is_ok(), "{fitting:?}");
     Ok(())
 }
+
+#[tokio::test]
+async fn ensure_instance_never_launches_replacement_before_previous_process_is_terminal()
+-> TestResult {
+    // Given: an enabled Agent whose previous ended instance still points at a non-terminal
+    // Process in `created` state (which cannot yet be terminated directly).
+    let reserved = Reserved::new().await?;
+    let agent = AgentId::new("guarded")?;
+    let spec = super::AgentSpec {
+        id: agent.clone(),
+        description: String::new(),
+        command: ("/bin/true".to_owned(), Vec::new()),
+        cwd: None,
+        env: Vec::new(),
+        tools: 0,
+        max_tasks: 1,
+    };
+    reserved.manager.define(spec).await?;
+    let mut repository = Repository::open(&reserved.config)?;
+    repository.set_agent_enabled(&agent, (true, 2))?;
+    let first = repository
+        .begin_agent_instance(&agent, 3)?
+        .into_value()
+        .and_then(|record| record.instance)
+        .ok_or("no instance began")?;
+    let process_id = ma2a_core::service::ProcessId::from_bytes([0x22; 16]);
+    let start = ProcessStart::new(
+        ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?,
+        true,
+        MAX_LOG_LIMIT,
+    )?
+    .to_bytes()?;
+    repository.create_process(&ma2a_store::NewProcess {
+        id: process_id,
+        binding: (reserved.manager.0.local, RequestId::random()?),
+        fingerprint: [0x33; 32],
+        start: (&start, None),
+        secret: [0x44; 32],
+        created_ms: 4,
+    })?;
+    repository.bind_agent_process((&agent, first.generation), process_id)?;
+    repository.set_agent_enabled(&agent, (false, 5))?;
+    repository.set_agent_enabled(&agent, (true, 6))?;
+    drop(repository);
+
+    // When: maintenance asks to ensure a live instance while the previous Process is non-terminal.
+    reserved.manager.ensure_instance(&agent).await;
+
+    // Then: no replacement generation is created while the old Process is still non-terminal.
+    let current = reserved
+        .manager
+        .agent(&agent)
+        .await?
+        .and_then(|record| record.instance)
+        .ok_or("instance missing")?;
+    reserved.finish().await?;
+    assert_eq!(current.generation, first.generation);
+    assert!(current.ended_ms.is_some());
+    Ok(())
+}

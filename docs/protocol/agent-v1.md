@@ -462,8 +462,10 @@ stopped. Removing it keeps its finished tasks until they expire.
 **Start and stop.** `agent_start` enables the Agent, and its first instance starts at once.
 `agent_stop` disables it in one transaction: every unfinished task fails with `agent_stopped`,
 the live instance ends, and its outbox is dropped. The instance Process is then terminated with a
-5 s grace period. A launch that races a stop finds its instance ended when it binds the Process,
-and terminates that Process the same way.
+5 s grace period. Lifecycle operations on the same Agent serialize through that termination, and
+no replacement instance launches while the previous instance's Process is still live. A launch
+that races a stop finds its instance ended when it binds the Process, and terminates that Process
+the same way.
 
 **Instance.** An instance is one incarnation of a started Agent: a Phase 3 Process that the local
 Endpoint creates for itself, with a generation number. Each start takes the next generation, and

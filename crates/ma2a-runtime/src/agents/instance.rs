@@ -55,6 +55,12 @@ impl AgentManager {
     /// Makes sure a started Agent has a linked live instance, starting the next one once
     /// its restart backoff has passed.
     pub(super) async fn ensure_instance(&self, agent: &AgentId) {
+        let _lifecycle = self.lock_lifecycle(agent).await;
+        self.ensure_instance_locked(agent).await;
+    }
+
+    /// Runs [`Self::ensure_instance`] while the caller already holds `agent`'s lifecycle lock.
+    pub(super) async fn ensure_instance_locked(&self, agent: &AgentId) {
         let Ok(Some(record)) = self.agent(agent).await else {
             return;
         };
@@ -66,6 +72,11 @@ impl AgentManager {
                 self.launch(&record, instance).await;
             }
             self.link(agent, instance.generation);
+            return;
+        }
+        if let Some(previous) = record.instance.and_then(|instance| instance.process_id)
+            && !self.previous_process_terminal(previous).await
+        {
             return;
         }
         let waiting = self
@@ -88,6 +99,26 @@ impl AgentManager {
         };
         self.launch(&record, instance).await;
         self.link(agent, instance.generation);
+    }
+
+    /// Ensures the previous instance's Process is terminal before a replacement starts or the
+    /// Agent is undefined.
+    pub(super) async fn previous_process_terminal(&self, process: ProcessId) -> bool {
+        let Ok(record) = self.0.processes.local_record(process).await else {
+            return false;
+        };
+        let Some(record) = record else {
+            return true;
+        };
+        if record.state.is_terminal() {
+            return true;
+        }
+        let reason = (super::operator::STOP_GRACE_MS, ProcessReason::Requested);
+        self.0
+            .processes
+            .terminate((None, process), reason)
+            .await
+            .is_ok_and(|committed| committed.value().state.is_terminal())
     }
 
     /// Creates (or finds, after a crash) the Process of one instance and records it.
@@ -231,55 +262,5 @@ pub(super) fn instance_start(
 }
 
 #[cfg(test)]
-mod tests {
-    use ma2a_core::service::AgentId;
-
-    use ma2a_core::service::ProcessId;
-    use ma2a_store::AgentInstanceRecord;
-
-    use super::{keeps, start_request};
-
-    fn instance(generation: u64, process_id: Option<ProcessId>) -> AgentInstanceRecord {
-        AgentInstanceRecord {
-            generation,
-            process_id,
-            ready: false,
-            cursor: 0,
-            next_seq: 0,
-            acked_seq: 0,
-            started_ms: 1_000,
-            ended_ms: None,
-        }
-    }
-
-    #[test]
-    fn only_the_live_instance_that_bound_a_process_keeps_it() {
-        let process = ProcessId::from_bytes([7; 16]);
-        let other = ProcessId::from_bytes([8; 16]);
-        assert!(keeps(Some(&instance(3, Some(process))), (3, process)));
-        // Undefined meanwhile: no record and so no instance keeps the Process.
-        assert!(!keeps(None, (3, process)));
-        // Stopped before the bind: the instance never named a Process.
-        assert!(!keeps(Some(&instance(3, None)), (3, process)));
-        // A later generation, another Process, or a concluded instance does not keep it.
-        assert!(!keeps(Some(&instance(4, Some(process))), (3, process)));
-        assert!(!keeps(Some(&instance(3, Some(other))), (3, process)));
-        let ended = AgentInstanceRecord {
-            ended_ms: Some(2_000),
-            ..instance(3, Some(process))
-        };
-        assert!(!keeps(Some(&ended), (3, process)));
-    }
-
-    #[test]
-    fn instance_starts_are_distinct_per_definition_and_generation()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let agent = AgentId::new("worker")?;
-        let first = start_request(&agent, (1_000, 1))?;
-        assert_eq!(first, start_request(&agent, (1_000, 1))?);
-        assert_ne!(first, start_request(&agent, (1_000, 2))?);
-        // The same generation of a later definition is another start.
-        assert_ne!(first, start_request(&agent, (2_000, 1))?);
-        Ok(())
-    }
-}
+#[path = "tests/instance.rs"]
+mod tests;

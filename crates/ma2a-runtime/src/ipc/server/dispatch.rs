@@ -156,6 +156,8 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
                 | "echo_call"
                 | "control_sync_trigger"
                 | "process_terminate"
+                | "agent_define"
+                | "agent_undefine"
                 | "agent_stop"
                 | "agent_start"
         ) {

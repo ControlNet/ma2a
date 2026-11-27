@@ -30,7 +30,7 @@ mod live_tests;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak},
     time::Duration,
 };
 
@@ -63,6 +63,8 @@ struct Coordination {
     calls: HashSet<(AgentTaskId, String)>,
     /// Listeners that live as long as their task.
     listeners: HashMap<AgentTaskId, Vec<CancellationToken>>,
+    /// Per-Agent lock serializing lifecycle changes through process termination.
+    lifecycle: HashMap<AgentId, Weak<tokio::sync::Mutex<()>>>,
 }
 
 #[derive(Debug)]
@@ -127,6 +129,28 @@ impl AgentManager {
             .coordination
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Serializes lifecycle operations and instance launches for one Agent.
+    async fn lock_lifecycle(&self, agent: &AgentId) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut coordination = self.coordination();
+            coordination
+                .lifecycle
+                .retain(|_, entry| entry.strong_count() > 0);
+            coordination
+                .lifecycle
+                .get(agent)
+                .and_then(Weak::upgrade)
+                .unwrap_or_else(|| {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    coordination
+                        .lifecycle
+                        .insert(agent.clone(), Arc::downgrade(&lock));
+                    lock
+                })
+        };
+        lock.lock_owned().await
     }
 
     fn now_ms(&self) -> u64 {

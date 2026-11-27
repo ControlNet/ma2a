@@ -86,6 +86,7 @@ impl AgentManager {
         // with is refused here instead of failing every start.
         let workspace = self.workspace(&definition.id);
         super::instance::instance_start(&definition, &workspace.to_string_lossy())?;
+        let _lifecycle = self.lock_lifecycle(&definition.id).await;
         let at_ms = self.now_ms();
         let (defined, revision) = self
             .commit_at(move |repository| repository.define_agent(&definition, at_ms))
@@ -99,6 +100,14 @@ impl AgentManager {
 
     /// Removes a stopped Agent's definition; the revision of the commit.
     pub(crate) async fn undefine(&self, agent: &AgentId) -> Result<u64, ServiceError> {
+        let _lifecycle = self.lock_lifecycle(agent).await;
+        if let Some(record) = self.agent(agent).await?
+            && !record.enabled
+            && let Some(process) = record.instance.and_then(|instance| instance.process_id)
+            && !self.previous_process_terminal(process).await
+        {
+            return Err(ServiceError::Unavailable);
+        }
         let id = agent.clone();
         let (undefined, revision) = self
             .commit_at(move |repository| repository.undefine_agent(&id))
@@ -122,13 +131,14 @@ impl AgentManager {
         if reserved_name(agent.as_str()) {
             return Err(ServiceError::InvalidInput);
         }
+        let _lifecycle = self.lock_lifecycle(agent).await;
         let (id, at_ms) = (agent.clone(), self.now_ms());
         let (record, revision) = self
             .commit_at(move |repository| repository.set_agent_enabled(&id, (true, at_ms)))
             .await?;
         let record = record.ok_or(ServiceError::UnknownAgent)?;
         self.coordination().restarts.remove(agent);
-        self.ensure_instance(agent).await;
+        self.ensure_instance_locked(agent).await;
         Ok((record, revision))
     }
 
@@ -140,6 +150,7 @@ impl AgentManager {
         &self,
         agent: &AgentId,
     ) -> Result<((AgentRecord, usize), u64), ServiceError> {
+        let _lifecycle = self.lock_lifecycle(agent).await;
         let (id, at_ms) = (agent.clone(), self.now_ms());
         let (record, revision) = self
             .commit_at(move |repository| repository.set_agent_enabled(&id, (false, at_ms)))
