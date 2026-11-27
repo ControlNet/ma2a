@@ -158,15 +158,13 @@ impl StoreBackend {
             StoreCommand::PublishRelayAdvertisements {
                 publisher,
                 local_endpoint_id,
-                issued_at_ms,
-                expires_at_ms,
+                window,
                 skip_spaces,
                 reply,
             } => drop(reply.send(self.publish_relay_advertisements(
                 &publisher,
                 local_endpoint_id,
-                issued_at_ms,
-                expires_at_ms,
+                window,
                 &skip_spaces,
             ))),
             #[cfg(test)]

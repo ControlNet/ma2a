@@ -45,13 +45,7 @@ async fn partial_batch_reuse_has_exact_renewal_and_expiry_boundaries() -> TestRe
         let (_state, fixture) = partial_relay_fixture("boundary").await?;
         let now_ms = NOW_MS + offset_ms;
         fixture.clock.0.store(now_ms, Ordering::Relaxed);
-        fixture
-            .handle
-            .publish_relay_advertisements(
-                fixture.provider.clone(),
-                u64::try_from(now_ms + 600_000)?,
-            )
-            .await?;
+        super::maintenance_tick(&fixture.handle).await;
         assert!(!fixture.handle.store.relay_publication_pending().await?);
         let repository = Repository::open(&fixture.config)?;
         for space_id in [fixture.committed_space, fixture.missing_space] {
@@ -115,13 +109,7 @@ async fn partially_failed_fresh_replacement_replays_its_own_batch() -> TestResul
         .clock
         .0
         .store(replacement_at_ms + 120_000, Ordering::Relaxed);
-    fixture
-        .handle
-        .publish_relay_advertisements(
-            fixture.provider.clone(),
-            u64::try_from(replacement_at_ms + 720_000)?,
-        )
-        .await?;
+    super::maintenance_tick(&fixture.handle).await;
     assert!(!fixture.handle.store.relay_publication_pending().await?);
     let repository = Repository::open(&fixture.config)?;
     let replayed = repository

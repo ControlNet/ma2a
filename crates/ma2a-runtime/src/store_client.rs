@@ -193,16 +193,14 @@ impl StoreClient {
         &self,
         publisher: ma2a_net::PrivateRelayAdvertisementPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
-        issued_at_ms: u64,
-        expires_at_ms: u64,
+        window: (u64, u64, crate::store::RelayExpiryPolicy),
         skip_spaces: std::collections::BTreeSet<ma2a_core::SpaceId>,
     ) -> Result<crate::store::RelayPublicationResult, RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::PublishRelayAdvertisements {
             publisher,
             local_endpoint_id,
-            issued_at_ms,
-            expires_at_ms,
+            window,
             skip_spaces,
             reply,
         })

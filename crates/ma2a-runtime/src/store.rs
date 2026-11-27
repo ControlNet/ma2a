@@ -5,6 +5,7 @@ mod identity;
 mod local_control;
 mod membership;
 mod mutation_replay;
+mod pending_relay;
 mod relay_state;
 mod runner;
 #[cfg(test)]
@@ -23,6 +24,7 @@ pub(crate) use identity::Identity;
 pub(crate) use local_control::RelayPublicationTestCommand;
 pub(crate) use membership::{OwnedMemberRevocation, RemovedMember};
 pub(crate) use mutation_replay::MutationReplayCommand;
+pub(crate) use pending_relay::RelayExpiryPolicy;
 pub(crate) use relay_state::with_parsed_relay_urls;
 pub(crate) use services::{ProcessJob, ServiceGrant, ServiceStoreCommand, authorize};
 
@@ -66,7 +68,7 @@ pub(crate) struct StoreClient {
 pub(crate) struct StoreBackend {
     repository: Repository,
     key_store: KeyStore,
-    pending_relay_publication: Option<local_control::PendingRelayPublication>,
+    pending_relay_publication: Option<pending_relay::PendingRelayPublication>,
     #[cfg(test)]
     relay_publication_fail_after: Option<usize>,
 }

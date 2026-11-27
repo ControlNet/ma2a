@@ -129,9 +129,7 @@ async fn partial_relay_batch_retries_identical_bytes_without_sequence_or_revisio
     let (_state, fixture) = partial_relay_fixture("partial-batch").await?;
     let handle = &fixture.handle;
     fixture.clock.0.store(NOW_MS + 120_000, Ordering::Relaxed);
-    handle
-        .publish_relay_advertisements(fixture.provider.clone(), u64::try_from(NOW_MS + 720_000)?)
-        .await?;
+    maintenance_tick(handle).await;
     assert!(!handle.store.relay_publication_pending().await?);
     let repository = Repository::open(&fixture.config)?;
     let replayed = repository

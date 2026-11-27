@@ -1,58 +1,8 @@
-use super::{AddressPublicationResult, RelayPublicationResult, StoreBackend};
+use super::{
+    AddressPublicationResult, RelayExpiryPolicy, RelayPublicationResult, StoreBackend,
+    pending_relay::PendingRelayPublication,
+};
 use crate::error::{RuntimeError, RuntimeErrorKind};
-
-pub(super) struct PendingRelayPublication {
-    config: ma2a_net::PrivateRelayProviderConfig,
-    authorizations: Vec<ma2a_core::SpaceAuthorizationView>,
-    skip_spaces: std::collections::BTreeSet<ma2a_core::SpaceId>,
-    advertisements: Vec<ma2a_core::SignedPrivateRelayAdvertisementV1>,
-    active_spaces: Vec<ma2a_core::SpaceId>,
-    clock_behind: bool,
-    issued_at_ms: u64,
-    expires_at_ms: u64,
-}
-
-impl PendingRelayPublication {
-    fn can_reuse(
-        &self,
-        desired: (
-            &ma2a_net::PrivateRelayProviderConfig,
-            &[ma2a_core::SpaceAuthorizationView],
-            &std::collections::BTreeSet<ma2a_core::SpaceId>,
-        ),
-        (now_ms, desired_expires_at_ms): (u64, u64),
-    ) -> Result<bool, RuntimeError> {
-        let (config, authorizations, skip_spaces) = desired;
-        let (issued_at_ms, expires_at_ms) = self.effective_window()?;
-        if now_ms < issued_at_ms {
-            return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
-        }
-        Ok(self.config == *config
-            && self.authorizations == authorizations
-            && self.skip_spaces == *skip_spaces
-            && desired_expires_at_ms >= expires_at_ms
-            && crate::relay_publication::is_current(now_ms, issued_at_ms, expires_at_ms))
-    }
-
-    fn effective_window(&self) -> Result<(u64, u64), RuntimeError> {
-        let window =
-            self.advertisements
-                .first()
-                .map_or((self.issued_at_ms, self.expires_at_ms), |signed| {
-                    let advertisement = signed.advertisement();
-                    (advertisement.issued_at_ms(), advertisement.expires_at_ms())
-                });
-        if self.advertisements.iter().any(|signed| {
-            (
-                signed.advertisement().issued_at_ms(),
-                signed.advertisement().expires_at_ms(),
-            ) != window
-        }) {
-            return Err(RuntimeError::new(RuntimeErrorKind::Control));
-        }
-        Ok(window)
-    }
-}
 
 #[cfg(test)]
 pub(crate) enum RelayPublicationTestCommand {
@@ -157,8 +107,7 @@ impl StoreBackend {
         &mut self,
         publisher: &ma2a_net::PrivateRelayAdvertisementPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
-        issued_at_ms: u64,
-        expires_at_ms: u64,
+        (issued_at_ms, expires_at_ms, expiry_policy): (u64, u64, RelayExpiryPolicy),
         skip_spaces: &std::collections::BTreeSet<ma2a_core::SpaceId>,
     ) -> Result<RelayPublicationResult, RuntimeError> {
         let authorizations = self
@@ -173,7 +122,7 @@ impl StoreBackend {
             .map_or(Ok(false), |pending| {
                 pending.can_reuse(
                     (publisher.config(), &authorizations, skip_spaces),
-                    (issued_at_ms, expires_at_ms),
+                    (issued_at_ms, expires_at_ms, expiry_policy),
                 )
             })?;
         if !reuse {

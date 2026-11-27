@@ -109,8 +109,7 @@ pub(crate) enum StoreCommand {
     PublishRelayAdvertisements {
         publisher: ma2a_net::PrivateRelayAdvertisementPublisher,
         local_endpoint_id: ma2a_core::EndpointId,
-        issued_at_ms: u64,
-        expires_at_ms: u64,
+        window: (u64, u64, super::RelayExpiryPolicy),
         skip_spaces: std::collections::BTreeSet<ma2a_core::SpaceId>,
         reply: oneshot::Sender<Result<super::RelayPublicationResult, RuntimeError>>,
     },
