@@ -15,15 +15,43 @@ const OUTPUT_QUEUE: usize = 2;
 /// Input chunks buffered between the network and the PTY writer thread.
 const INPUT_QUEUE: usize = 2;
 
+/// Ends the session program and (on Unix) every process in its session before terminal teardown.
+pub(super) struct Terminator {
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    #[cfg(unix)]
+    group: Option<u32>,
+}
+
+impl Terminator {
+    #[cfg(unix)]
+    pub(super) async fn terminate(mut self, leader_running: bool) {
+        if let Some(leader) = self
+            .group
+            .and_then(|id| i32::try_from(id).ok())
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            super::reap::end_session(leader, leader_running).await;
+        }
+        let _killed = self.killer.kill();
+    }
+
+    #[cfg(windows)]
+    #[expect(
+        clippy::unused_async,
+        reason = "the Unix counterpart waits for jobs to hang up"
+    )]
+    pub(super) async fn terminate(mut self, _leader_running: bool) {
+        let _killed = self.killer.kill();
+    }
+}
+
 /// One live session: its terminal, channels to its I/O threads, and its killer.
 pub(super) struct Session {
     pub(super) master: std::sync::Mutex<Box<dyn MasterPty + Send>>,
     pub(super) output: mpsc::Receiver<Vec<u8>>,
     pub(super) input: mpsc::Sender<Vec<u8>>,
     pub(super) exited: oneshot::Receiver<Termination>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
-    #[cfg(unix)]
-    group: Option<u32>,
+    terminator: Option<Terminator>,
     /// The terminal's device path and the end of the input thread, to release a blocked write.
     #[cfg(unix)]
     input_thread: (Option<std::path::PathBuf>, oneshot::Receiver<()>),
@@ -115,15 +143,23 @@ pub(super) fn spawn(request: &ShellRequest) -> Result<Session, ServiceError> {
         output,
         input,
         exited,
-        killer,
-        #[cfg(unix)]
-        group,
+        terminator: Some(Terminator {
+            killer,
+            #[cfg(unix)]
+            group,
+        }),
         #[cfg(unix)]
         input_thread,
     })
 }
 
 impl Session {
+    /// Extracts the process terminator so outbound stop handling can end the session before waiting
+    /// to finish an in-flight frame.
+    pub(super) const fn take_terminator(&mut self) -> Option<Terminator> {
+        self.terminator.take()
+    }
+
     /// Ends the session program and every job it started, then releases the terminal.
     ///
     /// `leader_running` is false once the program has exited by itself.
@@ -132,18 +168,13 @@ impl Session {
         let Self {
             master,
             input,
-            mut killer,
-            group,
+            terminator,
             input_thread: (terminal, mut input_done),
             ..
         } = self;
-        if let Some(leader) = group
-            .and_then(|id| i32::try_from(id).ok())
-            .and_then(rustix::process::Pid::from_raw)
-        {
-            super::reap::end_session(leader, leader_running).await;
+        if let Some(terminator) = terminator {
+            terminator.terminate(leader_running).await;
         }
-        let _killed = killer.kill();
         drop(input);
         super::reap::release_input(terminal.as_deref(), &mut input_done).await;
         drop(master);
@@ -151,12 +182,10 @@ impl Session {
 
     /// Ends the session program; closing the pseudoconsole ends its attached clients.
     #[cfg(windows)]
-    #[expect(
-        clippy::unused_async,
-        reason = "the Unix counterpart waits for jobs to hang up"
-    )]
-    pub(super) async fn close(mut self, _leader_running: bool) {
-        let _killed = self.killer.kill();
+    pub(super) async fn close(mut self, leader_running: bool) {
+        if let Some(terminator) = self.terminator.take() {
+            terminator.terminate(leader_running).await;
+        }
     }
 }
 

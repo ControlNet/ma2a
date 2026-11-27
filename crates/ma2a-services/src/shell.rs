@@ -4,6 +4,7 @@
 //! Runtime shutdown, and never survive a restart.
 
 mod io;
+mod outbound;
 mod pty;
 #[cfg(unix)]
 mod reap;
@@ -44,6 +45,7 @@ where
     }
     let (cancel, cancelled) = oneshot::channel();
     let (done, finished) = oneshot::channel();
+    let mut terminator = session.take_terminator();
     let pty::Session {
         master,
         output,
@@ -51,20 +53,24 @@ where
         exited,
         ..
     } = &mut session;
-    let outbound = io::Outbound {
+    let outbound = outbound::Outbound {
         output,
         exited,
         deadline: started + Duration::from_millis(request.lifetime_ms()),
         shutdown,
         cancelled,
         done,
+        terminator: &mut terminator,
     };
     let (input_bytes, ended) = tokio::join!(
         io::inbound(reader, (input.clone(), master), (cancel, finished)),
-        io::outbound(outbound, writer),
+        Box::pin(outbound::outbound(outbound, writer)),
     );
     let leader_running =
         ended.reason != EndReason::Completed || ended.termination == Termination::Unknown;
+    if let Some(terminator) = terminator {
+        terminator.terminate(leader_running).await;
+    }
     session.close(leader_running).await;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let bytes = (input_bytes, ended.output_bytes);

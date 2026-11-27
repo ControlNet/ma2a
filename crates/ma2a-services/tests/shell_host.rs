@@ -11,7 +11,7 @@ use ma2a_core::service::{
     TerminalSize, Termination,
 };
 use ma2a_services::{Frame, OperationEnd, OperationReport, serve_shell};
-use support::{ClientIo, TestResult, drain, pipe_blocked, pipe_with};
+use support::{ClientIo, TempRoot, TestResult, drain, pipe_blocked, pipe_with};
 use tokio_util::sync::CancellationToken;
 
 fn session(program: &str, args: &[&str], lifetime_ms: u64) -> TestResult<ShellRequest> {
@@ -420,5 +420,59 @@ async fn exit_drain_expiry_mid_frame_finishes_the_frame_and_sends_completed_outc
     assert!(terminal_sent, "terminal not sent");
     assert_eq!(report.end, OperationEnd::Completed);
     assert_eq!(report.bytes_out, received);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn stop_during_backpressured_output_kills_pty_child_and_stops_inbound_at_once() -> TestResult
+{
+    let root = TempRoot::new("shell-stop-kill")?;
+    let pid_file = root.path().join("pid");
+    let script = format!("echo $$ > '{}'; exec yes", pid_file.display());
+    let shutdown = CancellationToken::new();
+    let request = session("sh", &["-c", &script], 60_000)?;
+    let ((mut reader, mut writer), (mut server_reader, mut server_writer), blocked) =
+        pipe_blocked(256);
+    let stop = shutdown.clone();
+    let server = tokio::spawn(async move {
+        serve_shell(request, &stop, (&mut server_reader, &mut server_writer)).await
+    });
+
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let pid = loop {
+        if let Ok(contents) = std::fs::read_to_string(&pid_file)
+            && contents.contains('\n')
+        {
+            break contents.trim().to_owned();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "child never wrote pid"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    tokio::time::timeout(Duration::from_secs(5), blocked.notified()).await?;
+
+    shutdown.cancel();
+
+    let kill_deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+    while alive(&pid) && tokio::time::Instant::now() < kill_deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !alive(&pid),
+        "PTY child {pid} survived past stop while output was backpressured"
+    );
+
+    writer.data(Channel::Input, b"after-stop\n").await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let frames = tokio::time::timeout(Duration::from_secs(5), drain(&mut reader)).await??;
+    assert_eq!(outcome(&frames)?.reason, EndReason::Shutdown);
+    let report = tokio::time::timeout(Duration::from_secs(5), server).await??;
+    assert_eq!(report.end, OperationEnd::Failed(ServiceError::Unavailable));
+    assert_eq!(report.bytes_in, 0);
     Ok(())
 }
