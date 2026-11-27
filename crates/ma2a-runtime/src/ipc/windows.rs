@@ -122,8 +122,6 @@ pub(crate) const fn remove_stale_endpoint(_paths: &IpcPaths) -> Result<(), IpcEr
     Ok(())
 }
 
-/// Resolves once the connected named-pipe peer closes its handle, even when unread bytes remain
-/// buffered in the pipe or internal read buffer.
 /// Resolves once the connected named-pipe peer process exits, even when unread bytes remain
 /// buffered in the pipe or internal read buffer.
 pub(crate) async fn peer_disconnected(stream: &PlatformStream) {
