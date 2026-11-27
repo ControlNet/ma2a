@@ -37,7 +37,7 @@ fn keeps(instance: Option<&AgentInstanceRecord>, (generation, process): (u64, Pr
 ///
 /// A definition's creation time is part of it: an Agent undefined and defined again counts
 /// its generations from zero, and must never find the Processes of the earlier one.
-fn start_request(
+pub(super) fn start_request(
     agent: &AgentId,
     (defined_at_ms, generation): (u64, u64),
 ) -> Result<RequestId, ServiceError> {
@@ -74,9 +74,7 @@ impl AgentManager {
             self.link(agent, instance.generation);
             return;
         }
-        if let Some(previous) = record.instance.and_then(|instance| instance.process_id)
-            && !self.previous_process_terminal(previous).await
-        {
+        if !self.previous_instance_terminal(&record).await {
             return;
         }
         let waiting = self
@@ -101,9 +99,42 @@ impl AgentManager {
         self.link(agent, instance.generation);
     }
 
+    /// Returns the Process of `record`'s current instance, resolving the deterministic start
+    /// binding when the instance paused or ended before `bind_agent_process` committed.
+    pub(super) async fn instance_process(
+        &self,
+        record: &AgentRecord,
+    ) -> Result<Option<ProcessId>, ServiceError> {
+        let Some(instance) = record.instance else {
+            return Ok(None);
+        };
+        if let Some(process) = instance.process_id {
+            return Ok(Some(process));
+        }
+        let request_id =
+            start_request(&record.definition.id, (record.times.0, instance.generation))?;
+        let creator = self.0.local;
+        let process = self
+            .store(move |repository| repository.process_by_binding(creator, request_id))
+            .await?;
+        Ok(process.map(|process| process.id))
+    }
+
+    /// Ensures `record`'s previous instance has no live Process before a replacement starts
+    /// or the Agent is undefined.
+    pub(super) async fn previous_instance_terminal(&self, record: &AgentRecord) -> bool {
+        let Ok(process) = self.instance_process(record).await else {
+            return false;
+        };
+        let Some(process) = process else {
+            return true;
+        };
+        self.previous_process_terminal(process).await
+    }
+
     /// Ensures the previous instance's Process is terminal before a replacement starts or the
     /// Agent is undefined.
-    pub(super) async fn previous_process_terminal(&self, process: ProcessId) -> bool {
+    async fn previous_process_terminal(&self, process: ProcessId) -> bool {
         let Ok(record) = self.0.processes.local_record(process).await else {
             return false;
         };

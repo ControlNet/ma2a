@@ -310,3 +310,253 @@ async fn ensure_instance_never_launches_replacement_before_previous_process_is_t
     assert!(current.ended_ms.is_some());
     Ok(())
 }
+
+#[tokio::test]
+async fn unbound_previous_process_blocks_undefine_and_replacement() -> TestResult {
+    // Given: an Agent whose generation-1 instance never committed `bind_agent_process`, while
+    // its deterministic start RequestId already owns a non-terminal Process in `created` state.
+    let reserved = Reserved::new().await?;
+    let agent = AgentId::new("unbound-guarded")?;
+    let spec = super::AgentSpec {
+        id: agent.clone(),
+        description: String::new(),
+        command: ("/bin/true".to_owned(), Vec::new()),
+        cwd: None,
+        env: Vec::new(),
+        tools: 0,
+        max_tasks: 1,
+    };
+    let ((defined, _), _) = reserved.manager.define(spec).await?;
+    let mut repository = Repository::open(&reserved.config)?;
+    repository.set_agent_enabled(&agent, (true, 2))?;
+    let first = repository
+        .begin_agent_instance(&agent, 3)?
+        .into_value()
+        .and_then(|record| record.instance)
+        .ok_or("no instance began")?;
+    let request_id =
+        super::super::instance::start_request(&agent, (defined.times.0, first.generation))?;
+    let process_id = ma2a_core::service::ProcessId::from_bytes([0x29; 16]);
+    let start = ProcessStart::new(
+        ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?,
+        true,
+        MAX_LOG_LIMIT,
+    )?
+    .to_bytes()?;
+    repository.create_process(&ma2a_store::NewProcess {
+        id: process_id,
+        binding: (reserved.manager.0.local, request_id),
+        fingerprint: [0x39; 32],
+        start: (&start, None),
+        secret: [0x49; 32],
+        created_ms: 4,
+    })?;
+    drop(repository);
+
+    // When: operator stops the Agent before binding, tries to undefine, then re-enables and
+    // asks maintenance to ensure a live instance.
+    reserved.manager.stop(&agent).await?;
+    let undefine_while_live = reserved.manager.undefine(&agent).await;
+    Repository::open(&reserved.config)?.set_agent_enabled(&agent, (true, 6))?;
+    reserved.manager.ensure_instance(&agent).await;
+    let during_live = reserved
+        .manager
+        .agent(&agent)
+        .await?
+        .and_then(|record| record.instance)
+        .ok_or("instance missing")?;
+
+    // And once the unbound Process reaches a terminal state, undefine succeeds.
+    reserved.manager.stop(&agent).await?;
+    Repository::open(&reserved.config)?.transition_process(
+        process_id,
+        ma2a_store::ProcessTransition {
+            to: ma2a_core::service::ProcessState::Failed,
+            reason: Some(ma2a_core::service::ProcessReason::SpawnFailed),
+            termination: None,
+            at_ms: 7,
+        },
+    )?;
+    let undefine_after_terminal = reserved.manager.undefine(&agent).await;
+    reserved.finish().await?;
+
+    // Then: neither undefine nor replacement launch proceeded while the unbound Process lived.
+    assert_eq!(undefine_while_live.err(), Some(ServiceError::Unavailable));
+    assert_eq!(during_live.generation, first.generation);
+    assert!(during_live.ended_ms.is_some());
+    assert!(
+        undefine_after_terminal.is_ok(),
+        "{undefine_after_terminal:?}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn launch_unbound_running_agent(
+    dir: &std::path::Path,
+    (config, store, local): (&StoreConfig, &StoreClient, ma2a_core::EndpointId),
+    agent: &AgentId,
+) -> Result<ma2a_core::service::ProcessId, Box<dyn std::error::Error + Send + Sync>> {
+    use std::time::Duration;
+
+    use ma2a_core::service::ProcessState;
+
+    use crate::processes::ProcessHosting;
+
+    let shutdown = CancellationToken::new();
+    let processes = ProcessManager::new(
+        (local, store.clone(), Arc::new(SystemClock)),
+        (dir, Some(ProcessHosting::in_process())),
+        shutdown.clone(),
+    );
+    let manager = AgentManager::new(
+        (local, store.clone(), Arc::new(SystemClock)),
+        (dir, processes.clone()),
+        shutdown.clone(),
+    );
+    let spec = super::AgentSpec {
+        id: agent.clone(),
+        description: String::new(),
+        command: (
+            "/bin/sh".to_owned(),
+            vec![
+                "-c".to_owned(),
+                "printf '%s\\n' $$ >> \"$MA2A_AGENT_WORKSPACE/pids\"; exec sleep 60".to_owned(),
+            ],
+        ),
+        cwd: None,
+        env: Vec::new(),
+        tools: 0,
+        max_tasks: 1,
+    };
+    let ((defined, _), _) = manager.define(spec).await?;
+    let mut repository = Repository::open(config)?;
+    repository.set_agent_enabled(agent, (true, 2))?;
+    let first_instance = repository
+        .begin_agent_instance(agent, 3)?
+        .into_value()
+        .and_then(|record| record.instance)
+        .ok_or("no instance began")?;
+    drop(repository);
+    assert_eq!(first_instance.process_id, None);
+
+    let workspace = manager.workspace(agent);
+    super::super::private_dir(&workspace)?;
+    let start =
+        super::super::instance::instance_start(&defined.definition, &workspace.to_string_lossy())?;
+    let request_id =
+        super::super::instance::start_request(agent, (defined.times.0, first_instance.generation))?;
+    let first_process = processes.start_local(request_id, start).await?;
+    let pids_path = workspace.join("pids");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let running = processes
+            .local_record(first_process.id)
+            .await?
+            .is_some_and(|record| record.state == ProcessState::Running);
+        let wrote_pid =
+            std::fs::read_to_string(&pids_path).is_ok_and(|contents| contents.lines().count() == 1);
+        if running && wrote_pid {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "generation 1 process did not reach running"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    shutdown.cancel();
+    Ok(first_process.id)
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_before_recovery_terminates_running_unbound_process_after_restart() -> TestResult {
+    use ma2a_core::service::{ProcessReason, ProcessState};
+
+    use crate::processes::ProcessHosting;
+
+    // Given: an Agent whose generation-1 supervisor received Go and started running, then
+    // the daemon restarted before `bind_agent_process` committed.
+    let mut nonce = [0_u8; 8];
+    getrandom::fill(&mut nonce)?;
+    let dir = std::env::temp_dir().join(format!("ma2a-unbound-{}", u64::from_le_bytes(nonce)));
+    std::fs::create_dir(&dir)?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let config = StoreConfig::new(&dir);
+    let backend = StoreBackend::open(&config)?;
+    let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
+    let store_task = tokio::task::spawn_blocking(move || backend.run(receiver));
+    let store = StoreClient::new(sender);
+    let local = store.initialize().await?.endpoint_id;
+    let agent = AgentId::new("restart-unbound")?;
+    let first_id = launch_unbound_running_agent(&dir, (&config, &store, local), &agent).await?;
+
+    let shutdown = CancellationToken::new();
+    let processes = ProcessManager::new(
+        (local, store.clone(), Arc::new(SystemClock)),
+        (&dir, Some(ProcessHosting::in_process())),
+        shutdown.clone(),
+    );
+    let manager = AgentManager::new(
+        (local, store.clone(), Arc::new(SystemClock)),
+        (&dir, processes.clone()),
+        shutdown.clone(),
+    );
+
+    // When: operator stop acquires the Agent lock before startup recovery binds generation 1,
+    // followed by a fresh start.
+    manager.stop(&agent).await?;
+    let after_stop = processes
+        .local_record(first_id)
+        .await?
+        .ok_or("first process missing after stop")?;
+    let second_pid = if after_stop.state.is_terminal() {
+        manager.start(&agent).await?;
+        manager
+            .agent(&agent)
+            .await?
+            .and_then(|record| record.instance)
+            .and_then(|instance| instance.process_id)
+    } else {
+        None
+    };
+
+    // Clean up any still-running processes so no child leaks on failure or success.
+    let _ended_first = processes
+        .terminate((None, first_id), (100, ProcessReason::Requested))
+        .await;
+    if let Some(pid) = second_pid {
+        let _ended_second = processes
+            .terminate((None, pid), (100, ProcessReason::Requested))
+            .await;
+    }
+    let second_record = match second_pid {
+        Some(pid) => processes.local_record(pid).await?,
+        None => None,
+    };
+    shutdown.cancel();
+    drop(manager);
+    drop(processes);
+    store.stop().await?;
+    store_task.await?;
+    let _cleanup = std::fs::remove_dir_all(&dir);
+
+    // Then: stop terminated the unbound generation-1 Process before returning, and the
+    // replacement started only after generation 1 ended.
+    assert_eq!(after_stop.state, ProcessState::Terminated);
+    let first_ended = after_stop
+        .times
+        .ended_ms
+        .ok_or("first process missing ended_ms")?;
+    let second_record = second_record.ok_or("replacement process was not launched")?;
+    assert!(
+        second_record.times.created_ms >= first_ended,
+        "replacement created ({}) before first ended ({first_ended})",
+        second_record.times.created_ms
+    );
+    Ok(())
+}

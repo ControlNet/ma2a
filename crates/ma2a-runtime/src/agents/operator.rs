@@ -103,8 +103,7 @@ impl AgentManager {
         let _lifecycle = self.lock_lifecycle(agent).await;
         if let Some(record) = self.agent(agent).await?
             && !record.enabled
-            && let Some(process) = record.instance.and_then(|instance| instance.process_id)
-            && !self.previous_process_terminal(process).await
+            && !self.previous_instance_terminal(&record).await
         {
             return Err(ServiceError::Unavailable);
         }
@@ -157,7 +156,7 @@ impl AgentManager {
             .await?;
         let record = record.ok_or(ServiceError::UnknownAgent)?;
         // The stop ended the instance; its Process still runs until terminated here.
-        if let Some(process) = record.0.instance.and_then(|instance| instance.process_id) {
+        if let Some(process) = self.instance_process(&record.0).await.ok().flatten() {
             let reason = (STOP_GRACE_MS, ProcessReason::Requested);
             let _ended = self.0.processes.terminate((None, process), reason).await;
         }

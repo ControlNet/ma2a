@@ -264,6 +264,21 @@ impl Repository {
         Ok(record)
     }
 
+    /// Returns the Process bound to `(creator, request_id)`, archived or not.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the row is malformed.
+    pub fn process_by_binding(
+        &self,
+        creator: EndpointId,
+        request_id: RequestId,
+    ) -> Result<Option<ProcessRecord>, StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let record = find_by_binding(&transaction, creator, request_id)?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
     /// Returns one Process, archived or not, with the revision of the same read.
     ///
     /// # Errors
