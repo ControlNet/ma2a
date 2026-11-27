@@ -28,6 +28,10 @@ impl Repository {
             let mut statement = transaction.prepare(
                 "UPDATE processes SET start = NULL, archived_at_ms = ?1
                  WHERE state BETWEEN 3 AND 6 AND archived_at_ms IS NULL AND ended_at_ms < ?2
+                   AND NOT EXISTS (
+                       SELECT 1 FROM agent_instances
+                       WHERE process_id = processes.process_id AND ended_at_ms IS NULL
+                   )
                  RETURNING process_id",
             )?;
             let rows = statement.query_map(params![now_ms, ended_before], |row| {
@@ -75,16 +79,26 @@ impl Repository {
             Some(record) if !record.state.is_terminal() => ProcessArchive::Active,
             Some(record) if record.is_archived() => ProcessArchive::Archived(Box::new(record)),
             Some(_) => {
-                transaction.execute(
-                    "UPDATE processes SET start = NULL, archived_at_ms = ?2 WHERE process_id = ?1",
-                    params![id.as_bytes().as_slice(), at_ms],
+                let bound_to_live_instance = transaction.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM agent_instances
+                     WHERE process_id = ?1 AND ended_at_ms IS NULL)",
+                    [id.as_bytes().as_slice()],
+                    |row| row.get::<_, bool>(0),
                 )?;
-                increment_revision(&transaction)?;
-                ProcessArchive::Archived(Box::new(load(&transaction, id)?.ok_or(
-                    StoreError::SchemaMismatch {
-                        detail: "an archived Process could not be read back",
-                    },
-                )?))
+                if bound_to_live_instance {
+                    ProcessArchive::Active
+                } else {
+                    transaction.execute(
+                        "UPDATE processes SET start = NULL, archived_at_ms = ?2 WHERE process_id = ?1",
+                        params![id.as_bytes().as_slice(), at_ms],
+                    )?;
+                    increment_revision(&transaction)?;
+                    ProcessArchive::Archived(Box::new(load(&transaction, id)?.ok_or(
+                        StoreError::SchemaMismatch {
+                            detail: "an archived Process could not be read back",
+                        },
+                    )?))
+                }
             }
         };
         let revision = crate::service_exposures::current_revision(&transaction)?;

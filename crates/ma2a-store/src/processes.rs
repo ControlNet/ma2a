@@ -113,7 +113,8 @@ pub struct ProcessFilter {
 pub enum ProcessArchive {
     /// The Process is archived; its output may now be removed.
     Archived(Box<ProcessRecord>),
-    /// The Process has not ended yet; nothing changed.
+    /// The Process has not ended yet, or still belongs to an unconcluded Agent instance; nothing
+    /// changed.
     Active,
     /// No such Process exists.
     Missing,

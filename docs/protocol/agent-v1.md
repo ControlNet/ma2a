@@ -855,7 +855,8 @@ inside each crash window. Release builds compile the check out entirely.
   Endpoint as creator (Process v1: 8 non-terminal and 16 non-archived records per creator), so at
   most 8 Agents run instances at once. Ended instance Processes, with their output, stay readable
   until a new instance needs the room: a start that finds 16 non-archived local records archives
-  the local Process that ended first and tries once more.
+  the oldest ended local Process that is not bound to an unconcluded Agent instance and tries
+  once more, or refuses when none is eligible.
 - **Workspace downloads replace.** `transfer.get` and `agent.artifact` replace an existing
   workspace file of the same name.
 - **Backoff and ready deadline.** The restart backoff is in memory and resets with the daemon. The

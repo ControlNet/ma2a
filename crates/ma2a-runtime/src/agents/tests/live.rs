@@ -1085,6 +1085,157 @@ async fn a_transient_log_read_failure_during_ended_drain_retries_before_concludi
     Ok(())
 }
 
+fn seed_exited_local_process(
+    repository: &mut Repository,
+    (local, seed, ended_ms): (ma2a_core::EndpointId, u8, u64),
+    start_bytes: &[u8],
+) -> TestResult<ProcessId> {
+    use ma2a_core::service::ProcessState;
+    use ma2a_store::{NewProcess, ProcessTransition};
+
+    let id = ProcessId::from_bytes([seed; 16]);
+    repository.create_process(&NewProcess {
+        id,
+        binding: (local, RequestId::random()?),
+        fingerprint: [seed; 32],
+        start: (start_bytes, None),
+        secret: [0x5a; 32],
+        created_ms: 50,
+    })?;
+    repository.transition_process(
+        id,
+        ProcessTransition {
+            to: ProcessState::Starting,
+            reason: None,
+            termination: None,
+            at_ms: 51,
+        },
+    )?;
+    repository.transition_process(
+        id,
+        ProcessTransition {
+            to: ProcessState::Exited,
+            reason: None,
+            termination: Some(ma2a_core::service::Termination::Exited(0)),
+            at_ms: ended_ms,
+        },
+    )?;
+    Ok(id)
+}
+
+async fn wait_local_exit(hosted: &ProcessManager, id: ProcessId) -> TestResult {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let record = hosted.local_record(id).await?.ok_or("missing")?;
+        if record.state.is_terminal() {
+            return Ok(());
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retention_pressure_skips_processes_bound_to_unconcluded_agent_instances() -> TestResult {
+    use ma2a_store::MAX_RETAINED_PROCESSES_PER_CREATOR;
+
+    // Given: an ended Process [4; 16] at ended_ms = 9 holding an unread `completed` result for
+    // an unconcluded Agent instance, plus 15 newer ended standalone local Processes filling the
+    // 16-Process per-creator retention limit.
+    let live = Live::new().await?;
+    let completed = serde_json::json!({
+        "t": "state",
+        "task": live.task.to_string(),
+        "state": "completed",
+        "message": {"role": "agent", "parts": [{"kind": "text", "text": "surviving result"}]},
+    });
+    let mut payload = serde_json::to_vec(&completed)?;
+    payload.push(b'\n');
+    write_ended_instance_log(
+        &live,
+        &[
+            (ma2a_core::service::Channel::Output, b"\n"),
+            (ma2a_core::service::Channel::Output, &payload),
+        ],
+    )?;
+    let mut repository = Repository::open(&live.config)?;
+    let local = repository.endpoint()?.ok_or("no endpoint")?.endpoint_id();
+    let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
+    let start = ProcessStart::new(spec, false, MAX_LOG_LIMIT)?;
+    let start_bytes = start.to_bytes()?;
+    let others = u8::try_from(MAX_RETAINED_PROCESSES_PER_CREATOR - 1)?;
+    let mut eligible = Vec::new();
+    for offset in 0..others {
+        let id = seed_exited_local_process(
+            &mut repository,
+            (local, 10 + offset, 100 + u64::from(offset)),
+            &start_bytes,
+        )?;
+        eligible.push(id);
+    }
+    drop(repository);
+
+    let hosted = ProcessManager::new(
+        (local, live.store.clone(), Arc::new(SystemClock)),
+        (
+            &live.dir,
+            Some(crate::processes::ProcessHosting::in_process()),
+        ),
+        live.shutdown.clone(),
+    );
+
+    // When: another local Process starts before the Agent drains its oldest ended Process.
+    let started = hosted
+        .start_local(RequestId::random()?, start.clone())
+        .await?;
+    wait_local_exit(&hosted, started.id).await?;
+
+    // Then: the oldest eligible standalone Process was archived instead of [4; 16], and
+    // draining the Agent's Process recovers the original result.
+    let bound_id = ProcessId::from_bytes([4; 16]);
+    let bound_before = hosted
+        .local_record(bound_id)
+        .await?
+        .ok_or("missing bound")?;
+    assert!(bound_before.times.archived_ms.is_none(), "{bound_before:?}");
+    let oldest_eligible = eligible.first().copied().ok_or("missing eligible")?;
+    let archived_other = hosted
+        .local_record(oldest_eligible)
+        .await?
+        .ok_or("missing other")?;
+    assert!(
+        archived_other.times.archived_ms.is_some(),
+        "{archived_other:?}"
+    );
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        live.manager.follow_instance(&live.agent, live.generation),
+    )
+    .await?;
+    let recovered = Repository::open(&live.config)?
+        .agent_task(live.task)?
+        .ok_or("missing task")?;
+    assert_eq!(recovered.summary.state, AgentTaskState::Completed);
+    assert_eq!(
+        recovered.result,
+        Some(AgentMessage::text(MessageRole::Agent, "surviving result")?)
+    );
+
+    // Once concluded, [4; 16] is eligible and the next local start archives it.
+    let next = hosted.start_local(RequestId::random()?, start).await?;
+    wait_local_exit(&hosted, next.id).await?;
+    let bound_after = hosted
+        .local_record(bound_id)
+        .await?
+        .ok_or("missing bound")?;
+    live.shutdown.cancel();
+    live.finish().await?;
+    assert!(bound_after.times.archived_ms.is_some(), "{bound_after:?}");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_permanently_unusable_log_concludes_instead_of_looping_forever() -> TestResult {
     // Given: an ended instance whose log directory was replaced by a regular file.
@@ -1117,5 +1268,71 @@ async fn a_permanently_unusable_log_concludes_instead_of_looping_forever() -> Te
     assert_eq!(record.summary.state, AgentTaskState::Failed);
     assert_eq!(record.summary.reason, Some(AgentTaskReason::AgentLost));
     assert!(!instance.is_live());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retention_pressure_refuses_new_start_when_every_ended_process_is_bound() -> TestResult {
+    use ma2a_store::MAX_RETAINED_PROCESSES_PER_CREATOR;
+
+    // Given: 16 retained ended local Processes, each bound to an unconcluded Agent instance.
+    let live = Live::new().await?;
+    write_ended_instance_log(&live, &[])?;
+    let mut repository = Repository::open(&live.config)?;
+    let local = repository.endpoint()?.ok_or("no endpoint")?.endpoint_id();
+    let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
+    let start = ProcessStart::new(spec, false, MAX_LOG_LIMIT)?;
+    let start_bytes = start.to_bytes()?;
+    let others = u8::try_from(MAX_RETAINED_PROCESSES_PER_CREATOR - 1)?;
+    let mut bound_ids = vec![ProcessId::from_bytes([4; 16])];
+    for offset in 0..others {
+        let agent = AgentId::new(&format!("bound-{offset}"))?;
+        let pid = seed_exited_local_process(
+            &mut repository,
+            (local, 20 + offset, 100 + u64::from(offset)),
+            &start_bytes,
+        )?;
+        repository.define_agent(
+            &AgentDefinition {
+                id: agent.clone(),
+                description: String::new(),
+                start: start_bytes.clone(),
+                tools: 0,
+                max_tasks: 1,
+            },
+            1,
+        )?;
+        repository.set_agent_enabled(&agent, (true, 2))?;
+        let generation = repository
+            .begin_agent_instance(&agent, 3)?
+            .into_value()
+            .and_then(|record| record.instance)
+            .ok_or("missing instance")?
+            .generation;
+        repository.bind_agent_process((&agent, generation), pid)?;
+        bound_ids.push(pid);
+    }
+    drop(repository);
+
+    let hosted = ProcessManager::new(
+        (local, live.store.clone(), Arc::new(SystemClock)),
+        (
+            &live.dir,
+            Some(crate::processes::ProcessHosting::in_process()),
+        ),
+        live.shutdown.clone(),
+    );
+
+    // When: another local start attempts to make room.
+    let attempt = hosted.start_local(RequestId::random()?, start).await;
+
+    // Then: it refuses with ConcurrencyExceeded and leaves every bound Process unarchived.
+    assert_eq!(attempt.err(), Some(ServiceError::ConcurrencyExceeded));
+    for pid in bound_ids {
+        let record = hosted.local_record(pid).await?.ok_or("missing bound")?;
+        assert!(record.times.archived_ms.is_none(), "{record:?}");
+    }
+    live.shutdown.cancel();
+    live.finish().await?;
     Ok(())
 }

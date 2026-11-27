@@ -418,3 +418,67 @@ fn a_record_never_prints_its_secret_or_start() -> TestResult {
     assert!(!printed.contains("start bytes"), "{printed}");
     Ok(())
 }
+
+#[test]
+fn ended_processes_bound_to_unconcluded_agent_instances_are_not_archived() -> TestResult {
+    use ma2a_core::service::AgentId;
+    use ma2a_store::AgentDefinition;
+
+    let state = TempState::new("process-agent-retention")?;
+    let mut repository = Repository::open(&StoreConfig::new(state.path()))?;
+    let local = endpoint(1);
+    let process = created(
+        repository
+            .create_process(&new_process(1, (local, request(1)?), 1))?
+            .value(),
+    )?;
+    repository.transition_process(process, step(ProcessState::Starting, 2))?;
+    repository.transition_process(
+        process,
+        ProcessTransition {
+            termination: Some(Termination::Exited(0)),
+            ..step(ProcessState::Exited, 3)
+        },
+    )?;
+
+    let agent = AgentId::new("worker")?;
+    repository.define_agent(
+        &AgentDefinition {
+            id: agent.clone(),
+            description: String::new(),
+            start: b"start".to_vec(),
+            tools: 0,
+            max_tasks: 1,
+        },
+        1,
+    )?;
+    repository.set_agent_enabled(&agent, (true, 2))?;
+    let generation = repository
+        .begin_agent_instance(&agent, 3)?
+        .into_value()
+        .and_then(|record| record.instance)
+        .ok_or("missing instance")?
+        .generation;
+    assert!(
+        repository
+            .bind_agent_process((&agent, generation), process)?
+            .into_value()
+    );
+
+    // While the Agent instance is unconcluded, neither direct nor expiry archival removes it.
+    assert_eq!(
+        repository.archive_process(process, 4)?.value(),
+        &ProcessArchive::Active
+    );
+    assert!(
+        repository
+            .expire_processes(3 + ENDED_RETENTION_MS + 1)?
+            .is_empty()
+    );
+
+    // Once the instance concludes, archival proceeds.
+    repository.end_agent_instance((&agent, generation), 5)?;
+    let archived = repository.archive_process(process, 6)?.into_value();
+    assert!(matches!(archived, ProcessArchive::Archived(record) if record.is_archived()));
+    Ok(())
+}

@@ -39,7 +39,7 @@ impl ProcessManager {
         }
     }
 
-    /// Archives the local Process that ended first; `true` when one was archived.
+    /// Archives the oldest eligible ended local Process; `true` when one was archived.
     async fn archive_oldest_local(&self) -> bool {
         let filter = ProcessFilter {
             creator: Some(self.0.local),
@@ -54,15 +54,21 @@ impl ProcessManager {
         let Ok(Ok(listed)) = listed else {
             return false;
         };
-        let oldest = listed
+        let mut candidates: Vec<_> = listed
             .into_value()
             .into_iter()
             .filter(|record| record.state.is_terminal())
-            .min_by_key(|record| record.times.ended_ms);
-        match oldest {
-            Some(record) => self.delete(None, record.id).await.is_ok(),
-            None => false,
+            .collect();
+        candidates.sort_by_key(|record| (record.times.ended_ms, record.id));
+        for record in candidates {
+            match self.delete(None, record.id).await {
+                Ok(_) => return true,
+                // Processes bound to unconcluded Agent instances stay protected until concluded.
+                Err(ServiceError::ProcessActive) => {}
+                Err(_) => return false,
+            }
         }
+        false
     }
 
     /// Attaches to a live local Process as its stdin writer, reading output from `from`.
