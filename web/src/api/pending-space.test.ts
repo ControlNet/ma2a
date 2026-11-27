@@ -167,3 +167,53 @@ test("different-name refusal and pre-dispatch 403/422 keep Alpha's original requ
     vi.restoreAllMocks()
   }
 })
+
+test("in-memory pending record wins over stale storage when writes throw quota error", () => {
+  const endpointId = "aa".repeat(32)
+  const stale: PendingSpaceCreation = {
+    endpointId,
+    name: "Old",
+    requestId: "01".padStart(32, "0") as RequestId,
+  }
+  let stored: string | null = JSON.stringify(stale)
+  const quotaStorage: Storage = {
+    get length() {
+      return stored === null ? 0 : 1
+    },
+    clear: () => {
+      stored = null
+    },
+    getItem: (key) => (key === PENDING_SPACE_STORAGE_KEY ? stored : null),
+    key: (index) => (index === 0 && stored !== null ? PENDING_SPACE_STORAGE_KEY : null),
+    removeItem: (key) => {
+      if (key === PENDING_SPACE_STORAGE_KEY) stored = null
+    },
+    setItem: () => {
+      throw new Error("QuotaExceededError")
+    },
+  }
+  let next = 1
+  const nextId = (): RequestId => (++next).toString(16).padStart(32, "0") as RequestId
+  const tracker = createPendingSpaceTracker({
+    endpointId: () => endpointId,
+    storage: quotaStorage,
+  })
+
+  expect(writePendingSpaceCreation(stale, quotaStorage)).toBe(false)
+
+  const first = tracker.begin("NewLargerSpace", nextId)
+  tracker.markUnsettled(first.requestId)
+  const retry = tracker.begin("NewLargerSpace", nextId)
+
+  expect(first.reused).toBe(false)
+  expect(retry.reused).toBe(true)
+  expect(retry.requestId).toBe(first.requestId)
+
+  // Settling the older entry removes the stale stored copy even if writing the new one failed.
+  tracker.settle(stale.requestId)
+  expect(readPendingSpaceCreation(endpointId, quotaStorage)).toBeUndefined()
+  expect(tracker.begin("NewLargerSpace", nextId)).toEqual({
+    requestId: first.requestId,
+    reused: true,
+  })
+})

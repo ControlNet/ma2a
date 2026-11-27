@@ -75,24 +75,26 @@ export function readPendingSpaceCreation(
 function writePendingSpaceCreations(
   entries: readonly PendingSpaceCreation[],
   storage: Storage | undefined,
-): void {
+): boolean {
+  if (storage === undefined) return false
   if (entries.length === 0) {
     clearPendingSpaceCreation(storage)
-    return
+    return true
   }
   try {
     const value = entries.length === 1 ? entries[0] : entries
-    storage?.setItem(PENDING_SPACE_STORAGE_KEY, JSON.stringify(value))
+    storage.setItem(PENDING_SPACE_STORAGE_KEY, JSON.stringify(value))
+    return true
   } catch {
-    return
+    return false
   }
 }
 
 export function writePendingSpaceCreation(
   entry: PendingSpaceCreation,
   storage: Storage | undefined,
-): void {
-  writePendingSpaceCreations([entry], storage)
+): boolean {
+  return writePendingSpaceCreations([entry], storage)
 }
 
 export function clearPendingSpaceCreation(storage: Storage | undefined): void {
@@ -133,24 +135,38 @@ export function createPendingSpaceTracker(
   options: PendingSpaceTrackerOptions,
 ): PendingSpaceTracker {
   let memory: MemoryPendingSpace[] = []
+  const loadedScopes = new Set<string | undefined>()
   const load = (scope: string | undefined): readonly MemoryPendingSpace[] => {
+    if (loadedScopes.has(scope)) {
+      return memory.filter((entry) => entry.endpointId === scope)
+    }
     const stored =
       scope !== undefined && options.storage !== undefined
         ? readPendingSpaceCreations(scope, options.storage)
         : []
-    return stored.length > 0 ? stored : memory.filter((entry) => entry.endpointId === scope)
+    if (stored.length > 0) {
+      memory = [...memory.filter((entry) => entry.endpointId !== scope), ...stored]
+      loadedScopes.add(scope)
+      return stored
+    }
+    return memory.filter((entry) => entry.endpointId === scope)
   }
   const persist = (scope: string | undefined, entries: readonly MemoryPendingSpace[]): void => {
+    loadedScopes.add(scope)
     memory = [...memory.filter((entry) => entry.endpointId !== scope), ...entries]
     if (scope !== undefined && options.storage !== undefined) {
-      writePendingSpaceCreations(
-        entries.map((entry) => ({
-          endpointId: scope,
-          name: entry.name,
-          requestId: entry.requestId,
-        })),
-        options.storage,
-      )
+      const toStore = entries.map((entry) => ({
+        endpointId: scope,
+        name: entry.name,
+        requestId: entry.requestId,
+      }))
+      if (!writePendingSpaceCreations(toStore, options.storage)) {
+        const currentIds = new Set(toStore.map((entry) => entry.requestId))
+        const staleOnDisk = readPendingSpaceCreations(scope, options.storage).some(
+          (entry) => !currentIds.has(entry.requestId),
+        )
+        if (staleOnDisk) clearPendingSpaceCreation(options.storage)
+      }
     }
   }
   const notify = (scope: string | undefined, entry: MemoryPendingSpace | undefined): void => {
