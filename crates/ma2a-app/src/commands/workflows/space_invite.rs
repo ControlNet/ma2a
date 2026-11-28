@@ -165,7 +165,7 @@ fn quote_state_dir(state_dir: &Path) -> Option<String> {
     }
     #[cfg(windows)]
     {
-        if raw.contains('"') || raw.contains('%') {
+        if raw.ends_with('\\') || raw.contains(['"', '%', '$', '`']) {
             return None;
         }
         Some(format!("\"{raw}\""))

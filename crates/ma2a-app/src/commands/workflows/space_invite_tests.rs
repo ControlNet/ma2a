@@ -45,12 +45,30 @@ fn retry_hint_quotes_state_dir_and_falls_back_on_control_chars() {
         )
     );
     #[cfg(windows)]
-    assert_eq!(
-        retry_hint(Path::new(r"C:\ma2a\my state"), id),
-        format!(
-            "Retry the exact same ticket with: ma2a --state-dir \"C:\\ma2a\\my state\" space accept --request-id {id}"
-        )
-    );
+    {
+        assert_eq!(
+            retry_hint(Path::new(r"C:\ma2a\my state"), id),
+            format!(
+                "Retry the exact same ticket with: ma2a --state-dir \"C:\\ma2a\\my state\" space accept --request-id {id}"
+            )
+        );
+        for unsafe_dir in [
+            r"C:\ma2a\state\",
+            r"C:\",
+            r"C:\ma2a\state $lab",
+            r"C:\ma2a\state `lab",
+            r#"C:\ma2a\state"lab"#,
+            r"C:\ma2a\%TEMP%",
+        ] {
+            assert_eq!(
+                retry_hint(Path::new(unsafe_dir), id),
+                format!(
+                    "Keep the original --state-dir and retry the exact same ticket with: ma2a space accept --request-id {id}"
+                ),
+                "expected fallback for {unsafe_dir}"
+            );
+        }
+    }
     assert_eq!(
         retry_hint(Path::new("/tmp/bad\nstate"), id),
         format!(
