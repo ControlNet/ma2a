@@ -36,6 +36,16 @@ struct Segment {
     file_bytes: u64,
 }
 
+impl Segment {
+    const fn empty(first: u64) -> Self {
+        Self {
+            first,
+            content: 0,
+            file_bytes: 0,
+        }
+    }
+}
+
 fn name(first: u64) -> String {
     format!("{first:020}.seg")
 }
@@ -104,7 +114,7 @@ pub struct LogWriter {
     end: u64,
     discarded: u64,
     #[cfg(test)]
-    blocked_deletes: BTreeSet<u64>,
+    pub(super) blocked_deletes: BTreeSet<u64>,
 }
 
 impl LogWriter {
@@ -214,6 +224,29 @@ impl LogWriter {
         self.current.as_ref().map_or(Ok(()), File::sync_all)
     }
 
+    /// Makes every written record durable and persists any unrecovered retention gap at exit.
+    ///
+    /// # Errors
+    /// Returns an I/O error when the current segment cannot be synced or the gap marker cannot
+    /// be created.
+    pub fn finish(&mut self) -> io::Result<()> {
+        self.sync()?;
+        self.retain();
+        let next_end = self.end.saturating_add(self.discarded);
+        if next_end > self.end {
+            let marker = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(self.directory.join(name(next_end)))?;
+            self.segments.push_back(Segment::empty(next_end));
+            self.end = next_end;
+            self.discarded = 0;
+            marker.sync_all()?;
+        }
+        self.discarded = 0;
+        Ok(())
+    }
+
     fn retained_bytes(&self) -> u64 {
         self.segments.iter().map(|segment| segment.file_bytes).sum()
     }
@@ -255,11 +288,7 @@ impl LogWriter {
             .open(self.directory.join(name(self.end)))?;
         self.current = Some(file);
         if !again {
-            self.segments.push_back(Segment {
-                first: self.end,
-                content: 0,
-                file_bytes: 0,
-            });
+            self.segments.push_back(Segment::empty(self.end));
         }
         Ok(())
     }

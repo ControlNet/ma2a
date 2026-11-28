@@ -69,17 +69,26 @@ impl Shared {
         self.status.send_replace(next);
     }
 
-    /// Makes all appended output durable, on the blocking pool.
+    /// Makes all appended output durable and finalizes any trailing retention gap, on the
+    /// blocking pool.
     pub(super) async fn sync_log(self: &Arc<Self>) {
         let shared = Arc::clone(self);
-        let _synced = tokio::task::spawn_blocking(move || {
-            shared
-                .log
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .sync()
+        let window = tokio::task::spawn_blocking(move || {
+            let mut log = shared.log.lock().unwrap_or_else(PoisonError::into_inner);
+            let _finished = log.finish();
+            log.window()
         })
         .await;
+        if let Ok(window) = window {
+            self.output.send_if_modified(|current| {
+                if *current == window {
+                    false
+                } else {
+                    *current = window;
+                    true
+                }
+            });
+        }
     }
 
     /// Appends one output chunk and publishes the new window.

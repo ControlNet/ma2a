@@ -61,23 +61,31 @@ fn a_first_record_that_could_not_be_cut_back_never_blocks_later_ones() -> TestRe
     Ok(())
 }
 
-#[test]
-fn blocked_retention_bounds_disk_and_records_gap_on_resume() -> TestResult {
-    // Given: a 2 MiB log whose oldest segment cannot be deleted (simulating a Windows reader
-    // holding it open without delete sharing).
-    let limit = 2 * MIB;
-    let directory = TempDirectory::new("blocked-retention")?;
-    let mut writer = LogWriter::create(&directory.0, limit)?;
+fn write_blocked_past_limit(
+    directory: &std::path::Path,
+    limit: u64,
+) -> Result<(LogWriter, u64, u64), Box<dyn std::error::Error + Send + Sync>> {
+    let mut writer = LogWriter::create(directory, limit)?;
     writer.blocked_deletes.insert(0);
     let chunk = vec![b'a'; usize::try_from(MAX_RECORD_LEN)?];
-
-    // When: 5 MiB of output is appended while segment 0 cannot be deleted.
     let mut produced = 0_u64;
     while produced < 5 * MIB {
         writer.append(Channel::Output, &chunk)?;
         produced += u64::try_from(chunk.len())?;
     }
     writer.sync()?;
+    let stalled_end = writer.window().end;
+    assert!(stalled_end < produced, "excess output was discarded");
+    Ok((writer, stalled_end, produced))
+}
+
+#[test]
+fn blocked_retention_bounds_disk_and_records_gap_on_resume() -> TestResult {
+    // Given: a 2 MiB log whose oldest segment cannot be deleted (simulating a Windows reader
+    // holding it open without delete sharing), with 5 MiB appended.
+    let limit = 2 * MIB;
+    let directory = TempDirectory::new("blocked-retention")?;
+    let (mut writer, stalled_end, produced) = write_blocked_past_limit(&directory.0, limit)?;
 
     // Then: disk usage stays within log_limit plus one segment, and window matches disk.
     let on_disk = disk_bytes(&directory.0)?;
@@ -86,8 +94,6 @@ fn blocked_retention_bounds_disk_and_records_gap_on_resume() -> TestResult {
         "expected <= {} bytes on disk, got {on_disk}",
         limit + SEGMENT_BYTES
     );
-    let stalled_end = writer.window().end;
-    assert!(stalled_end < produced, "excess output was discarded");
     assert_eq!(window(&directory.0)?, writer.window());
 
     // When: segment 0 becomes deletable and new output arrives.
@@ -111,6 +117,37 @@ fn blocked_retention_bounds_disk_and_records_gap_on_resume() -> TestResult {
     assert_eq!(after.start, produced);
     assert_eq!(after.records, vec![(Channel::Output, b"RESUMED".to_vec())]);
     assert_eq!(after.next, produced + 7);
+    Ok(())
+}
+
+#[test]
+fn blocked_retention_records_discarded_tail_at_exit() -> TestResult {
+    for release_before_finish in [false, true] {
+        let limit = 2 * MIB;
+        let directory = TempDirectory::new("blocked-exit")?;
+        let (mut writer, stalled_end, produced) = write_blocked_past_limit(&directory.0, limit)?;
+        if release_before_finish {
+            writer.blocked_deletes.remove(&0);
+        }
+
+        // When: the writer finishes with no further append.
+        writer.finish()?;
+        writer.finish()?;
+
+        // Then: the gap is durable within the disk bound and readable as a truncated tail.
+        let on_disk = disk_bytes(&directory.0)?;
+        assert!(
+            on_disk <= limit + SEGMENT_BYTES,
+            "expected <= {} bytes on disk, got {on_disk}",
+            limit + SEGMENT_BYTES
+        );
+        assert_eq!(writer.window().end, produced);
+        assert_eq!(window(&directory.0)?, writer.window());
+        let tail = read(&directory.0, stalled_end, usize::MAX)?;
+        assert!(tail.truncated);
+        assert_eq!((tail.start, tail.next), (produced, produced));
+        assert!(tail.records.is_empty());
+    }
     Ok(())
 }
 

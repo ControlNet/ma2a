@@ -8,17 +8,24 @@ use std::{
     time::Duration,
 };
 
-use ma2a_core::service::{ProcessId, ProcessSignal, ProcessSpec, ProcessStart, ServiceError};
+use ma2a_core::service::{
+    Channel, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, ProcessId, ProcessSignal, ProcessSpec,
+    ProcessStart, ServiceError, Termination, decode_skipped,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::super::{
     host::{Lifecycle, Shared},
-    log::LogWriter,
+    host_attach,
+    log::{self, LogWriter, MAX_RECORD_LEN, SEGMENT_BYTES},
     proof::Credentials,
-    status::SupervisorStatus,
+    status::{EndCause, SupervisorStatus},
 };
+use crate::{FrameReader, FrameWriter};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+type ReadEnd = FrameReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>;
+type WriteEnd = FrameWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>;
 
 struct TempDirectory(std::path::PathBuf);
 
@@ -151,5 +158,111 @@ async fn closed_terminate_waiters_are_pruned_before_admitting_another() -> TestR
     );
     let _ = tokio::time::timeout(Duration::from_secs(5), kill_answer).await??;
     tokio::time::timeout(Duration::from_secs(5), lifecycle).await??;
+    Ok(())
+}
+
+fn duplex_ends() -> (ReadEnd, ReadEnd, WriteEnd) {
+    let (one, two) = tokio::io::duplex(MAX_DATA_CHUNK_LEN);
+    let ((daemon_read, _), (host_read, host_write)) =
+        (tokio::io::split(one), tokio::io::split(two));
+    (
+        FrameReader::new(daemon_read),
+        FrameReader::new(host_read),
+        FrameWriter::new(host_write),
+    )
+}
+
+async fn read_attachment(reader: &mut ReadEnd) -> TestResult<(u64, Option<u64>, SupervisorStatus)> {
+    assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
+    let mut data_bytes = 0_u64;
+    let mut skipped = None;
+    loop {
+        let frame = reader.expect().await?;
+        match frame.kind() {
+            FrameKind::Data => data_bytes += u64::try_from(frame.data()?.1.len())?,
+            FrameKind::Control => skipped = Some(decode_skipped(frame.payload())?),
+            FrameKind::Outcome => {
+                return Ok((
+                    data_bytes,
+                    skipped,
+                    SupervisorStatus::from_bytes(frame.payload())?,
+                ));
+            }
+            kind => return Err(format!("unexpected {kind:?}").into()),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_exit_while_retention_is_blocked_signals_discarded_tail_to_live_and_reopened_readers()
+-> TestResult {
+    // Given: a running supervisor whose oldest segment cannot be deleted and a live reader.
+    let limit = 2 * SEGMENT_BYTES;
+    let spec = ProcessSpec::new(Some("true".to_owned()), Vec::new(), None)?;
+    let (directory, shared, _receiver) = shared_fixture("blocked-exit", spec)?;
+    let log_dir = directory.0.join("log");
+    {
+        let mut log = LogWriter::create(&log_dir, limit)?;
+        log.blocked_deletes.insert(0);
+        *shared.log.lock().unwrap() = log;
+        shared
+            .output
+            .send_replace(shared.log.lock().unwrap().window());
+    }
+    let (mut reader, mut host_reader, mut host_writer) = duplex_ends();
+    let live = host_attach::attach(
+        (&mut host_reader, &mut host_writer),
+        &shared,
+        (LogFrom::Start, false),
+    );
+    let reading = tokio::spawn(async move { read_attachment(&mut reader).await });
+
+    // When: output overflows the blocked log and the child exits without another append.
+    let chunk = vec![b'a'; usize::try_from(MAX_RECORD_LEN)?];
+    let mut produced = 0_u64;
+    while produced < 5 * SEGMENT_BYTES {
+        shared.append(Channel::Output, &chunk);
+        produced += u64::try_from(chunk.len())?;
+    }
+    let stalled_end = shared.output.borrow().end;
+    assert!(stalled_end < produced, "excess output was discarded");
+    shared.sync_log().await;
+    shared
+        .record(SupervisorStatus::Ended(
+            Termination::Exited(0),
+            EndCause::Exited,
+            2,
+        ))
+        .await;
+    live.await?;
+    let (live_bytes, live_skipped, live_status) = reading.await??;
+
+    // Then: the live attachment saw the retained output, the skipped tail, and final status.
+    assert!(live_status.is_final(), "{live_status:?}");
+    assert_eq!(live_bytes, stalled_end);
+    assert_eq!(live_skipped, Some(produced));
+
+    // And: reopened attach and durable reads both report the discarded tail within disk bounds.
+    let (mut reopened_reader, mut r_host_reader, mut r_host_writer) = duplex_ends();
+    let reopened = host_attach::attach(
+        (&mut r_host_reader, &mut r_host_writer),
+        &shared,
+        (LogFrom::Cursor(stalled_end), false),
+    );
+    let reopened_read = tokio::spawn(async move { read_attachment(&mut reopened_reader).await });
+    reopened.await?;
+    let (reopened_bytes, reopened_skipped, reopened_status) = reopened_read.await??;
+    assert!(reopened_status.is_final(), "{reopened_status:?}");
+    assert_eq!(reopened_bytes, 0);
+    assert_eq!(reopened_skipped, Some(produced));
+    let mut on_disk = 0_u64;
+    for entry in std::fs::read_dir(&log_dir)? {
+        on_disk += entry?.metadata()?.len();
+    }
+    assert!(on_disk <= limit + SEGMENT_BYTES, "{on_disk} bytes on disk");
+    assert_eq!(log::window(&log_dir)?.end, produced);
+    let tail = log::read(&log_dir, stalled_end, usize::MAX)?;
+    assert!(tail.truncated);
+    assert_eq!((tail.start, tail.next), (produced, produced));
     Ok(())
 }
