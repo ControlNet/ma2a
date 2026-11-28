@@ -88,6 +88,7 @@ impl ControlRoundRunner {
         let mut dials = JoinSet::new();
         let mut synchronized_peers = BTreeSet::new();
         while !pending.is_empty() || !dials.is_empty() {
+            ensure_before_deadline(&mut deadline).await?;
             spawn_control_dials(&mut pending, &mut dials, dial.clone());
             let Some(joined) = run_before_deadline(&mut deadline, dials.join_next()).await? else {
                 break;
@@ -100,9 +101,9 @@ impl ControlRoundRunner {
             let now_ms = self.clock.now_ms().and_then(|value| {
                 u64::try_from(value).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
             })?;
-            let applied = self
-                .store
-                .apply_control_response(
+            let response = run_before_deadline(
+                &mut deadline,
+                self.store.admit_control_response(
                     ControlExchangeInput {
                         local_endpoint_id,
                         remote_endpoint_id: peer,
@@ -110,24 +111,29 @@ impl ControlRoundRunner {
                         now_ms,
                     },
                     spaces,
-                )
-                .await;
+                ),
+            )
+            .await??;
+            // Once admitted to the Store queue, await its receipt so any committed transaction
+            // still reaches Runtime state even if the aggregate deadline expires while it runs.
+            let applied = response.await.map_err(crate::store::channel_error)?;
             // A response this peer got wrong, such as one answering another request's Spaces,
             // fails that request only; a local failure still ends the round.
-            let ControlApplyOutcome {
-                revision,
-                changes: applied,
-            } = match applied {
-                Ok(outcome) => outcome,
+            match applied {
+                Ok(ControlApplyOutcome {
+                    revision,
+                    changes: applied,
+                }) => {
+                    pending.finished(peer, true);
+                    synchronized_peers.insert(peer);
+                    progress.record(revision, applied);
+                }
                 Err(ControlFailure::Rejected(_)) => {
                     pending.finished(peer, false);
-                    continue;
                 }
                 Err(failure) => return Err(failure),
-            };
-            pending.finished(peer, true);
-            synchronized_peers.insert(peer);
-            progress.record(revision, applied);
+            }
+            ensure_before_deadline(&mut deadline).await?;
         }
         // A peer whose Spaces were split across requests is synchronized only if all of them
         // succeeded.
@@ -179,6 +185,10 @@ impl RoundProgress {
     }
 }
 
+async fn ensure_before_deadline(deadline: &mut Pin<&mut Sleep>) -> Result<(), ControlFailure> {
+    run_before_deadline(deadline, std::future::ready(())).await
+}
+
 async fn run_before_deadline<Output>(
     deadline: &mut Pin<&mut Sleep>,
     operation: impl Future<Output = Output>,
@@ -214,8 +224,8 @@ fn spawn_control_dials<Dial, DialFuture, DialError>(
         else {
             break;
         };
-        let dial = dial.clone();
-        dials.spawn(async move { (peer, spaces, dial(peer, request).await) });
+        let call = dial(peer, request);
+        dials.spawn(async move { (peer, spaces, call.await) });
     }
 }
 

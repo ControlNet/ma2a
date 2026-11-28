@@ -34,7 +34,7 @@ pub(super) type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
-struct FixedClock(i64);
+pub(super) struct FixedClock(pub(super) i64);
 
 impl RuntimeClock for FixedClock {
     fn now_ms(&self) -> Result<i64, RuntimeError> {
@@ -67,10 +67,10 @@ impl RuntimeClock for FailSecondClock {
     }
 }
 
-struct TempState(PathBuf);
+pub(super) struct TempState(pub(super) PathBuf);
 
 impl TempState {
-    fn new(label: &str) -> TestResult<Self> {
+    pub(super) fn new(label: &str) -> TestResult<Self> {
         let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "ma2a-control-deadline-{label}-{}-{serial}",
