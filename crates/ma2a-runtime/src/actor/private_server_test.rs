@@ -6,6 +6,7 @@ mod failures;
 mod same_port_deactivation;
 mod tls_generation;
 mod tls_retry;
+mod view_sequence;
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

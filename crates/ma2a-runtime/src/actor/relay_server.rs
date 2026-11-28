@@ -61,6 +61,21 @@ impl Actor {
         desired: Option<&PrivateRelayProviderConfig>,
         (mode, preloaded_tls): (PrivateRelayApply, Option<ma2a_net::LoadedRelayTls>),
     ) -> Result<(), RuntimeError> {
+        let was_running = self.private_relay_server.is_some();
+        let result = self
+            .apply_private_relay_inner(desired, (mode, preloaded_tls))
+            .await;
+        if self.private_relay_server.is_some() != was_running {
+            self.view_sequence = self.view_sequence.saturating_add(1);
+        }
+        result
+    }
+
+    async fn apply_private_relay_inner(
+        &mut self,
+        desired: Option<&PrivateRelayProviderConfig>,
+        (mode, preloaded_tls): (PrivateRelayApply, Option<ma2a_net::LoadedRelayTls>),
+    ) -> Result<(), RuntimeError> {
         let applied = self
             .private_relay_server
             .as_ref()
