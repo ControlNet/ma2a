@@ -113,6 +113,7 @@ async fn maintenance_native_tls_retry_does_not_stall_status_or_snapshot() -> Tes
     *TLS_LOAD_GATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TlsLoadGate {
+        certificate_path: state.0.join("relay.cert.pem"),
         entered: entered_tx,
         release: release_rx,
         released_in_time: Arc::clone(&released_in_time),
@@ -171,6 +172,7 @@ async fn stale_maintenance_native_tls_load_is_discarded_when_configuration_chang
     *TLS_LOAD_GATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TlsLoadGate {
+        certificate_path: state.0.join("relay.cert.pem"),
         entered: entered_tx,
         release: release_rx,
         released_in_time: Arc::clone(&released_in_time),

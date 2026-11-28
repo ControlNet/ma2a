@@ -62,6 +62,7 @@ async fn native_tls_loading_does_not_stall_runtime_status() -> TestResult {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
         Some(crate::actor::relay_configuration::TlsLoadGate {
+            certificate_path: state.0.join("missing.cert.pem"),
             entered: entered_tx,
             release: release_rx,
             released_in_time: Arc::clone(&released_in_time),

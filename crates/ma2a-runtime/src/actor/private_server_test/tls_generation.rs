@@ -53,6 +53,7 @@ async fn superseded_maintenance_tls_failure_at_same_paths_does_not_stop_runtime(
     *TLS_LOAD_GATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TlsLoadGate {
+        certificate_path: std::path::PathBuf::from(certificate_path),
         entered: entered_tx,
         release: release_rx,
         released_in_time: Arc::clone(&released_in_time),
@@ -110,6 +111,7 @@ async fn superseded_maintenance_tls_success_at_same_paths_is_discarded() -> Test
     *TLS_LOAD_GATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TlsLoadGate {
+        certificate_path: state.0.join("relay.cert.pem"),
         entered: entered_tx,
         release: release_rx,
         released_in_time: Arc::clone(&released_in_time),
