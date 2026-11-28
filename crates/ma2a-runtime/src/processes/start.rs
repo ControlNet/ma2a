@@ -29,6 +29,17 @@ fn fingerprint(start: &[u8]) -> [u8; 32] {
         .as_bytes()
 }
 
+/// Maps supervisor and abort settlement errors from `start` to `unavailable`, matching
+/// `answer_effect`.
+pub(super) const fn start_abort_error(error: ServiceError) -> ServiceError {
+    match error {
+        ServiceError::Unreachable | ServiceError::Unauthorized | ServiceError::Cancelled => {
+            ServiceError::Unavailable
+        }
+        other => other,
+    }
+}
+
 /// Aborts this daemon at one named point of the start sequence (debug builds only).
 fn fault(point: &str) {
     #[cfg(debug_assertions)]
@@ -220,7 +231,7 @@ impl ProcessManager {
                 GoDispatch::AbortFailed(error) => {
                     drop(watching);
                     self.follow(id, None);
-                    return Err(error);
+                    return Err(start_abort_error(error));
                 }
                 GoDispatch::Deferred(error) => Err(error),
             },

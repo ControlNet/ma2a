@@ -1051,3 +1051,68 @@ async fn resumed_starting_row_active_after_go_hold_expires_and_withdrawal_termin
     second_shutdown.cancel();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_start_maps_abort_failed_unreachable_to_unavailable() -> TestResult {
+    let harness = Harness::new("a05-abort-unavail").await?;
+    harness
+        .store
+        .set_go_dispatch_hold(Duration::from_millis(80))
+        .await;
+    let (manager, shutdown) = harness.manager();
+    let (entered_rx, release_tx) = manager.arm_after_final_authorize_gate();
+
+    let marker = harness.state.0.join("child-a05-unavail");
+    let start_spec = start(&format!("touch {}; sleep 1", marker.display()))?;
+    let req = request_id(125)?;
+    let ((mut reader, _writer), (mut host_reader, mut host_writer)) = pipe();
+    let stop = CancellationToken::new();
+    let host = tokio::spawn({
+        let manager = manager.clone();
+        let creator = harness.creator;
+        async move {
+            let scope = ((creator, req), ProcessRequest::Start(start_spec), &stop);
+            serve(&manager, scope, (&mut host_reader, &mut host_writer)).await
+        }
+    });
+    let caller = tokio::spawn(async move { hosted::call(&mut reader).await });
+
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    harness.store.advance_revision().await?;
+    let row = harness
+        .store
+        .processes(move |repo| repo.process_by_binding(harness.creator, req))
+        .await??
+        .ok_or("missing created Process")?;
+    let _removed = std::fs::remove_file(manager.address(row.id).as_str());
+    let _released = release_tx.send(());
+
+    let answer = tokio::time::timeout(Duration::from_secs(5), caller).await??;
+    let _report = tokio::time::timeout(Duration::from_secs(5), host).await??;
+    assert!(
+        matches!(answer, Err(ClientError::Failed(ServiceError::Unavailable))),
+        "expected Failed(Unavailable), got {answer:?}"
+    );
+    assert!(!marker.exists(), "child must not run");
+    shutdown.cancel();
+    Ok(())
+}
+
+#[test]
+fn start_abort_error_maps_supervisor_and_cancelled_errors_to_unavailable() {
+    use crate::processes::start::start_abort_error;
+
+    for raw in [
+        ServiceError::Unreachable,
+        ServiceError::Unauthorized,
+        ServiceError::Cancelled,
+        ServiceError::Unavailable,
+    ] {
+        assert_eq!(start_abort_error(raw), ServiceError::Unavailable);
+    }
+    assert_eq!(
+        start_abort_error(ServiceError::UnknownProcess),
+        ServiceError::UnknownProcess
+    );
+}
