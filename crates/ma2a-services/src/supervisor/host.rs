@@ -107,12 +107,17 @@ impl Shared {
             self.publish_window(window);
         } else {
             // Keep `first_available` current when retention reclaimed an old segment before the
-            // write failed, without waking readers for an unpersisted end cursor.
+            // write failed, bounded by `current.end` and monotonic so readers never see
+            // `first_available > end` or a backward window.
             self.output.send_if_modified(|current| {
-                if current.first_available == window.first_available {
+                let next_first = window
+                    .first_available
+                    .min(current.end)
+                    .max(current.first_available);
+                if current.first_available == next_first {
                     false
                 } else {
-                    current.first_available = window.first_available;
+                    current.first_available = next_first;
                     true
                 }
             });

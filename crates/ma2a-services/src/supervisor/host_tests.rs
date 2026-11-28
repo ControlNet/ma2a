@@ -74,6 +74,41 @@ async fn failed_writes_do_not_wake_output_watchers_until_record_or_exit_persists
     Ok(())
 }
 
+async fn assert_live_attach_accepts(
+    shared: &Shared,
+    from: LogFrom,
+    expected: (u64, u64, u64),
+) -> TestResult {
+    let (one, two) = tokio::io::duplex(MAX_DATA_CHUNK_LEN);
+    let ((daemon_read, daemon_write), (host_read, host_write)) =
+        (tokio::io::split(one), tokio::io::split(two));
+    let (mut reader, mut writer) = (
+        FrameReader::new(daemon_read),
+        FrameWriter::new(daemon_write),
+    );
+    let (mut host_reader, mut host_writer) =
+        (FrameReader::new(host_read), FrameWriter::new(host_write));
+    let attached = host_attach::attach(
+        (&mut host_reader, &mut host_writer),
+        shared,
+        (from, StdinRelay::Disabled),
+    );
+    let daemon = async {
+        let accept = reader.expect().await?;
+        assert_eq!(accept.kind(), FrameKind::Accept, "{accept:?}");
+        assert_eq!(decode_reading(accept.payload())?, (expected, false));
+        writer.frame(FrameKind::Cancel, &[]).await?;
+        writer.flush().await?;
+        let outcome = reader.expect().await?;
+        assert_eq!(outcome.kind(), FrameKind::Outcome, "{outcome:?}");
+        TestResult::Ok(())
+    };
+    let (attached, daemon) = tokio::join!(attached, daemon);
+    attached?;
+    daemon?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_appends_publish_windows_in_write_order_and_keep_live_attach_valid() -> TestResult
 {
@@ -104,33 +139,32 @@ async fn concurrent_appends_publish_windows_in_write_order_and_keep_live_attach_
     second.await?;
 
     assert_eq!(*shared.output.borrow(), LogWindow::new(0, 8));
+    assert_live_attach_accepts(&shared, LogFrom::Cursor(8), (8, 0, 8)).await
+}
 
-    let (one, two) = tokio::io::duplex(MAX_DATA_CHUNK_LEN);
-    let ((daemon_read, daemon_write), (host_read, host_write)) =
-        (tokio::io::split(one), tokio::io::split(two));
-    let (mut reader, mut writer) = (
-        FrameReader::new(daemon_read),
-        FrameWriter::new(daemon_write),
-    );
-    let (mut host_reader, mut host_writer) =
-        (FrameReader::new(host_read), FrameWriter::new(host_write));
-    let attached = host_attach::attach(
-        (&mut host_reader, &mut host_writer),
-        &shared,
-        (LogFrom::Cursor(8), StdinRelay::Disabled),
-    );
-    let daemon = async {
-        let accept = reader.expect().await?;
-        assert_eq!(accept.kind(), FrameKind::Accept, "{accept:?}");
-        assert_eq!(decode_reading(accept.payload())?, ((8, 0, 8), false));
-        writer.frame(FrameKind::Cancel, &[]).await?;
-        writer.flush().await?;
-        let outcome = reader.expect().await?;
-        assert_eq!(outcome.kind(), FrameKind::Outcome, "{outcome:?}");
-        TestResult::Ok(())
-    };
-    let (attached, daemon) = tokio::join!(attached, daemon);
-    attached?;
-    daemon?;
-    Ok(())
+#[tokio::test(flavor = "current_thread")]
+async fn failed_write_with_unremovable_empty_segment_keeps_window_valid_and_monotonic() -> TestResult
+{
+    let (_root, shared) = test_shared("unremovable-empty", 0)?;
+    let watcher = shared.output.subscribe();
+    assert!(!watcher.has_changed()?);
+
+    let _caught = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(
+        Signal::XFSZ.as_raw(),
+    ))?;
+    let previous = getrlimit(Resource::Fsize);
+    let mut lowered = previous;
+    lowered.current = Some(4);
+    setrlimit(Resource::Fsize, lowered)?;
+    shared.append(Channel::Output, b"aaaa");
+    shared.log.lock().unwrap().blocked_deletes.insert(4);
+    shared.append(Channel::Output, b"bbbb");
+    setrlimit(Resource::Fsize, previous)?;
+
+    let window = *shared.output.borrow();
+    assert!(window.first_available <= window.end, "{window:?}");
+    assert_eq!(window, LogWindow::new(0, 0));
+    assert!(!watcher.has_changed()?);
+
+    assert_live_attach_accepts(&shared, LogFrom::Start, (0, 0, 0)).await
 }
