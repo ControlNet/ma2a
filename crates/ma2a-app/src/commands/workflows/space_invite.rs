@@ -67,24 +67,77 @@ pub(super) async fn invite(
 }
 
 /// Reads one invite ticket without ever accepting it from argv.
-pub(super) async fn accept(state_dir: &Path, paths: IpcPaths) -> Result<(), AppError> {
+pub(super) async fn accept(
+    state_dir: &Path,
+    paths: IpcPaths,
+    request_id: Option<String>,
+) -> Result<(), AppError> {
+    let request_id = match request_id {
+        Some(value) => validate_request_id(value)?,
+        None => request_id_hex(
+            RequestId::random()
+                .map_err(|_| io::Error::other("operating-system random source failed"))?,
+        )?,
+    };
     crate::daemon_control::require(&paths).await?;
     let invitation = read_invitation()?;
     let invitation = invitation.trim();
     if invitation.is_empty() {
         return Err(AppError::Usage("no invite ticket was supplied"));
     }
-    let mut fields = crate::commands::workflows::request_fields()?;
+    let mut fields = serde_json::Map::new();
+    fields.insert("request_id".to_owned(), Value::String(request_id.clone()));
     fields.insert(
         "invitation".to_owned(),
         Value::String(invitation.to_owned()),
     );
-    crate::call(
+    let response = match crate::request(
         (state_dir, paths),
         crate::commands::workflows::command("space_redeem", fields)?,
-        false,
     )
     .await
+    {
+        Ok(response) => response,
+        Err(error) => return Err(attach_retry_request_id(error, &request_id)),
+    };
+    let document: Value = serde_json::from_slice(&response).map_err(io::Error::other)?;
+    if let Err(error) = crate::output::reject_runtime_error(&document) {
+        let should_show_id = document
+            .get("remediation")
+            .and_then(Value::as_str)
+            .is_some_and(|remediation| remediation.contains("retry"))
+            || document.get("error").and_then(Value::as_str) == Some("unavailable");
+        return Err(if should_show_id {
+            attach_retry_request_id(error, &request_id)
+        } else {
+            error
+        });
+    }
+    crate::output::write_human(&document)?;
+    Ok(())
+}
+
+fn validate_request_id(value: String) -> Result<String, AppError> {
+    if value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        Ok(value)
+    } else {
+        Err(AppError::Usage(
+            "--request-id must be 32 lowercase hex characters",
+        ))
+    }
+}
+
+fn attach_retry_request_id(error: AppError, request_id: &str) -> AppError {
+    let hint =
+        format!("Retry the exact same ticket with: ma2a space accept --request-id {request_id}");
+    match error {
+        AppError::Rejected(code, message) => AppError::Rejected(code, format!("{message}\n{hint}")),
+        other => AppError::Protocol(format!("{other}\n{hint}")),
+    }
 }
 
 fn read_invitation() -> Result<String, AppError> {
@@ -155,7 +208,7 @@ fn request_id_hex(request_id: RequestId) -> Result<String, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_duration_ms;
+    use super::{parse_duration_ms, validate_request_id};
 
     #[test]
     fn the_default_invite_lifetime_is_five_minutes() {
@@ -174,5 +227,16 @@ mod tests {
         assert!(parse_duration_ms("6m").is_err());
         assert!(parse_duration_ms("0s").is_err());
         assert!(parse_duration_ms("5").is_err());
+    }
+
+    #[test]
+    fn explicit_accept_request_id_requires_32_lowercase_hex_chars() {
+        let valid = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            validate_request_id(valid.to_owned()).ok().as_deref(),
+            Some(valid)
+        );
+        assert!(validate_request_id("0123".to_owned()).is_err());
+        assert!(validate_request_id("0123456789ABCDEF0123456789ABCDEF".to_owned()).is_err());
     }
 }

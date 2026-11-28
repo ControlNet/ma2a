@@ -73,7 +73,7 @@ pub(crate) async fn run(
             )
             .await
         }
-        cli::SpaceCommand::Accept => accept(state_dir, paths).await,
+        cli::SpaceCommand::Accept { request_id } => accept(state_dir, paths, request_id).await,
         cli::SpaceCommand::Grant(arguments) => {
             crate::commands::services::grant(state_dir, paths, arguments).await
         }

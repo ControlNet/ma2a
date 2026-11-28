@@ -143,7 +143,11 @@ pub(crate) enum SpaceCommand {
         ttl: String,
     },
     /// Join a Space by reading an invite ticket from the terminal or stdin.
-    Accept,
+    Accept {
+        /// Retry an uncertain acceptance with its original 32-hex request ID.
+        #[arg(long, value_name = "HEX")]
+        request_id: Option<String>,
+    },
     /// Ask the Space authority to remove this Endpoint from a Space.
     Leave {
         /// Space name or complete Space ID.

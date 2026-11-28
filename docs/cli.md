@@ -48,7 +48,7 @@ ma2a space list [--json]
 ma2a space show SPACE_REF [--json]
 
 ma2a space invite SPACE_REF [--ttl DURATION]
-ma2a space accept
+ma2a space accept [--request-id HEX]
 ma2a space leave SPACE_REF [--json]
 
 ma2a space member remove SPACE_REF ENDPOINT_ID [--json]
@@ -86,13 +86,16 @@ else, so it pipes and copies cleanly. `--ttl` accepts `ms`, `s`, or `m` between 
 defaults to `5m`. Diagnostics go to stderr. Invite tickets are never accepted in argv and never
 appear in JSON responses.
 
-`ma2a space accept` reads one ticket without any flag. On an interactive terminal it prompts
+`ma2a space accept` reads one ticket without any input flag. On an interactive terminal it prompts
 `Invite:` and reads one line without echoing it; otherwise it reads the ticket from stdin:
 
 ```sh
 ma2a --state-dir "$STATE_A" space invite lab | ma2a --state-dir "$STATE_B" space accept
 ```
 
+If an acceptance fails with an uncertain remote outcome or a transient unavailable response, the
+diagnostic prints the attempt's 32-hex `RequestId` so you can retry the exact same ticket with
+`ma2a space accept --request-id HEX` without conflicting with an already-committed redemption.
 While the Runtime waits on the Space owner, for at most thirty seconds, it keeps answering every
 other command.
 
@@ -215,9 +218,9 @@ Each family's commands, bounds, and status codes are specified in its protocol d
 | `service register\|unregister\|start\|stop\|hosted` | third-party services this Runtime hosts | [service-v1](protocol/service-v1.md) |
 | `service discover\|call --endpoint ID …` | another Endpoint's built-in and hosted services | [service-v1](protocol/service-v1.md) |
 
-`process start`, `agent submit`, `agent send`, and `service call` take `--request-id` (32 hex
-characters); a retry with the same request ID replays the recorded outcome instead of acting
-twice, and `service call` then also needs `--version`. Commands that forward stdin
+`space accept`, `process start`, `agent submit`, `agent send`, and `service call` take `--request-id`
+(32 hex characters); a retry with the same request ID replays or recovers the recorded outcome
+instead of acting twice, and `service call` then also needs `--version`. Commands that forward stdin
 (`exec --stdin`, `shell`, `process attach --stdin`, `process stdin`, `proxy connect`,
 `service call --stdin`) exit on every outcome, even while stdin is still open.
 `process attach` and `process logs --follow` exit with the Process's status once they see it end,

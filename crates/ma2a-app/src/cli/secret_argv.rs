@@ -22,8 +22,11 @@ pub(super) fn reject_secret_argv(arguments: &[OsString]) -> Result<(), clap::Err
     });
     let stripped = strip_state_dir(&values);
     let accept_index = command_tail_index(&stripped, ["space", "accept"]);
-    let unsupported_accept_value =
-        accept_index.is_some_and(|index| stripped.get(index..).is_some_and(tail_has_unknown_value));
+    let unsupported_accept_value = accept_index.is_some_and(|index| {
+        stripped
+            .get(index..)
+            .is_some_and(accept_tail_has_unknown_value)
+    });
     let password_index = command_tail_index(&stripped, ["ui", "password", "set"])
         .or_else(|| command_tail_index(&stripped, ["ui", "password", "reset"]))
         .or_else(|| command_tail_index(&stripped, ["ui", "init"]));
@@ -86,6 +89,30 @@ fn tail_has_unknown_value(values: &[Cow<'_, str>]) -> bool {
     values
         .iter()
         .any(|value| !matches!(value.as_ref(), "--help" | "-h" | "--version" | "-V"))
+}
+
+/// Accepts informational flags and `--request-id` after `space accept`, rejecting any other token.
+fn accept_tail_has_unknown_value(values: &[Cow<'_, str>]) -> bool {
+    let mut iter = values.iter();
+    while let Some(value) = iter.next() {
+        if matches!(value.as_ref(), "--help" | "-h" | "--version" | "-V") {
+            continue;
+        }
+        if value == "--request-id" {
+            match iter.next() {
+                Some(operand) if !operand.is_empty() && !operand.starts_with('-') => continue,
+                _ => return true,
+            }
+        }
+        if value
+            .strip_prefix("--request-id=")
+            .is_some_and(|operand| !operand.is_empty() && !operand.starts_with('-'))
+        {
+            continue;
+        }
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -185,5 +212,45 @@ mod tests {
         );
         assert!(reject_secret_argv(&args(&["ui", "init", "--", "--password", "x"])).is_err());
         assert!(reject_secret_argv(&args(&["status", "--password=x"])).is_err());
+    }
+
+    #[test]
+    fn space_accept_allows_request_id_and_still_rejects_secrets() {
+        assert!(
+            reject_secret_argv(&args(&[
+                "space",
+                "accept",
+                "--request-id",
+                "01010101010101010101010101010101"
+            ]))
+            .is_ok()
+        );
+        assert!(
+            reject_secret_argv(&args(&[
+                "space",
+                "accept",
+                "--request-id=01010101010101010101010101010101"
+            ]))
+            .is_ok()
+        );
+        assert!(
+            reject_secret_argv(&args(&[
+                "space",
+                "accept",
+                "--request-id",
+                "ma2ainvite1abcdef"
+            ]))
+            .is_err()
+        );
+        assert!(
+            reject_secret_argv(&args(&[
+                "space",
+                "accept",
+                "--request-id",
+                "01010101010101010101010101010101",
+                "raw-ticket"
+            ]))
+            .is_err()
+        );
     }
 }
