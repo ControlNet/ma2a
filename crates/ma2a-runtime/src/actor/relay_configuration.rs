@@ -10,43 +10,6 @@ use super::{
 use crate::error::{RuntimeError, RuntimeErrorKind};
 
 impl Actor {
-    pub(super) async fn relay_runtime_status(
-        &self,
-    ) -> Result<super::RelayRuntimeStatus, RuntimeError> {
-        let desired = self.store.relay_configuration_committed().await?;
-        let revision = desired.revision();
-        self.relay_status_for(desired.into_value(), revision)
-    }
-
-    fn relay_status_for(
-        &self,
-        configuration: ma2a_store::RelayConfiguration,
-        revision: u64,
-    ) -> Result<super::RelayRuntimeStatus, RuntimeError> {
-        let desired = RuntimeRelayConfiguration::try_from(configuration.clone())
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-        let applied = self
-            .private_relay_server
-            .as_ref()
-            .map(PrivateRelayServer::configuration);
-        let convergence_pending =
-            self.maintenance.relay_configuration.is_some() || applied != desired.private_provider();
-        Ok(super::RelayRuntimeStatus {
-            revision,
-            configuration,
-            applied_private: self
-                .private_relay_server
-                .as_ref()
-                .map(|server| server.configuration().clone()),
-            convergence_pending,
-            private_listen_addr: self
-                .private_relay_server
-                .as_ref()
-                .map(PrivateRelayServer::listen_addr),
-            public_relay_online: self.state.relay.public_relay_online(),
-        })
-    }
-
     pub(super) async fn set_relay_configuration(
         &mut self,
         configuration: ma2a_store::RelayConfiguration,
@@ -216,8 +179,18 @@ impl Actor {
         (mode, preloaded_tls): (PrivateRelayApply, Option<ma2a_net::LoadedRelayTls>),
     ) -> Result<(), RuntimeError> {
         self.maintenance.relay_configuration = Some(RelayCompletion::Pending(mode));
-        self.apply_private_relay(runtime.private_provider(), (mode, preloaded_tls))
-            .await?;
+        if let Err(error) = self
+            .apply_private_relay(runtime.private_provider(), (mode, preloaded_tls))
+            .await
+        {
+            if self.private_relay_server.is_none()
+                && self.maintenance.relay_configuration != Some(RelayCompletion::ShutdownFailed)
+            {
+                let reconciled = self.refresh_local_relay_publication().await;
+                Self::absorb_background("relay configuration publication", reconciled)?;
+            }
+            return Err(error);
+        }
         // Once a server is installed, later publication failures must not restart it again.
         self.maintenance.relay_configuration =
             Some(RelayCompletion::Pending(PrivateRelayApply::IfChanged));

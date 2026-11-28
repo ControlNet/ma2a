@@ -1,7 +1,9 @@
 //! Durable relay configuration is desired state; the server owns its applied configuration.
 use super::Actor;
 use crate::error::{RuntimeError, RuntimeErrorKind};
-use ma2a_net::{PrivateRelayAccess, PrivateRelayProviderConfig, PrivateRelayServer};
+use ma2a_net::{
+    PrivateRelayAccess, PrivateRelayProviderConfig, PrivateRelayServer, RuntimeRelayConfiguration,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum PrivateRelayApply {
@@ -17,6 +19,43 @@ pub(crate) enum RelayCompletion {
 }
 
 impl Actor {
+    pub(super) async fn relay_runtime_status(
+        &self,
+    ) -> Result<super::RelayRuntimeStatus, RuntimeError> {
+        let desired = self.store.relay_configuration_committed().await?;
+        let revision = desired.revision();
+        self.relay_status_for(desired.into_value(), revision)
+    }
+
+    pub(super) fn relay_status_for(
+        &self,
+        configuration: ma2a_store::RelayConfiguration,
+        revision: u64,
+    ) -> Result<super::RelayRuntimeStatus, RuntimeError> {
+        let desired = RuntimeRelayConfiguration::try_from(configuration.clone())
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let applied = self
+            .private_relay_server
+            .as_ref()
+            .map(PrivateRelayServer::configuration);
+        let convergence_pending =
+            self.maintenance.relay_configuration.is_some() || applied != desired.private_provider();
+        Ok(super::RelayRuntimeStatus {
+            revision,
+            configuration,
+            applied_private: self
+                .private_relay_server
+                .as_ref()
+                .map(|server| server.configuration().clone()),
+            convergence_pending,
+            private_listen_addr: self
+                .private_relay_server
+                .as_ref()
+                .map(PrivateRelayServer::listen_addr),
+            public_relay_online: self.state.relay.public_relay_online(),
+        })
+    }
+
     pub(super) async fn apply_private_relay(
         &mut self,
         desired: Option<&PrivateRelayProviderConfig>,
