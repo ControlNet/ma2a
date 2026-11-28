@@ -85,3 +85,44 @@ async fn undialed_prepared_peers_are_excluded_from_dialed_peers_at_deadline() ->
     drop(endpoint);
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn unpolled_submitted_dial_is_excluded_from_dialed_peers_at_deadline() -> TestResult {
+    let peer = ma2a_net::EndpointSecret::parse(&[0x45; 32])?.endpoint_id();
+    let mut queue = super::super::DialQueue::new([crate::control_sync::PreparedControlPeer {
+        peer,
+        request: vec![1],
+        spaces: Vec::new(),
+    }]);
+    let dialed_peers = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    let mut dials = tokio::task::JoinSet::new();
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let deadline = tokio::time::sleep(std::time::Duration::from_millis(1));
+    tokio::pin!(deadline);
+    tokio::time::advance(std::time::Duration::from_millis(1)).await;
+
+    super::super::spawn_control_dials((&mut queue, &dialed_peers), &mut dials, {
+        let started = Arc::clone(&started);
+        move |_, _| {
+            let started = Arc::clone(&started);
+            async move {
+                started.store(true, std::sync::atomic::Ordering::SeqCst);
+                pending::<Result<Vec<u8>, std::io::Error>>().await
+            }
+        }
+    });
+    let result = super::super::run_before_deadline(&mut deadline, dials.join_next()).await;
+    drop(dials);
+
+    assert!(result.is_err());
+    assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+    let dialed_peers = dialed_peers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        dialed_peers.is_empty(),
+        "peer submitted to JoinSet but dropped before first poll was recorded as dialed: {dialed_peers:?}"
+    );
+    Ok(())
+}

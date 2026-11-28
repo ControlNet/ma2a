@@ -109,7 +109,7 @@ impl ControlRoundRunner {
         while !pending.is_empty() || !dials.is_empty() {
             ensure_before_deadline(&mut deadline).await?;
             spawn_control_dials(
-                (&mut pending, &mut progress.dialed_peers),
+                (&mut pending, &progress.dialed_peers),
                 &mut dials,
                 dial.clone(),
             );
@@ -171,7 +171,7 @@ impl ControlRoundRunner {
         let incomplete = had_peers && synchronized_peers.is_empty();
         Ok(progress.latest.map(|revision| ControlRoundOutcome {
             revision: Some(revision),
-            dialed_peers: std::mem::take(&mut progress.dialed_peers),
+            dialed_peers: progress.take_dialed_peers(),
             synchronized_peers,
             changes: std::mem::take(&mut progress.changes),
             incomplete,

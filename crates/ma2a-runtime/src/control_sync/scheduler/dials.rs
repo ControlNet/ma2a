@@ -1,4 +1,9 @@
-use std::{collections::BTreeSet, future::Future, pin::Pin};
+use std::{
+    collections::BTreeSet,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use ma2a_core::EndpointId;
 use ma2a_net::CONTROL_DIAL_CONCURRENCY;
@@ -13,7 +18,7 @@ use super::DialQueue;
 
 #[derive(Default)]
 pub(super) struct RoundProgress {
-    pub(super) dialed_peers: BTreeSet<EndpointId>,
+    pub(super) dialed_peers: Arc<Mutex<BTreeSet<EndpointId>>>,
     pub(super) latest: Option<u64>,
     pub(super) changes: crate::control_sync::ControlChanges,
 }
@@ -28,6 +33,15 @@ impl RoundProgress {
         self.latest = Some(revision);
     }
 
+    pub(super) fn take_dialed_peers(&self) -> BTreeSet<EndpointId> {
+        std::mem::take(
+            &mut *self
+                .dialed_peers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
     pub(super) fn finish_error(
         self,
         failure: ControlFailure,
@@ -38,9 +52,10 @@ impl RoundProgress {
                 crate::actor::Actor::absorb_background("control completion", Err(error))?;
             }
         }
+        let dialed_peers = self.take_dialed_peers();
         Ok(Some(ControlRoundOutcome {
             revision: self.latest,
-            dialed_peers: self.dialed_peers,
+            dialed_peers,
             synchronized_peers: BTreeSet::new(),
             changes: self.changes,
             incomplete: true,
@@ -92,7 +107,7 @@ pub(super) type DialOutcome<DialError> = (
 );
 
 pub(super) fn spawn_control_dials<Dial, DialFuture, DialError>(
-    (pending, dialed_peers): (&mut DialQueue, &mut BTreeSet<EndpointId>),
+    (pending, dialed_peers): (&mut DialQueue, &Arc<Mutex<BTreeSet<EndpointId>>>),
     dials: &mut JoinSet<DialOutcome<DialError>>,
     dial: Dial,
 ) where
@@ -109,8 +124,15 @@ pub(super) fn spawn_control_dials<Dial, DialFuture, DialError>(
         else {
             break;
         };
-        dialed_peers.insert(peer);
-        let call = dial(peer, request);
-        dials.spawn(async move { (peer, spaces, call.await) });
+        let dialed_peers = Arc::clone(dialed_peers);
+        let dial = dial.clone();
+        dials.spawn(async move {
+            dialed_peers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(peer);
+            let response = dial(peer, request).await;
+            (peer, spaces, response)
+        });
     }
 }
