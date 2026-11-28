@@ -112,9 +112,7 @@ export function createRuntimeApiClient(
   return {
     fetchSpaceDetails: async (spaceId) => {
       if (!/^[0-9a-f]{64}$/.test(spaceId)) throw new RuntimeApiPathError(spaceId)
-      return parseSpaceDetails(
-        await http.get(new URL(`/api/v1/spaces/${spaceId}`, window.location.origin)).json(),
-      )
+      return parseSpaceDetails(await http.get(`/api/v1/spaces/${spaceId}`).json())
     },
     fetchSnapshot: async () => {
       const controller = new AbortController()
