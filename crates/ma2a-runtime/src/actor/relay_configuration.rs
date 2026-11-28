@@ -16,7 +16,7 @@ impl Actor {
         (mode, preloaded_tls): (PrivateRelayApply, Option<ma2a_net::LoadedRelayTls>),
     ) -> Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError> {
         let runtime = RuntimeRelayConfiguration::try_from(configuration.clone())
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control).without_effects())?;
         let clear_published = mode == PrivateRelayApply::Reload
             || self
                 .private_relay_server

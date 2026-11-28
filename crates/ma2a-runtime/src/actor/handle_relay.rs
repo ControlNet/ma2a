@@ -97,7 +97,7 @@ impl RuntimeHandle {
         mode: super::relay_server::PrivateRelayApply,
     ) -> Result<ma2a_store::Committed<RelayRuntimeStatus>, RuntimeError> {
         let runtime = ma2a_net::RuntimeRelayConfiguration::try_from(configuration.clone())
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control).without_effects())?;
         // Load and validate native TLS files on the blocking pool before entering the Actor,
         // so slow filesystems never stall status, snapshot, or peer protocols.
         let preloaded_tls = if let Some(provider) = runtime.private_provider()

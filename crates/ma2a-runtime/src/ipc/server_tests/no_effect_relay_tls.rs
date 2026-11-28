@@ -209,3 +209,57 @@ async fn pre_commit_store_read_failure_on_public_relay_releases_request_id_for_r
     assert_eq!(call_json(&served, &fenced_req).await?, fenced_err);
     served.stop().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_commit_try_from_failure_on_private_disable_releases_request_id_for_retry() -> TestResult
+{
+    let served = Served::start().await?;
+    let config = StoreConfig::new(&served.state.0);
+    let sql = rusqlite::Connection::open(config.database_path())?;
+
+    let invalid = ma2a_store::RelayConfiguration {
+        public_fallback_enabled: true,
+        public_relay_urls: Vec::new(),
+        private_provider_enabled: false,
+        listener_address: None,
+        private_relay_url: None,
+        served_spaces: Vec::new(),
+        transport: None,
+    };
+    let (reply, response) = tokio::sync::oneshot::channel();
+    served
+        .runtime
+        .handle()
+        .commands
+        .send(crate::actor::Command::SetRelayConfiguration {
+            configuration: invalid,
+            mode: crate::actor::relay_server::PrivateRelayApply::IfChanged,
+            preloaded_tls: None,
+            reply,
+        })
+        .await?;
+    let direct_err = response.await?.expect_err("invalid relay config must fail");
+    assert!(direct_err.is_without_effects());
+
+    let disable_req = serde_json::json!({
+        "version": 1,
+        "operation": "private_relay_disable",
+        "request_id": "87".repeat(16),
+    });
+    sql.execute_batch(
+        "UPDATE relay_configuration SET public_fallback_enabled = 1 WHERE singleton = 1;",
+    )?;
+    served
+        .refused(&disable_req, ProtocolError::INTERNAL)
+        .await?;
+    sql.execute_batch(
+        "UPDATE relay_configuration SET public_fallback_enabled = 0 WHERE singleton = 1;",
+    )?;
+    let retried = call_json(&served, &disable_req).await?;
+    assert_eq!(retried.get("error"), None, "{retried}");
+    assert_eq!(
+        retried.pointer("/result/type"),
+        Some(&serde_json::json!("private_relay_status"))
+    );
+    served.stop().await
+}
