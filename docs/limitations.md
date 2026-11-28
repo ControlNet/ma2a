@@ -78,13 +78,15 @@ on restart until the new process observes current state.
   entry. Files callers can never create or address the `.ma2a-upload-` prefix, but local processes
   can. Before restoring a directory that held an interrupted upload, move away any
   `.ma2a-upload-*.part` entry there that must be kept.
-- **A stopped Agent's unbound Process is released with a bounded retry.** When an Agent is
-  stopped while its Process is starting, the Runtime terminates the Process that could not be
-  bound to it, retrying four times. If the Store fails all four times, or fails the binding
-  itself, the Process keeps running, and it is not recorded for a later retry. Stopping or
-  restarting the Runtime does not end it either: a Process outlives the daemon and is adopted
-  again at the next start. Find it with `ma2a process list` and `ma2a process inspect
-  PROCESS_ID`, which shows the Agent's command line, and end it with
+- **Stopping an Agent can leave its Process terminating in the background.** `agent_stop` commits
+  the disabled state first and then terminates the instance's Process, resolving an unbound
+  Process through its deterministic start `RequestId`. If that synchronous termination fails or
+  the daemon stops before it completes, `agent_stop` returns `unavailable`, the Agent stays
+  disabled, `agent_undefine` and replacement starts wait until the Process is terminal, and
+  maintenance keeps retrying termination with backoff (1 s to 60 s), including after a Runtime
+  restart. If the Agent was removed outside normal lifecycle checks before an in-flight launch
+  bound its Process, the launch still retries terminating it four times; any still-running Process
+  can be found with `ma2a process list` and `ma2a process inspect PROCESS_ID` and ended with
   `ma2a process terminate PROCESS_ID`.
 - **An oversized exposure list cannot be paged.** A Runtime that holds more Service exposures
   than one local API response can carry answers `ma2a service list` with `conflict` and a
