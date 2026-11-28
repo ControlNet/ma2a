@@ -99,23 +99,51 @@ impl AgentManager {
     }
 
     /// Removes a stopped Agent's definition; the revision of the commit.
+    #[cfg(test)]
     pub(crate) async fn undefine(&self, agent: &AgentId) -> Result<u64, ServiceError> {
+        self.undefine_checked(agent)
+            .await
+            .map_err(|(error, _)| error)
+    }
+
+    /// Removes a stopped Agent's definition, marking pre-commit refusals with no side effect
+    /// as `false` and an indeterminate Store commit failure as `true`.
+    pub(crate) async fn undefine_checked(
+        &self,
+        agent: &AgentId,
+    ) -> Result<u64, (ServiceError, bool)> {
         let _lifecycle = self.lock_lifecycle(agent).await;
-        if let Some(record) = self.agent(agent).await?
+        if let Some(record) = self.agent(agent).await.map_err(|error| (error, false))?
             && !record.enabled
-            && !self.previous_instance_terminal(&record).await
+            && !self.previous_process_ended(&record).await
         {
-            return Err(ServiceError::Unavailable);
+            return Err((ServiceError::Unavailable, false));
         }
         let id = agent.clone();
         let (undefined, revision) = self
             .commit_at(move |repository| repository.undefine_agent(&id))
-            .await?;
+            .await
+            .map_err(|error| (error, true))?;
         match undefined {
             AgentDefine::Defined(..) => Ok(revision),
-            AgentDefine::Active => Err(ServiceError::Conflict),
-            AgentDefine::Missing => Err(ServiceError::UnknownAgent),
+            AgentDefine::Active => Err((ServiceError::Conflict, false)),
+            AgentDefine::Missing => Err((ServiceError::UnknownAgent, false)),
         }
+    }
+
+    /// Whether `record`'s previous instance has no non-terminal local Process (read-only).
+    async fn previous_process_ended(&self, record: &AgentRecord) -> bool {
+        let Ok(process) = self.instance_process(record).await else {
+            return false;
+        };
+        let Some(process) = process else {
+            return true;
+        };
+        self.0
+            .processes
+            .local_record(process)
+            .await
+            .is_ok_and(|found| found.is_none_or(|process| process.state.is_terminal()))
     }
 
     /// Starts an Agent: its first instance starts at once. A reserved name, which only a

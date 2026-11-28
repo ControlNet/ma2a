@@ -44,10 +44,7 @@ pub(super) async fn execute(
                     .at_revision(revision),
             );
         }
-        AgentCommand::Undefine(_, agent) => {
-            let revision = manager.undefine(agent).await.map_err(active)?;
-            return Ok(CommandResult::agent_undefined(agent.as_str()).at_revision(revision));
-        }
+        AgentCommand::Undefine(_, agent) => return undefine(manager, agent).await,
         AgentCommand::Start(_, agent) => switch(manager, (agent, true)).await?,
         AgentCommand::Stop(_, agent) => switch(manager, (agent, false)).await?,
         AgentCommand::List(after) => return list(manager, after.as_ref()).await,
@@ -118,6 +115,22 @@ pub(super) async fn execute(
         }
     };
     Ok(result.at_revision(revision))
+}
+
+/// Undefines a stopped Agent while releasing pre-commit refusals with no side effect.
+async fn undefine(manager: &AgentManager, agent: &AgentId) -> Result<CommandResult, ApiError> {
+    let revision = manager
+        .undefine_checked(agent)
+        .await
+        .map_err(|(error, indeterminate)| {
+            let api = active(error);
+            if indeterminate {
+                api
+            } else {
+                api.without_effects()
+            }
+        })?;
+    Ok(CommandResult::agent_undefined(agent.as_str()).at_revision(revision))
 }
 
 /// Starts or stops an Agent, and answers its view at the revision of that commit.
