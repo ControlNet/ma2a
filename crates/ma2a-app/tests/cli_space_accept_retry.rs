@@ -188,15 +188,29 @@ fn pipe_accept(
     Ok(child.wait_with_output()?)
 }
 
-fn extract_retry_request_id(stderr: &str) -> Option<String> {
-    let marker = "--request-id ";
-    let rest = stderr.split_once(marker)?.1;
-    let token = rest.split_whitespace().next()?;
-    (token.len() == 32
-        && token
+fn extract_retry_command_args(stderr: &str) -> Option<(String, String)> {
+    let prefix = "Retry the exact same ticket with: ma2a --state-dir ";
+    let line = stderr.lines().find(|line| line.starts_with(prefix))?;
+    let after_flag = line.strip_prefix(prefix)?;
+    let (quoted_dir, request_id) = after_flag.split_once(" space accept --request-id ")?;
+    let state_dir = unquote_shell_arg(quoted_dir)?;
+    let request_id = request_id.trim();
+    (request_id.len() == 32
+        && request_id
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
-    .then(|| token.to_owned())
+    .then(|| (state_dir, request_id.to_owned()))
+}
+
+#[cfg(not(windows))]
+fn unquote_shell_arg(quoted: &str) -> Option<String> {
+    let inner = quoted.strip_prefix('\'')?.strip_suffix('\'')?;
+    Some(inner.replace("'\\''", "'"))
+}
+
+#[cfg(windows)]
+fn unquote_shell_arg(quoted: &str) -> Option<String> {
+    Some(quoted.strip_prefix('"')?.strip_suffix('"')?.to_owned())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -226,9 +240,17 @@ async fn space_accept_exposes_request_id_on_uncertain_reply_and_retries_cleanly(
     let first = pipe_accept(&candidate, &["space", "accept"], &ticket)?;
     assert!(!first.status.success());
     let first_stderr = String::from_utf8(first.stderr)?;
-    let request_id = extract_retry_request_id(&first_stderr).ok_or_else(|| {
-        format!("retry diagnostic must expose --request-id <32-hex>: {first_stderr}")
-    })?;
+    let (hinted_state_dir, request_id) =
+        extract_retry_command_args(&first_stderr).ok_or_else(|| {
+            format!(
+                "retry diagnostic must expose --state-dir and --request-id <32-hex>: {first_stderr}"
+            )
+        })?;
+    assert_eq!(
+        Path::new(&hinted_state_dir),
+        candidate.state_dir(),
+        "retry diagnostic must preserve candidate --state-dir: {first_stderr}"
+    );
     assert!(
         !first_stderr.contains(&ticket),
         "invite ticket must never appear in stderr"
@@ -244,11 +266,26 @@ async fn space_accept_exposes_request_id_on_uncertain_reply_and_retries_cleanly(
     drop(dropping_owner);
     owner.start_owned()?;
 
-    let retried = pipe_accept(
-        &candidate,
-        &["space", "accept", "--request-id", &request_id],
-        &ticket,
-    )?;
+    let mut retry_child = std::process::Command::new(env!("CARGO_BIN_EXE_ma2a"))
+        .args([
+            "--state-dir",
+            &hinted_state_dir,
+            "space",
+            "accept",
+            "--request-id",
+            &request_id,
+        ])
+        .env("XDG_STATE_HOME", owner.state_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    retry_child
+        .stdin
+        .take()
+        .ok_or("missing retry child stdin")?
+        .write_all(format!("{ticket}\n").as_bytes())?;
+    let retried = retry_child.wait_with_output()?;
     assert!(
         retried.status.success(),
         "exact retry failed: {}",

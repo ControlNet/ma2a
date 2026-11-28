@@ -98,7 +98,7 @@ pub(super) async fn accept(
     .await
     {
         Ok(response) => response,
-        Err(error) => return Err(attach_retry_request_id(error, &request_id)),
+        Err(error) => return Err(attach_retry_request_id(error, &request_id, state_dir)),
     };
     let document: Value = serde_json::from_slice(&response).map_err(io::Error::other)?;
     if let Err(error) = crate::output::reject_runtime_error(&document) {
@@ -108,7 +108,7 @@ pub(super) async fn accept(
             .is_some_and(|remediation| remediation.contains("retry"))
             || document.get("error").and_then(Value::as_str) == Some("unavailable");
         return Err(if should_show_id {
-            attach_retry_request_id(error, &request_id)
+            attach_retry_request_id(error, &request_id, state_dir)
         } else {
             error
         });
@@ -131,12 +131,44 @@ fn validate_request_id(value: String) -> Result<String, AppError> {
     }
 }
 
-fn attach_retry_request_id(error: AppError, request_id: &str) -> AppError {
-    let hint =
-        format!("Retry the exact same ticket with: ma2a space accept --request-id {request_id}");
+fn attach_retry_request_id(error: AppError, request_id: &str, state_dir: &Path) -> AppError {
+    let hint = retry_hint(state_dir, request_id);
     match error {
         AppError::Rejected(code, message) => AppError::Rejected(code, format!("{message}\n{hint}")),
         other => AppError::Protocol(format!("{other}\n{hint}")),
+    }
+}
+
+fn retry_hint(state_dir: &Path, request_id: &str) -> String {
+    quote_state_dir(state_dir).map_or_else(
+        || {
+            format!(
+                "Keep the original --state-dir and retry the exact same ticket with: ma2a space accept --request-id {request_id}"
+            )
+        },
+        |quoted| {
+            format!(
+                "Retry the exact same ticket with: ma2a --state-dir {quoted} space accept --request-id {request_id}"
+            )
+        },
+    )
+}
+
+fn quote_state_dir(state_dir: &Path) -> Option<String> {
+    let raw = state_dir.to_str()?;
+    if raw.chars().any(char::is_control) {
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        if raw.contains('"') || raw.contains('%') {
+            return None;
+        }
+        Some(format!("\"{raw}\""))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(format!("'{}'", raw.replace('\'', "'\\''")))
     }
 }
 
@@ -207,36 +239,5 @@ fn request_id_hex(request_id: RequestId) -> Result<String, AppError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{parse_duration_ms, validate_request_id};
-
-    #[test]
-    fn the_default_invite_lifetime_is_five_minutes() {
-        // Given / When / Then
-        assert_eq!(
-            parse_duration_ms(crate::cli::DEFAULT_INVITE_TTL).ok(),
-            Some(300_000)
-        );
-    }
-
-    #[test]
-    fn invite_lifetimes_stay_inside_the_protocol_bound() {
-        // Given / When / Then
-        assert_eq!(parse_duration_ms("30s").ok(), Some(30_000));
-        assert_eq!(parse_duration_ms("1ms").ok(), Some(1));
-        assert!(parse_duration_ms("6m").is_err());
-        assert!(parse_duration_ms("0s").is_err());
-        assert!(parse_duration_ms("5").is_err());
-    }
-
-    #[test]
-    fn explicit_accept_request_id_requires_32_lowercase_hex_chars() {
-        let valid = "0123456789abcdef0123456789abcdef";
-        assert_eq!(
-            validate_request_id(valid.to_owned()).ok().as_deref(),
-            Some(valid)
-        );
-        assert!(validate_request_id("0123".to_owned()).is_err());
-        assert!(validate_request_id("0123456789ABCDEF0123456789ABCDEF".to_owned()).is_err());
-    }
-}
+#[path = "space_invite_tests.rs"]
+mod tests;

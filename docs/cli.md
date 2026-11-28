@@ -94,8 +94,10 @@ ma2a --state-dir "$STATE_A" space invite lab | ma2a --state-dir "$STATE_B" space
 ```
 
 If an acceptance fails with an uncertain remote outcome or a transient unavailable response, the
-diagnostic prints the attempt's 32-hex `RequestId` so you can retry the exact same ticket with
-`ma2a space accept --request-id HEX` without conflicting with an already-committed redemption.
+diagnostic prints the attempt's 32-hex `RequestId` and `--state-dir` selection so you can retry
+the exact same ticket against the same Runtime with
+`ma2a --state-dir PATH space accept --request-id HEX` without conflicting with an
+already-committed redemption.
 While the Runtime waits on the Space owner, for at most thirty seconds, it keeps answering every
 other command.
 
