@@ -37,6 +37,8 @@ impl StoreBackend {
             pending_relay_publication: None,
             #[cfg(test)]
             relay_publication_fail_after: None,
+            #[cfg(all(test, unix))]
+            go_dispatch_hold: None,
         })
     }
 

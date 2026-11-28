@@ -2,7 +2,6 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Condvar, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -17,7 +16,7 @@ use ma2a_store::{
 };
 use tokio::sync::oneshot;
 
-use super::StoreBackend;
+use super::{GoDispatchLease, StoreBackend};
 use crate::error::RuntimeError;
 
 /// What a successful authorization lets the host touch.
@@ -33,9 +32,6 @@ pub(crate) type ProcessJob = Box<dyn FnOnce(&mut Repository) + Send>;
 /// Upper bound on holding the Store thread while the daemon writes `go` to a local supervisor.
 const GO_DISPATCH_HOLD: Duration = Duration::from_secs(6);
 
-/// Shared completion signal between `StoreBackend::authorize_process_go` and `ProcessManager`.
-pub(crate) type GoDispatchSignal = Arc<(Mutex<bool>, Condvar)>;
-
 pub(crate) enum ServiceStoreCommand {
     Authorize {
         endpoints: (EndpointId, EndpointId),
@@ -44,8 +40,13 @@ pub(crate) enum ServiceStoreCommand {
     },
     AuthorizeProcessGo {
         endpoints: (EndpointId, EndpointId),
-        dispatched: GoDispatchSignal,
+        lease: GoDispatchLease,
         reply: oneshot::Sender<Result<(), ServiceError>>,
+    },
+    #[cfg(all(test, unix))]
+    SetGoDispatchHold {
+        hold: Duration,
+        reply: oneshot::Sender<()>,
     },
     RecordStaging {
         path: String,
@@ -134,9 +135,14 @@ impl StoreBackend {
             } => drop(reply.send(authorize(&self.repository, endpoints, &access))),
             ServiceStoreCommand::AuthorizeProcessGo {
                 endpoints,
-                dispatched,
+                lease,
                 reply,
-            } => self.authorize_process_go(endpoints, (&dispatched, reply)),
+            } => self.authorize_process_go(endpoints, (&lease, reply)),
+            #[cfg(all(test, unix))]
+            ServiceStoreCommand::SetGoDispatchHold { hold, reply } => {
+                self.go_dispatch_hold = Some(hold);
+                let _sent = reply.send(());
+            }
             ServiceStoreCommand::RecordStaging {
                 path,
                 request_id,
@@ -179,34 +185,22 @@ impl StoreBackend {
     }
 
     /// Authorizes `Process` access and holds the Store thread until the caller writes `go`
-    /// (signalled via `dispatched`), ordering `go` dispatch with authorization withdrawals.
+    /// or `lease` expires, ordering `go` dispatch with authorization withdrawals.
     fn authorize_process_go(
         &self,
         endpoints: (EndpointId, EndpointId),
-        (dispatched, reply): (&GoDispatchSignal, oneshot::Sender<Result<(), ServiceError>>),
+        (lease, reply): (&GoDispatchLease, oneshot::Sender<Result<(), ServiceError>>),
     ) {
         let decision = authorize(&self.repository, endpoints, &ServiceAccess::Process).map(|_| ());
         let ok = decision.is_ok();
         if reply.send(decision).is_err() || !ok {
             return;
         }
-        let (done, signal) = &**dispatched;
-        let deadline = Instant::now() + GO_DISPATCH_HOLD;
-        let mut guard = done.lock().unwrap_or_else(PoisonError::into_inner);
-        while !*guard {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            let (next, waited) = signal
-                .wait_timeout(guard, remaining)
-                .unwrap_or_else(PoisonError::into_inner);
-            guard = next;
-            if waited.timed_out() {
-                break;
-            }
-        }
-        drop(guard);
+        #[cfg(all(test, unix))]
+        let hold = self.go_dispatch_hold.unwrap_or(GO_DISPATCH_HOLD);
+        #[cfg(not(all(test, unix)))]
+        let hold = GO_DISPATCH_HOLD;
+        lease.wait_until(Instant::now() + hold);
     }
 
     /// Removes every recorded staging file and its record; run before serving any stream.

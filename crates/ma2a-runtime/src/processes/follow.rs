@@ -93,7 +93,10 @@ impl ProcessManager {
         let address = self.address(credentials.id());
         if record.state == ProcessState::Starting {
             let channel = address.connect(credentials).await?;
-            match self.dispatch_go((record.id, record.creator), channel).await {
+            match self
+                .dispatch_go((credentials, record.creator), channel)
+                .await
+            {
                 GoDispatch::Reported(reported) => {
                     self.apply(credentials.id(), reported).await?;
                 }

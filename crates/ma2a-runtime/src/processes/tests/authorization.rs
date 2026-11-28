@@ -26,7 +26,7 @@ use crate::{
 
 impl ProcessManager {
     fn arm_gate(
-        slot: &crate::processes::TestGate,
+        slot: &crate::processes::go::TestGate,
     ) -> (
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Sender<()>,
@@ -45,7 +45,7 @@ impl ProcessManager {
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Sender<()>,
     ) {
-        Self::arm_gate(&self.0.before_go_gate)
+        Self::arm_gate(&self.0.gates.before_go)
     }
 
     pub(in crate::processes) fn arm_after_authorize_gate(
@@ -54,7 +54,16 @@ impl ProcessManager {
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Sender<()>,
     ) {
-        Self::arm_gate(&self.0.after_authorize_gate)
+        Self::arm_gate(&self.0.gates.after_authorize)
+    }
+
+    pub(in crate::processes) fn arm_after_final_authorize_gate(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        Self::arm_gate(&self.0.gates.after_final_authorize)
     }
 }
 
@@ -627,5 +636,149 @@ async fn resumed_starting_row_still_authorized_starts_on_recovery() -> TestResul
         "still-authorized resumed Starting row should start and run child"
     );
     second_shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_start_withdrawn_after_go_hold_expires_aborts_without_child() -> TestResult {
+    let harness = Harness::new("c01-start-hold-expired").await?;
+    harness
+        .store
+        .set_go_dispatch_hold(Duration::from_millis(80))
+        .await;
+    let (manager, shutdown) = harness.manager();
+    let (entered_rx, release_tx) = manager.arm_after_final_authorize_gate();
+
+    let marker = harness.state.0.join("child-c01-start");
+    let start_spec = start(&format!("touch {}; sleep 1", marker.display()))?;
+    let req = request_id(120)?;
+    let ((mut reader, _writer), (mut host_reader, mut host_writer)) = pipe();
+    let stop = CancellationToken::new();
+    let host = tokio::spawn({
+        let manager = manager.clone();
+        let creator = harness.creator;
+        async move {
+            let scope = ((creator, req), ProcessRequest::Start(start_spec), &stop);
+            serve(&manager, scope, (&mut host_reader, &mut host_writer)).await
+        }
+    });
+    let caller = tokio::spawn(async move { hosted::call(&mut reader).await });
+
+    // Pause right after the final Store authorization reply while the Store holds the lease.
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    // Withdrawing blocks on the Store until the hold expires, then commits before Go is sent.
+    harness.withdraw_creator().await?;
+    let _released = release_tx.send(());
+
+    let (_accept, reply) = tokio::time::timeout(Duration::from_secs(5), caller).await???;
+    let _report = tokio::time::timeout(Duration::from_secs(5), host).await??;
+    let ProcessReply::Summary(summary) = reply else {
+        return Err(format!("expected Summary reply, got {reply:?}").into());
+    };
+    assert_eq!(summary.state, ProcessState::Failed);
+    assert_eq!(summary.reason, Some(ProcessReason::Interrupted));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !marker.exists(),
+        "child must never start after Go hold expiry and withdrawal"
+    );
+    let recorded = status::read(&manager.directory(summary.id))?;
+    assert!(
+        matches!(recorded, Some(SupervisorStatus::NeverStarted(_))),
+        "expected NeverStarted supervisor status, got {recorded:?}"
+    );
+    shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_starting_row_withdrawn_after_go_hold_expires_aborts_without_child() -> TestResult {
+    let harness = Harness::new("c01-restart-hold-expired").await?;
+    let (prior_manager, prior_shutdown) = harness.manager();
+    let marker = harness.state.0.join("child-c01-restart");
+    let start_spec = start(&format!("touch {}; sleep 1", marker.display()))?;
+    let (creation, credentials) = prior_manager
+        .create((harness.creator, request_id(121)?), &start_spec)
+        .await?;
+    let ProcessCreation::Created(created) = creation else {
+        return Err("expected Created row".into());
+    };
+    let _proven = prior_manager.launch(credentials, start_spec).await?;
+    harness
+        .store
+        .processes(move |repo| {
+            repo.transition_process(
+                created.id,
+                ProcessTransition {
+                    to: ProcessState::Starting,
+                    reason: None,
+                    termination: None,
+                    at_ms: 10,
+                },
+            )
+        })
+        .await??;
+    prior_shutdown.cancel();
+
+    harness
+        .store
+        .set_go_dispatch_hold(Duration::from_millis(80))
+        .await;
+    let (second, second_shutdown) = harness.manager();
+    let (entered_rx, release_tx) = second.arm_after_final_authorize_gate();
+    second.reconcile().await;
+
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    harness.withdraw_creator().await?;
+    let _released = release_tx.send(());
+
+    let failed = reaches(&second, created.id, ProcessState::Failed).await?;
+    assert_eq!(failed.reason, Some(ProcessReason::Interrupted));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !marker.exists(),
+        "resumed Starting row started child after Go hold expiry and withdrawal"
+    );
+    let recorded = status::read(&second.directory(created.id))?;
+    assert!(
+        matches!(recorded, Some(SupervisorStatus::NeverStarted(_))),
+        "expected NeverStarted supervisor status, got {recorded:?}"
+    );
+    second_shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn go_write_stops_mid_frame_when_lease_expires() -> TestResult {
+    use tokio::io::AsyncReadExt as _;
+
+    use crate::processes::go::{WriteGoOutcome, go_frame, write_go_with_lease};
+
+    let frame = go_frame()?;
+    assert!(frame.len() > 2);
+    let (mut reader, mut writer) = tokio::io::duplex(2);
+    let lease = crate::store::GoDispatchLease::new();
+
+    {
+        let write_fut = write_go_with_lease(&mut writer, &frame, &lease);
+        tokio::pin!(write_fut);
+        let mut ready_outcome = None;
+        tokio::select! {
+            biased;
+            outcome = &mut write_fut => {
+                ready_outcome = Some(outcome);
+            }
+            () = tokio::task::yield_now() => {}
+        }
+        assert!(ready_outcome.is_none(), "write must block after 2 bytes");
+
+        lease.wait_until(std::time::Instant::now());
+        assert_eq!(write_fut.await, WriteGoOutcome::Expired { wrote_any: true });
+    }
+    drop(writer);
+
+    let mut received = Vec::new();
+    reader.read_to_end(&mut received).await?;
+    assert_eq!(Some(received.as_slice()), frame.get(..2));
     Ok(())
 }

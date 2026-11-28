@@ -208,7 +208,10 @@ impl ProcessManager {
         }
         let address = self.address(id);
         let reported = match address.connect(&credentials).await {
-            Ok(channel) => match self.dispatch_go((id, stepped.creator), channel).await {
+            Ok(channel) => match self
+                .dispatch_go((&credentials, stepped.creator), channel)
+                .await
+            {
                 GoDispatch::Reported(reported) => Ok(reported),
                 GoDispatch::Aborted => {
                     drop(watching);

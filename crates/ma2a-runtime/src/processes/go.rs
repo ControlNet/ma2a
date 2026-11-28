@@ -1,37 +1,116 @@
 //! Ordered `go` dispatch against durable Process authorization.
 
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::{pin::Pin, task::Poll};
 
 use ma2a_core::{
     EndpointId,
-    service::{FrameKind, ProcessId, ServiceError},
+    service::{FrameHeader, FrameKind, ProcessId, ServiceError},
 };
-use ma2a_services::supervisor::{Channel, SupervisorRequest, SupervisorStatus};
+use ma2a_services::supervisor::{Channel, Credentials, SupervisorRequest, SupervisorStatus};
+use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 
 use super::{
     ProcessManager,
     follow::{ANSWER_MARGIN, read_supervisor_status, request},
 };
+use crate::store::GoDispatchLease;
 
 /// Outcome of deciding and dispatching `go` on an authenticated supervisor channel.
 pub(super) enum GoDispatch {
     /// `go` was sent and the supervisor reported this status.
     Reported(SupervisorStatus),
-    /// Authorization was withdrawn before `go`; the supervisor was aborted and settled.
+    /// Authorization was withdrawn or the dispatch lease expired before `go`; the supervisor
+    /// was aborted and settled.
     Aborted,
-    /// Authorization was withdrawn, and settling the abort failed transiently.
+    /// Authorization was withdrawn or the lease expired, and settling the abort failed transiently.
     AbortFailed(ServiceError),
     /// The authorization check or `go` transport failed transiently; retry without starting.
     Deferred(ServiceError),
 }
 
-struct GoDispatchGuard(Arc<(Mutex<bool>, Condvar)>);
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum WriteGoOutcome {
+    Sent,
+    Expired { wrote_any: bool },
+    Failed(ServiceError),
+}
+
+#[cfg(test)]
+pub(super) type TestGate = std::sync::Mutex<
+    Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
+>;
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(super) struct GoTestGates {
+    pub(super) before_go: TestGate,
+    pub(super) after_authorize: TestGate,
+    pub(super) after_final_authorize: TestGate,
+}
+
+struct GoDispatchGuard(GoDispatchLease);
 
 impl Drop for GoDispatchGuard {
     fn drop(&mut self) {
-        let (done, signal) = &*self.0;
-        *done.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        signal.notify_one();
+        self.0.finish();
+    }
+}
+
+pub(super) fn go_frame() -> Result<Vec<u8>, ServiceError> {
+    let payload = SupervisorRequest::Go.to_bytes();
+    let header = FrameHeader::new(FrameKind::Open, payload.len())
+        .and_then(FrameHeader::encode)
+        .map_err(|_| ServiceError::InvalidInput)?;
+    let mut frame = Vec::with_capacity(header.len() + payload.len());
+    frame.extend_from_slice(&header);
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+pub(super) async fn write_go_with_lease<W: AsyncWrite + Unpin>(
+    stream: &mut W,
+    frame: &[u8],
+    lease: &GoDispatchLease,
+) -> WriteGoOutcome {
+    let mut written = 0_usize;
+    let outcome = {
+        let write = std::future::poll_fn(|cx| {
+            lease
+                .try_while_waiting(|| {
+                    while let Some(rest) = frame.get(written..).filter(|rest| !rest.is_empty()) {
+                        match Pin::new(&mut *stream).poll_write(cx, rest) {
+                            Poll::Ready(Ok(0) | Err(_)) => {
+                                return (
+                                    Poll::Ready(WriteGoOutcome::Failed(ServiceError::Cancelled)),
+                                    true,
+                                );
+                            }
+                            Poll::Ready(Ok(n)) => written += n,
+                            Poll::Pending => return (Poll::Pending, false),
+                        }
+                    }
+                    (Poll::Ready(WriteGoOutcome::Sent), true)
+                })
+                .unwrap_or(Poll::Ready(WriteGoOutcome::Expired { wrote_any: false }))
+        });
+        tokio::select! {
+            biased;
+            () = lease.expired() => WriteGoOutcome::Expired { wrote_any: false },
+            outcome = write => outcome,
+        }
+    };
+    match outcome {
+        WriteGoOutcome::Sent => match stream.flush().await {
+            Ok(()) => WriteGoOutcome::Sent,
+            Err(_) => WriteGoOutcome::Failed(ServiceError::Cancelled),
+        },
+        WriteGoOutcome::Expired { .. } => WriteGoOutcome::Expired {
+            wrote_any: written > 0,
+        },
+        WriteGoOutcome::Failed(error) => WriteGoOutcome::Failed(error),
     }
 }
 
@@ -40,7 +119,7 @@ impl ProcessManager {
     /// changes on the Store so a completed withdrawal aborts instead of starting the child.
     pub(super) async fn dispatch_go(
         &self,
-        (id, creator): (ProcessId, EndpointId),
+        (credentials, creator): (&Credentials, EndpointId),
         channel: Channel,
     ) -> GoDispatch {
         if creator == self.0.local {
@@ -53,12 +132,15 @@ impl ProcessManager {
         self.wait_before_go_gate().await;
         match self.authorize_remote(creator).await {
             Ok(()) => {}
-            Err(ServiceError::Unauthorized) => return self.abort_unauthorized(id, channel).await,
+            Err(ServiceError::Unauthorized) => {
+                return self.abort_unauthorized(credentials.id(), channel).await;
+            }
             Err(error) => return GoDispatch::Deferred(error),
         }
         #[cfg(test)]
         self.wait_after_authorize_gate().await;
-        self.authorize_and_send_go((id, creator), channel).await
+        self.authorize_and_send_go((credentials, creator), channel)
+            .await
     }
 
     async fn abort_unauthorized(&self, id: ProcessId, channel: Channel) -> GoDispatch {
@@ -70,14 +152,15 @@ impl ProcessManager {
 
     async fn authorize_and_send_go(
         &self,
-        (id, creator): (ProcessId, EndpointId),
+        (credentials, creator): (&Credentials, EndpointId),
         (mut reader, mut writer): Channel,
     ) -> GoDispatch {
-        let signal = Arc::new((Mutex::new(false), Condvar::new()));
-        let guard = GoDispatchGuard(Arc::clone(&signal));
+        let id = credentials.id();
+        let lease = GoDispatchLease::new();
+        let guard = GoDispatchGuard(lease.clone());
         if let Err(error) = self
             .store()
-            .authorize_process_go((self.0.local, creator), signal)
+            .authorize_process_go((self.0.local, creator), lease.clone())
             .await
         {
             drop(guard);
@@ -87,18 +170,32 @@ impl ProcessManager {
                 GoDispatch::Deferred(error)
             };
         }
-        let sent = tokio::time::timeout(super::host::FRAME_GRACE, async {
-            writer
-                .frame(FrameKind::Open, &SupervisorRequest::Go.to_bytes())
-                .await?;
-            writer.flush().await
-        })
+        #[cfg(test)]
+        self.wait_after_final_authorize_gate().await;
+        let Ok(frame) = go_frame() else {
+            drop(guard);
+            return GoDispatch::Deferred(ServiceError::InvalidInput);
+        };
+        let sent = tokio::time::timeout(
+            super::host::FRAME_GRACE,
+            write_go_with_lease(writer.get_mut(), &frame, &lease),
+        )
         .await;
-        // Release the Store thread as soon as `go` is flushed (or failed/timed out).
+        // Release the Store thread as soon as `go` is written (or failed/timed out).
         drop(guard);
         match sent {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => return GoDispatch::Deferred(error),
+            Ok(WriteGoOutcome::Sent) => {}
+            Ok(WriteGoOutcome::Expired { wrote_any }) => {
+                if wrote_any {
+                    drop((reader, writer));
+                    return match self.address(id).connect(credentials).await {
+                        Ok(channel) => self.abort_unauthorized(id, channel).await,
+                        Err(error) => GoDispatch::AbortFailed(error),
+                    };
+                }
+                return self.abort_unauthorized(id, (reader, writer)).await;
+            }
+            Ok(WriteGoOutcome::Failed(error)) => return GoDispatch::Deferred(error),
             Err(_) => return GoDispatch::Deferred(ServiceError::Unavailable),
         }
         match read_supervisor_status(&mut reader, ANSWER_MARGIN).await {
@@ -108,8 +205,11 @@ impl ProcessManager {
     }
 
     #[cfg(test)]
-    async fn wait_gate(gate: &super::TestGate) {
-        let gate = gate.lock().unwrap_or_else(PoisonError::into_inner).take();
+    async fn wait_gate(gate: &TestGate) {
+        let gate = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some((entered, release)) = gate {
             let _entered = entered.send(());
             let _released = release.await;
@@ -118,11 +218,16 @@ impl ProcessManager {
 
     #[cfg(test)]
     async fn wait_before_go_gate(&self) {
-        Self::wait_gate(&self.0.before_go_gate).await;
+        Self::wait_gate(&self.0.gates.before_go).await;
     }
 
     #[cfg(test)]
     async fn wait_after_authorize_gate(&self) {
-        Self::wait_gate(&self.0.after_authorize_gate).await;
+        Self::wait_gate(&self.0.gates.after_authorize).await;
+    }
+
+    #[cfg(test)]
+    async fn wait_after_final_authorize_gate(&self) {
+        Self::wait_gate(&self.0.gates.after_final_authorize).await;
     }
 }

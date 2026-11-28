@@ -1,5 +1,6 @@
 mod backend_state;
 mod command;
+mod go_lease;
 mod grant;
 mod identity;
 mod local_control;
@@ -18,6 +19,7 @@ use tokio::sync::mpsc;
 pub(crate) use crate::store_client::channel_error;
 
 pub(crate) use command::StoreCommand;
+pub(crate) use go_lease::GoDispatchLease;
 pub(crate) use grant::{GrantRefusal, GrantResult, OwnedMemberGrant, SERVICE_CAPABILITIES};
 pub(crate) use identity::Identity;
 #[cfg(test)]
@@ -26,9 +28,7 @@ pub(crate) use membership::{OwnedMemberRevocation, RemovedMember};
 pub(crate) use mutation_replay::MutationReplayCommand;
 pub(crate) use pending_relay::RelayExpiryPolicy;
 pub(crate) use relay_state::with_parsed_relay_urls;
-pub(crate) use services::{
-    GoDispatchSignal, ProcessJob, ServiceGrant, ServiceStoreCommand, authorize,
-};
+pub(crate) use services::{ProcessJob, ServiceGrant, ServiceStoreCommand, authorize};
 
 /// Everything one enrollment commit needs from the caller.
 pub(crate) struct EnrollmentPersistence {
@@ -73,4 +73,6 @@ pub(crate) struct StoreBackend {
     pending_relay_publication: Option<pending_relay::PendingRelayPublication>,
     #[cfg(test)]
     relay_publication_fail_after: Option<usize>,
+    #[cfg(all(test, unix))]
+    go_dispatch_hold: Option<std::time::Duration>,
 }
