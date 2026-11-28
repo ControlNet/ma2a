@@ -453,7 +453,10 @@ is terminated with a 5 s grace period and reason `unauthorized`.
 - A failed withdrawal attempt is retried on the next check. Once `terminate` has been sent to the
   supervisor, a status-record read failed transiently, or storing a reported termination failed,
   the Runtime retains `unauthorized` in memory until a terminal state is recorded so the follower
-  or a retry commits that reason; a failure before reaching the supervisor retains nothing.
+  or a retry commits that reason. A failure before reaching the supervisor retains nothing when no
+  other termination is in flight; if an overlapping `requested` termination is still in flight,
+  that call keeps the upgraded `unauthorized` reason while it runs (and retains it if it later
+  fails after reaching the supervisor or storing the end).
 - A `created` Process is not checked: it has no child, and it is decided at bring-up or at the
   next start.
 
