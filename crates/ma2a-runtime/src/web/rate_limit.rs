@@ -20,6 +20,9 @@ impl LoginRateLimit {
         let Ok(mut attempts) = self.attempts.lock() else {
             return false;
         };
+        for attempt in &mut *attempts {
+            *attempt = (*attempt).min(now_ms);
+        }
         while attempts
             .front()
             .is_some_and(|attempt| now_ms.saturating_sub(*attempt) >= self.window_ms)
@@ -31,5 +34,43 @@ impl LoginRateLimit {
         }
         attempts.push_back(now_ms);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LoginRateLimit;
+
+    #[test]
+    fn wall_clock_rollback_recovers_within_window() {
+        let limit = LoginRateLimit::new(5, 60_000);
+        for _ in 0..5 {
+            assert!(limit.allow(10_000_000));
+        }
+        assert!(!limit.allow(10_000_000));
+        assert!(!limit.allow(5_000_000));
+        assert!(!limit.allow(5_059_999));
+        assert!(limit.allow(5_060_000));
+    }
+
+    #[test]
+    fn partial_attempts_before_rollback_do_not_pin_eviction() {
+        let limit = LoginRateLimit::new(5, 60_000);
+        assert!(limit.allow(10_000_000));
+        for _ in 0..4 {
+            assert!(limit.allow(5_000_000));
+        }
+        assert!(!limit.allow(5_000_000));
+        assert!(limit.allow(5_060_000));
+    }
+
+    #[test]
+    fn rollback_without_intermediate_attempts_recovers_within_one_window() {
+        let limit = LoginRateLimit::new(5, 60_000);
+        for _ in 0..5 {
+            assert!(limit.allow(10_000_000));
+        }
+        assert!(!limit.allow(5_060_000));
+        assert!(limit.allow(5_120_000));
     }
 }
