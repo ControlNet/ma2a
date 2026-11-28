@@ -166,23 +166,19 @@ pub(crate) fn encode_outcome<T>(
     writer.finish(super::MAX_OUTCOME_FRAME_LEN)
 }
 
+const MAX_CBOR_SKIP_DEPTH: usize = 16;
+
 /// Decodes the envelope written by [`encode_outcome`].
 pub(crate) fn decode_outcome<T>(
     bytes: &[u8],
     decode: impl FnOnce(&mut Decoder<'_>) -> Result<T, ProtocolError>,
 ) -> Result<Result<T, ServiceError>, ProtocolError> {
     let mut decoder = Decoder::new(bytes);
-    decoder.map(2)?;
-    decoder.key(0)?;
-    let status = u8::try_from(decoder.uint()?).map_err(|_| ProtocolError::INVALID_INPUT)?;
-    decoder.key(1)?;
+    let status = decode_outcome_header(&mut decoder)?;
     let outcome = if status == 0 {
         Ok(decode(&mut decoder)?)
     } else {
-        if !decoder.null() {
-            return Err(ProtocolError::INVALID_INPUT);
-        }
-        Err(ServiceError::from_code(status).ok_or(ProtocolError::INVALID_INPUT)?)
+        Err(decode_outcome_error(&mut decoder, status)?)
     };
     decoder.finish()?;
     Ok(outcome)
@@ -191,14 +187,75 @@ pub(crate) fn decode_outcome<T>(
 /// Reads only the status of an outcome envelope: `None` for success.
 pub(crate) fn outcome_status(bytes: &[u8]) -> Result<Option<ServiceError>, ProtocolError> {
     let mut decoder = Decoder::new(bytes);
+    let status = decode_outcome_header(&mut decoder)?;
+    let outcome = if status == 0 {
+        skip_value(&mut decoder, MAX_CBOR_SKIP_DEPTH)?;
+        None
+    } else {
+        Some(decode_outcome_error(&mut decoder, status)?)
+    };
+    decoder.finish()?;
+    Ok(outcome)
+}
+
+fn decode_outcome_header(decoder: &mut Decoder<'_>) -> Result<u8, ProtocolError> {
     decoder.map(2)?;
     decoder.key(0)?;
     let status = u8::try_from(decoder.uint()?).map_err(|_| ProtocolError::INVALID_INPUT)?;
-    if status == 0 {
-        Ok(None)
-    } else {
-        ServiceError::from_code(status)
-            .map(Some)
-            .ok_or(ProtocolError::INVALID_INPUT)
+    decoder.key(1)?;
+    Ok(status)
+}
+
+fn decode_outcome_error(
+    decoder: &mut Decoder<'_>,
+    status: u8,
+) -> Result<ServiceError, ProtocolError> {
+    if !decoder.null() {
+        return Err(ProtocolError::INVALID_INPUT);
     }
+    ServiceError::from_code(status).ok_or(ProtocolError::INVALID_INPUT)
+}
+
+fn skip_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), ProtocolError> {
+    if depth == 0 {
+        return Err(ProtocolError::INVALID_INPUT);
+    }
+    let header = decoder.peek()?;
+    match header >> 5 {
+        0 => {
+            decoder.uint()?;
+        }
+        2 => {
+            decoder.bytes(usize::MAX)?;
+        }
+        3 => {
+            decoder.utf8_text(usize::MAX)?;
+        }
+        4 => {
+            let length = decoder.length(4)?;
+            for _ in 0..length {
+                skip_value(decoder, depth - 1)?;
+            }
+        }
+        5 => {
+            let length = decoder.length(5)?;
+            for _ in 0..length {
+                skip_value(decoder, depth - 1)?;
+                skip_value(decoder, depth - 1)?;
+            }
+        }
+        7 => match header {
+            0xf4 | 0xf5 => {
+                decoder.boolean()?;
+            }
+            0xf6 => {
+                if !decoder.null() {
+                    return Err(ProtocolError::INVALID_INPUT);
+                }
+            }
+            _ => return Err(ProtocolError::INVALID_INPUT),
+        },
+        _ => return Err(ProtocolError::INVALID_INPUT),
+    }
+    Ok(())
 }

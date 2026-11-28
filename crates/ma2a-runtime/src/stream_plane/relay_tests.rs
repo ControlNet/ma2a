@@ -257,3 +257,13 @@ async fn concurrent_traffic_both_ways_through_tiny_pipes_arrives_whole_and_in_or
     let relayed = task.await.expect("relay");
     assert_eq!((relayed.to_target, relayed.from_target), (180_000, 180_000));
 }
+
+#[tokio::test]
+async fn a_malformed_outcome_frame_is_indeterminate() {
+    let ((_client_reader, _client_writer), (_target_reader, mut target_writer), task) = start();
+    target_writer
+        .frame(FrameKind::Outcome, &[0xa2, 0x00, 0x06])
+        .await
+        .expect("malformed outcome");
+    assert_eq!(task.await.expect("relay").terminal, Terminal::Lost);
+}

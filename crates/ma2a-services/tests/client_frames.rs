@@ -2332,3 +2332,44 @@ async fn torn_frames_and_stream_resets_report_outcome_unknown_across_client_driv
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn malformed_outcome_frames_report_invalid_input_instead_of_failed() -> TestResult {
+    let stat_req = FilesRequest::Stat(RemotePath::parse("docs:/a")?);
+    let write_req = FilesRequest::Write(RemotePath::parse("docs:/a")?, WriteMode::Replace, 3);
+    for payload in [
+        &[0xa2_u8, 0x00, 0x06][..],
+        &[0xa2_u8, 0x00, 0x06, 0x01, 0x00][..],
+        &[0xa2_u8, 0x00, 0x06, 0x01, 0xf6, 0xff][..],
+        &[0xa2_u8, 0x00, 0x00, 0x01, 0xf6, 0xff][..],
+    ] {
+        let initial = replies(&[Sent::Frame(FrameKind::Outcome, payload.to_vec())]).await?;
+        let res = within(files::run(
+            (
+                &mut FrameReader::new(initial.as_slice()),
+                &mut FrameWriter::new(tokio::io::sink()),
+            ),
+            &stat_req,
+            &[],
+        ))
+        .await?;
+        assert!(malformed(&res), "initial {payload:02x?}: {res:?}");
+
+        let after_broken_write = replies(&[
+            accept(&EMPTY_ACCEPT),
+            Sent::Frame(FrameKind::Outcome, payload.to_vec()),
+        ])
+        .await?;
+        let res = within(files::run(
+            (
+                &mut FrameReader::new(after_broken_write.as_slice()),
+                &mut FrameWriter::new(Broken),
+            ),
+            &write_req,
+            b"abc",
+        ))
+        .await?;
+        assert!(malformed(&res), "broken write {payload:02x?}: {res:?}");
+    }
+    Ok(())
+}

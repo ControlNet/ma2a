@@ -217,11 +217,18 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    fn length(&mut self, major: u8) -> Result<usize, ProtocolError> {
+    pub(crate) fn peek(&self) -> Result<u8, ProtocolError> {
+        self.input
+            .get(self.offset)
+            .copied()
+            .ok_or(ProtocolError::INVALID_INPUT)
+    }
+
+    pub(crate) fn length(&mut self, major: u8) -> Result<usize, ProtocolError> {
         usize::try_from(self.major(major)?).map_err(|_| ProtocolError::INVALID_INPUT)
     }
 
-    fn utf8_text(&mut self, maximum: usize) -> Result<&'a str, ProtocolError> {
+    pub(crate) fn utf8_text(&mut self, maximum: usize) -> Result<&'a str, ProtocolError> {
         let length = self.length(3)?;
         if length > maximum {
             return Err(ProtocolError::INVALID_INPUT);

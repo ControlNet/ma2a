@@ -244,3 +244,35 @@ fn a_failed_outcome_is_readable_by_every_family_and_by_status_alone() -> TestRes
     );
     Ok(())
 }
+
+#[test]
+fn outcome_status_rejects_malformed_key_one_values_and_trailing_bytes() {
+    let malformed = [
+        &[0xa2, 0x00, 0x06][..],                   // truncated failure, missing key 1
+        &[0xa2, 0x00, 0x06, 0x02, 0xf6][..],       // wrong key 1
+        &[0xa2, 0x00, 0x06, 0x01, 0x00][..],       // non-null failure value
+        &[0xa2, 0x00, 0x06, 0x01, 0xf6, 0xff][..], // trailing byte on failure
+        &[0xa2, 0x00, 0x00][..],                   // truncated success, missing key 1
+        &[0xa2, 0x00, 0x00, 0x01][..],             // truncated success value
+        &[0xa2, 0x00, 0x00, 0x01, 0xf6, 0xff][..], // trailing byte on success
+        &[0xa2, 0x00, 0x00, 0x01, 0x62, 0x80, 0x80][..], // invalid UTF-8 in success
+        &[0xa2, 0x00, 0x00, 0x01, 0x18, 0x00][..], // non-canonical uint in success
+        &[0xa2, 0x00, 0x00, 0x01, 0x81][..],       // truncated array in success
+        &[0xa2, 0x00, 0x00, 0x01, 0x9f, 0xff][..], // indefinite-length array in success
+    ];
+    for payload in malformed {
+        assert_eq!(
+            ma2a_core::service::outcome_status(payload),
+            Err(ProtocolError::INVALID_INPUT),
+            "accepted malformed payload: {payload:02x?}"
+        );
+    }
+    let mut deep = vec![0xa2, 0x00, 0x00, 0x01];
+    deep.extend(std::iter::repeat_n(0x81, 16));
+    deep.push(0x00);
+    assert_eq!(
+        ma2a_core::service::outcome_status(&deep),
+        Err(ProtocolError::INVALID_INPUT),
+        "accepted overly deep CBOR outcome"
+    );
+}
