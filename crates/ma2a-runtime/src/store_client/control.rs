@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+};
+
 use crate::control_sync::ControlFailure;
 use ma2a_core::EndpointId;
 use tokio::sync::oneshot;
@@ -9,6 +14,50 @@ use crate::{
     store::{StoreClient, StoreCommand},
     store_client::channel_error,
 };
+
+const APPLY_QUEUED: u8 = 0;
+const APPLY_STARTED: u8 = 1;
+const APPLY_CANCELLED: u8 = 2;
+
+/// Shared atomic state coordinating whether a queued control apply has started.
+#[derive(Clone, Debug)]
+pub(crate) struct ControlApplyLease(Arc<AtomicU8>);
+
+impl ControlApplyLease {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(APPLY_QUEUED)))
+    }
+
+    /// Claims execution on the Store thread; returns `false` if already cancelled.
+    pub(crate) fn begin(&self) -> bool {
+        self.0
+            .compare_exchange(
+                APPLY_QUEUED,
+                APPLY_STARTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// Cancels a still-queued apply; returns `false` if the Store already started it.
+    pub(crate) fn cancel(&self) -> bool {
+        match self.0.compare_exchange(
+            APPLY_QUEUED,
+            APPLY_CANCELLED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => true,
+            Err(current) => current == APPLY_CANCELLED,
+        }
+    }
+}
+
+pub(crate) struct AdmittedControlApply {
+    pub(crate) response: oneshot::Receiver<Result<ControlApplyOutcome, ControlFailure>>,
+    pub(crate) lease: ControlApplyLease,
+}
 
 impl StoreClient {
     pub(crate) async fn authorize_control(
@@ -46,15 +95,16 @@ impl StoreClient {
         &self,
         (input, requested): (ControlExchangeInput, Vec<ma2a_core::SpaceId>),
         deadline: tokio::time::Instant,
-    ) -> Result<oneshot::Receiver<Result<ControlApplyOutcome, ControlFailure>>, ControlFailure>
-    {
+    ) -> Result<AdmittedControlApply, ControlFailure> {
         let permit = self.sender.reserve().await.map_err(channel_error)?;
         let (reply, response) = oneshot::channel();
+        let lease = ControlApplyLease::new();
         permit.send(StoreCommand::ApplyControlResponse {
             input: (input, requested),
             deadline,
+            lease: lease.clone(),
             reply,
         });
-        Ok(response)
+        Ok(AdmittedControlApply { response, lease })
     }
 }

@@ -193,10 +193,16 @@ async fn admitted_response_skips_apply_and_stops_dials_when_deadline_fires() -> 
 
     // Hold the Store thread while keeping its queue free, then let owner_id reply.
     let release_store = hold_store(&f.actor.store).await?;
+    let baseline_capacity = f.actor.store.sender.capacity();
     let _ = harness.owner_gate_tx.send(());
-    for _ in 0..16 {
+    while f.actor.store.sender.capacity() == baseline_capacity {
         tokio::task::yield_now().await;
     }
+    assert_eq!(
+        f.actor.store.sender.capacity(),
+        baseline_capacity - 1,
+        "response must enter the Store queue before the deadline test advances"
+    );
     assert!(
         harness.hanging_dropped_rx.try_recv().is_err(),
         "hanging dial must still be active before deadline"
@@ -212,8 +218,12 @@ async fn admitted_response_skips_apply_and_stops_dials_when_deadline_fires() -> 
         "outstanding dials must stop immediately when the round deadline fires"
     );
 
-    drop(release_store);
+    assert!(
+        harness.round_task.is_finished(),
+        "expired round stayed blocked behind queued Store command"
+    );
     let outcome = harness.round_task.await?;
+    drop(release_store);
     let chain = f
         .actor
         .store

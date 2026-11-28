@@ -215,9 +215,11 @@ impl StoreBackend {
             StoreCommand::ApplyControlResponse {
                 input,
                 deadline,
+                lease,
                 reply,
             } => {
-                if tokio::time::Instant::now() >= deadline {
+                if tokio::time::Instant::now() >= deadline || !lease.begin() {
+                    let _ = lease.cancel();
                     let _unsent = reply.send(Err(ma2a_net::ControlRejection::Unavailable.into()));
                 } else {
                     local_control::apply(&mut self.repository, &input, reply);

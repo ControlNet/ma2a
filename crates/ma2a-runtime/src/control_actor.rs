@@ -110,7 +110,7 @@ impl Actor {
             scheduled.membership_generation() == self.synchronized_control_peers.generation();
         let before_view = self.view_sequence;
         let mut failure = None;
-        let (peers, dialed) = match outcome {
+        let (peers, dialed, had_effects) = match outcome {
             Ok(Some(outcome)) => {
                 if let Some(revision) = outcome.revision {
                     self.state.revision = self.state.revision.max(revision);
@@ -120,21 +120,27 @@ impl Actor {
                 } else {
                     BTreeSet::new()
                 };
-                self.retain_control_completion(outcome.changes, peers.clone());
+                let had_effects = !outcome.changes.is_empty() || !peers.is_empty();
+                if had_effects {
+                    self.retain_control_completion(outcome.changes, peers.clone());
+                }
                 if outcome.incomplete {
                     // The round failed before finishing; its committed changes still stay.
                     failure = Some(ma2a_net::ControlRejection::Unavailable.into());
                 }
-                (peers, Some(outcome.dialed_peers))
+                (peers, Some(outcome.dialed_peers), had_effects)
             }
-            Ok(None) => (BTreeSet::new(), Some(BTreeSet::new())),
+            Ok(None) => (BTreeSet::new(), Some(BTreeSet::new()), false),
             Err(error) => {
-                self.retain_control_completion(ControlChanges::default(), BTreeSet::new());
                 failure = Some(error);
-                (BTreeSet::new(), None)
+                (BTreeSet::new(), None, false)
             }
         };
-        let reconciled = self.reconcile_control_completion().await;
+        let reconciled = if had_effects || failure.is_none() {
+            self.reconcile_control_completion().await
+        } else {
+            Ok(())
+        };
         let succeeded = failure.is_none() && reconciled.is_ok();
         self.record_control_round((succeeded, &peers), before_view);
         self.complete_control_waiters(round_id, succeeded, &peers, dialed.as_ref());

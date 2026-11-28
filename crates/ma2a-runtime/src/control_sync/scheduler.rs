@@ -102,7 +102,7 @@ impl ControlRoundRunner {
                 u64::try_from(value).map_err(|_| RuntimeError::new(RuntimeErrorKind::Clock))
             })?;
             let round_deadline = deadline.deadline();
-            let response = run_before_deadline(
+            let admitted = run_before_deadline(
                 &mut deadline,
                 self.store.admit_control_response(
                     (
@@ -118,9 +118,9 @@ impl ControlRoundRunner {
                 ),
             )
             .await??;
-            // Once admitted to the Store queue, await its receipt so any committed transaction
-            // still reaches Runtime state even if the aggregate deadline expires while it runs.
-            let applied = await_store_apply_receipt(&mut deadline, &mut dials, response).await?;
+            // Cancel a still-queued apply at the deadline, or await its receipt if the Store
+            // already started applying it so any committed transaction reaches Runtime state.
+            let applied = await_store_apply_receipt(&mut deadline, &mut dials, admitted).await?;
             // A response this peer got wrong, such as one answering another request's Spaces,
             // fails that request only; a local failure still ends the round.
             match applied {
@@ -192,14 +192,18 @@ impl RoundProgress {
 async fn await_store_apply_receipt<DialError: 'static>(
     deadline: &mut Pin<&mut Sleep>,
     dials: &mut JoinSet<DialOutcome<DialError>>,
-    mut response: tokio::sync::oneshot::Receiver<Result<ControlApplyOutcome, ControlFailure>>,
+    mut admitted: crate::store_client::control::AdmittedControlApply,
 ) -> Result<Result<ControlApplyOutcome, ControlFailure>, RuntimeError> {
     let applied = tokio::select! {
         biased;
-        applied = &mut response => applied,
+        applied = &mut admitted.response => applied,
         () = deadline.as_mut() => {
+            let cancelled = admitted.lease.cancel();
             dials.shutdown().await;
-            response.await
+            if cancelled {
+                return Ok(Err(ma2a_net::ControlRejection::Unavailable.into()));
+            }
+            admitted.response.await
         }
     };
     applied.map_err(crate::store::channel_error)

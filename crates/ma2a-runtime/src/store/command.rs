@@ -163,6 +163,7 @@ pub(crate) enum StoreCommand {
         /// The response, the Spaces the request it answers asked about, and the round deadline.
         input: (ControlExchangeInput, Vec<ma2a_core::SpaceId>),
         deadline: tokio::time::Instant,
+        lease: crate::store_client::control::ControlApplyLease,
         reply: oneshot::Sender<Result<ControlApplyOutcome, crate::control_sync::ControlFailure>>,
     },
     AuthorizeEcho {

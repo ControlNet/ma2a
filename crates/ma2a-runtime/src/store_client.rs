@@ -1,7 +1,7 @@
 use ma2a_store::{AuthorizedEnrollmentRedemption, EnrollmentOutcome};
 use tokio::sync::oneshot;
 
-mod control;
+pub(crate) mod control;
 mod echo;
 mod membership;
 mod mutation_replay;

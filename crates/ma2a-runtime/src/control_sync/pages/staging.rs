@@ -23,6 +23,10 @@ pub(crate) struct ControlChanges {
 }
 
 impl ControlChanges {
+    pub(crate) const fn is_empty(self) -> bool {
+        !self.manifest && !self.address && !self.relay
+    }
+
     pub(crate) const fn merge(&mut self, other: Self) {
         self.manifest |= other.manifest;
         self.address |= other.address;

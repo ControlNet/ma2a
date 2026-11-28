@@ -1,5 +1,6 @@
 mod admitted_queue;
 mod fixture;
+mod no_effect_timeout;
 mod store_queue;
 
 use std::{future::pending, sync::Arc};
@@ -214,10 +215,20 @@ async fn running_store_apply_keeps_receipt_while_stopping_dials_at_deadline() ->
     dial_started_rx.await?;
 
     let (reply_tx, reply_rx) = oneshot::channel();
+    let lease = crate::store_client::control::ControlApplyLease::new();
+    assert!(lease.begin());
     let wait_task = tokio::spawn(async move {
         let deadline = tokio::time::sleep(ma2a_net::CONTROL_ROUND_DEADLINE);
         tokio::pin!(deadline);
-        super::await_store_apply_receipt(&mut deadline, &mut dials, reply_rx).await
+        super::await_store_apply_receipt(
+            &mut deadline,
+            &mut dials,
+            crate::store_client::control::AdmittedControlApply {
+                response: reply_rx,
+                lease,
+            },
+        )
+        .await
     });
     tokio::task::yield_now().await;
     assert!(dial_dropped_rx.try_recv().is_err());
