@@ -238,6 +238,7 @@ fn service_host(
         (state_dir, hosting),
         cancellation.child_token(),
     );
+    processes.fence_startup();
     handle.install_processes(processes.clone());
     let hosted = crate::hosting::HostedServices::new((local, store.clone(), Arc::clone(&clock)));
     handle.install_hosted(hosted.clone());

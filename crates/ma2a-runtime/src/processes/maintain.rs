@@ -68,7 +68,9 @@ impl ProcessManager {
 
     /// Re-adopts every non-terminal Process through its supervisor's proof, or decides it.
     pub(super) async fn reconcile(&self) {
-        for record in self.active().await {
+        let active = self.active().await;
+        self.release_startup();
+        for record in active {
             if record.state == ProcessState::Created {
                 let manager = self.clone();
                 self.0

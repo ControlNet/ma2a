@@ -63,6 +63,7 @@ impl ProcessManager {
         (creator, request_id): (EndpointId, RequestId),
         (start, reclaim_retained): (&ProcessStart, bool),
     ) -> Result<((ProcessCreation, Option<ProcessId>), Credentials), ServiceError> {
+        self.wait_for_startup().await?;
         let bytes = start.to_bytes().map_err(|_| ServiceError::InvalidInput)?;
         let name = start.name().map(str::to_owned);
         let id = ProcessId::random().map_err(|_| ServiceError::Internal)?;
@@ -159,11 +160,23 @@ impl ProcessManager {
         };
         fault("after_launch");
         let watching = open_watch(proven).await;
-        if let Err(error) = self.step(id, (ProcessState::Starting, None)).await {
-            // Without `starting` no `go` may be sent; the supervisor gives up by itself and
-            // the follower records that end.
-            self.follow(id, watching.ok());
-            return Err(error);
+        let stepped = match self.step(id, (ProcessState::Starting, None)).await {
+            Ok(committed) => committed.into_value(),
+            Err(error) => {
+                // Without `starting` no `go` may be sent; the supervisor gives up by itself and
+                // the follower records that end.
+                self.follow(id, watching.ok());
+                return Err(error);
+            }
+        };
+        if stepped.state != ProcessState::Starting {
+            // Another path already moved this Process out of `created`; abort the proved
+            // supervisor so no unmanaged child can start.
+            drop(watching);
+            if let Ok(channel) = self.address(id).connect(&credentials).await {
+                let _aborted = request(channel, SupervisorRequest::Abort).await;
+            }
+            return Ok(stepped);
         }
         let address = self.address(id);
         let reported = match address.connect(&credentials).await {

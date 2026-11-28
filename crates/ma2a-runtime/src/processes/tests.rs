@@ -6,6 +6,7 @@ mod local_limit;
 mod logs;
 mod recovery;
 mod relay;
+mod startup_recovery;
 mod supervisor_loss;
 mod terminating;
 mod watch;

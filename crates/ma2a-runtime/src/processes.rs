@@ -82,6 +82,8 @@ struct Inner {
     #[cfg(windows)]
     pipe_scope: String,
     shutdown: CancellationToken,
+    /// Open once startup recovery has scanned prior-boot rows; new starts wait while closed.
+    admit: tokio::sync::watch::Sender<bool>,
     tasks: TaskTracker,
     coordination: Mutex<Coordination>,
 }
@@ -160,9 +162,36 @@ impl ProcessManager {
                 .unwrap_or_default()
                 .to_owned(),
             shutdown,
+            admit: tokio::sync::watch::Sender::new(true),
             tasks: TaskTracker::new(),
             coordination: Mutex::new(Coordination::default()),
         }))
+    }
+
+    /// Holds new Process admission until [`Self::reconcile`] has scanned prior-boot rows.
+    pub(crate) fn fence_startup(&self) {
+        self.0.admit.send_replace(false);
+    }
+
+    /// Releases the startup admission fence once prior-boot rows have been scanned.
+    pub(super) fn release_startup(&self) {
+        self.0.admit.send_replace(true);
+    }
+
+    /// Waits until the startup recovery scan has claimed prior-boot rows.
+    pub(super) async fn wait_for_startup(&self) -> Result<(), ServiceError> {
+        let mut admitted = self.0.admit.subscribe();
+        while !*admitted.borrow_and_update() {
+            tokio::select! {
+                () = self.0.shutdown.cancelled() => return Err(ServiceError::Unavailable),
+                updated = admitted.changed() => {
+                    if updated.is_err() {
+                        return Err(ServiceError::Unavailable);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn coordination(&self) -> MutexGuard<'_, Coordination> {
