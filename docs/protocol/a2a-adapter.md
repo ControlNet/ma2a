@@ -155,6 +155,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
 - **Local artifact.**
   - The body carries `Content-Length`.
   - It is read in local API chunks of at most 32 KiB.
+  - The first chunk is read and checked before sending `200`, which verifies the whole content when it fits in one chunk.
   - The last chunk is sent only after the whole content verified. A mismatch ends the body early.
 - **Remote artifact.**
   - The body is chunked, with no length.
@@ -163,6 +164,7 @@ Each Server-Sent Event's `data:` is one complete JSON-RPC response with the requ
   - A client that disconnects ends the download at once, even while the target sends nothing.
 - An unknown task or artifact answers `404`, as does a task this caller may not see.
 - A Runtime or remote target that cannot answer now, because it is unavailable, unreachable, busy, timed out, or its answer was lost, answers `503`, so a client can retry.
+- A local artifact whose first chunk fails verification or cannot be read from the store answers `500`.
 
 ### ListTasks
 

@@ -25,7 +25,7 @@ use tokio::{
     io::{AsyncWrite, DuplexStream, ReadHalf, WriteHalf},
     sync::{mpsc, oneshot},
 };
-use tokio_stream::{Stream, wrappers::ReceiverStream};
+use tokio_stream::Stream;
 use tokio_util::io::ReaderStream;
 
 use super::{
@@ -33,7 +33,10 @@ use super::{
     http::status,
     remote,
 };
-use crate::commands::{agent_artifact, remote::open_as};
+use crate::commands::remote::open_as;
+
+#[path = "artifact_local.rs"]
+mod local;
 
 /// Pipe capacity between a remote download and the response body.
 const PIPE: usize = 65_536;
@@ -80,15 +83,10 @@ pub(super) async fn serve(
         .to_owned();
     let is_local = matches!(route, Route::Local(_));
     let body = match route {
-        Route::Local(_) => {
-            let (chunks, received) = mpsc::channel(4);
-            tokio::spawn(async move {
-                if let Err(error) = local(&backend, (&task, &name), &chunks).await {
-                    let _sent = chunks.send(Err(error)).await;
-                }
-            });
-            Body::from_stream(ReceiverStream::new(received))
-        }
+        Route::Local(_) => match local::open(backend, (task, name), (size, blake3)).await {
+            Ok(body) => body,
+            Err(code) => return status(code),
+        },
         Route::Remote(..) => {
             let accepted = match admit(&backend, (&route, &task, &name)).await {
                 Ok(accepted) => accepted,
@@ -160,27 +158,6 @@ impl Stream for Verified {
     }
 }
 
-/// Reads a local artifact chunk by chunk into `chunks`, verifying the whole.
-async fn local(backend: &Backend, (task, name): (&str, &str), chunks: &Chunks) -> io::Result<()> {
-    let runtime = (backend.state_dir.as_path(), backend.paths.clone());
-    let (mut offset, mut hasher) = (0_u64, blake3::Hasher::new());
-    loop {
-        let chunk = agent_artifact::read(&runtime, (task, name), offset)
-            .await
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        hasher.update(&chunk.content);
-        offset += u64::try_from(chunk.content.len()).unwrap_or(u64::MAX);
-        let verified = !chunk.eof
-            || (offset == chunk.size && hasher.finalize().to_hex().as_str() == chunk.blake3);
-        if !verified || (chunk.content.is_empty() && !chunk.eof) {
-            return Err(io::Error::other("the artifact failed verification"));
-        }
-        if chunks.send(Ok(Bytes::from(chunk.content))).await.is_err() || chunk.eof {
-            return Ok(());
-        }
-    }
-}
-
 type Accepted = (
     FrameReader<ReadHalf<LocalStream>>,
     FrameWriter<WriteHalf<LocalStream>>,
@@ -241,6 +218,12 @@ fn matches_reference((size, blake3): (u64, &str), (got, hash): (u64, &[u8; 32]))
     size == got && blake3::Hash::from_hex(blake3).is_ok_and(|expected| expected == *hash)
 }
 
+#[cfg(all(test, unix))]
+#[path = "artifact_local_error_tests.rs"]
+mod local_error_tests;
+#[cfg(all(test, unix))]
+#[path = "artifact_local_tests.rs"]
+mod local_tests;
 #[cfg(test)]
 #[path = "artifact_tests.rs"]
 mod tests;
