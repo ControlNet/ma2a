@@ -29,6 +29,9 @@ mod live_tests;
 #[cfg(test)]
 #[path = "agents/tests/maintain.rs"]
 mod maintain_tests;
+#[cfg(test)]
+#[path = "agents/tests/ready_deadline.rs"]
+mod ready_deadline_tests;
 
 use std::{
     collections::{HashMap, HashSet},

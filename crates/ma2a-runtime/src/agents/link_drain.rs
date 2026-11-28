@@ -23,7 +23,7 @@ impl AgentManager {
     ///
     /// Runs across the whole generation (including connect and backoff) and retries termination
     /// with backoff while the same generation remains live and unready.
-    pub(super) async fn ready_deadline(
+    pub(in crate::agents) async fn ready_deadline(
         &self,
         (agent, generation): (&AgentId, u64),
         terminated: &tokio::sync::watch::Sender<bool>,
@@ -33,7 +33,9 @@ impl AgentManager {
         };
         if !instance.ready {
             let deadline = instance.started_ms.saturating_add(READY_DEADLINE_MS);
-            let wait = deadline.saturating_sub(self.now_ms());
+            let wait = deadline
+                .saturating_sub(self.now_ms())
+                .min(READY_DEADLINE_MS);
             tokio::time::sleep(Duration::from_millis(wait)).await;
             let mut backoff = INITIAL_BACKOFF;
             while let Some(current) = self.live_instance(agent, generation).await {
