@@ -22,11 +22,28 @@ impl RuntimeHandle {
             .await
     }
 
+    pub(crate) async fn reserve_retryable_mutation_replay(
+        &self,
+        request_id: RequestId,
+        fingerprint: [u8; 32],
+    ) -> Result<(), RuntimeError> {
+        self.store
+            .reserve_retryable_mutation_replay(request_id, fingerprint)
+            .await
+    }
+
     pub(crate) async fn abort_mutation_replay(
         &self,
         request_id: RequestId,
     ) -> Result<(), RuntimeError> {
         self.store.abort_mutation_replay(request_id).await
+    }
+
+    pub(crate) async fn release_mutation_replay(
+        &self,
+        request_id: RequestId,
+    ) -> Result<(), RuntimeError> {
+        self.store.release_mutation_replay(request_id).await
     }
 
     pub(crate) async fn defer_mutation_replay(

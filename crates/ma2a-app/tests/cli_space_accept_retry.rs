@@ -1,6 +1,6 @@
 //! Process-level CLI retry coverage for `ma2a space accept --request-id`.
 
-use std::{io::Write as _, net::Ipv4Addr, path::Path, process::Stdio};
+use std::{io::Write as _, net::Ipv4Addr, path::Path, process::Stdio, sync::Arc};
 
 use iroh::{
     Endpoint, RelayMode, SecretKey,
@@ -23,6 +23,14 @@ use daemon_fixture::{DaemonFixture, TestResult};
 struct CommitThenDropReply {
     owner_config: StoreConfig,
     owner_id: EndpointId,
+}
+
+#[derive(Clone, Debug)]
+struct CommitAndHoldReply {
+    owner_config: StoreConfig,
+    owner_id: EndpointId,
+    committed: Arc<tokio::sync::Notify>,
+    release: tokio_util::sync::CancellationToken,
 }
 
 fn decode_attempt(
@@ -99,10 +107,54 @@ impl ProtocolHandler for CommitThenDropReply {
     }
 }
 
+impl ProtocolHandler for CommitAndHoldReply {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let remote: EndpointId = connection.remote_id().into();
+        let (_send, mut receive) = connection.accept_bi().await?;
+        let request = receive
+            .read_to_end(4_096)
+            .await
+            .map_err(std::io::Error::other)?;
+        let (ticket, redemption) = decode_attempt(&request, remote)?;
+        let now_ms = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(std::io::Error::other)?
+                .as_millis(),
+        )
+        .map_err(std::io::Error::other)?;
+        let authorized = AuthorizedEnrollmentRedemption::new(ticket, redemption, now_ms)
+            .requiring_owner_address(self.owner_id);
+        let mut repo = Repository::open(&self.owner_config).map_err(std::io::Error::other)?;
+        let _outcome = repo
+            .redeem_enrollment(&authorized)
+            .map_err(std::io::Error::other)?;
+        self.committed.notify_waiters();
+        self.release.cancelled().await;
+        Ok(())
+    }
+}
+
 async fn start_dropping_owner(
     state_dir: &Path,
     owner_config: StoreConfig,
     (owner_id, bind_port): (EndpointId, u16),
+) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
+    start_test_owner(
+        state_dir,
+        bind_port,
+        CommitThenDropReply {
+            owner_config,
+            owner_id,
+        },
+    )
+    .await
+}
+
+async fn start_test_owner<H: ProtocolHandler + 'static>(
+    state_dir: &Path,
+    bind_port: u16,
+    handler: H,
 ) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
     let protected = KeyStore::open(state_dir)?.read(
         KeyKind::Endpoint,
@@ -118,13 +170,7 @@ async fn start_dropping_owner(
         .bind()
         .await?;
     Ok(Router::builder(endpoint)
-        .accept(
-            ma2a_net::ENROLLMENT_ALPN,
-            CommitThenDropReply {
-                owner_config,
-                owner_id,
-            },
-        )
+        .accept(ma2a_net::ENROLLMENT_ALPN, handler)
         .spawn())
 }
 
@@ -206,6 +252,99 @@ async fn space_accept_exposes_request_id_on_uncertain_reply_and_retries_cleanly(
     assert!(
         retried.status.success(),
         "exact retry failed: {}",
+        String::from_utf8_lossy(&retried.stderr)
+    );
+    let retried_stdout = String::from_utf8(retried.stdout)?;
+    assert!(retried_stdout.contains("Joined Space"), "{retried_stdout}");
+
+    let spaces = candidate.json(&["space", "list", "--json"])?;
+    assert_eq!(
+        spaces
+            .pointer("/result/payload")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{spaces}"
+    );
+    owner.stop_owned()?;
+    let generation_after_retry = Repository::open(&owner_config)?
+        .load_space_chain(space_id)?
+        .ok_or("owner chain missing")?
+        .latest_generation();
+    assert_eq!(generation_after_retry, generation_after_first);
+
+    candidate.shutdown()?;
+    owner.shutdown()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_accept_recovers_after_candidate_daemon_crash_following_owner_commit() -> TestResult {
+    let mut owner = DaemonFixture::running("cli-accept-crash-owner")?;
+    let _created = owner.run_ok(&["space", "create", "crash-space", "--json"])?;
+    let ticket = String::from_utf8(owner.run_ok(&["space", "invite", "crash-space"])?.stdout)?
+        .trim()
+        .to_owned();
+    let parsed_ticket = SignedInviteTicket::decode_string(&ticket)?;
+    let space_id = parsed_ticket.space_id();
+    let owner_id = parsed_ticket.creator();
+    let owner_config = StoreConfig::new(owner.state_dir());
+
+    owner.stop_owned()?;
+    let bind_port = Repository::open(&owner_config)?
+        .endpoint_bind_port()?
+        .ok_or("owner bind port missing")?;
+    let committed = Arc::new(tokio::sync::Notify::new());
+    let release = tokio_util::sync::CancellationToken::new();
+    let holding_owner = start_test_owner(
+        owner.state_dir(),
+        bind_port,
+        CommitAndHoldReply {
+            owner_config: owner_config.clone(),
+            owner_id,
+            committed: Arc::clone(&committed),
+            release: release.clone(),
+        },
+    )
+    .await?;
+
+    let mut candidate = DaemonFixture::running("cli-accept-crash-cand")?;
+    let req_1 = "c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9";
+    let mut child = candidate
+        .command(&["space", "accept", "--request-id", req_1])
+        .stdin(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("missing child stdin")?
+        .write_all(format!("{ticket}\n").as_bytes())?;
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), committed.notified()).await?;
+    let generation_after_first = Repository::open(&owner_config)?
+        .load_space_chain(space_id)?
+        .ok_or("owner chain missing")?
+        .latest_generation();
+    assert_eq!(generation_after_first, 1);
+
+    // Simulate candidate daemon crash after owner committed and before candidate records anything.
+    candidate.kill_owned()?;
+    let first = child.wait_with_output()?;
+    assert!(!first.status.success());
+
+    release.cancel();
+    holding_owner.shutdown().await?;
+    drop(holding_owner);
+    owner.start_owned()?;
+    candidate.start_owned()?;
+
+    let retried = pipe_accept(
+        &candidate,
+        &["space", "accept", "--request-id", req_1],
+        &ticket,
+    )?;
+    assert!(
+        retried.status.success(),
+        "exact retry after candidate crash failed: {}",
         String::from_utf8_lossy(&retried.stderr)
     );
     let retried_stdout = String::from_utf8(retried.stdout)?;

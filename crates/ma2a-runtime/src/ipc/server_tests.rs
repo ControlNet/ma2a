@@ -56,6 +56,8 @@ mod services;
 mod space_leave;
 #[path = "server_tests/space_leave_outcomes.rs"]
 mod space_leave_outcomes;
+#[path = "server_tests/space_redeem_crash.rs"]
+mod space_redeem_crash;
 #[path = "server_tests/space_redeem_full.rs"]
 mod space_redeem_full;
 #[path = "server_tests/space_redeem_lost_expire.rs"]

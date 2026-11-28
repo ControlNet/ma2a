@@ -1,6 +1,62 @@
 //! Replay owns execution admission, independently of response delivery.
 
+use ma2a_core::{ProtocolError, RequestId};
+
 use crate::api::{self, ApiError};
+
+pub(super) enum ReplayAdmission {
+    Answer(Vec<u8>),
+    Proceed { retryable_fence: bool },
+}
+
+/// Answers a request ID that was already admitted, or durably reserves a new one and returns
+/// `Proceed` so that it executes.
+pub(super) async fn admit(
+    context: &super::ConnectionContext,
+    (request_id, fingerprint): (RequestId, [u8; 32]),
+    initial_retryable: bool,
+) -> Result<ReplayAdmission, super::IpcError> {
+    let Some(entry) = context.handle.mutation_replay(request_id).await? else {
+        if initial_retryable {
+            context
+                .handle
+                .reserve_retryable_mutation_replay(request_id, fingerprint)
+                .await?;
+        } else {
+            context
+                .handle
+                .reserve_mutation_replay(request_id, fingerprint)
+                .await?;
+        }
+        return Ok(ReplayAdmission::Proceed {
+            retryable_fence: false,
+        });
+    };
+    let refusal = match entry {
+        ma2a_store::MutationReplayState::Completed(entry) if entry.fingerprint() == fingerprint => {
+            return Ok(ReplayAdmission::Answer(entry.response().to_vec()));
+        }
+        ma2a_store::MutationReplayState::Retryable(found) if found == fingerprint => {
+            context
+                .handle
+                .reserve_mutation_replay(request_id, fingerprint)
+                .await?;
+            return Ok(ReplayAdmission::Proceed {
+                retryable_fence: true,
+            });
+        }
+        ma2a_store::MutationReplayState::Pending(found) if found == fingerprint => {
+            ProtocolError::UNAVAILABLE
+        }
+        ma2a_store::MutationReplayState::Pending(_)
+        | ma2a_store::MutationReplayState::Retryable(_)
+        | ma2a_store::MutationReplayState::Completed(_) => ProtocolError::CONFLICT,
+        _ => ProtocolError::UNAVAILABLE,
+    };
+    Ok(ReplayAdmission::Answer(api::encode_error(ApiError::new(
+        refusal,
+    ))?))
+}
 
 /// An execution error is not evidence that its side effects rolled back.
 pub(super) enum MutationFailure {
@@ -48,17 +104,24 @@ impl From<ApiError> for MutationFailure {
 
 pub(super) async fn record_failure(
     context: &super::ConnectionContext,
-    admitted: (ma2a_store::MutationReplayRequest, u64),
+    admitted: (ma2a_store::MutationReplayRequest, u64, bool),
     error: ApiError,
 ) -> Result<Vec<u8>, super::IpcError> {
     let failure = MutationFailure::from(error);
     let encoded = failure.response()?;
     match failure {
         MutationFailure::NotStarted(_) => {
-            context
-                .handle
-                .abort_mutation_replay(admitted.0.request_id())
-                .await?;
+            if admitted.2 {
+                context
+                    .handle
+                    .abort_mutation_replay(admitted.0.request_id())
+                    .await?;
+            } else {
+                context
+                    .handle
+                    .release_mutation_replay(admitted.0.request_id())
+                    .await?;
+            }
         }
         MutationFailure::Retryable(_) => {
             context

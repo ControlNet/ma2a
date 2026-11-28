@@ -142,9 +142,19 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
         Some(request_id) => Some((request_id, api::command_fingerprint(&command)?)),
         None => None,
     };
+    let mut had_retryable_fence = false;
     if let Some(request) = fingerprint {
-        if let Some(answer) = replayed_or_reserved(context, request).await? {
-            return Ok((answer, false));
+        match super::mutation_outcome::admit(
+            context,
+            request,
+            command.operation() == "space_redeem",
+        )
+        .await?
+        {
+            super::mutation_outcome::ReplayAdmission::Answer(answer) => return Ok((answer, false)),
+            super::mutation_outcome::ReplayAdmission::Proceed { retryable_fence } => {
+                had_retryable_fence = retryable_fence;
+            }
         }
         // Remote network mutations and blocking Process/Agent supervisor waits can hold for up
         // to 70 s. They keep their durable reservation, which already refuses the same request as
@@ -166,20 +176,16 @@ async fn dispatch(input: &[u8], context: &ConnectionContext) -> Result<(Vec<u8>,
     }
     let status = context.handle.status().await?;
     let (result, response_revision) = match fingerprint {
-        Some((request_id, _)) => {
+        Some((request_id, value)) => {
             let result = match execute(&command, &status, context).await {
                 Ok(result) => result,
                 Err(error) => {
                     let encoded = super::mutation_outcome::record_failure(
                         context,
                         (
-                            ma2a_store::MutationReplayRequest::new(
-                                request_id,
-                                fingerprint
-                                    .map(|(_, value)| value)
-                                    .ok_or(IpcError::InvalidFrame)?,
-                            ),
+                            ma2a_store::MutationReplayRequest::new(request_id, value),
                             status.revision(),
+                            had_retryable_fence,
                         ),
                         error,
                     )
@@ -231,39 +237,4 @@ fn encode_stamped_snapshot_response(
     );
     let encoded = serde_json::to_vec(&value).map_err(|_| IpcError::InvalidFrame)?;
     Ok(encoded)
-}
-
-/// Answers a request ID that was already admitted, or durably reserves a new one and returns
-/// `None` so that it executes.
-async fn replayed_or_reserved(
-    context: &ConnectionContext,
-    (request_id, fingerprint): (ma2a_core::RequestId, [u8; 32]),
-) -> Result<Option<Vec<u8>>, IpcError> {
-    let Some(entry) = context.handle.mutation_replay(request_id).await? else {
-        context
-            .handle
-            .reserve_mutation_replay(request_id, fingerprint)
-            .await?;
-        return Ok(None);
-    };
-    let refusal = match entry {
-        ma2a_store::MutationReplayState::Completed(entry) if entry.fingerprint() == fingerprint => {
-            return Ok(Some(entry.response().to_vec()));
-        }
-        ma2a_store::MutationReplayState::Retryable(found) if found == fingerprint => {
-            context
-                .handle
-                .reserve_mutation_replay(request_id, fingerprint)
-                .await?;
-            return Ok(None);
-        }
-        ma2a_store::MutationReplayState::Pending(found) if found == fingerprint => {
-            ProtocolError::UNAVAILABLE
-        }
-        ma2a_store::MutationReplayState::Pending(_)
-        | ma2a_store::MutationReplayState::Retryable(_)
-        | ma2a_store::MutationReplayState::Completed(_) => ProtocolError::CONFLICT,
-        _ => ProtocolError::UNAVAILABLE,
-    };
-    Ok(Some(api::encode_error(api::ApiError::new(refusal))?))
 }

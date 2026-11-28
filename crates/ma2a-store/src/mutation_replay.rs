@@ -74,6 +74,26 @@ impl Repository {
         request_id: RequestId,
         fingerprint: [u8; 32],
     ) -> Result<(), StoreError> {
+        self.reserve_with_fence(MutationReplayRequest::new(request_id, fingerprint), false)
+    }
+
+    /// Durably reserves one request whose initial crash fence permits exact retry.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when capacity cannot be reclaimed or `SQLite` rejects the transaction.
+    pub fn reserve_retryable_mutation_replay(
+        &mut self,
+        request_id: RequestId,
+        fingerprint: [u8; 32],
+    ) -> Result<(), StoreError> {
+        self.reserve_with_fence(MutationReplayRequest::new(request_id, fingerprint), true)
+    }
+
+    fn reserve_with_fence(
+        &mut self,
+        request: MutationReplayRequest,
+        retryable: bool,
+    ) -> Result<(), StoreError> {
         let transaction = self.immediate()?;
         let sequence = transaction.query_row(
             "SELECT COALESCE(MAX(sequence), 0) + 1 FROM local_mutation_replay",
@@ -85,11 +105,21 @@ impl Repository {
                 request_id, fingerprint, revision, response, sequence
              ) VALUES (?1, ?2, NULL, NULL, ?3)",
             (
-                request_id.as_bytes().as_slice(),
-                fingerprint.as_slice(),
+                request.request_id().as_bytes().as_slice(),
+                request.fingerprint().as_slice(),
                 sequence,
             ),
         )?;
+        if retryable {
+            transaction.execute(
+                "UPDATE local_mutation_fences SET retryable = 1
+                 WHERE request_id = ?1 AND fingerprint = ?2",
+                (
+                    request.request_id().as_bytes().as_slice(),
+                    request.fingerprint().as_slice(),
+                ),
+            )?;
+        }
         enforce_retention(&transaction)?;
         transaction.commit()?;
         Ok(())
@@ -102,13 +132,33 @@ impl Repository {
     /// # Errors
     /// Returns [`StoreError`] when `SQLite` rejects the deletion.
     pub fn abort_mutation_replay(&mut self, request_id: RequestId) -> Result<(), StoreError> {
+        self.abort_with_fence_policy(request_id, false)
+    }
+
+    /// Removes an in-flight initial reservation and its fence after a known no-effect refusal.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when `SQLite` rejects the deletion.
+    pub fn release_mutation_replay(&mut self, request_id: RequestId) -> Result<(), StoreError> {
+        self.abort_with_fence_policy(request_id, true)
+    }
+
+    fn abort_with_fence_policy(
+        &mut self,
+        request_id: RequestId,
+        release_retryable: bool,
+    ) -> Result<(), StoreError> {
         let transaction = self.immediate()?;
-        transaction.execute(
+        let fence_sql = if release_retryable {
+            "DELETE FROM local_mutation_fences WHERE request_id = ?1 AND EXISTS (
+                SELECT 1 FROM local_mutation_replay WHERE request_id = ?1 AND response IS NULL
+            )"
+        } else {
             "DELETE FROM local_mutation_fences WHERE request_id = ?1 AND retryable = 0 AND EXISTS (
                 SELECT 1 FROM local_mutation_replay WHERE request_id = ?1 AND response IS NULL
-            )",
-            [request_id.as_bytes().as_slice()],
-        )?;
+            )"
+        };
+        transaction.execute(fence_sql, [request_id.as_bytes().as_slice()])?;
         transaction.execute(
             "DELETE FROM local_mutation_replay
              WHERE request_id = ?1 AND response IS NULL",

@@ -26,10 +26,29 @@ impl StoreClient {
         request_id: RequestId,
         fingerprint: [u8; 32],
     ) -> Result<(), RuntimeError> {
+        self.reserve_with_fence(MutationReplayRequest::new(request_id, fingerprint), false)
+            .await
+    }
+
+    pub(crate) async fn reserve_retryable_mutation_replay(
+        &self,
+        request_id: RequestId,
+        fingerprint: [u8; 32],
+    ) -> Result<(), RuntimeError> {
+        self.reserve_with_fence(MutationReplayRequest::new(request_id, fingerprint), true)
+            .await
+    }
+
+    async fn reserve_with_fence(
+        &self,
+        request: MutationReplayRequest,
+        retryable: bool,
+    ) -> Result<(), RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::MutationReplay(
             MutationReplayCommand::Reserve {
-                request: MutationReplayRequest::new(request_id, fingerprint),
+                request,
+                retryable,
                 reply,
             },
         ))
@@ -41,9 +60,25 @@ impl StoreClient {
         &self,
         request_id: RequestId,
     ) -> Result<(), RuntimeError> {
+        self.abort_with_fence_policy(request_id, false).await
+    }
+
+    pub(crate) async fn release_mutation_replay(
+        &self,
+        request_id: RequestId,
+    ) -> Result<(), RuntimeError> {
+        self.abort_with_fence_policy(request_id, true).await
+    }
+
+    async fn abort_with_fence_policy(
+        &self,
+        request_id: RequestId,
+        release_retryable: bool,
+    ) -> Result<(), RuntimeError> {
         let (reply, response) = oneshot::channel();
         self.send(StoreCommand::MutationReplay(MutationReplayCommand::Abort {
             request_id,
+            release_retryable,
             reply,
         }))
         .await?;

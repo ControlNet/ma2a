@@ -306,3 +306,39 @@ fn retryable_fence_rejects_changed_fingerprint_and_completes_on_exact_retry() ->
     assert!(reopened.reserve_mutation_replay(id, fp).is_err());
     Ok(())
 }
+
+#[test]
+fn initial_retryable_reservation_survives_reclaim_but_releases_on_initial_no_effect() -> TestResult
+{
+    let state = TempState::new("replay-initial-retryable")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let crashed_id = request_id(51)?;
+    let released_id = request_id(52)?;
+    let fp = [0x51; 32];
+    let other_fp = [0x52; 32];
+
+    // An initial retryable reservation looks Pending while in flight, and becomes Retryable on reclaim.
+    repository.reserve_retryable_mutation_replay(crashed_id, fp)?;
+    assert_eq!(
+        repository.mutation_replay(crashed_id)?,
+        Some(ma2a_store::MutationReplayState::Pending(fp))
+    );
+    assert_eq!(repository.reclaim_abandoned_mutation_replays()?, 1);
+    assert_eq!(
+        repository.mutation_replay(crashed_id)?,
+        Some(ma2a_store::MutationReplayState::Retryable(fp))
+    );
+    assert!(
+        repository
+            .reserve_mutation_replay(crashed_id, other_fp)
+            .is_err()
+    );
+
+    // An initial retryable reservation that gets a known no-effect refusal releases completely.
+    repository.reserve_retryable_mutation_replay(released_id, fp)?;
+    repository.release_mutation_replay(released_id)?;
+    assert_eq!(repository.mutation_replay(released_id)?, None);
+    repository.reserve_mutation_replay(released_id, other_fp)?;
+    Ok(())
+}

@@ -11,10 +11,12 @@ pub(crate) enum MutationReplayCommand {
     },
     Reserve {
         request: MutationReplayRequest,
+        retryable: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
     Abort {
         request_id: RequestId,
+        release_retryable: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
     Defer {
@@ -32,23 +34,30 @@ pub(super) fn dispatch(repository: &mut Repository, command: MutationReplayComma
         MutationReplayCommand::Lookup { request_id, reply } => {
             drop(reply.send(repository.mutation_replay(request_id).map_err(Into::into)));
         }
-        MutationReplayCommand::Reserve { request, reply } => {
-            drop(
-                reply.send(
-                    repository
-                        .reserve_mutation_replay(request.request_id(), request.fingerprint())
-                        .map_err(Into::into),
-                ),
-            );
+        MutationReplayCommand::Reserve {
+            request,
+            retryable,
+            reply,
+        } => {
+            let outcome = if retryable {
+                repository
+                    .reserve_retryable_mutation_replay(request.request_id(), request.fingerprint())
+            } else {
+                repository.reserve_mutation_replay(request.request_id(), request.fingerprint())
+            };
+            drop(reply.send(outcome.map_err(Into::into)));
         }
-        MutationReplayCommand::Abort { request_id, reply } => {
-            drop(
-                reply.send(
-                    repository
-                        .abort_mutation_replay(request_id)
-                        .map_err(Into::into),
-                ),
-            );
+        MutationReplayCommand::Abort {
+            request_id,
+            release_retryable,
+            reply,
+        } => {
+            let outcome = if release_retryable {
+                repository.release_mutation_replay(request_id)
+            } else {
+                repository.abort_mutation_replay(request_id)
+            };
+            drop(reply.send(outcome.map_err(Into::into)));
         }
         MutationReplayCommand::Defer { request_id, reply } => {
             drop(
