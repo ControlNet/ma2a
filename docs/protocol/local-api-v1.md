@@ -93,7 +93,10 @@ Web console's Services view. Each needs an authenticated session:
   `agent_list` and of `agent_task_list`. Each Agent keeps only `agent`, `description`, `tools`,
   `max_tasks`, `enabled`, `generation`, `live_tasks`, and `instance`, never its program,
   arguments, working directory, or environment names. Tasks are the content-free summaries.
-- `GET /api/v1/hosted-services` returns the first `hosted_services` page of `service_hosted_list`.
+- `GET /api/v1/hosted-services` returns `{services, more}` from the first page of
+  `service_hosted_list`, with `more` reporting whether `next` was non-null. Each service flattens
+  `manifest` into `description`, `versions`, and `max_calls` alongside `service`, `enabled`,
+  `state`, `running_calls`, and `calls`, and omits `created_at_ms` and `updated_at_ms`.
 
 Grants and consent
 (`space_grant`, `service_expose`, `service_unexpose`) are never routed over HTTP, so a browser
@@ -287,10 +290,9 @@ Errors:
 ### Hosted services (Phase 5)
 
 These commands let the operator of a Runtime host third-party services (`docs/protocol/service-v1.md`).
-Only the first `service_hosted_list` page is routed over HTTP, read-only, as
-`GET /api/v1/hosted-services`; registration, lifecycle, and process upgrades are local IPC
-operations only. Another Endpoint's services are discovered and called through
-`stream_open` with service `service`.
+Only the read-only `GET /api/v1/hosted-services` projection above is routed over HTTP;
+registration, lifecycle, and process upgrades are local IPC operations only. Another Endpoint's
+services are discovered and called through `stream_open` with service `service`.
 
 Registrations:
 
