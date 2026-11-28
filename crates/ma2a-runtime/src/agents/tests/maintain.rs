@@ -1,7 +1,14 @@
 //! Maintenance keeps task cancellation expiry moving while slow Agent startups run separately.
 #![cfg(unix)]
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use ma2a_core::{
     EndpointId, RequestId,
@@ -25,6 +32,22 @@ use crate::{
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+static NEXT_STATE: AtomicU64 = AtomicU64::new(0);
+
+/// Creates a private state directory with a short name: a supervisor's socket lives several
+/// levels below it, and a Unix socket path holds at most 103 bytes. `label` names it in
+/// diagnostics only.
+fn short_state_dir(label: &str) -> TestResult<PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let serial = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("ma2a-{:x}-{serial}", std::process::id()));
+    eprintln!("{label}: state directory {}", dir.display());
+    std::fs::create_dir(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
+}
 
 /// Clock tied to Tokio's paused time so `tokio::time::advance` drives `now_ms()`.
 #[derive(Debug)]
@@ -154,14 +177,7 @@ fn seed_agents(config: &StoreConfig, local: EndpointId) -> TestResult<AgentTaskI
 async fn slow_agent_startups_do_not_delay_cancellation_expiry() -> TestResult {
     // Given: two enabled Agents whose supervisor binary never binds (each holding startup for 10 s),
     // and a third ready Agent with a running task and an open tool call.
-    let mut nonce = [0_u8; 8];
-    getrandom::fill(&mut nonce)?;
-    let dir = std::env::temp_dir().join(format!("ma2a-maintain-{}", u64::from_le_bytes(nonce)));
-    std::fs::create_dir(&dir)?;
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    let dir = short_state_dir("ma2a-maintain")?;
     let config = StoreConfig::new(&dir);
     let backend = StoreBackend::open(&config)?;
     let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
@@ -341,14 +357,7 @@ fn seed_failing_predecessor_agents(
 async fn eight_failing_predecessor_recoveries_do_not_starve_ninth_healthy_agent() -> TestResult {
     // Given: eight enabled Agents (`fail-1`..`fail-8`) whose previous Processes cannot be
     // confirmed terminal, ahead in name order of a ninth healthy Agent (`healthy`).
-    let mut nonce = [0_u8; 8];
-    getrandom::fill(&mut nonce)?;
-    let dir = std::env::temp_dir().join(format!("ma2a-starve-{}", u64::from_le_bytes(nonce)));
-    std::fs::create_dir(&dir)?;
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    let dir = short_state_dir("ma2a-starve")?;
     let config = StoreConfig::new(&dir);
     let backend = StoreBackend::open(&config)?;
     let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
@@ -504,14 +513,7 @@ async fn ninth_healthy_agent_claims_slot_when_failing_supervisor_releases_permit
 
     // Given: eight enabled Agents (`fail-1`..`fail-8`) whose running predecessors have mock
     // supervisors that accept Terminate and drop without answering, plus a ninth healthy Agent.
-    let mut nonce = [0_u8; 8];
-    getrandom::fill(&mut nonce)?;
-    let dir = std::env::temp_dir().join(format!("ma2a-slot-{}", u64::from_le_bytes(nonce)));
-    std::fs::create_dir(&dir)?;
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    let dir = short_state_dir("ma2a-slot")?;
     let sockets_dir = dir.join("run-v1").join("p");
     std::fs::create_dir_all(&sockets_dir)?;
     let config = StoreConfig::new(&dir);
@@ -667,15 +669,8 @@ struct MaintainEnv {
 }
 
 impl MaintainEnv {
-    async fn new(prefix: &str) -> TestResult<Self> {
-        let mut nonce = [0_u8; 8];
-        getrandom::fill(&mut nonce)?;
-        let dir = std::env::temp_dir().join(format!("{prefix}-{}", u64::from_le_bytes(nonce)));
-        std::fs::create_dir(&dir)?;
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-        }
+    async fn new(label: &str) -> TestResult<Self> {
+        let dir = short_state_dir(label)?;
         let sockets_dir = dir.join("run-v1").join("p");
         std::fs::create_dir_all(&sockets_dir)?;
         let config = StoreConfig::new(&dir);
