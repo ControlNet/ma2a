@@ -4,6 +4,7 @@ import { z } from "zod"
 import { RuntimeApiPayloadError } from "./codec"
 import { AgentsSchema, type AgentsView } from "./services-agents"
 import { HostedServicesSchema, type HostedServicesView } from "./services-hosted"
+import { sessionIsGone } from "./web-auth"
 
 const HexId = (bytes: number) => z.string().regex(new RegExp(`^[0-9a-f]{${bytes * 2}}$`))
 const Port = z.number().int().min(1).max(65_535)
@@ -194,19 +195,56 @@ export function parseServicesData(
   }
 }
 
-export async function fetchServicesData(): Promise<ServicesData> {
+const SERVICES_PATHS = [
+  "/api/v1/services",
+  "/api/v1/operations",
+  "/api/v1/processes",
+  "/api/v1/agents",
+  "/api/v1/hosted-services",
+] as const
+
+export async function fetchServicesData(signal?: AbortSignal): Promise<ServicesData> {
+  const batch = new AbortController()
+  const onAbort = (): void => batch.abort(signal?.reason)
+  if (signal?.aborted) {
+    batch.abort(signal.reason)
+  } else {
+    signal?.addEventListener("abort", onAbort, { once: true })
+  }
   const http = ky.create({
     credentials: "same-origin",
     headers: { accept: "application/json" },
     retry: 0,
     timeout: 30_000,
   })
-  const [exposures, operations, processes, agents, hosted] = await Promise.all([
-    http.get("/api/v1/services").json(),
-    http.get("/api/v1/operations").json(),
-    http.get("/api/v1/processes").json(),
-    http.get("/api/v1/agents").json(),
-    http.get("/api/v1/hosted-services").json(),
-  ])
-  return parseServicesData(exposures, operations, [processes, agents, hosted])
+  let failure: unknown
+  let hasFailure = false
+  try {
+    const settled = await Promise.allSettled(
+      SERVICES_PATHS.map(async (path) => {
+        try {
+          return await http
+            .get(new URL(path, window.location.origin), { signal: batch.signal })
+            .json()
+        } catch (error) {
+          if (!hasFailure) {
+            hasFailure = true
+            failure = error
+            batch.abort()
+          } else if (sessionIsGone(error) && !sessionIsGone(failure)) {
+            failure = error
+          }
+          throw error
+        }
+      }),
+    )
+    if (hasFailure) throw failure
+    const values = settled.map((result) => {
+      if (result.status !== "fulfilled") throw result.reason
+      return result.value
+    })
+    return parseServicesData(values[0], values[1], [values[2], values[3], values[4]])
+  } finally {
+    signal?.removeEventListener("abort", onAbort)
+  }
 }

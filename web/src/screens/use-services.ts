@@ -8,7 +8,10 @@ import type { ServicesState } from "./services"
 export const SERVICES_POLL_MS = 3_000
 
 /** Where the view reads its data, and how long it waits after one read before the next. */
-export type ServicesPoll = { load: () => Promise<ServicesData>; everyMs: number }
+export type ServicesPoll = {
+  load: (signal?: AbortSignal) => Promise<ServicesData>
+  everyMs: number
+}
 
 const DEFAULT_POLL: ServicesPoll = { load: fetchServicesData, everyMs: SERVICES_POLL_MS }
 
@@ -30,9 +33,10 @@ export function useServices(
     }
     let stopped = false
     let timer: number | undefined
+    const controller = new AbortController()
     const load = (): void => {
       void poll
-        .load()
+        .load(controller.signal)
         .then(
           (data) => {
             if (!stopped) setState({ status: "ready", data })
@@ -41,6 +45,7 @@ export function useServices(
             if (stopped) return
             if (sessionIsGone(error)) {
               stopped = true
+              controller.abort()
               onSessionExpired()
               return
             }
@@ -54,6 +59,7 @@ export function useServices(
     load()
     return () => {
       stopped = true
+      controller.abort()
       window.clearTimeout(timer)
     }
   }, [active, onSessionExpired, poll])
