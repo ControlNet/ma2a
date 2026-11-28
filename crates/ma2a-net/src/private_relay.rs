@@ -12,7 +12,7 @@ use ma2a_core::SpaceAuthorizationView;
 
 use crate::{
     LoadedRelayTls, PrivateRelayAccess, PrivateRelayProviderConfig, PrivateRelayTransport,
-    RelayTlsError,
+    RelayTlsError, relay_access::PendingDisconnects,
 };
 
 /// Running private Iroh relay hosted by the Runtime process.
@@ -24,6 +24,7 @@ pub struct PrivateRelayServer {
     clients: Clients,
     listen_addr: SocketAddr,
     native_tls: bool,
+    pending_disconnects: PendingDisconnects,
 }
 
 impl PrivateRelayServer {
@@ -93,6 +94,7 @@ impl PrivateRelayServer {
             server.http_addr()
         }
         .ok_or(PrivateRelayServerError::MissingListener)?;
+        let pending_disconnects = PendingDisconnects::spawn(access.clone(), clients.clone());
         Ok(Self {
             configuration: config.clone(),
             server,
@@ -100,6 +102,7 @@ impl PrivateRelayServer {
             clients,
             listen_addr,
             native_tls,
+            pending_disconnects,
         })
     }
 
@@ -120,8 +123,15 @@ impl PrivateRelayServer {
 
     /// Applies coherent authorization state and disconnects sessions losing all eligibility.
     pub fn replace_from_spaces(&self, authorizations: &[SpaceAuthorizationView]) {
+        let mut deferred = Vec::new();
         for (endpoint_id, connection_id) in self.access.replace_from_spaces(authorizations) {
-            self.clients.disconnect(endpoint_id, Some(connection_id));
+            if !self.clients.disconnect(endpoint_id, Some(connection_id)) {
+                deferred.push((endpoint_id, connection_id));
+            }
+        }
+        self.pending_disconnects.retain_revoked(&self.access);
+        if !deferred.is_empty() {
+            self.pending_disconnects.enqueue(deferred);
         }
     }
 
@@ -130,6 +140,7 @@ impl PrivateRelayServer {
     /// # Errors
     /// Returns [`PrivateRelayServerError`] when the relay supervisor fails.
     pub async fn shutdown(self) -> Result<(), PrivateRelayServerError> {
+        self.pending_disconnects.shutdown().await;
         self.server
             .shutdown()
             .await
