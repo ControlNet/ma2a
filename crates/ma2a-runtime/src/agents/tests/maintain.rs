@@ -1122,3 +1122,279 @@ async fn overdue_unready_instance_retries_terminate_and_starts_replacement() -> 
     );
     Ok(())
 }
+
+/// Handles one connection on [`run_rejecting_attach_supervisor`].
+async fn serve_rejecting_attach_connection(
+    mut stream: interprocess::local_socket::tokio::Stream,
+    credentials: ma2a_services::supervisor::Credentials,
+    (reject_error, attach_count, term_count, fail_term_count, terminated): (
+        ma2a_core::service::ServiceError,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        usize,
+        Arc<std::sync::atomic::AtomicBool>,
+    ),
+) -> TestResult {
+    use std::sync::atomic::Ordering;
+
+    use interprocess::local_socket::tokio::prelude::*;
+    use ma2a_core::service::{FrameKind, Termination};
+    use ma2a_services::{
+        FrameReader, FrameWriter,
+        supervisor::{
+            EndCause, SupervisorRequest, SupervisorStatus,
+            proof::{prove_supervisor, read_challenge},
+        },
+    };
+
+    let ended = SupervisorStatus::Ended(Termination::Signaled(15), EndCause::Terminated, 1_031_000);
+    let challenge = read_challenge(&mut FrameReader::new(&mut stream)).await?;
+    let (recv, send) = stream.split();
+    let (mut reader, mut writer) = (FrameReader::new(recv), FrameWriter::new(send));
+    prove_supervisor(challenge, (&mut reader, &mut writer), &credentials).await?;
+    let request = reader.expect().await?;
+    match SupervisorRequest::from_bytes(request.payload())? {
+        SupervisorRequest::Attach(..) => {
+            attach_count.fetch_add(1, Ordering::SeqCst);
+            let error = if terminated.load(Ordering::SeqCst) {
+                ma2a_core::service::ServiceError::NotRunning
+            } else {
+                reject_error
+            };
+            writer.reject(error).await?;
+        }
+        SupervisorRequest::Terminate(_) => {
+            let seen = term_count.fetch_add(1, Ordering::SeqCst);
+            if !terminated.load(Ordering::SeqCst) && seen < fail_term_count {
+                drop((reader, writer));
+                return Ok(());
+            }
+            terminated.store(true, Ordering::SeqCst);
+            writer.frame(FrameKind::Outcome, &ended.to_bytes()).await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Mock supervisor that rejects every `Attach` with `reject_error`, drops the first
+/// `fail_term_count` `Terminate` requests, and ends the Process on the next one.
+async fn run_rejecting_attach_supervisor(
+    (address, credentials): (
+        ma2a_services::supervisor::SupervisorAddress,
+        ma2a_services::supervisor::Credentials,
+    ),
+    (reject_error, attach_count, term_count, fail_term_count): (
+        ma2a_core::service::ServiceError,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        usize,
+    ),
+    shutdown: CancellationToken,
+) -> TestResult {
+    use std::sync::atomic::AtomicBool;
+
+    use interprocess::local_socket::tokio::prelude::*;
+
+    let listener = address.bind()?;
+    let terminated = Arc::new(AtomicBool::new(false));
+    let mut handlers = Vec::new();
+    loop {
+        let stream = tokio::select! {
+            () = shutdown.cancelled() => break,
+            accepted = listener.accept() => accepted?,
+        };
+        handlers.push(tokio::spawn(serve_rejecting_attach_connection(
+            stream,
+            credentials,
+            (
+                reject_error,
+                Arc::clone(&attach_count),
+                Arc::clone(&term_count),
+                fail_term_count,
+                Arc::clone(&terminated),
+            ),
+        )));
+    }
+    for handler in handlers {
+        handler.abort();
+        let _joined = handler.await;
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn unready_instance_with_writer_busy_attach_is_terminated_at_ready_deadline() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use ma2a_core::service::ServiceError;
+    use ma2a_services::supervisor::{Credentials, SupervisorAddress};
+
+    // Given: an enabled unready Agent whose supervisor always refuses Attach with WriterBusy
+    // while accepting Terminate.
+    let env = MaintainEnv::new("ma2a-busy-attach").await?;
+    let (agent, generation, pid, secret) =
+        seed_running_agent_process((&env.config, env.local), ("busy-unready", 0x73, true))?;
+    rusqlite::Connection::open(env.config.database_path())?.execute(
+        "UPDATE agent_instances SET started_at_ms = 1000000 WHERE agent_id = ?1",
+        [agent.as_str()],
+    )?;
+    let attach_count = Arc::new(AtomicUsize::new(0));
+    let term_count = Arc::new(AtomicUsize::new(0));
+    let address = SupervisorAddress::new(
+        env.sockets_dir
+            .join(format!("{pid}.sock"))
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let supervisor = tokio::spawn(run_rejecting_attach_supervisor(
+        (address, Credentials::new(pid, secret)),
+        (
+            ServiceError::WriterBusy,
+            Arc::clone(&attach_count),
+            Arc::clone(&term_count),
+            0,
+        ),
+        env.shutdown.clone(),
+    ));
+    tokio::task::yield_now().await;
+
+    // When: maintenance runs past the 30 s ready deadline despite continuous Attach refusals.
+    let runner = tokio::spawn(crate::agents::run(env.manager.clone()));
+    let mut pre_deadline_seconds = 0_u64;
+    while attach_count.load(Ordering::SeqCst) == 0 && pre_deadline_seconds < 10 {
+        env.tick_seconds(1).await?;
+        pre_deadline_seconds += 1;
+    }
+    let attached_before_deadline = attach_count.load(Ordering::SeqCst);
+    let terms_before_deadline = term_count.load(Ordering::SeqCst);
+
+    let remaining = 29_u64.saturating_sub(pre_deadline_seconds);
+    if remaining > 0 {
+        tokio::time::advance(Duration::from_secs(remaining)).await;
+        tokio::task::yield_now().await;
+    }
+    for _ in 0..15 {
+        env.tick_seconds(1).await?;
+        let ended = env
+            .processes
+            .local_record(pid)
+            .await?
+            .is_some_and(|record| record.state == ProcessState::Terminated);
+        let replaced = Repository::open(&env.config)?
+            .agent(&agent)?
+            .is_some_and(|record| record.generation > generation);
+        if ended && replaced {
+            break;
+        }
+    }
+
+    let final_agent = Repository::open(&env.config)?
+        .agent(&agent)?
+        .ok_or("agent missing after WriterBusy ready deadline")?;
+    let final_process = env
+        .processes
+        .local_record(pid)
+        .await?
+        .ok_or("process missing after WriterBusy ready deadline")?;
+    env.finish(runner, vec![supervisor]).await?;
+
+    // Then: the 30 s ready deadline fired anyway, terminated the Process, and started a
+    // replacement generation.
+    assert!(attached_before_deadline >= 1);
+    assert_eq!(terms_before_deadline, 0);
+    assert!(
+        term_count.load(Ordering::SeqCst) >= 1,
+        "ready deadline did not terminate instance whose Attach returned WriterBusy"
+    );
+    assert_eq!(final_process.state, ProcessState::Terminated);
+    assert!(
+        final_agent.generation > generation,
+        "replacement generation did not start after WriterBusy instance ended: {final_agent:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn stdin_closed_running_instance_retries_terminate_and_starts_replacement() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use ma2a_core::service::ServiceError;
+    use ma2a_services::supervisor::{Credentials, SupervisorAddress};
+    use ma2a_store::{AgentOutput, AgentOutputEffect};
+
+    // Given: an enabled ready Agent whose running Process rejects Attach with StdinClosed and
+    // whose supervisor drops the first Terminate before answering the second with Ended.
+    let env = MaintainEnv::new("ma2a-stdin-closed").await?;
+    let (agent, generation, pid, secret) =
+        seed_running_agent_process((&env.config, env.local), ("stdin-closed", 0x75, true))?;
+    Repository::open(&env.config)?.apply_agent_output(
+        &AgentOutput {
+            agent: agent.clone(),
+            generation,
+            cursor: 1,
+            at_ms: 1_000_000,
+        },
+        AgentOutputEffect::Ready,
+    )?;
+    let attach_count = Arc::new(AtomicUsize::new(0));
+    let term_count = Arc::new(AtomicUsize::new(0));
+    let address = SupervisorAddress::new(
+        env.sockets_dir
+            .join(format!("{pid}.sock"))
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let supervisor = tokio::spawn(run_rejecting_attach_supervisor(
+        (address, Credentials::new(pid, secret)),
+        (
+            ServiceError::StdinClosed,
+            Arc::clone(&attach_count),
+            Arc::clone(&term_count),
+            1,
+        ),
+        env.shutdown.clone(),
+    ));
+    tokio::task::yield_now().await;
+
+    // When: maintenance runs for up to 10 s (well under the 30 s ready deadline).
+    let runner = tokio::spawn(crate::agents::run(env.manager.clone()));
+    for _ in 0..10 {
+        env.tick_seconds(1).await?;
+        let ended = env
+            .processes
+            .local_record(pid)
+            .await?
+            .is_some_and(|record| record.state == ProcessState::Terminated);
+        let replaced = Repository::open(&env.config)?
+            .agent(&agent)?
+            .is_some_and(|record| record.generation > generation);
+        if ended && replaced {
+            break;
+        }
+    }
+
+    let final_agent = Repository::open(&env.config)?
+        .agent(&agent)?
+        .ok_or("agent missing after StdinClosed termination")?;
+    let final_process = env
+        .processes
+        .local_record(pid)
+        .await?
+        .ok_or("process missing after StdinClosed termination")?;
+    env.finish(runner, vec![supervisor]).await?;
+
+    // Then: the link terminated the Process (retrying the dropped Terminate), concluded the
+    // generation, and started a replacement instead of looping forever as Broken.
+    assert!(attach_count.load(Ordering::SeqCst) >= 1);
+    assert!(
+        term_count.load(Ordering::SeqCst) >= 2,
+        "StdinClosed did not retry Terminate"
+    );
+    assert_eq!(final_process.state, ProcessState::Terminated);
+    assert!(
+        final_agent.generation > generation,
+        "replacement generation did not start after StdinClosed instance ended: {final_agent:?}"
+    );
+    Ok(())
+}

@@ -9,8 +9,8 @@
 use std::time::Duration;
 
 use ma2a_core::service::{
-    AgentId, Channel as DataChannel, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, ProcessReason,
-    ServiceError, decode_skipped,
+    AgentId, Channel as DataChannel, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, ServiceError,
+    decode_skipped,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
@@ -24,12 +24,10 @@ use super::{AgentManager, lines::Lines, render};
 #[path = "link_drain.rs"]
 mod drain;
 
-/// How long a new instance has to announce `ready`.
-const READY_DEADLINE_MS: u64 = 30_000;
 /// Shortest pause between attempts to reach an instance's supervisor.
-const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+pub(super) const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 /// Longest pause between attempts to reach an instance's supervisor.
-const MAX_BACKOFF: Duration = Duration::from_secs(10);
+pub(super) const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
 /// How one connection to an instance ended.
 pub(super) enum Linked {
@@ -64,6 +62,18 @@ impl AgentManager {
     }
 
     pub(super) async fn follow_instance(&self, agent: &AgentId, generation: u64) {
+        let (terminated_tx, mut terminated_rx) = tokio::sync::watch::channel(false);
+        tokio::select! {
+            () = self.follow_connections((agent, generation), &mut terminated_rx) => {}
+            () = self.ready_deadline((agent, generation), &terminated_tx) => {}
+        }
+    }
+
+    async fn follow_connections(
+        &self,
+        (agent, generation): (&AgentId, u64),
+        terminated: &mut tokio::sync::watch::Receiver<bool>,
+    ) {
         let mut backoff = INITIAL_BACKOFF;
         loop {
             let Some(instance) = self.live_instance(agent, generation).await else {
@@ -80,8 +90,18 @@ impl AgentManager {
                     return;
                 }
                 Linked::Broken => {
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    tokio::select! {
+                        () = tokio::time::sleep(backoff) => {
+                            backoff = (backoff * 2).min(MAX_BACKOFF);
+                        }
+                        res = terminated.changed() => {
+                            backoff = if res.is_ok() {
+                                INITIAL_BACKOFF
+                            } else {
+                                (backoff * 2).min(MAX_BACKOFF)
+                            };
+                        }
+                    }
                 }
             }
         }
@@ -93,11 +113,16 @@ impl AgentManager {
             return Linked::Broken;
         };
         let from = LogFrom::Cursor(instance.cursor);
-        let Ok((_, (reader, mut writer), accepted)) =
-            self.0.processes.attach_local(process, from).await
-        else {
-            return self.process_ended((agent, instance), process).await;
-        };
+        let (_, (reader, mut writer), accepted) =
+            match self.0.processes.attach_local(process, from).await {
+                Ok(attached) => attached,
+                Err(ServiceError::StdinClosed) => {
+                    self.terminate_with_retry((agent, instance.generation), (process, false))
+                        .await;
+                    return self.process_ended((agent, instance), process).await;
+                }
+                Err(_) => return self.process_ended((agent, instance), process).await,
+            };
         let Ok(((start, _, _), _)) = decode_reading(&accepted) else {
             return Linked::Broken;
         };
@@ -111,11 +136,9 @@ impl AgentManager {
         }
         let output = self.read_output((agent, instance.generation), (reader, lines));
         let deliveries = self.write_deliveries((agent, instance.generation), &mut writer);
-        let deadline = self.ready_deadline((agent, instance), process);
         tokio::select! {
             linked = output => linked,
             () = deliveries => Linked::Broken,
-            () = deadline => Linked::Broken,
         }
     }
 
@@ -193,35 +216,6 @@ impl AgentManager {
                 return;
             }
         }
-    }
-
-    /// Ends an instance that does not announce `ready` in time; never completes while ready.
-    ///
-    /// Retries termination with backoff while the same generation remains live and unready.
-    async fn ready_deadline(
-        &self,
-        (agent, instance): (&AgentId, AgentInstanceRecord),
-        process: ma2a_core::service::ProcessId,
-    ) {
-        if instance.ready {
-            return std::future::pending().await;
-        }
-        let deadline = instance.started_ms.saturating_add(READY_DEADLINE_MS);
-        let wait = deadline.saturating_sub(self.now_ms());
-        tokio::time::sleep(Duration::from_millis(wait)).await;
-        let mut backoff = INITIAL_BACKOFF;
-        while self.overdue(agent, instance.generation).await {
-            let reason = (1_000, ProcessReason::Requested);
-            match self.0.processes.terminate((None, process), reason).await {
-                Ok(committed) if committed.value().state.is_terminal() => return,
-                Err(ServiceError::UnknownProcess) => return,
-                _ => {
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
-                }
-            }
-        }
-        std::future::pending::<()>().await;
     }
 
     /// Whether instance `generation` of `agent` is still live and has not announced `ready`.
