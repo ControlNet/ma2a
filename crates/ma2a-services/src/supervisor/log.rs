@@ -7,6 +7,7 @@
 
 mod format;
 mod read;
+mod retain;
 
 #[cfg(test)]
 use std::collections::BTreeSet;
@@ -19,6 +20,7 @@ use std::{
 
 use format::{HEADER, content_len, name, parse, segments};
 use ma2a_core::service::{Channel, LogWindow};
+use retain::staging_name;
 
 pub use read::{LogRead, read, window};
 
@@ -54,6 +56,7 @@ pub struct LogWriter {
     limit: u64,
     segments: VecDeque<Segment>,
     current: Option<File>,
+    staged: Option<u64>,
     end: u64,
     discarded: u64,
     #[cfg(test)]
@@ -75,6 +78,7 @@ impl LogWriter {
             limit,
             segments: VecDeque::new(),
             current: None,
+            staged: None,
             end: 0,
             discarded: 0,
             #[cfg(test)]
@@ -124,35 +128,44 @@ impl LogWriter {
             self.discarded = self.discarded.saturating_add(u64::from(length));
             return Err(error);
         }
-        let file = self
-            .current
-            .as_mut()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let mut record = Vec::with_capacity(HEADER + bytes.len());
         record.push(code);
         record.extend_from_slice(&length.to_be_bytes());
         record.extend_from_slice(bytes);
-        if let Err(error) = file.write_all(&record) {
-            // Roll back any partly written record, seal the segment, and account the dropped
-            // chunk as a pending gap so the next segment or exit marker records a skip rather
-            // than splicing bytes around the loss.
-            let whole = self.segments.back().map_or(0, |last| last.file_bytes);
-            let _cut = file
-                .set_len(whole)
-                .and_then(|()| file.seek(SeekFrom::Start(whole)));
-            self.seal();
-            if whole == 0 {
-                let _removed = self.drop_empty_back();
-            }
-            self.discarded = self.discarded.saturating_add(u64::from(length));
+        let write_result = self
+            .current
+            .as_mut()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
+            .write_all(&record);
+        if let Err(error) = write_result {
+            self.rollback_append(u64::from(length));
             return Err(error);
         }
         let added = u64::from(length);
-        if let Some(last) = self.segments.back_mut() {
-            last.content += added;
-            last.file_bytes += u64::try_from(record.len()).unwrap_or(u64::MAX);
+        let file_bytes = u64::try_from(record.len()).unwrap_or(u64::MAX);
+        if let Some(first) = self.staged {
+            if let Err(error) = fs::rename(
+                self.directory.join(staging_name(first)),
+                self.directory.join(name(first)),
+            ) {
+                self.rollback_append(added);
+                return Err(error);
+            }
+            self.staged = None;
+            self.discarded = 0;
+            self.end = first + added;
+            self.segments.push_back(Segment {
+                first,
+                content: added,
+                file_bytes,
+            });
+        } else {
+            if let Some(last) = self.segments.back_mut() {
+                last.content += added;
+                last.file_bytes += file_bytes;
+            }
+            self.end += added;
         }
-        self.end += added;
         self.retain();
         Ok(self.end)
     }
@@ -173,8 +186,9 @@ impl LogWriter {
     pub fn finish(&mut self) -> io::Result<()> {
         self.sync()?;
         self.retain();
-        if self.discarded > 0 {
-            let _dropped = self.drop_empty_back();
+        if self.staged.is_some() {
+            self.seal();
+            let _dropped = self.drop_staged();
         }
         let next_end = self.end.saturating_add(self.discarded);
         if next_end > self.end {
@@ -184,7 +198,7 @@ impl LogWriter {
                 .open(self.directory.join(name(next_end)))?;
             if let Err(error) = marker.sync_all() {
                 drop(marker);
-                let _removed = self.remove_segment_file(next_end);
+                let _removed = self.remove_file(&name(next_end), next_end);
                 return Err(error);
             }
             self.segments.push_back(Segment::empty(next_end));
@@ -197,37 +211,6 @@ impl LogWriter {
         Ok(())
     }
 
-    fn usage(&self) -> (u64, usize) {
-        self.segments
-            .iter()
-            .fold((0, 0), |(bytes, count), segment| {
-                (
-                    bytes + segment.file_bytes,
-                    count + usize::from(segment.file_bytes > 0),
-                )
-            })
-    }
-
-    fn needs_rotate(&self) -> bool {
-        self.current.is_none()
-            || self
-                .segments
-                .back()
-                .is_some_and(|last| last.file_bytes >= SEGMENT_BYTES)
-    }
-
-    fn retention_blocked(&self, record_bytes: u64) -> bool {
-        let (retained, non_empty) = self.usage();
-        if non_empty <= 1 {
-            return false;
-        }
-        if self.discarded > 0 || self.needs_rotate() {
-            retained > self.limit
-        } else {
-            retained.saturating_add(record_bytes) > self.limit.saturating_add(SEGMENT_BYTES)
-        }
-    }
-
     fn seal(&mut self) {
         if self.current.is_some() {
             let _synced = self.sync();
@@ -238,80 +221,67 @@ impl LogWriter {
     fn rotate(&mut self) -> io::Result<()> {
         self.sync()?;
         if self.discarded > 0 {
-            self.drop_empty_back()?;
+            self.drop_staged()?;
         }
         let next_end = self.end.saturating_add(self.discarded);
-        // A segment still without a whole record lost its first one and could not be cut back:
-        // it is this writer's own, at this cursor, and is started again empty.
-        let again = self.discarded == 0
-            && self
-                .segments
-                .back()
-                .is_some_and(|last| last.content == 0 && last.first == next_end);
+        // A staged segment that lost its first record and could not be removed at this cursor
+        // is truncated and reused in place.
+        let again = self.discarded == 0 && self.staged == Some(next_end);
         // Written in place rather than appended: on Windows an append-only handle cannot be
         // truncated back after a failed write.
         let file = OpenOptions::new()
             .create_new(!again)
             .write(true)
             .truncate(again)
-            .open(self.directory.join(name(next_end)))?;
+            .open(self.directory.join(staging_name(next_end)))?;
         self.current = Some(file);
-        self.end = next_end;
-        self.discarded = 0;
-        if !again {
-            self.segments.push_back(Segment::empty(next_end));
-        }
+        self.staged = Some(next_end);
+        #[cfg(all(test, unix))]
+        run_after_rotate();
         Ok(())
     }
 
-    fn remove_segment_file(&self, first: u64) -> io::Result<()> {
-        #[cfg(test)]
-        if self.blocked_deletes.contains(&first) {
-            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
-        }
-        match fs::remove_file(self.directory.join(name(first))) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
-    }
-
-    fn drop_empty_back(&mut self) -> io::Result<()> {
-        let Some(&empty) = self.segments.back().filter(|last| last.file_bytes == 0) else {
-            return Ok(());
+    fn rollback_append(&mut self, length: u64) {
+        // Roll back any partly written record, seal the segment, and account the dropped chunk
+        // as a pending gap so the next segment or exit marker records a skip.
+        let whole = if self.staged.is_some() {
+            0
+        } else {
+            self.segments.back().map_or(0, |last| last.file_bytes)
         };
-        self.remove_segment_file(empty.first)?;
-        self.segments.pop_back();
-        let committed = self.segments.back().map_or(0, |s| s.first + s.content);
-        let gap = empty.first.saturating_sub(committed);
-        self.discarded = self.discarded.saturating_add(gap);
-        self.end = committed;
-        Ok(())
-    }
-
-    /// Deletes oldest segments while their files hold more than the limit, record headers
-    /// included, so the limit bounds the disk the log takes. A segment leaves the window only
-    /// once its file is gone, so the window always matches the directory; one that cannot be
-    /// deleted now stays first and is tried again after the next append.
-    fn retain(&mut self) {
-        let (mut retained, mut non_empty) = self.usage();
-        while retained > self.limit && self.segments.len() > 1 {
-            let Some(oldest) = self.segments.front().copied() else {
-                break;
-            };
-            if oldest.file_bytes > 0 && non_empty <= 1 {
-                break;
-            }
-            if self.remove_segment_file(oldest.first).is_err() {
-                break;
-            }
-            self.segments.pop_front();
-            retained -= oldest.file_bytes;
-            if oldest.file_bytes > 0 {
-                non_empty -= 1;
-            }
+        if let Some(file) = self.current.as_mut() {
+            let _cut = file
+                .set_len(whole)
+                .and_then(|()| file.seek(SeekFrom::Start(whole)));
         }
+        self.seal();
+        if self.staged.is_some() {
+            let _removed = self.drop_staged();
+        }
+        self.discarded = self.discarded.saturating_add(length);
     }
 }
 
+#[cfg(all(test, unix))]
+thread_local! {
+    static AFTER_ROTATE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+fn set_after_rotate(hook: Box<dyn FnOnce()>) {
+    AFTER_ROTATE.with(|slot| *slot.borrow_mut() = Some(hook));
+}
+
+#[cfg(all(test, unix))]
+fn run_after_rotate() {
+    let hook = AFTER_ROTATE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod rotate_tests;
 #[cfg(test)]
 mod tests;

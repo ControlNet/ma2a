@@ -4,7 +4,7 @@ use std::{io::Write as _, path::PathBuf};
 
 use ma2a_core::service::{Channel, LogWindow};
 
-use super::{LogWriter, MAX_RECORD_LEN, SEGMENT_BYTES, name, read, window};
+use super::{LogWriter, MAX_RECORD_LEN, SEGMENT_BYTES, name, read, staging_name, window};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -44,7 +44,7 @@ fn a_first_record_that_could_not_be_cut_back_never_blocks_later_ones() -> TestRe
     writer.rotate()?;
     let mut torn = std::fs::OpenOptions::new()
         .append(true)
-        .open(directory.0.join(name(0)))?;
+        .open(directory.0.join(staging_name(0)))?;
     torn.write_all(&[1, 0, 0, 0, 9, b'L', b'O'])?;
     writer.current = None;
 
@@ -271,13 +271,14 @@ fn unremovable_empty_segment_stays_bounded_and_recovers_with_exact_cursor() -> T
         }
     })?;
 
-    // Then: at most one empty segment remains on disk and in the deque.
+    // Then: at most one empty staged file remains on disk, unpublished.
     let mut entries = std::fs::read_dir(&directory.0)?
         .map(|entry| entry.map(|item| item.file_name().to_string_lossy().into_owned()))
         .collect::<Result<Vec<_>, _>>()?;
     entries.sort();
-    assert_eq!(entries, vec![name(0)]);
-    assert_eq!(writer.segments.len(), 1);
+    assert_eq!(entries, vec![staging_name(0)]);
+    assert!(writer.segments.is_empty());
+    assert_eq!(writer.staged, Some(0));
     assert_eq!(writer.window(), LogWindow::new(0, 0));
 
     // When: the delete block clears and output recovers.

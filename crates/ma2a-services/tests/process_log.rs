@@ -496,3 +496,19 @@ fn failed_write_after_rotation_at_minimum_limit_preserves_retained_segment() -> 
     assert_eq!(after.records, vec![(Channel::Output, b"ok".to_vec())]);
     Ok(())
 }
+
+#[test]
+fn uncommitted_staged_segment_files_are_ignored_until_renamed() -> TestResult {
+    let root = TempRoot::new("log-staged-ignored")?;
+    let mut writer = LogWriter::create(root.path(), MIB)?;
+    writer.append(Channel::Output, b"head")?;
+    writer.sync()?;
+
+    std::fs::write(root.path().join(format!("{:020}.part", 8)), b"")?;
+
+    assert_eq!(log::window(root.path())?, LogWindow::new(0, 4));
+    let read = log::read(root.path(), 0, 1024)?;
+    assert_eq!((read.start, read.truncated, read.next), (0, false, 4));
+    assert_eq!(read.records, vec![(Channel::Output, b"head".to_vec())]);
+    Ok(())
+}
