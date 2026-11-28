@@ -48,7 +48,10 @@ fn exported_relay_url(
         },
     )
     .map_err(|failure| failure.to_string())?;
-    let response = ControlResponseV1::decode(&outcome.response)?;
+    let response_bytes = outcome
+        .response
+        .map_err(|failure| format!("unexpected control_sync::respond error: {failure}"))?;
+    let response = ControlResponseV1::decode(&response_bytes)?;
     let url = response
         .pages()
         .iter()
