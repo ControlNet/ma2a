@@ -59,7 +59,8 @@ async fn dial_collection_never_exceeds_runtime_concurrency() -> TestResult {
     // When
     let mut queue = queue;
     let mut dials = tokio::task::JoinSet::new();
-    spawn_control_dials(&mut queue, &mut dials, {
+    let mut dialed_peers = std::collections::BTreeSet::new();
+    spawn_control_dials((&mut queue, &mut dialed_peers), &mut dials, {
         let gate = Arc::clone(&gate);
         let active = Arc::clone(&active);
         let maximum = Arc::clone(&maximum);
@@ -96,7 +97,7 @@ async fn dial_collection_never_exceeds_runtime_concurrency() -> TestResult {
         response?;
         queue.finished(peer, true);
         completed += 1;
-        spawn_control_dials(&mut queue, &mut dials, {
+        spawn_control_dials((&mut queue, &mut dialed_peers), &mut dials, {
             let gate = Arc::clone(&gate);
             move |_, _| {
                 let gate = Arc::clone(&gate);

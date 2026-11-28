@@ -82,14 +82,17 @@ impl ControlRoundRunner {
         let local_endpoint_id = request.local_endpoint_id;
         let prepared =
             run_before_deadline(&mut deadline, self.store.prepare_control_round(request)).await??;
-        progress.dialed_peers = prepared.iter().map(|entry| entry.peer).collect();
         let mut pending = DialQueue::new(prepared);
         let had_peers = !pending.is_empty();
         let mut dials = JoinSet::new();
         let mut synchronized_peers = BTreeSet::new();
         while !pending.is_empty() || !dials.is_empty() {
             ensure_before_deadline(&mut deadline).await?;
-            spawn_control_dials(&mut pending, &mut dials, dial.clone());
+            spawn_control_dials(
+                (&mut pending, &mut progress.dialed_peers),
+                &mut dials,
+                dial.clone(),
+            );
             let Some(joined) = run_before_deadline(&mut deadline, dials.join_next()).await? else {
                 break;
             };
@@ -231,7 +234,7 @@ type DialOutcome<DialError> = (
 );
 
 fn spawn_control_dials<Dial, DialFuture, DialError>(
-    pending: &mut DialQueue,
+    (pending, dialed_peers): (&mut DialQueue, &mut BTreeSet<ma2a_core::EndpointId>),
     dials: &mut JoinSet<DialOutcome<DialError>>,
     dial: Dial,
 ) where
@@ -248,6 +251,7 @@ fn spawn_control_dials<Dial, DialFuture, DialError>(
         else {
             break;
         };
+        dialed_peers.insert(peer);
         let call = dial(peer, request);
         dials.spawn(async move { (peer, spaces, call.await) });
     }

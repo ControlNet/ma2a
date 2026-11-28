@@ -32,7 +32,7 @@ use crate::{
     store::{STORE_CAPACITY, StoreBackend, StoreClient},
 };
 
-fn seed_queued_peers(
+pub(super) fn seed_queued_peers(
     dir: &Path,
     local_id: EndpointId,
 ) -> Result<(EndpointId, SpaceId), Box<dyn std::error::Error + Send + Sync>> {
