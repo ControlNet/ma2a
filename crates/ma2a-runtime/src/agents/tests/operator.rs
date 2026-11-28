@@ -382,8 +382,14 @@ async fn unbound_previous_process_blocks_undefine_and_replacement() -> TestResul
 
     // Then: stop reported Unavailable while committing disabled, and neither undefine nor
     // replacement launch proceeded while the unbound Process lived.
-    assert_eq!(stop_while_created.err(), Some(ServiceError::Unavailable));
-    assert_eq!(second_stop.err(), Some(ServiceError::Unavailable));
+    assert!(matches!(
+        stop_while_created,
+        Err((ServiceError::Unavailable, Some(_)))
+    ));
+    assert!(matches!(
+        second_stop,
+        Err((ServiceError::Unavailable, Some(_)))
+    ));
     assert_eq!(undefine_while_live.err(), Some(ServiceError::Unavailable));
     assert_eq!(during_live.generation, first.generation);
     assert!(during_live.ended_ms.is_some());
@@ -512,7 +518,7 @@ async fn stop_before_recovery_terminates_running_unbound_process_after_restart()
 
     // When: operator stop acquires the Agent lock before startup recovery binds generation 1,
     // followed by a fresh start.
-    manager.stop(&agent).await?;
+    manager.stop(&agent).await.map_err(|(error, _)| error)?;
     let after_stop = processes
         .local_record(first_id)
         .await?

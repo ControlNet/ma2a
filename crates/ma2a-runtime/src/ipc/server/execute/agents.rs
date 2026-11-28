@@ -125,12 +125,14 @@ async fn switch(
     manager: &AgentManager,
     (agent, start): (&AgentId, bool),
 ) -> Result<(CommandResult, u64), ApiError> {
-    let switched = if start {
-        manager.start(agent).await
+    let ((record, live), revision) = if start {
+        manager.start(agent).await.map_err(refusal)?
     } else {
-        manager.stop(agent).await
+        manager.stop(agent).await.map_err(|(error, committed)| {
+            let api = refusal(error);
+            committed.map_or(api, |revision| api.after_commit(revision))
+        })?
     };
-    let ((record, live), revision) = switched.map_err(refusal)?;
     let view = AgentView::new(record, live);
     let result = if start {
         CommandResult::agent_started(&view)

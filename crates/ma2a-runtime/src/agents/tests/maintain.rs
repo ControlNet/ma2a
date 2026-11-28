@@ -889,7 +889,10 @@ async fn failed_stop_termination_reports_error_and_maintenance_reconciles_disabl
 
     // Then: stop reported Unavailable while committing disabled, and maintenance finished
     // terminating the Process without re-enabling or replacing the Agent.
-    assert_eq!(stop_result.err(), Some(ServiceError::Unavailable));
+    assert!(matches!(
+        stop_result,
+        Err((ServiceError::Unavailable, Some(_)))
+    ));
     assert!(!after_stop_agent.enabled);
     assert_eq!(after_stop_process.state, ProcessState::Running);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);

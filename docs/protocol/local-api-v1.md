@@ -285,6 +285,8 @@ Errors:
 | `agent_task_send` to a task that has ended or is being cancelled | `conflict` ("the task has already ended"), no effect |
 | A reused request ID with a different body | `conflict`, no effect |
 | A task bound is reached | `unavailable` ("retry once tasks end"), no effect |
+| `agent_stop` when the instance's Process cannot be confirmed ended | `unavailable`; the Agent is stopped and maintenance keeps terminating the Process |
+| `agent_undefine` while a previous instance's Process still runs | `unavailable`, no effect |
 | This Runtime does not host Agents | `unavailable`, no effect |
 
 ### Hosted services (Phase 5)

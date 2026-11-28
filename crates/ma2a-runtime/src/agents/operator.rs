@@ -144,21 +144,23 @@ impl AgentManager {
     /// Stops an Agent: its unfinished tasks fail and its instance is terminated.
     ///
     /// Answers the Agent and its number of unfinished tasks as the stop committed them, with
-    /// that commit's revision.
+    /// that commit's revision. On post-commit termination failure, carries the committed revision
+    /// with the error so callers record the replay outcome against that commit.
     pub(crate) async fn stop(
         &self,
         agent: &AgentId,
-    ) -> Result<((AgentRecord, usize), u64), ServiceError> {
+    ) -> Result<((AgentRecord, usize), u64), (ServiceError, Option<u64>)> {
         let _lifecycle = self.lock_lifecycle(agent).await;
         let (id, at_ms) = (agent.clone(), self.now_ms());
         let (record, revision) = self
             .commit_at(move |repository| repository.set_agent_enabled(&id, (false, at_ms)))
-            .await?;
-        let record = record.ok_or(ServiceError::UnknownAgent)?;
+            .await
+            .map_err(|error| (error, None))?;
+        let record = record.ok_or((ServiceError::UnknownAgent, None))?;
         // The stop ended the instance; its Process still runs until terminated here.
         if !self.previous_instance_terminal(&record.0).await {
             self.schedule_backoff(agent, false);
-            return Err(ServiceError::Unavailable);
+            return Err((ServiceError::Unavailable, Some(revision)));
         }
         self.coordination().restarts.remove(agent);
         Ok((record, revision))
