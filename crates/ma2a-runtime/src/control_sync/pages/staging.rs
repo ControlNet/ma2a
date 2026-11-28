@@ -46,7 +46,7 @@ impl ControlChanges {
 pub(crate) fn apply_pages(
     repository: &mut Repository,
     application: PageApplication<'_>,
-) -> Result<ControlChanges, ControlFailure> {
+) -> Result<(Option<u64>, ControlChanges), ControlFailure> {
     let mut chains = Vec::new();
     let mut addresses = BTreeMap::new();
     let mut relays = BTreeMap::new();
@@ -123,14 +123,19 @@ pub(crate) fn apply_pages(
         address: !addresses.is_empty(),
         relay: !relays.is_empty(),
     };
-    repository
+    let committed_revision = repository
         .persist_control_batch(&ControlBatch::new(
             chains,
             addresses.into_values().collect(),
             relays.into_values().collect(),
         ))
         .map_err(ControlFailure::from)?;
-    Ok(changes)
+    let changes = if committed_revision.is_some() {
+        changes
+    } else {
+        ControlChanges::default()
+    };
+    Ok((committed_revision, changes))
 }
 
 fn stage_address(

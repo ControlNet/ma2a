@@ -38,7 +38,8 @@ fn respond_has_relay_advertisement(
         },
     )
     .map_err(|failure| failure.to_string())?;
-    let response = ControlResponseV1::decode(&outcome.response)?;
+    let response_bytes = outcome.response.map_err(|failure| failure.to_string())?;
+    let response = ControlResponseV1::decode(&response_bytes)?;
     Ok(response
         .pages()
         .iter()

@@ -216,13 +216,13 @@ fn truncated_push_page_omits_records_until_full_prefix_fits() -> TestResult {
             .all(|artifact| artifact.kind() == ControlArtifactKind::MANIFEST)
     );
     let receiver_shared = receiver_repo.control_spaces_between(owner, sender)?;
-    let changes = apply_pages(
+    let (committed_revision, changes) = apply_pages(
         &mut receiver_repo,
         PageApplication::new(&receiver_shared, &[page], 400),
     )?;
 
     // Then: receiver advances to generation 2 without rejecting the page.
-    assert!(changes.manifest);
+    assert!(committed_revision.is_some() && changes.manifest);
     assert_eq!(
         receiver_repo
             .load_space_chain(chain.space_id())?

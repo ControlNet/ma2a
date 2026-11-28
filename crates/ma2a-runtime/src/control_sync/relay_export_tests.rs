@@ -99,7 +99,8 @@ fn a_stored_advertisement_the_policy_now_refuses_is_not_exported() -> TestResult
     .map_err(|failure| failure.to_string())?;
 
     // Then: the address record is sent, and the refused advertisement is not.
-    let response = ControlResponseV1::decode(&outcome.response)?;
+    let response_bytes = outcome.response.map_err(|failure| failure.to_string())?;
+    let response = ControlResponseV1::decode(&response_bytes)?;
     let kinds = response
         .pages()
         .iter()
@@ -166,7 +167,8 @@ fn a_stored_address_record_the_policy_now_refuses_is_skipped_and_not_exported() 
 
     // Then: the record is left out of both, and neither fails.
     assert!(lookup.is_ok_and(|lookup| lookup.addresses.is_empty()));
-    let response = ControlResponseV1::decode(&outcome.response)?;
+    let response_bytes = outcome.response.map_err(|failure| failure.to_string())?;
+    let response = ControlResponseV1::decode(&response_bytes)?;
     assert!(
         response
             .pages()

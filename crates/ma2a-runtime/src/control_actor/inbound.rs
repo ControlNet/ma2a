@@ -7,6 +7,8 @@ use crate::{
 };
 
 #[cfg(test)]
+mod post_apply_rejection_tests;
+#[cfg(test)]
 mod view_sequence_tests;
 
 #[cfg(test)]
@@ -126,18 +128,33 @@ impl Actor {
                 return Self::control_failure(error);
             }
         };
-        let peers = if membership_generation == self.synchronized_control_peers.generation() {
-            [remote_endpoint_id].into()
-        } else {
-            std::collections::BTreeSet::new()
+        let (response, peers) = match outcome.response {
+            Ok(response) => {
+                let peers = if membership_generation == self.synchronized_control_peers.generation()
+                {
+                    [remote_endpoint_id].into()
+                } else {
+                    std::collections::BTreeSet::new()
+                };
+                (Ok(response), peers)
+            }
+            Err(error) => (Err(error), std::collections::BTreeSet::new()),
         };
         self.state.revision = self.state.revision.max(outcome.revision);
         self.retain_control_completion(outcome.changes, peers);
-        match self.reconcile_control_completion().await {
-            Ok(()) => responder.respond(Ok(outcome.response)),
+        let reconciled = self.reconcile_control_completion().await;
+        match response {
+            Ok(bytes) => match reconciled {
+                Ok(()) => responder.respond(Ok(bytes)),
+                Err(error) => {
+                    responder.respond(Err(ControlRejection::Unavailable));
+                    Self::absorb_background("inbound control projection", Err(error))?;
+                }
+            },
             Err(error) => {
-                responder.respond(Err(ControlRejection::Unavailable));
-                Self::absorb_background("inbound control projection", Err(error))?;
+                responder.respond(Err(error.rejection()));
+                Self::absorb_background("inbound control projection", reconciled)?;
+                Self::control_failure(error)?;
             }
         }
         Ok(())

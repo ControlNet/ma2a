@@ -61,7 +61,7 @@ pub(crate) struct ControlApplyOutcome {
 
 #[derive(Debug)]
 pub(crate) struct ControlRespondOutcome {
-    pub(crate) response: Vec<u8>,
+    pub(crate) response: Result<Vec<u8>, ControlFailure>,
     pub(crate) revision: u64,
     pub(crate) changes: ControlChanges,
 }

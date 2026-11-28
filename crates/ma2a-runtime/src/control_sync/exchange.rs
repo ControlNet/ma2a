@@ -14,7 +14,7 @@ pub(crate) fn respond(
     repository: &mut Repository,
     input: &ControlExchangeInput,
 ) -> Result<ControlRespondOutcome, ControlFailure> {
-    let mut shared =
+    let shared =
         repository.control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)?;
     authorize_shared(&shared, input.local_endpoint_id, input.remote_endpoint_id)?;
     let request =
@@ -40,11 +40,32 @@ pub(crate) fn respond(
         .map_err(|_| ControlRejection::Unauthorized)?;
     }
     pages::validate_page_spaces(&shared, request.push_pages())?;
-    let changes = pages::apply_pages(
+    let (committed_revision, changes) = pages::apply_pages(
         repository,
         pages::PageApplication::new(&shared, request.push_pages(), input.now_ms),
     )?;
-    shared =
+    let response = build_response(repository, input, &request);
+    if let Some(revision) = committed_revision {
+        return Ok(ControlRespondOutcome {
+            response,
+            revision,
+            changes,
+        });
+    }
+    let response = response?;
+    Ok(ControlRespondOutcome {
+        response: Ok(response),
+        revision: repository.revision()?,
+        changes,
+    })
+}
+
+fn build_response(
+    repository: &Repository,
+    input: &ControlExchangeInput,
+    request: &ControlRequestV1,
+) -> Result<Vec<u8>, ControlFailure> {
+    let shared =
         repository.control_spaces_between(input.local_endpoint_id, input.remote_endpoint_id)?;
     pages::validate_cursor_spaces(&shared, request.cursors())?;
     let requested = request
@@ -58,14 +79,9 @@ pub(crate) fn respond(
         })
         .collect::<Vec<_>>();
     let pages = pages::pull_pages(&requested, input.now_ms)?;
-    let response = ControlResponseV1::new(pages)
+    ControlResponseV1::new(pages)
         .and_then(|response| response.encode())
-        .map_err(|_| ControlRejection::Invalid)?;
-    Ok(ControlRespondOutcome {
-        response,
-        revision: repository.revision()?,
-        changes,
-    })
+        .map_err(|_| ControlRejection::Invalid.into())
 }
 
 pub(crate) fn authorize(
@@ -129,12 +145,13 @@ pub(crate) fn apply_response(
     if answered.len() != response.pages().len() || answered != requested.iter().copied().collect() {
         return Err(ControlRejection::Invalid.into());
     }
-    let changes = pages::apply_pages(
+    let (committed_revision, changes) = pages::apply_pages(
         repository,
         pages::PageApplication::new(&shared, response.pages(), input.now_ms),
     )?;
-    Ok(ControlApplyOutcome {
-        revision: repository.revision()?,
-        changes,
-    })
+    let revision = match committed_revision {
+        Some(revision) => revision,
+        None => repository.revision()?,
+    };
+    Ok(ControlApplyOutcome { revision, changes })
 }
