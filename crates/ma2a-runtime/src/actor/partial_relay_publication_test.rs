@@ -14,6 +14,7 @@ pub(super) mod activity_reconciliation_test;
 mod clock_rollback_test;
 mod explicit_expiry_test;
 mod freshness_test;
+mod url_change_test;
 
 #[derive(Debug)]
 struct PublicationClock(AtomicI64);

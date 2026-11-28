@@ -81,7 +81,10 @@ impl StoreBackend {
                 && self
                     .repository
                     .relay_advertisement(space_id, local_endpoint_id)?
-                    .is_some_and(|current| current.is_active())
+                    .is_some_and(|current| {
+                        current.is_active()
+                            && advertisement_matches_url(&current, config.public_relay_url())
+                    })
             {
                 active_spaces.push(space_id);
             }
@@ -140,4 +143,14 @@ impl StoreBackend {
         }
         Ok(())
     }
+}
+
+fn advertisement_matches_url(
+    current: &ma2a_store::PersistedRelayAdvertisement,
+    relay_url: &ma2a_net::RelayUrl,
+) -> bool {
+    ma2a_core::SignedPrivateRelayAdvertisementV1::parse_canonical_bytes(
+        current.signed_advertisement(),
+    )
+    .is_ok_and(|signed| signed.advertisement().relay_url() == relay_url)
 }
