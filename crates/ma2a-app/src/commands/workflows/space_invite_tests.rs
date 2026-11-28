@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use super::{parse_duration_ms, retry_hint, validate_request_id};
+use serde_json::json;
+
+use super::{parse_duration_ms, retry_hint, should_show_retry_request_id, validate_request_id};
 
 #[test]
 fn the_default_invite_lifetime_is_five_minutes() {
@@ -55,4 +57,28 @@ fn retry_hint_quotes_state_dir_and_falls_back_on_control_chars() {
             "Keep the original --state-dir and retry the exact same ticket with: ma2a space accept --request-id {id}"
         )
     );
+}
+
+#[test]
+fn retry_request_id_is_shown_only_when_exact_retry_can_work() {
+    assert!(should_show_retry_request_id(&json!({
+        "error": "unavailable",
+        "remediation": null,
+    })));
+    assert!(should_show_retry_request_id(&json!({
+        "error": "internal",
+        "remediation": "remote outcome may include side effects; inspect current state or retry the exact same request",
+    })));
+    assert!(!should_show_retry_request_id(&json!({
+        "error": "unavailable",
+        "remediation": "mutation outcome may include side effects; inspect current state; this request will not execute again",
+    })));
+    assert!(!should_show_retry_request_id(&json!({
+        "error": "unavailable",
+        "remediation": "mutation committed; completion failed; inspect current state; this request will not execute again",
+    })));
+    assert!(!should_show_retry_request_id(&json!({
+        "error": "expired",
+        "remediation": null,
+    })));
 }

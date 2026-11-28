@@ -102,12 +102,7 @@ pub(super) async fn accept(
     };
     let document: Value = serde_json::from_slice(&response).map_err(io::Error::other)?;
     if let Err(error) = crate::output::reject_runtime_error(&document) {
-        let should_show_id = document
-            .get("remediation")
-            .and_then(Value::as_str)
-            .is_some_and(|remediation| remediation.contains("retry"))
-            || document.get("error").and_then(Value::as_str) == Some("unavailable");
-        return Err(if should_show_id {
+        return Err(if should_show_retry_request_id(&document) {
             attach_retry_request_id(error, &request_id, state_dir)
         } else {
             error
@@ -115,6 +110,15 @@ pub(super) async fn accept(
     }
     crate::output::write_human(&document)?;
     Ok(())
+}
+
+fn should_show_retry_request_id(document: &Value) -> bool {
+    let remediation = document.get("remediation").and_then(Value::as_str);
+    if remediation.is_some_and(|text| text.contains("will not execute again")) {
+        return false;
+    }
+    remediation.is_some_and(|text| text.contains("retry"))
+        || document.get("error").and_then(Value::as_str) == Some("unavailable")
 }
 
 fn validate_request_id(value: String) -> Result<String, AppError> {
