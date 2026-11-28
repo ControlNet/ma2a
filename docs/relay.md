@@ -100,8 +100,8 @@ normal Runtime maintenance, including after restart. A failed mutation response
 after configuration commit retains its RequestId outcome; it does not undo the
 desired configuration or execute the mutation again.
 
-Reconfiguring the same listener joins the old server before binding its replacement.
-Different listeners can prepare the replacement while the old server still serves.
+Reconfiguring a conflicting listener (same port with matching canonical IP, a native IPv6 wildcard, or an IPv4 wildcard paired with an IPv4 address) joins the old server before binding its replacement.
+Non-conflicting listeners can prepare the replacement while the old server still serves.
 Explicit private reconfiguration reloads certificate files; unchanged maintenance
 does not restart the server. Invalid TLS files are rejected before changing desired
 state. A server shutdown failure terminates the Runtime rather than reporting a
