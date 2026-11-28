@@ -3,11 +3,30 @@
 
 use std::time::Duration;
 
-use ma2a_core::service::{ProcessReason, ProcessState, ServiceAccess, ServiceError};
+use ma2a_core::service::{ProcessId, ProcessReason, ProcessState, ServiceAccess, ServiceError};
 use ma2a_services::supervisor::SupervisorRequest;
 use ma2a_store::ProcessRecord;
 
 use super::{ProcessManager, credentials, follow::request};
+
+/// Initial and longest pause between retries of startup scan or `created` settlement.
+const RECOVERY_BACKOFF: (Duration, Duration) =
+    (Duration::from_millis(250), Duration::from_secs(10));
+
+/// How a `created` Process that is no longer being brought up must be settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CreatedSettlement {
+    /// Left `created` by a prior boot (or an uncommitted `starting`): abort any waiting
+    /// supervisor and record `failed(interrupted)` or its final status.
+    Interrupted,
+    /// Supervisor launch failed and committing `failed(spawn_failed)` failed transiently.
+    SpawnFailed,
+}
+
+async fn pause_recovery(backoff: Duration) -> Duration {
+    tokio::time::sleep(backoff).await;
+    (backoff * 2).min(RECOVERY_BACKOFF.1)
+}
 
 /// How often durable state is checked for a change that may withdraw consent.
 const CONVERGE_INTERVAL: Duration = Duration::from_secs(1);
@@ -57,45 +76,117 @@ pub(crate) async fn run(manager: ProcessManager) {
 }
 
 impl ProcessManager {
-    async fn active(&self) -> Vec<ProcessRecord> {
+    async fn active_result(&self) -> Result<Vec<ProcessRecord>, ServiceError> {
         self.store()
             .processes(|repository| repository.active_processes())
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default()
+            .await?
+            .map_err(|_| ServiceError::Unavailable)
+    }
+
+    async fn active(&self) -> Vec<ProcessRecord> {
+        self.active_result().await.unwrap_or_default()
     }
 
     /// Re-adopts every non-terminal Process through its supervisor's proof, or decides it.
+    ///
+    /// A transient Store failure during the startup scan is retried with bounded backoff
+    /// while the admission fence stays closed, so prior-boot `created` rows are never
+    /// abandoned or mixed with newly admitted starts.
     pub(super) async fn reconcile(&self) {
-        let active = self.active().await;
-        self.release_startup();
+        let mut backoff = RECOVERY_BACKOFF.0;
+        let active = loop {
+            match self.active_result().await {
+                Ok(active) => break active,
+                Err(_) => {
+                    tokio::select! {
+                        () = self.0.shutdown.cancelled() => return,
+                        next = pause_recovery(backoff) => backoff = next,
+                    }
+                }
+            }
+        };
         for record in active {
             if record.state == ProcessState::Created {
-                let manager = self.clone();
-                self.0
-                    .tasks
-                    .spawn(async move { manager.interrupt(&record).await });
+                self.settle_created((record.id, Some(record)), CreatedSettlement::Interrupted);
             } else {
                 self.follow(record.id, None);
             }
+        }
+        self.release_startup();
+    }
+
+    /// Retries settling one `created` Process with bounded backoff until it is terminal or gone.
+    pub(super) fn settle_created(
+        &self,
+        (id, initial): (ProcessId, Option<ProcessRecord>),
+        settlement: CreatedSettlement,
+    ) {
+        if !self.coordination().settling.insert(id) {
+            return;
+        }
+        let manager = self.clone();
+        self.0.tasks.spawn(async move {
+            let shutdown = manager.0.shutdown.clone();
+            tokio::select! {
+                () = shutdown.cancelled() => {}
+                () = manager.settle_created_loop((id, initial), settlement) => {}
+            }
+            manager.coordination().settling.remove(&id);
+        });
+    }
+
+    async fn settle_created_loop(
+        &self,
+        (id, mut initial): (ProcessId, Option<ProcessRecord>),
+        settlement: CreatedSettlement,
+    ) {
+        let mut backoff = RECOVERY_BACKOFF.0;
+        loop {
+            let record = match initial.take() {
+                Some(record) => record,
+                None => match self.record(id).await {
+                    Ok(Some(record)) => record,
+                    Ok(None) => return,
+                    Err(_) => {
+                        backoff = pause_recovery(backoff).await;
+                        continue;
+                    }
+                },
+            };
+            if record.state != ProcessState::Created {
+                return;
+            }
+            let result = match settlement {
+                CreatedSettlement::Interrupted => self.interrupt(&record).await,
+                CreatedSettlement::SpawnFailed => {
+                    let failed = (ProcessState::Failed, Some(ProcessReason::SpawnFailed));
+                    self.step(id, failed).await.map(|_| ())
+                }
+            };
+            if result.is_ok() || result == Err(ServiceError::UnknownProcess) {
+                return;
+            }
+            backoff = pause_recovery(backoff).await;
         }
     }
 
     /// A Process left `created` never got `go`: its supervisor is aborted if it is still
     /// waiting, and the start is recorded as interrupted either way.
-    async fn interrupt(&self, record: &ProcessRecord) {
-        let aborted = match credentials(record) {
-            Some(credentials) => match self.address(record.id).connect(&credentials).await {
-                Ok(channel) => request(channel, SupervisorRequest::Abort).await,
-                Err(error) => Err(error),
-            },
-            None => Err(ServiceError::Internal),
+    async fn interrupt(&self, record: &ProcessRecord) -> Result<(), ServiceError> {
+        let Some(credentials) = credentials(record) else {
+            return self.conclude(record).await.map(|_| ());
         };
-        let _recorded = match aborted {
-            Ok(reported) => self.apply(record.id, reported).await,
-            Err(_) => self.conclude(record).await,
+        let aborted = match self.address(record.id).connect(&credentials).await {
+            Ok(channel) => request(channel, SupervisorRequest::Abort).await,
+            Err(error) => Err(error),
         };
+        match aborted {
+            Ok(reported) => self.apply(record.id, reported).await.map(|_| ()),
+            Err(ServiceError::Unreachable | ServiceError::Unauthorized) => {
+                self.conclude(record).await.map(|_| ())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Ends every Process whose creator no longer has one complete authorization path, and

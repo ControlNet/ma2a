@@ -156,16 +156,26 @@ impl ProcessManager {
         let id = credentials.id();
         let Ok(proven) = self.launch(credentials, start).await else {
             let failed = (ProcessState::Failed, Some(ProcessReason::SpawnFailed));
-            return self.step(id, failed).await.map(Committed::into_value);
+            return match self.step(id, failed).await {
+                Ok(committed) => Ok(committed.into_value()),
+                Err(error) => {
+                    self.settle_created(
+                        (id, None),
+                        super::maintain::CreatedSettlement::SpawnFailed,
+                    );
+                    Err(error)
+                }
+            };
         };
         fault("after_launch");
         let watching = open_watch(proven).await;
         let stepped = match self.step(id, (ProcessState::Starting, None)).await {
             Ok(committed) => committed.into_value(),
             Err(error) => {
-                // Without `starting` no `go` may be sent; the supervisor gives up by itself and
-                // the follower records that end.
-                self.follow(id, watching.ok());
+                // Without `starting` no `go` may be sent; abort the waiting supervisor and
+                // retry settling the `created` row if the Store is still unavailable.
+                drop(watching);
+                self.settle_created((id, None), super::maintain::CreatedSettlement::Interrupted);
                 return Err(error);
             }
         };

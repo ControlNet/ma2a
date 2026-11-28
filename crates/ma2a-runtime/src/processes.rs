@@ -64,6 +64,8 @@ impl Terminating {
 struct Coordination {
     /// Processes with a running follower.
     followed: HashSet<ProcessId>,
+    /// `created` Processes with an active bounded-backoff settlement task.
+    settling: HashSet<ProcessId>,
     /// Why this Runtime asked a Process to terminate, until that end is recorded.
     terminating: HashMap<ProcessId, Terminating>,
     /// Attached readers per Process.
