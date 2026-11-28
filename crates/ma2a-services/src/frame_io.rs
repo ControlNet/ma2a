@@ -169,6 +169,7 @@ pub struct FrameWriter<W> {
     inner: W,
     torn: bool,
     terminal_sent: bool,
+    wrote: bool,
 }
 
 impl<W: AsyncWrite + Unpin> FrameWriter<W> {
@@ -178,6 +179,7 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
             inner,
             torn: false,
             terminal_sent: false,
+            wrote: false,
         }
     }
 
@@ -189,6 +191,35 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     /// Returns whether a complete terminal `outcome` or `reject` frame was written.
     pub const fn terminal_sent(&self) -> bool {
         self.terminal_sent
+    }
+
+    /// Returns whether any byte has been handed to the underlying writer.
+    pub const fn has_written(&self) -> bool {
+        self.wrote
+    }
+
+    /// Writes and flushes the initial `open` frame of a caller stream.
+    ///
+    /// Keeps [`ServiceError::Cancelled`] only when no byte reached the underlying writer; once
+    /// any byte was written, a write or flush failure becomes [`ServiceError::OutcomeUnknown`].
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::InvalidInput`] for an out-of-bound header,
+    /// [`ServiceError::Cancelled`] before any byte was written, and
+    /// [`ServiceError::OutcomeUnknown`] once bytes may have reached the target.
+    pub async fn write_open(&mut self, header: &[u8]) -> Result<(), ServiceError> {
+        let wrote = async {
+            self.frame(FrameKind::Open, header).await?;
+            self.flush().await
+        }
+        .await;
+        wrote.map_err(|error| {
+            if error == ServiceError::Cancelled && self.wrote {
+                ServiceError::OutcomeUnknown
+            } else {
+                error
+            }
+        })
     }
 
     /// Writes one frame of any type.
@@ -283,10 +314,20 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     }
 
     async fn write(&mut self, bytes: &[u8]) -> Result<(), ServiceError> {
-        self.inner
-            .write_all(bytes)
-            .await
-            .map_err(|_| ServiceError::Cancelled)
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let written = self
+                .inner
+                .write(rest)
+                .await
+                .map_err(|_| ServiceError::Cancelled)?;
+            if written == 0 {
+                return Err(ServiceError::Cancelled);
+            }
+            self.wrote = true;
+            rest = rest.get(written..).unwrap_or_default();
+        }
+        Ok(())
     }
 }
 

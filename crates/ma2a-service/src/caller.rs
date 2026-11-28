@@ -79,8 +79,8 @@ impl CallStream {
     /// gone.
     pub async fn send(&mut self, channel: Channel, bytes: &[u8]) -> Result<(), Error> {
         self.ended.take((channel, Party::Caller), false)?;
-        self.writer.data(channel, bytes).await?;
-        Ok(self.writer.flush().await?)
+        let wrote = self.writer.data(channel, bytes).await;
+        flush_call(&mut self.writer, wrote).await
     }
 
     /// Finishes one channel.
@@ -89,8 +89,8 @@ impl CallStream {
     /// The same as [`Self::send`].
     pub async fn end(&mut self, channel: Channel) -> Result<(), Error> {
         self.ended.take((channel, Party::Caller), true)?;
-        self.writer.end(channel).await?;
-        Ok(self.writer.flush().await?)
+        let wrote = self.writer.end(channel).await;
+        flush_call(&mut self.writer, wrote).await
     }
 
     /// Sends one control message of 1 byte to 16 KiB; the service reads it as
@@ -107,8 +107,8 @@ impl CallStream {
     /// # Errors
     /// Returns [`Error::Service`] when the connection is gone.
     pub async fn cancel(&mut self) -> Result<(), Error> {
-        self.writer.frame(FrameKind::Cancel, &[]).await?;
-        Ok(self.writer.flush().await?)
+        let wrote = self.writer.frame(FrameKind::Cancel, &[]).await;
+        flush_call(&mut self.writer, wrote).await
     }
 }
 
@@ -212,13 +212,29 @@ fn received(frame: Frame, seen: &mut Seen) -> Result<Received, Error> {
     })
 }
 
+/// Maps mid-call write/flush loss after `open` to `outcome_unknown`, keeping validation errors.
+async fn flush_call<W: AsyncWrite + Unpin>(
+    writer: &mut FrameWriter<W>,
+    wrote: Result<(), ServiceError>,
+) -> Result<(), Error> {
+    let map = |error| {
+        Error::Service(if error == ServiceError::Cancelled {
+            ServiceError::OutcomeUnknown
+        } else {
+            error
+        })
+    };
+    wrote.map_err(map)?;
+    writer.flush().await.map_err(map)
+}
+
 /// Writes one `control` frame; its bounds are the frame header's.
 async fn control<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,
     message: &[u8],
 ) -> Result<(), Error> {
-    writer.frame(FrameKind::Control, message).await?;
-    Ok(writer.flush().await?)
+    let wrote = writer.frame(FrameKind::Control, message).await;
+    flush_call(writer, wrote).await
 }
 
 /// Longest wait for a target to answer one `describe`, dial included.
@@ -317,8 +333,7 @@ impl Caller {
         let header = OpenHeader::new(request_id, target, OpenBody::Service(request))
             .encode()
             .map_err(|_| Error::Protocol("the request exceeds a protocol bound"))?;
-        opened.writer.frame(FrameKind::Open, &header).await?;
-        opened.writer.flush().await?;
+        opened.writer.write_open(&header).await?;
         Ok(opened)
     }
 }
@@ -326,3 +341,7 @@ impl Caller {
 #[cfg(test)]
 #[path = "caller_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "caller_write_tests.rs"]
+mod write_tests;

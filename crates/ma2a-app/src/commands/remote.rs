@@ -7,7 +7,7 @@ use std::io;
 
 use ma2a_core::{
     EndpointId, RequestId,
-    service::{FrameKind, OpenBody, OpenHeader, RemotePath, ServiceError},
+    service::{OpenBody, OpenHeader, RemotePath, ServiceError},
 };
 use ma2a_runtime::ipc::{IpcPaths, LocalApiClient, LocalStream, StreamUpgrade};
 use ma2a_services::{FrameReader, FrameWriter, client::ClientError};
@@ -33,6 +33,8 @@ mod hosted_stream;
 mod hosted_view;
 #[cfg(all(test, unix))]
 mod logs_tests;
+#[cfg(test)]
+mod open_tests;
 pub(crate) mod process;
 pub(crate) mod proxy;
 #[cfg(all(test, unix))]
@@ -132,12 +134,15 @@ pub(crate) async fn open_bound(
     let header = OpenHeader::new(request_id, target, body)
         .encode()
         .map_err(|_| AppError::Usage("the remote request exceeds a protocol bound"))?;
-    let sent = async {
-        writer.frame(FrameKind::Open, &header).await?;
-        writer.flush().await
-    };
-    sent.await.map_err(ClientError::Stream)?;
+    send_open(&mut writer, &header).await?;
     Ok((request_id, (reader, writer)))
+}
+
+async fn send_open<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut FrameWriter<W>,
+    header: &[u8],
+) -> Result<(), ClientError> {
+    writer.write_open(header).await.map_err(ClientError::Stream)
 }
 
 /// This Runtime's own Endpoint, which a target records as the creator of every task it

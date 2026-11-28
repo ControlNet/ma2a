@@ -114,3 +114,78 @@ async fn a_frame_abandoned_mid_write_refuses_every_later_frame() {
     assert!(writer.is_torn());
     assert_eq!(outcome, Err(ServiceError::Cancelled));
 }
+
+struct FailsAfterWrite {
+    remaining: usize,
+    fail_flush: bool,
+}
+
+impl tokio::io::AsyncWrite for FailsAfterWrite {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if self.remaining == 0 {
+            return std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+        }
+        let take = buffer.len().min(self.remaining);
+        self.remaining -= take;
+        std::task::Poll::Ready(Ok(take))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.fail_flush {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        } else {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn write_open_keeps_cancelled_only_before_any_byte_is_written() {
+    // Out-of-bound header fails before any byte is written.
+    let mut writer = FrameWriter::new(Vec::new());
+    assert_eq!(
+        writer.write_open(&[]).await,
+        Err(ServiceError::InvalidInput)
+    );
+    assert!(!writer.has_written());
+
+    // Write failure before byte 0: nothing could have reached the target -> Cancelled.
+    let mut writer = FrameWriter::new(FailsAfterWrite {
+        remaining: 0,
+        fail_flush: false,
+    });
+    assert_eq!(
+        writer.write_open(b"open-header").await,
+        Err(ServiceError::Cancelled)
+    );
+    assert!(!writer.has_written());
+
+    // Partial header (2 B), full frame header before payload (5 B), partial payload (7 B),
+    // and flush failure after full write: bytes may have reached the target -> OutcomeUnknown.
+    for (remaining, fail_flush) in [(2, false), (5, false), (7, false), (usize::MAX, true)] {
+        let mut writer = FrameWriter::new(FailsAfterWrite {
+            remaining,
+            fail_flush,
+        });
+        assert_eq!(
+            writer.write_open(b"open-header").await,
+            Err(ServiceError::OutcomeUnknown),
+            "remaining={remaining}, fail_flush={fail_flush}"
+        );
+        assert!(writer.has_written());
+    }
+}
