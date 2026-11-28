@@ -44,6 +44,9 @@ jobs:
       - name: Check the A2A token file natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-app --bin ma2a token_file
+      - name: Check Windows console and redirected stdout natively
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p ma2a-app --bin ma2a commands::remote::stdio::tests
       - name: Check the invitation file natively
         if: runner.os == 'Windows'
         run: cargo test --locked -p ma2a-runtime --lib invite_file
