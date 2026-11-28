@@ -19,6 +19,8 @@ pub(crate) use queue::{ControlRoundQueue, ScheduledControlRound, SynchronizedCon
 #[cfg(test)]
 mod fairness_tests;
 #[cfg(test)]
+mod projection_tests;
+#[cfg(test)]
 mod scheduling_tests;
 #[cfg(test)]
 mod source_tests;
@@ -156,6 +158,7 @@ impl Actor {
         self.record_control_round((succeeded, &peers), before_view);
         self.complete_control_waiters(round_id, succeeded, &peers, dialed.as_ref());
         Self::absorb_background("control projection", reconciled)?;
+        self.schedule_control_projection();
         Ok(())
     }
 
