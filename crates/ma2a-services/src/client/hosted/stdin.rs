@@ -61,9 +61,10 @@ where
     };
     let frame = match early {
         Ok(frame) => frame,
-        Err(Ok(())) => next(reader).await?,
-        // A target that stopped reading may still have said why.
-        Err(Err(error @ ClientError::Stream(_))) => next(reader).await.map_err(|_| error)?,
+        // A target that stopped reading may still have said why; if the stream broke without
+        // a terminal frame, `next` already reports `outcome_unknown` (or `invalid_input` for
+        // a malformed frame).
+        Err(Ok(()) | Err(ClientError::Stream(_))) => next(reader).await?,
         // Local input failed: cancel the write within the grace so the target releases its
         // writer lease even if the caller keeps this stream open.
         Err(Err(error)) => {

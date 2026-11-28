@@ -2075,6 +2075,57 @@ const fn outcome_unknown<T>(result: &Result<T, ClientError>) -> bool {
     )
 }
 
+struct NotifyingBroken(std::sync::Arc<tokio::sync::Notify>);
+
+impl AsyncWrite for NotifyingBroken {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        _bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.0.notify_one();
+        Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+async fn stdin_after_broken_write(tail: &[u8]) -> TestResult<Result<(u64, bool), ClientError>> {
+    use ma2a_core::service::ProcessAccept;
+    use ma2a_services::client::hosted;
+    use tokio::io::AsyncWriteExt as _;
+
+    let ((mut reader, _writer), (_target_reader, mut target_writer)) = pipe();
+    let wrote = std::sync::Arc::new(tokio::sync::Notify::new());
+    let target_wrote = std::sync::Arc::clone(&wrote);
+    let tail = tail.to_vec();
+    let target = async move {
+        let admitted = ProcessAccept::Admitted.encode()?;
+        target_writer.frame(FrameKind::Accept, &admitted).await?;
+        target_writer.flush().await?;
+        target_wrote.notified().await;
+        if !tail.is_empty() {
+            target_writer.get_mut().write_all(&tail).await?;
+        }
+        target_writer.shutdown().await?;
+        TestResult::Ok(())
+    };
+    let mut broken = FrameWriter::new(NotifyingBroken(wrote));
+    let caller = hosted::stdin((&mut reader, &mut broken), (&b"abc"[..], true));
+    let (res, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    Ok(res)
+}
+
 async fn assert_streaming_drivers_unknown<R, F>(label: &str, mut make: F) -> TestResult
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -2240,5 +2291,17 @@ async fn torn_frames_and_stream_resets_report_outcome_unknown_across_client_driv
     ))
     .await?;
     assert!(malformed(&res), "oversized header: {res:?}");
+
+    // Failed write in hosted::stdin must preserve the read-side stream error instead of
+    // surfacing the write-side Cancelled.
+    let res = stdin_after_broken_write(&[]).await?;
+    assert!(outcome_unknown(&res), "hosted::stdin clean eof: {res:?}");
+    let res = stdin_after_broken_write(&[4_u8, 0, 0, 0, 10, 1, b'a', b'b']).await?;
+    assert!(
+        outcome_unknown(&res),
+        "hosted::stdin truncated payload: {res:?}"
+    );
+    let res = stdin_after_broken_write(oversized_header).await?;
+    assert!(malformed(&res), "hosted::stdin oversized header: {res:?}");
     Ok(())
 }
