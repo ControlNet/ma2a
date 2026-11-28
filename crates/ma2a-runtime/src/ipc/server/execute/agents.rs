@@ -202,6 +202,7 @@ const fn refusal(error: ServiceError) -> ApiError {
         )
         .without_effects(),
         ServiceError::InvalidInput => ApiError::invalid_input().without_effects(),
+        ServiceError::Internal => ApiError::new(ProtocolError::INTERNAL),
         _ => ApiError::new(ProtocolError::UNAVAILABLE),
     }
 }
