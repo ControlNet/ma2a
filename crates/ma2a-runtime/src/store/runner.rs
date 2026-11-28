@@ -42,23 +42,8 @@ impl StoreBackend {
                 let result = self.repository.snapshot_state(endpoint_id, now_ms);
                 drop(reply.send(result.map_err(Into::into)));
             }
-            StoreCommand::MutationReplay { request_id, reply } => {
-                mutation_replay::lookup(&self.repository, request_id, reply);
-            }
-            StoreCommand::ReserveMutationReplay {
-                request_id,
-                fingerprint,
-                reply,
-            } => mutation_replay::reserve(
-                &mut self.repository,
-                ma2a_store::MutationReplayRequest::new(request_id, fingerprint),
-                reply,
-            ),
-            StoreCommand::AbortMutationReplay { request_id, reply } => {
-                mutation_replay::abort(&mut self.repository, request_id, reply);
-            }
-            StoreCommand::RecordMutationReplay { record, reply } => {
-                mutation_replay::complete(&mut self.repository, &record, reply);
+            StoreCommand::MutationReplay(command) => {
+                mutation_replay::dispatch(&mut self.repository, command);
             }
             StoreCommand::CreateOwnedSpace { creation, reply } => drop(
                 reply.send(

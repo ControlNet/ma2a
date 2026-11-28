@@ -156,7 +156,13 @@ pub(super) async fn redeem(
         .map_err(|error| {
             let api = ApiError::new(enrollment_protocol_error(&error));
             error.committed_revision().map_or_else(
-                || api.without_effects(),
+                || {
+                    if error.is_no_effect() {
+                        api.without_effects()
+                    } else {
+                        api.retryable_remote()
+                    }
+                },
                 |revision| api.after_commit(revision),
             )
         })?;

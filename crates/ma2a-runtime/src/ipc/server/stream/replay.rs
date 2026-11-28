@@ -102,6 +102,9 @@ pub(super) async fn admit(
                 Admission::Answer(outcome_unknown())
             }
         }
+        Ok(Some(MutationReplayState::Retryable(found))) if found != fingerprint => {
+            reject(ServiceError::Conflict)
+        }
         Ok(Some(MutationReplayState::Pending(_) | MutationReplayState::Completed(_))) => {
             reject(ServiceError::Conflict)
         }

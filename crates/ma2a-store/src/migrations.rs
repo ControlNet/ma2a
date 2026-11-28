@@ -4,7 +4,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The newest schema version this store can read or write.
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 const MIGRATION_V1: &str = include_str!("../migrations/0001_init.sql");
 const MIGRATION_V2: &str = include_str!("../migrations/0002_web_auth.sql");
 const MIGRATION_V3: &str = include_str!("../migrations/0003_relay_persistence.sql");
@@ -19,6 +19,7 @@ const MIGRATION_V10: &str = include_str!("../migrations/0010_hosted_services.sql
 const MIGRATION_V11: &str = include_str!("../migrations/0011_departure_receipts.sql");
 const MIGRATION_V12: &str = include_str!("../migrations/0012_agent_task_changed.sql");
 const MIGRATION_V13: &str = include_str!("../migrations/0013_agent_outbox_task_fk.sql");
+const MIGRATION_V14: &str = include_str!("../migrations/0014_retryable_mutation_fences.sql");
 
 pub(crate) fn current_version(connection: &Connection) -> Result<u32, StoreError> {
     Ok(connection.query_row("PRAGMA user_version", [], |row| row.get(0))?)
@@ -93,6 +94,10 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
     }
     if current_version(&transaction)? == 12 {
         transaction.execute_batch(MIGRATION_V13)?;
+        transaction.pragma_update(None, "user_version", 13_u32)?;
+    }
+    if current_version(&transaction)? == 13 {
+        transaction.execute_batch(MIGRATION_V14)?;
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     validate(&transaction)?;
@@ -151,7 +156,8 @@ fn validate(connection: &Connection) -> Result<(), StoreError> {
          OR (version = 10 AND name = 'hosted_services')
          OR (version = 11 AND name = 'departure_receipts')
          OR (version = 12 AND name = 'agent_task_changed')
-         OR (version = 13 AND name = 'agent_outbox_task_fk')",
+         OR (version = 13 AND name = 'agent_outbox_task_fk')
+         OR (version = 14 AND name = 'retryable_mutation_fences')",
         [],
         |row| row.get::<_, u32>(0),
     )?;

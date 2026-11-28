@@ -217,7 +217,7 @@ fn schema_five_replay_rows_gain_permanent_fences() -> TestResult {
     drop(repository);
     // Reconstruct the real schema-5 replay layout, retaining both row states.
     let connection = Connection::open(config.database_path())?;
-    connection.execute_batch("DELETE FROM schema_migrations WHERE version IN (12, 13); DROP TABLE departure_receipts; DELETE FROM schema_migrations WHERE version = 11; DROP TABLE hosted_services; DELETE FROM schema_migrations WHERE version = 10; DROP TABLE agent_outbox; DROP TABLE agent_tool_calls; DROP TABLE agent_artifacts; DROP TABLE agent_task_events; DROP TABLE agent_tasks; DROP TABLE agent_instances; DROP TABLE agents; DELETE FROM schema_migrations WHERE version = 9; DROP TABLE processes; DELETE FROM schema_migrations WHERE version = 8; DROP TABLE service_exposures; DROP TABLE file_roots; DROP TABLE transfer_staging; DELETE FROM schema_migrations WHERE version = 7; DROP TRIGGER reserve_mutation_fence; DROP TABLE local_mutation_fences; DELETE FROM schema_migrations WHERE version = 6; PRAGMA user_version = 5;")?;
+    connection.execute_batch("DELETE FROM schema_migrations WHERE version IN (12, 13, 14); DROP TABLE departure_receipts; DELETE FROM schema_migrations WHERE version = 11; DROP TABLE hosted_services; DELETE FROM schema_migrations WHERE version = 10; DROP TABLE agent_outbox; DROP TABLE agent_tool_calls; DROP TABLE agent_artifacts; DROP TABLE agent_task_events; DROP TABLE agent_tasks; DROP TABLE agent_instances; DROP TABLE agents; DELETE FROM schema_migrations WHERE version = 9; DROP TABLE processes; DELETE FROM schema_migrations WHERE version = 8; DROP TABLE service_exposures; DROP TABLE file_roots; DROP TABLE transfer_staging; DELETE FROM schema_migrations WHERE version = 7; DROP TRIGGER reserve_mutation_fence; DROP TABLE local_mutation_fences; DELETE FROM schema_migrations WHERE version = 6; PRAGMA user_version = 5;")?;
     drop(connection);
     let mut reopened = Repository::open(&config)?;
     assert!(matches!(
@@ -244,5 +244,65 @@ fn schema_five_replay_rows_gain_permanent_fences() -> TestResult {
             .reserve_mutation_replay(completed.request_id(), completed.fingerprint())
             .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn retryable_fence_rejects_changed_fingerprint_and_completes_on_exact_retry() -> TestResult {
+    let state = TempState::new("replay-retryable")?;
+    let config = StoreConfig::new(state.path());
+    let mut repository = Repository::open(&config)?;
+    let id = request_id(42)?;
+    let fp = [0x42; 32];
+    let other_fp = [0x99; 32];
+
+    repository.reserve_mutation_replay(id, fp)?;
+    repository.defer_mutation_replay(id)?;
+    drop(repository);
+
+    let mut reopened = Repository::open(&config)?;
+    assert_eq!(
+        reopened.mutation_replay(id)?,
+        Some(ma2a_store::MutationReplayState::Retryable(fp))
+    );
+    assert!(reopened.reserve_mutation_replay(id, other_fp).is_err());
+
+    // Exact retry re-reserves to Pending, and a transient abort keeps the retryable fence.
+    reopened.reserve_mutation_replay(id, fp)?;
+    assert_eq!(
+        reopened.mutation_replay(id)?,
+        Some(ma2a_store::MutationReplayState::Pending(fp))
+    );
+    reopened.abort_mutation_replay(id)?;
+    assert_eq!(
+        reopened.mutation_replay(id)?,
+        Some(ma2a_store::MutationReplayState::Retryable(fp))
+    );
+
+    // Reclaiming an abandoned in-flight retry preserves Retryable.
+    reopened.reserve_mutation_replay(id, fp)?;
+    assert_eq!(reopened.reclaim_abandoned_mutation_replays()?, 1);
+    assert_eq!(
+        reopened.mutation_replay(id)?,
+        Some(ma2a_store::MutationReplayState::Retryable(fp))
+    );
+
+    // Completing clears retryable so later eviction stays non-retryable Pending.
+    reopened.reserve_mutation_replay(id, fp)?;
+    let done = MutationReplayRecord::new(MutationReplayRequest::new(id, fp), 9, b"ok".to_vec())?;
+    reopened.record_mutation_replay(&done)?;
+    assert_eq!(
+        reopened.mutation_replay(id)?,
+        Some(ma2a_store::MutationReplayState::Completed(done))
+    );
+    Connection::open(config.database_path())?.execute(
+        "DELETE FROM local_mutation_replay WHERE request_id = ?1",
+        [id.as_bytes().as_slice()],
+    )?;
+    assert_eq!(
+        reopened.mutation_replay(id)?,
+        Some(ma2a_store::MutationReplayState::Pending(fp))
+    );
+    assert!(reopened.reserve_mutation_replay(id, fp).is_err());
     Ok(())
 }

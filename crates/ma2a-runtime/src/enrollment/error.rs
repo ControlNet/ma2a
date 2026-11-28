@@ -113,6 +113,29 @@ impl EnrollmentError {
     pub const fn stage(&self) -> Option<EnrollmentStage> {
         self.1
     }
+
+    /// Returns whether this failure is known to have taken no remote or local effect.
+    pub(crate) const fn is_no_effect(&self) -> bool {
+        if self.2.is_some() {
+            return false;
+        }
+        matches!(
+            (self.0, self.1),
+            (
+                EnrollmentErrorKind::Busy,
+                None | Some(EnrollmentStage::Exchange)
+            ) | (EnrollmentErrorKind::InvalidTicket, None)
+                | (
+                    EnrollmentErrorKind::InvalidTicket
+                        | EnrollmentErrorKind::Expired
+                        | EnrollmentErrorKind::Cancelled
+                        | EnrollmentErrorKind::Conflict
+                        | EnrollmentErrorKind::SpaceFull
+                        | EnrollmentErrorKind::AddressUnavailable,
+                    Some(EnrollmentStage::OwnerRedemption),
+                )
+        )
+    }
 }
 
 impl fmt::Display for EnrollmentError {

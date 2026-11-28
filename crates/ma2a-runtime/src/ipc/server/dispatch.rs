@@ -250,10 +250,18 @@ async fn replayed_or_reserved(
         ma2a_store::MutationReplayState::Completed(entry) if entry.fingerprint() == fingerprint => {
             return Ok(Some(entry.response().to_vec()));
         }
+        ma2a_store::MutationReplayState::Retryable(found) if found == fingerprint => {
+            context
+                .handle
+                .reserve_mutation_replay(request_id, fingerprint)
+                .await?;
+            return Ok(None);
+        }
         ma2a_store::MutationReplayState::Pending(found) if found == fingerprint => {
             ProtocolError::UNAVAILABLE
         }
         ma2a_store::MutationReplayState::Pending(_)
+        | ma2a_store::MutationReplayState::Retryable(_)
         | ma2a_store::MutationReplayState::Completed(_) => ProtocolError::CONFLICT,
         _ => ProtocolError::UNAVAILABLE,
     };

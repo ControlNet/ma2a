@@ -8,6 +8,8 @@ pub(super) enum MutationFailure {
     NotStarted(ApiError),
     /// A durable commit is known to have happened; completion failed afterwards.
     Committed { error: ApiError, revision: u64 },
+    /// Remote execution may have committed; keep the request ID fenced for exact retry only.
+    Retryable(ApiError),
     /// Execution started, but its durable/external outcome cannot be proven.
     Indeterminate(ApiError),
 }
@@ -19,6 +21,10 @@ impl MutationFailure {
             Self::Committed { error, .. } => ApiError::with_remediation(
                 error.code(),
                 "mutation committed; completion failed; inspect current state; this request will not execute again",
+            ),
+            Self::Retryable(error) => ApiError::with_remediation(
+                error.code(),
+                "remote outcome may include side effects; inspect current state or retry the exact same request",
             ),
             Self::Indeterminate(error) => ApiError::with_remediation(
                 error.code(),
@@ -34,6 +40,7 @@ impl From<ApiError> for MutationFailure {
         match error.effect {
             api::MutationEffect::NotStarted => Self::NotStarted(error),
             api::MutationEffect::Committed(revision) => Self::Committed { error, revision },
+            api::MutationEffect::Retryable => Self::Retryable(error),
             api::MutationEffect::Indeterminate => Self::Indeterminate(error),
         }
     }
@@ -51,6 +58,12 @@ pub(super) async fn record_failure(
             context
                 .handle
                 .abort_mutation_replay(admitted.0.request_id())
+                .await?;
+        }
+        MutationFailure::Retryable(_) => {
+            context
+                .handle
+                .defer_mutation_replay(admitted.0.request_id())
                 .await?;
         }
         failure => {

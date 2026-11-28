@@ -41,6 +41,13 @@ impl ServedRuntime {
         timeout(PROMPT, self.runtime.shutdown()).await??;
         Ok(())
     }
+
+    pub(super) async fn stop_preserving_state(self) -> TestResult<TempState> {
+        self.server.cancel().await?;
+        IpcPaths::new(&self.state.0)?.remove_stale_endpoint()?;
+        timeout(PROMPT, self.runtime.shutdown()).await??;
+        Ok(self.state)
+    }
 }
 
 pub(super) async fn serve_runtime(

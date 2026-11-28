@@ -184,12 +184,12 @@ impl Actor {
             return Err(EnrollmentError::from_status(1)
                 .at_stage(crate::EnrollmentStage::BootstrapValidation));
         }
-        let now_ms = u64::try_from(
-            self.clock
-                .now_ms()
-                .map_err(|_| EnrollmentError::internal())?,
-        )
-        .map_err(|_| EnrollmentError::internal())?;
+        let now_ms = u64::try_from(self.clock.now_ms().map_err(|_| {
+            EnrollmentError::internal().at_stage(crate::EnrollmentStage::BootstrapValidation)
+        })?)
+        .map_err(|_| {
+            EnrollmentError::internal().at_stage(crate::EnrollmentStage::BootstrapValidation)
+        })?;
         let authorization = ma2a_core::SpaceAuthorizationView::from_chain(&chain);
         let owner_address = ValidatedAddressRecord::parse(
             owner_address.canonical_bytes(),

@@ -29,6 +29,13 @@ impl RuntimeHandle {
         self.store.abort_mutation_replay(request_id).await
     }
 
+    pub(crate) async fn defer_mutation_replay(
+        &self,
+        request_id: RequestId,
+    ) -> Result<(), RuntimeError> {
+        self.store.defer_mutation_replay(request_id).await
+    }
+
     pub(crate) async fn record_mutation_replay(
         &self,
         record: MutationReplayRecord,

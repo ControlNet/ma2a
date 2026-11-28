@@ -62,6 +62,8 @@ mod space_redeem_owner_address;
 mod space_redeem_retry;
 #[path = "server_tests/space_redeem_support.rs"]
 mod space_redeem_support;
+#[path = "server_tests/space_redeem_uncertain.rs"]
+mod space_redeem_uncertain;
 #[path = "server_tests/stream_plane.rs"]
 mod stream_plane;
 #[path = "server_tests/stream_plane_disconnect.rs"]

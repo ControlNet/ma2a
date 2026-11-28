@@ -140,6 +140,7 @@ pub struct ApiError {
 pub(crate) enum MutationEffect {
     NotStarted,
     Committed(u64),
+    Retryable,
     Indeterminate,
 }
 
@@ -151,6 +152,11 @@ impl ApiError {
 
     pub(crate) const fn without_effects(mut self) -> Self {
         self.effect = MutationEffect::NotStarted;
+        self
+    }
+
+    pub(crate) const fn retryable_remote(mut self) -> Self {
+        self.effect = MutationEffect::Retryable;
         self
     }
 

@@ -446,8 +446,15 @@ fn a_task_stored_before_schema_twelve_takes_its_newest_recorded_time() -> TestRe
     let config = StoreConfig::new(state.path());
     let connection = rusqlite::Connection::open(config.database_path())?;
     connection.execute_batch(
-        "ALTER TABLE agent_tasks DROP COLUMN changed_at_ms;
-         DELETE FROM schema_migrations WHERE version IN (12, 13); PRAGMA user_version = 11;",
+        "DROP TRIGGER reserve_mutation_fence;
+         ALTER TABLE local_mutation_fences DROP COLUMN retryable;
+         CREATE TRIGGER reserve_mutation_fence BEFORE INSERT ON local_mutation_replay
+         BEGIN
+             INSERT INTO local_mutation_fences(request_id, fingerprint)
+             VALUES (NEW.request_id, NEW.fingerprint);
+         END;
+         ALTER TABLE agent_tasks DROP COLUMN changed_at_ms;
+         DELETE FROM schema_migrations WHERE version IN (12, 13, 14); PRAGMA user_version = 11;",
     )?;
     drop(connection);
 
@@ -502,8 +509,15 @@ fn schema_twelve_backfills_changed_at_ms_from_the_last_state_event() -> TestResu
         [fallback.as_bytes().as_slice()],
     )?;
     connection.execute_batch(
-        "ALTER TABLE agent_tasks DROP COLUMN changed_at_ms;
-         DELETE FROM schema_migrations WHERE version IN (12, 13); PRAGMA user_version = 11;",
+        "DROP TRIGGER reserve_mutation_fence;
+         ALTER TABLE local_mutation_fences DROP COLUMN retryable;
+         CREATE TRIGGER reserve_mutation_fence BEFORE INSERT ON local_mutation_replay
+         BEGIN
+             INSERT INTO local_mutation_fences(request_id, fingerprint)
+             VALUES (NEW.request_id, NEW.fingerprint);
+         END;
+         ALTER TABLE agent_tasks DROP COLUMN changed_at_ms;
+         DELETE FROM schema_migrations WHERE version IN (12, 13, 14); PRAGMA user_version = 11;",
     )?;
     drop(connection);
 
@@ -1191,8 +1205,15 @@ fn schema_thirteen_prunes_orphaned_outbox_rows_on_upgrade() -> TestResult {
     let connection = rusqlite::Connection::open(config.database_path())?;
     connection.execute_batch(
         "PRAGMA foreign_keys = OFF;
+         DROP TRIGGER reserve_mutation_fence;
+         ALTER TABLE local_mutation_fences DROP COLUMN retryable;
+         CREATE TRIGGER reserve_mutation_fence BEFORE INSERT ON local_mutation_replay
+         BEGIN
+             INSERT INTO local_mutation_fences(request_id, fingerprint)
+             VALUES (NEW.request_id, NEW.fingerprint);
+         END;
          DELETE FROM agent_tasks WHERE task_id = X'01010101010101010101010101010101';
-         DELETE FROM schema_migrations WHERE version = 13;
+         DELETE FROM schema_migrations WHERE version IN (13, 14);
          PRAGMA user_version = 12;",
     )?;
     drop(connection);

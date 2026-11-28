@@ -1,104 +1,15 @@
+#[path = "mutation_replay_models.rs"]
+mod models;
+
 use ma2a_core::RequestId;
 use rusqlite::OptionalExtension as _;
 
 use crate::{Repository, StoreError};
-
-/// Maximum terminal local mutation decisions retained across restarts.
-pub const LOCAL_MUTATION_REPLAY_MAX_ENTRIES: usize = 1_024;
-/// Maximum aggregate encoded response bytes retained across restarts.
-pub const LOCAL_MUTATION_REPLAY_MAX_BYTES: usize = 8 * 1_024 * 1_024;
-/// Maximum encoded response bytes retained for one terminal mutation.
-pub const LOCAL_MUTATION_REPLAY_MAX_RESULT_BYTES: usize = 65_536;
-
-/// One bounded terminal local mutation decision stored without command payloads.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MutationReplayRecord {
-    request_id: RequestId,
-    fingerprint: [u8; 32],
-    revision: u64,
-    response: Vec<u8>,
-}
-
-/// Correlation identity and canonical fingerprint for one local mutation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MutationReplayRequest {
-    request_id: RequestId,
-    fingerprint: [u8; 32],
-}
-
-/// Durable classification for one local mutation request identifier.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum MutationReplayState {
-    /// The request was durably admitted but no retained terminal response is available.
-    Pending([u8; 32]),
-    /// The request completed and its exact terminal response is retained.
-    Completed(MutationReplayRecord),
-}
-
-impl MutationReplayRequest {
-    /// Creates one replay request identity from validated typed command data.
-    pub const fn new(request_id: RequestId, fingerprint: [u8; 32]) -> Self {
-        Self {
-            request_id,
-            fingerprint,
-        }
-    }
-
-    /// Returns the mutation correlation identifier.
-    pub const fn request_id(self) -> RequestId {
-        self.request_id
-    }
-
-    /// Returns the canonical typed-command fingerprint.
-    pub const fn fingerprint(self) -> [u8; 32] {
-        self.fingerprint
-    }
-}
-
-impl MutationReplayRecord {
-    /// Creates one validated replay record from an already bounded terminal response.
-    ///
-    /// # Errors
-    /// Returns [`StoreError`] when the response is empty or exceeds the per-entry bound.
-    pub fn new(
-        request: MutationReplayRequest,
-        revision: u64,
-        response: Vec<u8>,
-    ) -> Result<Self, StoreError> {
-        if response.is_empty() || response.len() > LOCAL_MUTATION_REPLAY_MAX_RESULT_BYTES {
-            return Err(StoreError::SchemaMismatch {
-                detail: "local mutation replay response is outside its bound",
-            });
-        }
-        Ok(Self {
-            request_id: request.request_id,
-            fingerprint: request.fingerprint,
-            revision,
-            response,
-        })
-    }
-
-    /// Returns the mutation correlation identifier.
-    pub const fn request_id(&self) -> RequestId {
-        self.request_id
-    }
-
-    /// Returns the canonical typed-command fingerprint.
-    pub const fn fingerprint(&self) -> [u8; 32] {
-        self.fingerprint
-    }
-
-    /// Returns the original committed response revision.
-    pub const fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    /// Returns the exact encoded terminal response.
-    pub fn response(&self) -> &[u8] {
-        &self.response
-    }
-}
+pub use models::{
+    LOCAL_MUTATION_REPLAY_MAX_BYTES, LOCAL_MUTATION_REPLAY_MAX_ENTRIES,
+    LOCAL_MUTATION_REPLAY_MAX_RESULT_BYTES, MutationReplayRecord, MutationReplayRequest,
+    MutationReplayState,
+};
 
 impl Repository {
     /// Loads one retained local mutation decision.
@@ -112,10 +23,10 @@ impl Repository {
         let row = self
             .connection
             .query_row(
-                "SELECT fingerprint, revision, response FROM local_mutation_replay
+                "SELECT fingerprint, revision, response, 0 AS retryable FROM local_mutation_replay
                  WHERE request_id = ?1
                  UNION ALL
-                 SELECT fingerprint, NULL, NULL FROM local_mutation_fences
+                 SELECT fingerprint, NULL, NULL, retryable FROM local_mutation_fences
                  WHERE request_id = ?1 AND NOT EXISTS (
                     SELECT 1 FROM local_mutation_replay WHERE request_id = ?1
                  )",
@@ -125,18 +36,20 @@ impl Repository {
                         row.get::<_, Vec<u8>>(0)?,
                         row.get::<_, Option<u64>>(1)?,
                         row.get::<_, Option<Vec<u8>>>(2)?,
+                        row.get::<_, u8>(3)?,
                     ))
                 },
             )
             .optional()?;
-        row.map_or(Ok(None), |(fingerprint, revision, response)| {
+        row.map_or(Ok(None), |(fingerprint, revision, response, retryable)| {
             let fingerprint =
                 <[u8; 32]>::try_from(fingerprint).map_err(|_| StoreError::SchemaMismatch {
                     detail: "local mutation replay fingerprint is malformed",
                 })?;
-            match (revision, response) {
-                (None, None) => Ok(Some(MutationReplayState::Pending(fingerprint))),
-                (Some(revision), Some(response)) => {
+            match (revision, response, retryable) {
+                (None, None, 0) => Ok(Some(MutationReplayState::Pending(fingerprint))),
+                (None, None, 1) => Ok(Some(MutationReplayState::Retryable(fingerprint))),
+                (Some(revision), Some(response), 0) => {
                     Self::validate_replay_response(&response)?;
                     Ok(Some(MutationReplayState::Completed(MutationReplayRecord {
                         request_id,
@@ -145,7 +58,7 @@ impl Repository {
                         response,
                     })))
                 }
-                (None, Some(_)) | (Some(_), None) => Err(StoreError::SchemaMismatch {
+                _ => Err(StoreError::SchemaMismatch {
                     detail: "local mutation replay completion is inconsistent",
                 }),
             }
@@ -182,14 +95,16 @@ impl Repository {
         Ok(())
     }
 
-    /// Removes a reservation after execution fails without a terminal side effect.
+    /// Removes an in-flight reservation after a known no-effect refusal.
+    ///
+    /// A fence already marked retryable after an earlier uncertain remote outcome stays bound.
     ///
     /// # Errors
     /// Returns [`StoreError`] when `SQLite` rejects the deletion.
     pub fn abort_mutation_replay(&mut self, request_id: RequestId) -> Result<(), StoreError> {
         let transaction = self.immediate()?;
         transaction.execute(
-            "DELETE FROM local_mutation_fences WHERE request_id = ?1 AND EXISTS (
+            "DELETE FROM local_mutation_fences WHERE request_id = ?1 AND retryable = 0 AND EXISTS (
                 SELECT 1 FROM local_mutation_replay WHERE request_id = ?1 AND response IS NULL
             )",
             [request_id.as_bytes().as_slice()],
@@ -203,11 +118,37 @@ impl Repository {
         Ok(())
     }
 
+    /// Transitions an in-flight reservation into a retryable fence after an uncertain remote outcome.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when no pending reservation exists or `SQLite` rejects the update.
+    pub fn defer_mutation_replay(&mut self, request_id: RequestId) -> Result<(), StoreError> {
+        let transaction = self.immediate()?;
+        let changed = transaction.execute(
+            "UPDATE local_mutation_fences SET retryable = 1
+             WHERE request_id = ?1 AND EXISTS (
+                 SELECT 1 FROM local_mutation_replay WHERE request_id = ?1 AND response IS NULL
+             )",
+            [request_id.as_bytes().as_slice()],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::SchemaMismatch {
+                detail: "local mutation replay reservation is missing",
+            });
+        }
+        transaction.execute(
+            "DELETE FROM local_mutation_replay WHERE request_id = ?1 AND response IS NULL",
+            [request_id.as_bytes().as_slice()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Frees the bounded slots of reservations that no live process can settle anymore.
     ///
     /// Only the Runtime that owns this state directory may call this, at start, before it
-    /// admits anything. The permanent fence of each request stays, so the same request is
-    /// still answered as pending and can never become executable again.
+    /// admits anything. The permanent fence of each request stays, so a non-retryable request is
+    /// still answered as pending and a retryable request stays fenced for exact retry.
     ///
     /// # Errors
     /// Returns [`StoreError`] when `SQLite` rejects the deletion.
@@ -250,6 +191,14 @@ impl Repository {
                 detail: "local mutation replay reservation is missing",
             });
         }
+        transaction.execute(
+            "UPDATE local_mutation_fences SET retryable = 0
+             WHERE request_id = ?1 AND fingerprint = ?2",
+            (
+                record.request_id.as_bytes().as_slice(),
+                record.fingerprint.as_slice(),
+            ),
+        )?;
         enforce_retention(&transaction)?;
         transaction.commit()?;
         Ok(())
