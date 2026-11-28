@@ -24,7 +24,11 @@ pub(super) static TLS_LOAD_COMPLETIONS: std::sync::atomic::AtomicUsize =
 pub(super) fn load_native_tls_blocking(
     tls: &ma2a_net::NativeRelayTlsConfig,
 ) -> Result<ma2a_net::LoadedRelayTls, RuntimeError> {
-    load_native_tls_raw(tls).map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))
+    load_native_tls_raw(tls).map_err(|error| {
+        RuntimeError::new(RuntimeErrorKind::PrivateRelay(
+            ma2a_net::PrivateRelayServerError::Tls(error),
+        ))
+    })
 }
 
 pub(super) fn load_native_tls_raw(

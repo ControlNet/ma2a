@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "no_effect_relay_tls.rs"]
+mod relay_tls;
+
 /// A Runtime and its local API server over a private state directory.
 pub(super) struct Served {
     pub(super) state: TempState,

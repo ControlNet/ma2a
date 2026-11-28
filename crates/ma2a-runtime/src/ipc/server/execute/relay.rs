@@ -203,11 +203,13 @@ fn after_commit<T, V>(
     view.map_err(|error| ApiError::from(error).after_commit(committed.revision()))
 }
 
-fn relay_error(error: &crate::RuntimeError) -> ApiError {
+const fn relay_error(error: &crate::RuntimeError) -> ApiError {
     let api = ApiError::new(ProtocolError::INTERNAL);
-    error
-        .committed_revision()
-        .map_or(api, |revision| api.after_commit(revision))
+    match error.committed_revision() {
+        Some(revision) => api.after_commit(revision),
+        None if error.is_pre_commit_relay_tls_refusal() => api.without_effects(),
+        None => api,
+    }
 }
 
 fn public_view(
