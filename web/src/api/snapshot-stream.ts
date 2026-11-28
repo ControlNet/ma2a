@@ -99,15 +99,34 @@ async function readJsonSnapshot(
   }
 }
 
+async function cancelUnreadBody(response: Response): Promise<void> {
+  const body = response.body
+  if (body === null || body.locked) return
+  try {
+    await body.cancel()
+  } catch {
+    // Keep the validation error as the rejection reason.
+  }
+}
+
 // Publish only a complete, ordered frozen snapshot. A new request starts afresh;
 // fragments from different revisions/boots are never combined.
 export async function readSnapshot(
   response: Response,
   signal?: AbortSignal,
 ): Promise<StampedRuntimeSnapshot> {
-  const headerBoot = parseBootHeader(response)
+  let headerBoot: string | undefined
+  try {
+    headerBoot = parseBootHeader(response)
+  } catch (error) {
+    await cancelUnreadBody(response)
+    throw error
+  }
   if (!response.headers.get("content-type")?.startsWith("application/x-ndjson")) {
-    if (headerBoot === undefined) invalid("missing runtime boot id")
+    if (headerBoot === undefined) {
+      await cancelUnreadBody(response)
+      invalid("missing runtime boot id")
+    }
     return readJsonSnapshot(response, headerBoot, signal)
   }
   const reader = response.body?.getReader()

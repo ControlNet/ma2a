@@ -160,3 +160,28 @@ test.each(["application/json", "application/x-ndjson"])(
     }
   },
 )
+
+test.each([
+  ["malformed", { "content-type": "application/json", [RUNTIME_BOOT_ID_HEADER]: "not-hex" }],
+  ["missing", { "content-type": "application/json" }],
+  [
+    "malformed ndjson",
+    { "content-type": "application/x-ndjson", [RUNTIME_BOOT_ID_HEADER]: "not-hex" },
+  ],
+])(
+  "cancels and releases unread response body when boot id header is %s",
+  async (_label, headers) => {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start() {},
+      cancel() {
+        cancelled = true
+      },
+    })
+    const response = new Response(body, { status: 200, headers })
+
+    await expect(readSnapshot(response)).rejects.toThrow(RuntimeApiPayloadError)
+    expect(cancelled).toBe(true)
+    expect(body.locked).toBe(false)
+  },
+)
