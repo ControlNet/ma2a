@@ -147,12 +147,21 @@ impl Actor {
     }
 }
 
-fn listeners_conflict(bound: std::net::SocketAddr, desired: std::net::SocketAddr) -> bool {
-    let bound_ip = bound.ip().to_canonical();
-    let desired_ip = desired.ip().to_canonical();
-    desired.port() != 0
-        && bound.port() == desired.port()
-        && (bound_ip == desired_ip || bound_ip.is_unspecified() || desired_ip.is_unspecified())
+pub(crate) fn listeners_conflict(
+    bound: std::net::SocketAddr,
+    desired: std::net::SocketAddr,
+) -> bool {
+    desired.port() != 0 && bound.port() == desired.port() && ips_conflict(bound.ip(), desired.ip())
+}
+
+fn ips_conflict(bound: std::net::IpAddr, desired: std::net::IpAddr) -> bool {
+    use std::net::IpAddr::{V4, V6};
+    match (bound.to_canonical(), desired.to_canonical()) {
+        (a, b) if a == b => true,
+        (V6(a), V6(b)) => a.is_unspecified() || b.is_unspecified(),
+        (V6(v6), V4(_)) | (V4(_), V6(v6)) => v6.is_unspecified(),
+        (V4(a), V4(b)) => a.is_unspecified() || b.is_unspecified(),
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +219,31 @@ mod tests {
         assert!(!listeners_conflict(
             addr("0.0.0.0:8443"),
             addr("127.0.0.1:8444")
+        ));
+        assert!(!listeners_conflict(
+            addr("[::ffff:0.0.0.0]:8443"),
+            addr("[::1]:8443")
+        ));
+        assert!(!listeners_conflict(
+            addr("[::1]:8443"),
+            addr("[::ffff:0.0.0.0]:8443")
+        ));
+        assert!(!listeners_conflict(
+            addr("0.0.0.0:8443"),
+            addr("[::1]:8443")
+        ));
+        assert!(!listeners_conflict(
+            addr("[::1]:8443"),
+            addr("0.0.0.0:8443")
+        ));
+        assert!(listeners_conflict(addr("[::]:8443"), addr("[::1]:8443")));
+        assert!(listeners_conflict(
+            addr("[::]:8443"),
+            addr("[::ffff:0.0.0.0]:8443")
+        ));
+        assert!(listeners_conflict(
+            addr("[::ffff:0.0.0.0]:8443"),
+            addr("[::]:8443")
         ));
     }
 }

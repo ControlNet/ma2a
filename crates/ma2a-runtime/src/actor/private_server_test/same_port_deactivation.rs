@@ -11,16 +11,34 @@ use crate::{
 };
 use ma2a_store::{Repository, StoreConfig, StoreError};
 
-#[tokio::test(start_paused = true)]
-async fn failed_same_port_replacement_deactivates_advertisements_immediately() -> TestResult {
-    let state = TempState::new("same-port-deactivate")?;
+async fn setup_space(
+    name: &str,
+) -> Result<
+    (TempState, StoreConfig, Runtime, ma2a_core::SpaceId),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    let state = TempState::new(name)?;
     let config = StoreConfig::new(&state.0);
     let runtime = Runtime::start(config.clone()).await?;
+    let space = runtime.handle().create_owned_space(name.to_owned()).await?;
+    Ok((state, config, runtime, space))
+}
+
+fn relay_ad(
+    config: &StoreConfig,
+    space: ma2a_core::SpaceId,
+    endpoint: ma2a_core::EndpointId,
+) -> Result<ma2a_store::PersistedRelayAdvertisement, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(Repository::open(config)?
+        .relay_advertisement(space, endpoint)?
+        .ok_or("relay advertisement missing")?)
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_same_port_replacement_deactivates_advertisements_immediately() -> TestResult {
+    let (_state, config, runtime, space) = setup_space("same-port-deactivate").await?;
     let handle = runtime.handle();
     let endpoint = handle.status().await?.endpoint_id();
-    let space = handle
-        .create_owned_space("same-port-deactivate".to_owned())
-        .await?;
     let peer_id = ma2a_core::EndpointId::from(iroh::SecretKey::from_bytes(&[0x45; 32]).public());
     add_peer(&config, space, peer_id)?;
 
@@ -31,9 +49,7 @@ async fn failed_same_port_replacement_deactivates_advertisements_immediately() -
     desired.listener_address = Some(address.to_string());
     handle.set_relay_configuration(desired.clone()).await?;
 
-    let initial_ad = Repository::open(&config)?
-        .relay_advertisement(space, endpoint)?
-        .ok_or("initial advertisement missing")?;
+    let initial_ad = relay_ad(&config, space, endpoint)?;
     assert!(initial_ad.is_active());
     let now_ms = u64::try_from(initial_ad.issued_at_ms())?;
     assert!(respond_has_relay_advertisement(
@@ -55,14 +71,10 @@ async fn failed_same_port_replacement_deactivates_advertisements_immediately() -
     );
 
     let status = handle.relay_status().await?;
-    assert!(status.convergence_pending);
-    assert!(status.applied_private.is_none());
+    assert!(status.convergence_pending && status.applied_private.is_none());
     assert_eq!(status.configuration, desired);
-    let after_fail = Repository::open(&config)?
-        .relay_advertisement(space, endpoint)?
-        .ok_or("persisted advertisement disappeared")?;
     assert!(
-        !after_fail.is_active(),
+        !relay_ad(&config, space, endpoint)?.is_active(),
         "advertisement remained active after failed same-port replacement"
     );
     assert!(!respond_has_relay_advertisement(
@@ -85,11 +97,8 @@ async fn failed_same_port_replacement_deactivates_advertisements_immediately() -
         Some(address)
     );
     assert!(!handle.relay_status().await?.convergence_pending);
-    let recovered = Repository::open(&config)?
-        .relay_advertisement(space, endpoint)?
-        .ok_or("recovered advertisement missing")?;
-    assert!(recovered.is_active());
-    assert!(recovered.sequence() > initial_ad.sequence());
+    let recovered = relay_ad(&config, space, endpoint)?;
+    assert!(recovered.is_active() && recovered.sequence() > initial_ad.sequence());
     assert!(respond_has_relay_advertisement(
         &config,
         (endpoint, peer_id, space),
@@ -101,22 +110,15 @@ async fn failed_same_port_replacement_deactivates_advertisements_immediately() -
 
 #[tokio::test(start_paused = true)]
 async fn failed_different_listener_replacement_keeps_advertisement_active() -> TestResult {
-    let state = TempState::new("diff-port-keep-active")?;
-    let config = StoreConfig::new(&state.0);
-    let runtime = Runtime::start(config.clone()).await?;
+    let (_state, config, runtime, space) = setup_space("diff-port-keep-active").await?;
     let handle = runtime.handle();
     let endpoint = handle.status().await?.endpoint_id();
-    let space = handle
-        .create_owned_space("diff-port-keep-active".to_owned())
-        .await?;
     let peer_id = ma2a_core::EndpointId::from(iroh::SecretKey::from_bytes(&[0x46; 32]).public());
     add_peer(&config, space, peer_id)?;
 
     let mut desired = enabled_configuration(vec![space]);
     handle.set_relay_configuration(desired.clone()).await?;
-    let initial_ad = Repository::open(&config)?
-        .relay_advertisement(space, endpoint)?
-        .ok_or("initial advertisement missing")?;
+    let initial_ad = relay_ad(&config, space, endpoint)?;
     assert!(initial_ad.is_active());
     let now_ms = u64::try_from(initial_ad.issued_at_ms())?;
     assert!(respond_has_relay_advertisement(
@@ -129,12 +131,8 @@ async fn failed_different_listener_replacement_keeps_advertisement_active() -> T
     desired.listener_address = Some(occupied.local_addr()?.to_string());
     assert!(handle.set_relay_configuration(desired).await.is_err());
 
-    let status = handle.relay_status().await?;
-    assert!(status.applied_private.is_some());
-    let after_fail = Repository::open(&config)?
-        .relay_advertisement(space, endpoint)?
-        .ok_or("advertisement disappeared")?;
-    assert!(after_fail.is_active());
+    assert!(handle.relay_status().await?.applied_private.is_some());
+    assert!(relay_ad(&config, space, endpoint)?.is_active());
     assert!(respond_has_relay_advertisement(
         &config,
         (endpoint, peer_id, space),
@@ -148,12 +146,8 @@ async fn failed_different_listener_replacement_keeps_advertisement_active() -> T
 
 #[tokio::test]
 async fn ephemeral_to_assigned_port_reconfiguration_stops_old_listener_first() -> TestResult {
-    let state = TempState::new("ephemeral-to-fixed")?;
-    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let (_state, _config, runtime, space) = setup_space("ephemeral-to-fixed").await?;
     let handle = runtime.handle();
-    let space = handle
-        .create_owned_space("ephemeral-to-fixed".to_owned())
-        .await?;
 
     let mut desired = enabled_configuration(vec![space]);
     handle.set_relay_configuration(desired.clone()).await?;
@@ -173,48 +167,69 @@ async fn ephemeral_to_assigned_port_reconfiguration_stops_old_listener_first() -
     Ok(())
 }
 
-#[tokio::test]
-async fn wildcard_and_loopback_same_port_reconfiguration_stops_old_listener_first() -> TestResult {
+async fn assert_relay_state(
+    handle: &crate::RuntimeHandle,
+    (expected_listen, expected_applied): (std::net::SocketAddr, std::net::SocketAddr),
+    pending: bool,
+) -> TestResult {
+    let status = handle.relay_status().await?;
+    assert_eq!(status.convergence_pending, pending);
+    assert_eq!(status.private_listen_addr, Some(expected_listen));
+    assert_eq!(
+        status.applied_private.map(|cfg| cfg.listen_addr()),
+        Some(expected_applied)
+    );
+    Ok(())
+}
+
+type TlsRelaySetup = (
+    TempState,
+    Runtime,
+    ma2a_core::SpaceId,
+    ma2a_store::RelayTransportConfiguration,
+    std::net::SocketAddr,
+);
+
+async fn setup_tls_relay(
+    name: &str,
+    listen: std::net::SocketAddr,
+) -> Result<TlsRelaySetup, Box<dyn std::error::Error + Send + Sync>> {
     use super::tls_retry::{native_tls_config, write_tls_fixture};
 
-    let state = TempState::new("wildcard-loopback")?;
+    let (state, _config, runtime, space) = setup_space(name).await?;
     let transport = write_tls_fixture(&state)?;
-    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
     let handle = runtime.handle();
-    let space = handle
-        .create_owned_space("wildcard-loopback".to_owned())
-        .await?;
-
-    let wildcard_ephemeral: std::net::SocketAddr = ([0, 0, 0, 0], 0).into();
     handle
-        .set_relay_configuration(native_tls_config(
-            space,
-            wildcard_ephemeral,
-            transport.clone(),
-        ))
+        .set_relay_configuration(native_tls_config(space, listen, transport.clone()))
         .await?;
-    let wildcard = handle
+    let bound = handle
         .relay_status()
         .await?
         .private_listen_addr
-        .ok_or("missing bound wildcard private listener")?;
+        .ok_or("missing bound private listener")?;
+    assert_ne!(bound.port(), 0);
+    Ok((state, runtime, space, transport, bound))
+}
+
+#[tokio::test]
+async fn wildcard_and_loopback_same_port_reconfiguration_stops_old_listener_first() -> TestResult {
+    use super::tls_retry::native_tls_config;
+
+    let (_state, runtime, space, transport, wildcard) =
+        setup_tls_relay("wildcard-loopback", ([0, 0, 0, 0], 0).into()).await?;
     assert_eq!(wildcard.ip(), std::net::IpAddr::from([0, 0, 0, 0]));
-    assert_ne!(wildcard.port(), 0);
+    let handle = runtime.handle();
     let loopback: std::net::SocketAddr = ([127, 0, 0, 1], wildcard.port()).into();
 
     handle
         .set_relay_configuration(native_tls_config(space, loopback, transport.clone()))
         .await?;
-    let tightened = handle.relay_status().await?;
-    assert!(!tightened.convergence_pending);
-    assert_eq!(tightened.private_listen_addr, Some(loopback));
+    assert_relay_state(&handle, (loopback, loopback), false).await?;
 
     handle
         .set_relay_configuration(native_tls_config(space, wildcard, transport))
         .await?;
-    let widened = handle.relay_status().await?;
-    assert!(!widened.convergence_pending);
-    assert_eq!(widened.private_listen_addr, Some(wildcard));
+    assert_relay_state(&handle, (wildcard, wildcard), false).await?;
     runtime.shutdown().await?;
     Ok(())
 }
@@ -223,38 +238,46 @@ async fn wildcard_and_loopback_same_port_reconfiguration_stops_old_listener_firs
 #[tokio::test]
 async fn mapped_wildcard_to_loopback_same_port_reconfiguration_stops_old_listener_first()
 -> TestResult {
-    use super::tls_retry::{native_tls_config, write_tls_fixture};
+    use super::tls_retry::native_tls_config;
 
-    let state = TempState::new("mapped-wildcard-loopback")?;
-    let transport = write_tls_fixture(&state)?;
-    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let (_state, runtime, space, transport, bound) =
+        setup_tls_relay("mapped-wildcard-loopback", "[::ffff:0.0.0.0]:0".parse()?).await?;
     let handle = runtime.handle();
-    let space = handle
-        .create_owned_space("mapped-wildcard-loopback".to_owned())
-        .await?;
-
-    let mapped_wildcard: std::net::SocketAddr = "[::ffff:0.0.0.0]:0".parse()?;
-    handle
-        .set_relay_configuration(native_tls_config(space, mapped_wildcard, transport.clone()))
-        .await?;
-    let bound = handle
-        .relay_status()
-        .await?
-        .private_listen_addr
-        .ok_or("missing bound mapped wildcard private listener")?;
-    assert_ne!(bound.port(), 0);
     let loopback: std::net::SocketAddr = ([127, 0, 0, 1], bound.port()).into();
-
     handle
         .set_relay_configuration(native_tls_config(space, loopback, transport))
         .await?;
-    let tightened = handle.relay_status().await?;
-    assert!(!tightened.convergence_pending);
-    assert_eq!(tightened.private_listen_addr, Some(loopback));
-    assert_eq!(
-        tightened.applied_private.map(|cfg| cfg.listen_addr()),
-        Some(loopback)
+    assert_relay_state(&handle, (loopback, loopback), false).await?;
+    runtime.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(start_paused = true)]
+async fn mapped_wildcard_to_occupied_ipv6_loopback_keeps_old_relay_online() -> TestResult {
+    use super::tls_retry::native_tls_config;
+
+    let mapped_wildcard: std::net::SocketAddr = "[::ffff:0.0.0.0]:0".parse()?;
+    let (_state, runtime, space, transport, bound) =
+        setup_tls_relay("mapped-wildcard-ipv6-occupied", mapped_wildcard).await?;
+    let handle = runtime.handle();
+    let ipv4_loopback = (std::net::Ipv4Addr::LOCALHOST, bound.port());
+    drop(tokio::net::TcpStream::connect(ipv4_loopback).await?);
+
+    let ipv6_loopback: std::net::SocketAddr = (std::net::Ipv6Addr::LOCALHOST, bound.port()).into();
+    let occupied_v6 = std::net::TcpListener::bind(ipv6_loopback)?;
+    assert!(
+        handle
+            .set_relay_configuration(native_tls_config(space, ipv6_loopback, transport))
+            .await
+            .is_err()
     );
+    assert_relay_state(&handle, (bound, mapped_wildcard), true).await?;
+    drop(tokio::net::TcpStream::connect(ipv4_loopback).await?);
+
+    drop(occupied_v6);
+    tick(&handle).await;
+    assert_relay_state(&handle, (ipv6_loopback, ipv6_loopback), false).await?;
     runtime.shutdown().await?;
     Ok(())
 }
