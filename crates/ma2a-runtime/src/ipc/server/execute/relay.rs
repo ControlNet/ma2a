@@ -90,13 +90,18 @@ pub(super) async fn public_configure(
     context: &ConnectionContext,
     url: &str,
 ) -> Result<CommandResult, ApiError> {
-    let mut configuration = current(context).await?;
-    configuration.public_fallback_enabled = true;
-    configuration.public_relay_urls = vec![url.to_owned()];
-    refuse_unusable(&configuration)?;
+    refuse_unusable(&RelayConfiguration {
+        public_fallback_enabled: true,
+        public_relay_urls: vec![url.to_owned()],
+        private_provider_enabled: false,
+        listener_address: None,
+        private_relay_url: None,
+        served_spaces: Vec::new(),
+        transport: None,
+    })?;
     let committed = context
         .handle
-        .set_relay_configuration_committed(configuration)
+        .set_public_relay_configuration(true, vec![url.to_owned()])
         .await
         .map_err(|error| relay_error(&error))?;
     Ok(CommandResult::public_relay_configured(after_commit(
@@ -107,12 +112,9 @@ pub(super) async fn public_configure(
 }
 
 pub(super) async fn public_disable(context: &ConnectionContext) -> Result<CommandResult, ApiError> {
-    let mut configuration = current(context).await?;
-    configuration.public_fallback_enabled = false;
-    configuration.public_relay_urls.clear();
     let committed = context
         .handle
-        .set_relay_configuration_committed(configuration)
+        .set_public_relay_configuration(false, Vec::new())
         .await
         .map_err(|error| relay_error(&error))?;
     Ok(CommandResult::public_relay_status(after_commit(

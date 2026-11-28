@@ -48,6 +48,8 @@ mod process_delete;
 mod process_mutations;
 #[path = "server_tests/read_revisions.rs"]
 mod read_revisions;
+#[path = "server_tests/relay_public_fallback.rs"]
+mod relay_public_fallback;
 #[path = "server_tests/remote_mutations.rs"]
 mod remote_mutations;
 #[path = "server_tests/services.rs"]

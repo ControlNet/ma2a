@@ -49,6 +49,37 @@ impl Actor {
         ))
     }
 
+    pub(super) async fn set_public_relay_configuration(
+        &mut self,
+        enabled: bool,
+        urls: Vec<String>,
+    ) -> Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError> {
+        let mut configuration = self.store.relay_configuration().await?;
+        configuration.public_fallback_enabled = enabled;
+        configuration.public_relay_urls = urls;
+        let configuration = crate::store::with_parsed_relay_urls(configuration);
+        RuntimeRelayConfiguration::try_from(configuration.clone())
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+        let revision = self
+            .store
+            .set_relay_configuration(configuration.clone())
+            .await?;
+        self.state.revision = self.state.revision.max(revision);
+        self.refresh_relay_candidates()
+            .await
+            .map_err(|error| error.after_commit(revision))?;
+        let _receiver_count = self
+            .events
+            .send(crate::state::RuntimeEvent::memberships_changed(
+                self.state.revision,
+            ));
+        Ok(ma2a_store::Committed::new(
+            revision,
+            self.relay_status_for(configuration, revision)
+                .map_err(|error| error.after_commit(revision))?,
+        ))
+    }
+
     pub(crate) async fn reconcile_relay_configuration(&mut self) -> Result<(), RuntimeError> {
         self.reconcile_relay_configuration_with(None).await
     }

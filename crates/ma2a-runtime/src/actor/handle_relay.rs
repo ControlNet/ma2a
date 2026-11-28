@@ -72,6 +72,25 @@ impl RuntimeHandle {
         .await
     }
 
+    pub(crate) async fn set_public_relay_configuration(
+        &self,
+        enabled: bool,
+        urls: Vec<String>,
+    ) -> Result<ma2a_store::Committed<RelayRuntimeStatus>, RuntimeError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::SetPublicRelayConfiguration {
+                enabled,
+                urls,
+                reply,
+            })
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?;
+        response
+            .await
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Channel))?
+    }
+
     async fn apply_relay_configuration(
         &self,
         configuration: ma2a_store::RelayConfiguration,

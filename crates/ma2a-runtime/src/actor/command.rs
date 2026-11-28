@@ -88,6 +88,12 @@ pub(crate) enum Command {
         reply:
             oneshot::Sender<Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError>>,
     },
+    SetPublicRelayConfiguration {
+        enabled: bool,
+        urls: Vec<String>,
+        reply:
+            oneshot::Sender<Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError>>,
+    },
     Echo {
         request_id: RequestId,
         target: EndpointId,

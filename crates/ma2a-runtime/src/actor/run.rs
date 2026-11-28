@@ -133,6 +133,16 @@ impl Actor {
                                 .await,
                         );
                     }
+                    Some(Command::SetPublicRelayConfiguration {
+                        enabled,
+                        urls,
+                        reply,
+                    }) => {
+                        let _unsent = reply.send(
+                            self.set_public_relay_configuration(enabled, urls)
+                                .await,
+                        );
+                    }
                     Some(Command::Echo { request_id, target, payload, reply }) => {
                         self.spawn_outbound_echo(
                             echo::OutboundEchoRequest { request_id, target, payload },
