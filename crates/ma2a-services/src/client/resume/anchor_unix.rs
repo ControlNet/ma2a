@@ -25,6 +25,8 @@ pub(super) enum Open {
 #[derive(Debug)]
 pub(super) struct Anchor {
     fd: OwnedFd,
+    #[cfg(test)]
+    fail_sync: bool,
 }
 
 impl Anchor {
@@ -33,6 +35,8 @@ impl Anchor {
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
         Ok(Self {
             fd: at::openat(at::CWD, path, flags, Mode::empty())?,
+            #[cfg(test)]
+            fail_sync: false,
         })
     }
 
@@ -41,6 +45,8 @@ impl Anchor {
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         Ok(Self {
             fd: at::openat(&self.fd, name, flags, Mode::empty())?,
+            #[cfg(test)]
+            fail_sync: false,
         })
     }
 
@@ -149,6 +155,20 @@ impl Anchor {
         }
         at::linkat(&self.fd, from, &to.fd, name, AtFlags::empty())?;
         self.remove_file(from)
+    }
+
+    /// Flushes changes to this directory's entries to disk.
+    pub(super) fn sync(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if self.fail_sync {
+            return Err(io::Error::other("injected directory sync failure"));
+        }
+        Ok(at::fsync(&self.fd)?)
+    }
+
+    #[cfg(test)]
+    pub(super) const fn set_fail_sync(&mut self) {
+        self.fail_sync = true;
     }
 }
 

@@ -196,6 +196,11 @@ impl Partial {
         file.sync_all().await?;
         drop(file);
         directory.rename(&self.staged, (directory, &self.sidecar))?;
+        #[cfg(unix)]
+        {
+            directory.sync()?;
+            self.helpers.parent.0.sync()?;
+        }
         self.identity = Some(identity);
         Ok(())
     }
@@ -280,3 +285,7 @@ fn remove_if_present(directory: &anchor::Anchor, name: &OsStr) -> io::Result<()>
         _ => Ok(()),
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "resume/sync_tests.rs"]
+mod sync_tests;
