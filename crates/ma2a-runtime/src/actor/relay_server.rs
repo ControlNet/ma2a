@@ -83,12 +83,14 @@ impl Actor {
         if applied == desired && mode == PrivateRelayApply::IfChanged {
             return Ok(());
         }
-        // A same-listener replacement must release the current listener first.
-        // Different listeners can prepare the replacement while the old server serves.
-        let same_listener = applied
+        // A conflicting listener must release the current socket first.
+        // Non-conflicting listeners can prepare the replacement while the old server serves.
+        let conflicts = self
+            .private_relay_server
+            .as_ref()
             .zip(desired)
-            .is_some_and(|(old, new)| old.listen_addr() == new.listen_addr());
-        if same_listener || desired.is_none() {
+            .is_some_and(|(old, new)| listeners_conflict(old.listen_addr(), new.listen_addr()));
+        if conflicts || desired.is_none() {
             self.stop_private_relay().await?;
         }
         let replacement = match desired {
@@ -142,5 +144,56 @@ impl Actor {
             self.maintenance.relay_configuration = Some(RelayCompletion::ShutdownFailed);
         }
         stopped
+    }
+}
+
+fn listeners_conflict(bound: std::net::SocketAddr, desired: std::net::SocketAddr) -> bool {
+    desired.port() != 0
+        && bound.port() == desired.port()
+        && (bound.ip().to_canonical() == desired.ip().to_canonical()
+            || bound.ip().is_unspecified()
+            || desired.ip().is_unspecified())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::listeners_conflict;
+
+    #[test]
+    fn listeners_conflict_detects_bound_ephemeral_and_wildcard_overlaps() {
+        let addr = |text: &str| text.parse::<std::net::SocketAddr>().expect("valid socket");
+        assert!(listeners_conflict(
+            addr("127.0.0.1:8443"),
+            addr("127.0.0.1:8443")
+        ));
+        assert!(listeners_conflict(
+            addr("0.0.0.0:8443"),
+            addr("127.0.0.1:8443")
+        ));
+        assert!(listeners_conflict(
+            addr("127.0.0.1:8443"),
+            addr("0.0.0.0:8443")
+        ));
+        assert!(listeners_conflict(
+            addr("[::]:8443"),
+            addr("127.0.0.1:8443")
+        ));
+        assert!(listeners_conflict(addr("[::]:8443"), addr("0.0.0.0:8443")));
+        assert!(listeners_conflict(
+            addr("[::ffff:127.0.0.1]:8443"),
+            addr("127.0.0.1:8443")
+        ));
+        assert!(!listeners_conflict(
+            addr("127.0.0.1:8443"),
+            addr("127.0.0.1:0")
+        ));
+        assert!(!listeners_conflict(
+            addr("127.0.0.1:8443"),
+            addr("127.0.0.2:8443")
+        ));
+        assert!(!listeners_conflict(
+            addr("0.0.0.0:8443"),
+            addr("127.0.0.1:8444")
+        ));
     }
 }

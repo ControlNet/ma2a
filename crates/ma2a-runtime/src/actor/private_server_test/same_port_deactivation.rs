@@ -145,3 +145,76 @@ async fn failed_different_listener_replacement_keeps_advertisement_active() -> T
     runtime.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn ephemeral_to_assigned_port_reconfiguration_stops_old_listener_first() -> TestResult {
+    let state = TempState::new("ephemeral-to-fixed")?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let handle = runtime.handle();
+    let space = handle
+        .create_owned_space("ephemeral-to-fixed".to_owned())
+        .await?;
+
+    let mut desired = enabled_configuration(vec![space]);
+    handle.set_relay_configuration(desired.clone()).await?;
+    let bound = handle
+        .relay_status()
+        .await?
+        .private_listen_addr
+        .ok_or("missing bound private listener")?;
+    assert_ne!(bound.port(), 0);
+
+    desired.listener_address = Some(bound.to_string());
+    handle.set_relay_configuration(desired).await?;
+    let status = handle.relay_status().await?;
+    assert!(!status.convergence_pending);
+    assert_eq!(status.private_listen_addr, Some(bound));
+    runtime.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn wildcard_and_loopback_same_port_reconfiguration_stops_old_listener_first() -> TestResult {
+    use super::tls_retry::{native_tls_config, write_tls_fixture};
+
+    let state = TempState::new("wildcard-loopback")?;
+    let transport = write_tls_fixture(&state)?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let handle = runtime.handle();
+    let space = handle
+        .create_owned_space("wildcard-loopback".to_owned())
+        .await?;
+
+    let wildcard_ephemeral: std::net::SocketAddr = ([0, 0, 0, 0], 0).into();
+    handle
+        .set_relay_configuration(native_tls_config(
+            space,
+            wildcard_ephemeral,
+            transport.clone(),
+        ))
+        .await?;
+    let wildcard = handle
+        .relay_status()
+        .await?
+        .private_listen_addr
+        .ok_or("missing bound wildcard private listener")?;
+    assert_eq!(wildcard.ip(), std::net::IpAddr::from([0, 0, 0, 0]));
+    assert_ne!(wildcard.port(), 0);
+    let loopback: std::net::SocketAddr = ([127, 0, 0, 1], wildcard.port()).into();
+
+    handle
+        .set_relay_configuration(native_tls_config(space, loopback, transport.clone()))
+        .await?;
+    let tightened = handle.relay_status().await?;
+    assert!(!tightened.convergence_pending);
+    assert_eq!(tightened.private_listen_addr, Some(loopback));
+
+    handle
+        .set_relay_configuration(native_tls_config(space, wildcard, transport))
+        .await?;
+    let widened = handle.relay_status().await?;
+    assert!(!widened.convergence_pending);
+    assert_eq!(widened.private_listen_addr, Some(wildcard));
+    runtime.shutdown().await?;
+    Ok(())
+}
