@@ -54,12 +54,16 @@ impl Actor {
         enabled: bool,
         urls: Vec<String>,
     ) -> Result<ma2a_store::Committed<super::RelayRuntimeStatus>, RuntimeError> {
-        let mut configuration = self.store.relay_configuration().await?;
+        let mut configuration = self
+            .store
+            .relay_configuration()
+            .await
+            .map_err(RuntimeError::without_effects)?;
         configuration.public_fallback_enabled = enabled;
         configuration.public_relay_urls = urls;
         let configuration = crate::store::with_parsed_relay_urls(configuration);
         RuntimeRelayConfiguration::try_from(configuration.clone())
-            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
+            .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control).without_effects())?;
         let revision = self
             .store
             .set_relay_configuration(configuration.clone())

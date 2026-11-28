@@ -36,9 +36,16 @@ impl RuntimeErrorCode {
     pub const IDENTITY_MISMATCH: Self = Self(ErrorCodeKind::IdentityMismatch);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MutationEffect {
+    Unknown,
+    None,
+    Committed(u64),
+}
+
 /// Runtime lifecycle failure with redacted secret handling.
 #[derive(Debug)]
-pub struct RuntimeError(RuntimeErrorKind, Option<u64>);
+pub struct RuntimeError(RuntimeErrorKind, MutationEffect);
 
 #[derive(Debug)]
 pub(crate) enum RuntimeErrorKind {
@@ -64,17 +71,27 @@ pub(crate) enum RuntimeErrorKind {
 
 impl RuntimeError {
     pub(crate) const fn new(kind: RuntimeErrorKind) -> Self {
-        Self(kind, None)
+        Self(kind, MutationEffect::Unknown)
     }
 
     pub(crate) const fn after_commit(mut self, revision: u64) -> Self {
-        self.1 = Some(revision);
+        self.1 = MutationEffect::Committed(revision);
+        self
+    }
+
+    pub(crate) const fn without_effects(mut self) -> Self {
+        if matches!(self.1, MutationEffect::Unknown) {
+            self.1 = MutationEffect::None;
+        }
         self
     }
 
     /// Returns the durable revision when the mutation committed before completion failed.
     pub const fn committed_revision(&self) -> Option<u64> {
-        self.1
+        match self.1 {
+            MutationEffect::Committed(revision) => Some(revision),
+            MutationEffect::Unknown | MutationEffect::None => None,
+        }
     }
 
     /// Background maintenance retries only recognized temporary operational failures.
@@ -137,14 +154,15 @@ impl RuntimeError {
         matches!(self.0, RuntimeErrorKind::ControlNotDialed)
     }
 
-    /// Pre-commit native TLS loading failed before any configuration commit.
-    pub(crate) const fn is_pre_commit_relay_tls_refusal(&self) -> bool {
+    /// Pre-commit validation or read failed before any relay configuration commit.
+    pub(crate) const fn is_without_effects(&self) -> bool {
         matches!(
             (&self.0, self.1),
-            (
-                RuntimeErrorKind::PrivateRelay(PrivateRelayServerError::Tls(_)),
-                None
-            )
+            (_, MutationEffect::None)
+                | (
+                    RuntimeErrorKind::PrivateRelay(PrivateRelayServerError::Tls(_)),
+                    MutationEffect::Unknown
+                )
         )
     }
 
@@ -178,7 +196,7 @@ impl RuntimeError {
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(revision) = self.1 {
+        if let Some(revision) = self.committed_revision() {
             write!(
                 formatter,
                 "mutation committed at revision {revision}; completion failed: "

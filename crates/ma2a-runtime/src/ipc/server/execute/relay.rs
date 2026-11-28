@@ -207,7 +207,7 @@ const fn relay_error(error: &crate::RuntimeError) -> ApiError {
     let api = ApiError::new(ProtocolError::INTERNAL);
     match error.committed_revision() {
         Some(revision) => api.after_commit(revision),
-        None if error.is_pre_commit_relay_tls_refusal() => api.without_effects(),
+        None if error.is_without_effects() => api.without_effects(),
         None => api,
     }
 }

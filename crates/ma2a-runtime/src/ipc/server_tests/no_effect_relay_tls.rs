@@ -140,3 +140,72 @@ async fn post_commit_and_indeterminate_private_relay_failures_remain_fenced() ->
     );
     served.stop().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_commit_store_read_failure_on_public_relay_releases_request_id_for_retry() -> TestResult
+{
+    let served = Served::start().await?;
+    let config = StoreConfig::new(&served.state.0);
+    let sql = rusqlite::Connection::open(config.database_path())?;
+
+    let configure_req = serde_json::json!({
+        "version": 1,
+        "operation": "public_relay_configure",
+        "request_id": "84".repeat(16),
+        "url": "https://fallback.example.invalid",
+    });
+    sql.execute_batch("UPDATE relay_configuration SET tls_mode = 0 WHERE singleton = 1;")?;
+    served
+        .refused(&configure_req, ProtocolError::INTERNAL)
+        .await?;
+    sql.execute_batch("UPDATE relay_configuration SET tls_mode = NULL WHERE singleton = 1;")?;
+    let retried_configure = call_json(&served, &configure_req).await?;
+    assert_eq!(retried_configure.get("error"), None, "{retried_configure}");
+    assert_eq!(
+        retried_configure.pointer("/result/type"),
+        Some(&serde_json::json!("public_relay_configured"))
+    );
+
+    let disable_req = serde_json::json!({
+        "version": 1,
+        "operation": "public_relay_disable",
+        "request_id": "85".repeat(16),
+    });
+    sql.execute_batch("UPDATE relay_configuration SET tls_mode = 0 WHERE singleton = 1;")?;
+    served
+        .refused(&disable_req, ProtocolError::INTERNAL)
+        .await?;
+    sql.execute_batch("UPDATE relay_configuration SET tls_mode = NULL WHERE singleton = 1;")?;
+    let retried_disable = call_json(&served, &disable_req).await?;
+    assert_eq!(retried_disable.get("error"), None, "{retried_disable}");
+    assert_eq!(
+        retried_disable.pointer("/result/type"),
+        Some(&serde_json::json!("public_relay_status"))
+    );
+
+    sql.execute_batch(
+        "CREATE TRIGGER test_public_relay_commit_fence BEFORE UPDATE ON relay_configuration \
+         BEGIN SELECT RAISE(ABORT, 'injected public relay commit failure'); END;",
+    )?;
+    let fenced_req = serde_json::json!({
+        "version": 1,
+        "operation": "public_relay_configure",
+        "request_id": "86".repeat(16),
+        "url": "https://fallback.example.invalid",
+    });
+    let fenced_err = call_json(&served, &fenced_req).await?;
+    assert_eq!(
+        fenced_err.get("error").and_then(serde_json::Value::as_str),
+        Some("internal")
+    );
+    let fenced_id = api::decode_command(&serde_json::to_vec(&fenced_req)?)?
+        .request_id()
+        .ok_or("missing request id")?;
+    assert!(matches!(
+        served.runtime.handle().mutation_replay(fenced_id).await?,
+        Some(MutationReplayState::Completed(_))
+    ));
+    sql.execute_batch("DROP TRIGGER test_public_relay_commit_fence;")?;
+    assert_eq!(call_json(&served, &fenced_req).await?, fenced_err);
+    served.stop().await
+}
