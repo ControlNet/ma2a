@@ -22,9 +22,9 @@ cargo install --locked cargo-nextest@0.9.143 cargo-deny@0.20.2 cargo-machete@0.9
 ```
 
 `cargo dist` validates the release policy and invokes pinned cargo-dist 0.32.0 for the current host
-target. The app build script performs the frozen frontend install/build and embeds every file from
-`web/dist`; generated assets remain ignored and are never runtime source-tree dependencies. The
-archive and checksum are written below `target/distrib`.
+target. The app build script performs the frozen frontend install/build into Cargo's `OUT_DIR`
+(`web-dist`) and embeds every file from that directory; generated assets remain ignored and are
+never runtime source-tree dependencies. The archive and checksum are written below `target/distrib`.
 
 The exact six-target architecture and evidence contract is checked by `cargo xtask check-support`
 against `docs/platform-support.json`; `check-release` composes that gate with cargo-dist policy.
