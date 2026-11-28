@@ -98,8 +98,23 @@ impl Shared {
     /// Appends one output chunk and publishes the new window.
     pub(super) fn append(&self, channel: ma2a_core::service::Channel, bytes: &[u8]) {
         let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
-        let _appended = log.append(channel, bytes);
-        self.publish_window(log.window());
+        let appended = log.append(channel, bytes);
+        let window = log.window();
+        drop(log);
+        if appended.is_ok() {
+            self.publish_window(window);
+        } else {
+            // Keep `first_available` current when retention reclaimed an old segment before the
+            // write failed, without waking readers for an unpersisted end cursor.
+            self.output.send_if_modified(|current| {
+                if current.first_available == window.first_available {
+                    false
+                } else {
+                    current.first_available = window.first_available;
+                    true
+                }
+            });
+        }
     }
 
     /// Takes the single stdin writer lease.
@@ -175,4 +190,66 @@ pub async fn supervise(launch: Launch) -> io::Result<()> {
     #[cfg(unix)]
     let _removed = std::fs::remove_file(launch.address.as_str());
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use ma2a_core::service::{Channel, ProcessId, ProcessSpec};
+    use rustix::process::{Resource, Signal, getrlimit, setrlimit};
+
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _cleanup = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_writes_do_not_wake_output_watchers_until_record_or_exit_persists()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut nonce = [0_u8; 8];
+        getrandom::fill(&mut nonce)?;
+        let root = TempDir(
+            std::env::temp_dir().join(format!("ma2a-host-log-{:016x}", u64::from_le_bytes(nonce))),
+        );
+        let log = LogWriter::create(&log_directory(&root.0), 0)?;
+        let spec = ProcessSpec::new(Some("true".to_owned()), Vec::new(), None)?;
+        let (requests, _receiver) = mpsc::channel(1);
+        let shared = Arc::new(Shared {
+            credentials: Credentials::new(ProcessId::random()?, [7; 32]),
+            directory: root.0.clone(),
+            start: ProcessStart::new(spec, false, 1_048_576)?,
+            status: watch::Sender::new(SupervisorStatus::Awaiting),
+            output: watch::Sender::new(log.window()),
+            log: Mutex::new(log),
+            stdin: tokio::sync::Mutex::new(None),
+            writer: AtomicBool::new(false),
+            requests,
+            connections: AtomicUsize::new(0),
+        });
+        let mut watcher = shared.output.subscribe();
+        assert!(!watcher.has_changed()?);
+
+        let _caught = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(
+            Signal::XFSZ.as_raw(),
+        ))?;
+        let previous = getrlimit(Resource::Fsize);
+        let mut lowered = previous;
+        lowered.current = Some(4);
+        setrlimit(Resource::Fsize, lowered)?;
+        for _ in 0..5 {
+            shared.append(Channel::Output, b"aaaa");
+        }
+        setrlimit(Resource::Fsize, previous)?;
+
+        assert!(!watcher.has_changed()?);
+        assert_eq!(*watcher.borrow(), LogWindow::new(0, 0));
+
+        shared.sync_log().await;
+        assert!(watcher.has_changed()?);
+        assert_eq!(*watcher.borrow_and_update(), LogWindow::new(20, 20));
+        Ok(())
+    }
 }

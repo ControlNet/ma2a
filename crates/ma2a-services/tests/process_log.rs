@@ -329,3 +329,170 @@ fn failed_write_records_gap_for_reopened_readers_and_exit_marker() -> TestResult
     assert!(tail.records.is_empty());
     Ok(())
 }
+
+#[cfg(unix)]
+fn segment_files(directory: &std::path::Path) -> TestResult<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("seg"))
+        {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(unix)]
+#[test]
+fn repeated_failed_first_writes_coalesce_without_empty_segments() -> TestResult {
+    // Given: a fresh log where every first-record write fails (e.g., EFBIG or ENOSPC on data).
+    let root = TempRoot::new("log-repeated-fail-recover")?;
+    let mut writer = LogWriter::create(root.path(), 0)?;
+
+    // When: 20 appends fail on the first record.
+    with_file_size_limit(4, || {
+        for _ in 0..20 {
+            let failed = writer.append(Channel::Output, b"aaaa");
+            assert!(failed.is_err(), "{failed:?}");
+        }
+    })?;
+
+    // Then: no empty segments accumulate and the cursor stays at 0 until something persists.
+    assert!(
+        segment_files(root.path())?.is_empty(),
+        "expected 0 segments, found {:?}",
+        segment_files(root.path())?
+    );
+    assert_eq!(writer.window(), LogWindow::new(0, 0));
+    assert_eq!(log::window(root.path())?, LogWindow::new(0, 0));
+
+    // When: writes recover and a record persists.
+    assert_eq!(writer.append(Channel::Output, b"ok")?, 82);
+    writer.sync()?;
+
+    // Then: only the recovered segment exists at the exact skip cursor 80..82.
+    assert_eq!(segment_files(root.path())?, vec![format!("{:020}.seg", 80)]);
+    assert_eq!(writer.window(), LogWindow::new(80, 82));
+    assert_eq!(log::window(root.path())?, LogWindow::new(80, 82));
+    let read = log::read(root.path(), 0, 1024)?;
+    assert_eq!((read.start, read.truncated, read.next), (80, true, 82));
+    assert_eq!(read.records, vec![(Channel::Output, b"ok".to_vec())]);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn repeated_failed_first_writes_coalesce_into_single_exit_marker() -> TestResult {
+    // Given: a fresh log whose 128 appends all fail on the first record.
+    let root = TempRoot::new("log-repeated-fail-exit")?;
+    let mut writer = LogWriter::create(root.path(), 0)?;
+    with_file_size_limit(4, || {
+        for _ in 0..128 {
+            let failed = writer.append(Channel::Output, b"aaaa");
+            assert!(failed.is_err(), "{failed:?}");
+        }
+    })?;
+    assert!(segment_files(root.path())?.is_empty());
+    assert_eq!(writer.window(), LogWindow::new(0, 0));
+
+    // When: the writer finishes without any subsequent output.
+    writer.finish()?;
+
+    // Then: a single exit marker records the 512-byte skip cursor.
+    assert_eq!(
+        segment_files(root.path())?,
+        vec![format!("{:020}.seg", 512)]
+    );
+    assert_eq!(writer.window(), LogWindow::new(512, 512));
+    assert_eq!(log::window(root.path())?, LogWindow::new(512, 512));
+    let read = log::read(root.path(), 0, 1024)?;
+    assert_eq!((read.start, read.truncated, read.next), (512, true, 512));
+    assert!(read.records.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_write_after_rotation_at_minimum_limit_preserves_retained_segment() -> TestResult {
+    // Given: a log with minimum limit SEGMENT_BYTES whose sole segment S0 just crossed it.
+    let root = TempRoot::new("log-min-limit-fail")?;
+    let mut writer = LogWriter::create(root.path(), SEGMENT_BYTES)?;
+    let chunk = vec![b'x'; usize::try_from(MAX_RECORD_LEN)?];
+    let mut total = 0_u64;
+    for _ in 0..16 {
+        total = writer.append(Channel::Output, &chunk)?;
+    }
+    assert_eq!(total, 1_048_560);
+    assert_eq!(segment_files(root.path())?, vec![format!("{:020}.seg", 0)]);
+
+    // When: the first append after rotation fails, then the writer finishes (and finishes again).
+    let failed = with_file_size_limit(4, || writer.append(Channel::Output, b"aaaa"))?;
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(segment_files(root.path())?, vec![format!("{:020}.seg", 0)]);
+    assert_eq!(writer.window(), LogWindow::new(0, total));
+
+    writer.finish()?;
+    writer.finish()?;
+
+    // Then: S0 is preserved alongside the exit gap marker at total + 4.
+    assert_eq!(
+        segment_files(root.path())?,
+        vec![format!("{:020}.seg", 0), format!("{:020}.seg", total + 4)]
+    );
+    assert_eq!(writer.window(), LogWindow::new(0, total + 4));
+    assert_eq!(log::window(root.path())?, LogWindow::new(0, total + 4));
+
+    let retained = log::read(root.path(), 0, usize::MAX)?;
+    assert_eq!(
+        (retained.start, retained.truncated, retained.next),
+        (0, false, total)
+    );
+    assert_eq!(joined(&retained).len(), usize::try_from(total)?);
+
+    let gap = log::read(root.path(), total, usize::MAX)?;
+    assert_eq!(
+        (gap.start, gap.truncated, gap.next),
+        (total + 4, true, total + 4)
+    );
+    assert!(gap.records.is_empty());
+
+    // And: when output recovers after failed rotations instead of exiting, S1 persists past the
+    // coalesced gap before S0 is retired.
+    let recover_root = TempRoot::new("log-min-limit-recover")?;
+    let mut recover_writer = LogWriter::create(recover_root.path(), SEGMENT_BYTES)?;
+    for _ in 0..16 {
+        recover_writer.append(Channel::Output, &chunk)?;
+    }
+    for _ in 0..3 {
+        let err = with_file_size_limit(4, || recover_writer.append(Channel::Output, b"aaaa"))?;
+        assert!(err.is_err(), "{err:?}");
+    }
+    assert_eq!(
+        segment_files(recover_root.path())?,
+        vec![format!("{:020}.seg", 0)]
+    );
+    assert_eq!(recover_writer.window(), LogWindow::new(0, total));
+
+    let resumed = recover_writer.append(Channel::Output, b"ok")?;
+    recover_writer.sync()?;
+    assert_eq!(resumed, total + 14);
+    assert_eq!(
+        segment_files(recover_root.path())?,
+        vec![format!("{:020}.seg", total + 12)]
+    );
+    assert_eq!(
+        recover_writer.window(),
+        LogWindow::new(total + 12, total + 14)
+    );
+    let after = log::read(recover_root.path(), 0, 1024)?;
+    assert_eq!(
+        (after.start, after.truncated, after.next),
+        (total + 12, true, total + 14)
+    );
+    assert_eq!(after.records, vec![(Channel::Output, b"ok".to_vec())]);
+    Ok(())
+}

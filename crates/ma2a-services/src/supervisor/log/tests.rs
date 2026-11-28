@@ -234,3 +234,69 @@ fn finish_syncs_gap_marker_directory_entry() -> TestResult {
     assert_eq!(window(&directory.0)?, LogWindow::new(0, produced));
     Ok(())
 }
+
+#[cfg(unix)]
+fn with_file_size_limit<T>(limit: u64, write: impl FnOnce() -> T) -> Result<T, std::io::Error> {
+    use rustix::process::{Resource, Signal, getrlimit, setrlimit};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let _caught = runtime.block_on(async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(
+            Signal::XFSZ.as_raw(),
+        ))
+    })?;
+    let previous = getrlimit(Resource::Fsize);
+    let mut lowered = previous;
+    lowered.current = Some(limit);
+    setrlimit(Resource::Fsize, lowered)?;
+    let result = write();
+    setrlimit(Resource::Fsize, previous)?;
+    Ok(result)
+}
+
+#[cfg(unix)]
+#[test]
+fn unremovable_empty_segment_stays_bounded_and_recovers_with_exact_cursor() -> TestResult {
+    // Given: a writer whose uncommitted 0.seg cannot be deleted when its first write fails.
+    let directory = TempDirectory::new("unremovable-empty")?;
+    let mut writer = LogWriter::create(&directory.0, SEGMENT_BYTES)?;
+    writer.blocked_deletes.insert(0);
+
+    // When: 10 appends fail on the first record while 0.seg cannot be removed.
+    with_file_size_limit(4, || {
+        for _ in 0..10 {
+            let failed = writer.append(Channel::Output, b"aaaa");
+            assert!(failed.is_err(), "{failed:?}");
+        }
+    })?;
+
+    // Then: at most one empty segment remains on disk and in the deque.
+    let mut entries = std::fs::read_dir(&directory.0)?
+        .map(|entry| entry.map(|item| item.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort();
+    assert_eq!(entries, vec![name(0)]);
+    assert_eq!(writer.segments.len(), 1);
+    assert_eq!(writer.window(), LogWindow::new(0, 0));
+
+    // When: the delete block clears and output recovers.
+    writer.blocked_deletes.remove(&0);
+    assert_eq!(writer.append(Channel::Output, b"ok")?, 42);
+    writer.sync()?;
+
+    // Then: the stale empty segment is gone and only 40..42 remains.
+    let mut after = std::fs::read_dir(&directory.0)?
+        .map(|entry| entry.map(|item| item.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<Vec<_>, _>>()?;
+    after.sort();
+    assert_eq!(after, vec![name(40)]);
+    assert_eq!(writer.window(), LogWindow::new(40, 42));
+    let output = read(&directory.0, 0, 1024)?;
+    assert_eq!(
+        (output.start, output.truncated, output.next),
+        (40, true, 42)
+    );
+    assert_eq!(output.records, vec![(Channel::Output, b"ok".to_vec())]);
+    Ok(())
+}

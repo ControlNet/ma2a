@@ -141,6 +141,9 @@ impl LogWriter {
                 .set_len(whole)
                 .and_then(|()| file.seek(SeekFrom::Start(whole)));
             self.seal();
+            if whole == 0 {
+                let _removed = self.drop_empty_back();
+            }
             self.discarded = self.discarded.saturating_add(u64::from(length));
             return Err(error);
         }
@@ -170,16 +173,23 @@ impl LogWriter {
     pub fn finish(&mut self) -> io::Result<()> {
         self.sync()?;
         self.retain();
+        if self.discarded > 0 {
+            let _dropped = self.drop_empty_back();
+        }
         let next_end = self.end.saturating_add(self.discarded);
         if next_end > self.end {
             let marker = OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .open(self.directory.join(name(next_end)))?;
+            if let Err(error) = marker.sync_all() {
+                drop(marker);
+                let _removed = self.remove_segment_file(next_end);
+                return Err(error);
+            }
             self.segments.push_back(Segment::empty(next_end));
             self.end = next_end;
             self.discarded = 0;
-            marker.sync_all()?;
         }
         self.discarded = 0;
         #[cfg(unix)]
@@ -187,8 +197,15 @@ impl LogWriter {
         Ok(())
     }
 
-    fn retained_bytes(&self) -> u64 {
-        self.segments.iter().map(|segment| segment.file_bytes).sum()
+    fn usage(&self) -> (u64, usize) {
+        self.segments
+            .iter()
+            .fold((0, 0), |(bytes, count), segment| {
+                (
+                    bytes + segment.file_bytes,
+                    count + usize::from(segment.file_bytes > 0),
+                )
+            })
     }
 
     fn needs_rotate(&self) -> bool {
@@ -200,10 +217,10 @@ impl LogWriter {
     }
 
     fn retention_blocked(&self, record_bytes: u64) -> bool {
-        if self.segments.len() <= 1 {
+        let (retained, non_empty) = self.usage();
+        if non_empty <= 1 {
             return false;
         }
-        let retained = self.retained_bytes();
         if self.discarded > 0 || self.needs_rotate() {
             retained > self.limit
         } else {
@@ -220,6 +237,9 @@ impl LogWriter {
 
     fn rotate(&mut self) -> io::Result<()> {
         self.sync()?;
+        if self.discarded > 0 {
+            self.drop_empty_back()?;
+        }
         let next_end = self.end.saturating_add(self.discarded);
         // A segment still without a whole record lost its first one and could not be cut back:
         // it is this writer's own, at this cursor, and is started again empty.
@@ -244,32 +264,51 @@ impl LogWriter {
         Ok(())
     }
 
+    fn remove_segment_file(&self, first: u64) -> io::Result<()> {
+        #[cfg(test)]
+        if self.blocked_deletes.contains(&first) {
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
+        match fs::remove_file(self.directory.join(name(first))) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    fn drop_empty_back(&mut self) -> io::Result<()> {
+        let Some(&empty) = self.segments.back().filter(|last| last.file_bytes == 0) else {
+            return Ok(());
+        };
+        self.remove_segment_file(empty.first)?;
+        self.segments.pop_back();
+        let committed = self.segments.back().map_or(0, |s| s.first + s.content);
+        let gap = empty.first.saturating_sub(committed);
+        self.discarded = self.discarded.saturating_add(gap);
+        self.end = committed;
+        Ok(())
+    }
+
     /// Deletes oldest segments while their files hold more than the limit, record headers
     /// included, so the limit bounds the disk the log takes. A segment leaves the window only
     /// once its file is gone, so the window always matches the directory; one that cannot be
     /// deleted now stays first and is tried again after the next append.
     fn retain(&mut self) {
-        let mut retained: u64 = self.segments.iter().map(|segment| segment.file_bytes).sum();
+        let (mut retained, mut non_empty) = self.usage();
         while retained > self.limit && self.segments.len() > 1 {
             let Some(oldest) = self.segments.front().copied() else {
                 break;
             };
-            let path = self.directory.join(name(oldest.first));
-            #[cfg(test)]
-            let removed = if self.blocked_deletes.contains(&oldest.first) {
-                Err(io::Error::from(io::ErrorKind::PermissionDenied))
-            } else {
-                fs::remove_file(&path)
-            };
-            #[cfg(not(test))]
-            let removed = fs::remove_file(&path);
-            match removed {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(_) => break,
+            if oldest.file_bytes > 0 && non_empty <= 1 {
+                break;
+            }
+            if self.remove_segment_file(oldest.first).is_err() {
+                break;
             }
             self.segments.pop_front();
             retained -= oldest.file_bytes;
+            if oldest.file_bytes > 0 {
+                non_empty -= 1;
+            }
         }
     }
 }
