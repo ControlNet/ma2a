@@ -98,6 +98,7 @@ jobs:
       - run: cargo run --locked -p xtask -- check
       - name: Check the built console's runtime references
         run: |
+          (cd web && bun run build)
           compgen -G 'web/dist/assets/*.js' >/dev/null || { echo 'no built console to scan' >&2; exit 1; }
           ./scripts/test-runtime-references.sh
       - name: Check the license report does not name its checkout

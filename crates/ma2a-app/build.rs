@@ -3,6 +3,7 @@
 use std::{
     env,
     error::Error,
+    ffi::OsStr,
     fmt::{self, Write as _},
     fs, io,
     path::{Path, PathBuf},
@@ -86,15 +87,38 @@ fn build() -> Result<(), BuildError> {
     ] {
         println!("cargo::rerun-if-changed={}", web.join(input).display());
     }
-    run_bun(&web, &["--version"], "bun --version")?;
+    run_bun(&web, ["--version"], "bun --version")?;
     run_bun(
         &web,
-        &["install", "--frozen-lockfile"],
+        ["install", "--frozen-lockfile"],
         "bun install --frozen-lockfile",
     )?;
-    run_bun(&web, &["run", "build"], "bun run build")?;
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").ok_or_else(|| BuildError::Io {
+        context: "Cargo did not provide OUT_DIR",
+        source: io::Error::new(io::ErrorKind::NotFound, "OUT_DIR is unset"),
+    })?);
+    let out_dir = if out_dir.is_relative() {
+        env::current_dir()
+            .map_err(|source| BuildError::Io {
+                context: "resolving OUT_DIR",
+                source,
+            })?
+            .join(&out_dir)
+    } else {
+        out_dir
+    };
+    let dist = out_dir.join("web-dist");
+    run_bun(
+        &web,
+        [
+            OsStr::new("run"),
+            OsStr::new("build"),
+            OsStr::new("--outDir"),
+            dist.as_os_str(),
+        ],
+        "bun run build",
+    )?;
 
-    let dist = web.join("dist");
     let mut assets = Vec::new();
     collect_assets(&dist, &dist, &mut assets)?;
     if assets.is_empty() {
@@ -102,18 +126,18 @@ fn build() -> Result<(), BuildError> {
     }
     assets.sort_by(|left, right| left.0.cmp(&right.0));
     let generated = render_assets(&assets)?;
-    let output = PathBuf::from(env::var_os("OUT_DIR").ok_or_else(|| BuildError::Io {
-        context: "Cargo did not provide OUT_DIR",
-        source: io::Error::new(io::ErrorKind::NotFound, "OUT_DIR is unset"),
-    })?)
-    .join("embedded_web.rs");
+    let output = out_dir.join("embedded_web.rs");
     fs::write(output, generated).map_err(|source| BuildError::Io {
         context: "writing generated embedded asset module",
         source,
     })
 }
 
-fn run_bun(directory: &Path, arguments: &[&str], label: &'static str) -> Result<(), BuildError> {
+fn run_bun<I, S>(directory: &Path, arguments: I, label: &'static str) -> Result<(), BuildError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let output = Command::new("bun")
         .args(arguments)
         .current_dir(directory)

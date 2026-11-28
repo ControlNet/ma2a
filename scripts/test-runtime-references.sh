@@ -105,9 +105,12 @@ for probe in tab.html newline.html control.js template.js; do
   fi
 done
 
-# The built console, when present, must carry only same-origin references.
+# Build and scan the console so it carries only same-origin references.
+(cd web && bun run build)
 shopt -s nullglob
-for built in web/dist/assets/*.js; do
+built_assets=(web/dist/assets/*.js)
+(( ${#built_assets[@]} > 0 )) || { printf 'no built console to scan\n' >&2; exit 1; }
+for built in "${built_assets[@]}"; do
   scan_built "$built"
 done
 
