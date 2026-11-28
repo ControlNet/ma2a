@@ -148,11 +148,11 @@ impl Actor {
 }
 
 fn listeners_conflict(bound: std::net::SocketAddr, desired: std::net::SocketAddr) -> bool {
+    let bound_ip = bound.ip().to_canonical();
+    let desired_ip = desired.ip().to_canonical();
     desired.port() != 0
         && bound.port() == desired.port()
-        && (bound.ip().to_canonical() == desired.ip().to_canonical()
-            || bound.ip().is_unspecified()
-            || desired.ip().is_unspecified())
+        && (bound_ip == desired_ip || bound_ip.is_unspecified() || desired_ip.is_unspecified())
 }
 
 #[cfg(test)]
@@ -182,6 +182,22 @@ mod tests {
         assert!(listeners_conflict(
             addr("[::ffff:127.0.0.1]:8443"),
             addr("127.0.0.1:8443")
+        ));
+        assert!(listeners_conflict(
+            addr("[::ffff:0.0.0.0]:8443"),
+            addr("127.0.0.1:8443")
+        ));
+        assert!(listeners_conflict(
+            addr("127.0.0.1:8443"),
+            addr("[::ffff:0.0.0.0]:8443")
+        ));
+        assert!(listeners_conflict(
+            addr("[::ffff:0.0.0.0]:8443"),
+            addr("[::ffff:127.0.0.1]:8443")
+        ));
+        assert!(listeners_conflict(
+            addr("[::ffff:127.0.0.1]:8443"),
+            addr("[::ffff:0.0.0.0]:8443")
         ));
         assert!(!listeners_conflict(
             addr("127.0.0.1:8443"),

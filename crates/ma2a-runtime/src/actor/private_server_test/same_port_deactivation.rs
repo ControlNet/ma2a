@@ -218,3 +218,43 @@ async fn wildcard_and_loopback_same_port_reconfiguration_stops_old_listener_firs
     runtime.shutdown().await?;
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn mapped_wildcard_to_loopback_same_port_reconfiguration_stops_old_listener_first()
+-> TestResult {
+    use super::tls_retry::{native_tls_config, write_tls_fixture};
+
+    let state = TempState::new("mapped-wildcard-loopback")?;
+    let transport = write_tls_fixture(&state)?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let handle = runtime.handle();
+    let space = handle
+        .create_owned_space("mapped-wildcard-loopback".to_owned())
+        .await?;
+
+    let mapped_wildcard: std::net::SocketAddr = "[::ffff:0.0.0.0]:0".parse()?;
+    handle
+        .set_relay_configuration(native_tls_config(space, mapped_wildcard, transport.clone()))
+        .await?;
+    let bound = handle
+        .relay_status()
+        .await?
+        .private_listen_addr
+        .ok_or("missing bound mapped wildcard private listener")?;
+    assert_ne!(bound.port(), 0);
+    let loopback: std::net::SocketAddr = ([127, 0, 0, 1], bound.port()).into();
+
+    handle
+        .set_relay_configuration(native_tls_config(space, loopback, transport))
+        .await?;
+    let tightened = handle.relay_status().await?;
+    assert!(!tightened.convergence_pending);
+    assert_eq!(tightened.private_listen_addr, Some(loopback));
+    assert_eq!(
+        tightened.applied_private.map(|cfg| cfg.listen_addr()),
+        Some(loopback)
+    );
+    runtime.shutdown().await?;
+    Ok(())
+}
