@@ -200,3 +200,16 @@ test("uses the reset command for Settings password recovery", () => {
   expect(screen.getByText("ma2a ui init")).toBeVisible()
   expect(screen.queryByText("ma2a ui password set")).not.toBeInTheDocument()
 })
+
+test("clicking a peer on the Map updates the inspector to PeerInspector", async () => {
+  const user = userEvent.setup()
+  render(<App initialPath="/" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  expect(screen.getByRole("heading", { name: "Nothing selected" })).toBeVisible()
+  await user.click(screen.getByRole("button", { name: /field-station-2/ }))
+
+  expect(screen.queryByRole("heading", { name: "Nothing selected" })?.textContent).toBeUndefined()
+  expect(screen.getByText("44".repeat(32))).toBeVisible()
+  expect(screen.getByText("Retained observations")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Sync now" })).toBeInTheDocument()
+})

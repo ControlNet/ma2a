@@ -4,6 +4,7 @@ import type { PendingSpaceCreation } from "../api/pending-space"
 import { ROUTE_PATHS, type RoutePath } from "../routes"
 import type { RuntimeActions } from "../runtime-actions"
 import type { RuntimeViewData } from "../view-model"
+import { peerList } from "./derive"
 import { EchoInspector, EchoScreen } from "./echo"
 import { MapInspector, MapScreen } from "./map"
 import { PeerInspector, PeersScreen } from "./peers"
@@ -90,12 +91,24 @@ export function routeView(options: RouteViewOptions): RouteView {
           />
         ),
       }
-    default:
+    default: {
+      const hasSelectedPeer =
+        runtime !== undefined &&
+        selectedPeer !== undefined &&
+        peerList(runtime).some((candidate) => candidate.id === selectedPeer)
       return {
         content: (
           <MapScreen onSelect={options.onSelectPeer} runtime={runtime} selected={selectedPeer} />
         ),
-        inspector: (
+        inspector: hasSelectedPeer ? (
+          <PeerInspector
+            actions={actions}
+            message={options.syncMessage}
+            onSync={options.onSync}
+            runtime={runtime}
+            selected={selectedPeer}
+          />
+        ) : (
           <MapInspector
             actions={actions}
             onCreateSpace={() => options.onNavigate(ROUTE_PATHS.spaces)}
@@ -103,5 +116,6 @@ export function routeView(options: RouteViewOptions): RouteView {
           />
         ),
       }
+    }
   }
 }
