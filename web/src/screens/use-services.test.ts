@@ -7,6 +7,8 @@ import { SERVICES_FIXTURE } from "../test/services-fixture"
 import { type ServicesPoll, useServices } from "./use-services"
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+const NOOP = (): void => undefined
+const FAST_FETCH_POLL: ServicesPoll = { load: fetchServicesData, everyMs: 5 }
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -19,7 +21,7 @@ test("a slow read is never overlapped, so it cannot overwrite a newer one", asyn
     everyMs: 5,
   }
 
-  const { result, unmount } = renderHook(() => useServices(true, () => undefined, poll))
+  const { result, unmount } = renderHook(() => useServices(true, NOOP, poll))
   await pause(60)
 
   // Many poll periods passed while the first read was still open: no second read started.
@@ -43,7 +45,10 @@ test("a read refused for a session that is gone signs out and stops polling", as
     everyMs: 5,
   }
 
-  const { unmount } = renderHook(() => useServices(true, () => (expired += 1), poll))
+  const onSessionExpired = (): void => {
+    expired += 1
+  }
+  const { unmount } = renderHook(() => useServices(true, onSessionExpired, poll))
   await pause(60)
 
   expect(expired).toBe(1)
@@ -84,9 +89,7 @@ test("a fast 503 settles and aborts slow siblings before the next poll starts", 
     })
   })
 
-  const { result, unmount } = renderHook(() =>
-    useServices(true, () => undefined, { load: fetchServicesData, everyMs: 5 }),
-  )
+  const { result, unmount } = renderHook(() => useServices(true, NOOP, FAST_FETCH_POLL))
   await waitFor(() => expect(batchStarts).toBeGreaterThanOrEqual(3))
 
   expect(result.current.status).toBe("failed")
@@ -116,9 +119,7 @@ test("a fast 503 waits for delayed siblings that ignore abort before scheduling 
     })
   })
 
-  const { unmount } = renderHook(() =>
-    useServices(true, () => undefined, { load: fetchServicesData, everyMs: 5 }),
-  )
+  const { unmount } = renderHook(() => useServices(true, NOOP, FAST_FETCH_POLL))
   await waitFor(() => expect(batchStarts).toBeGreaterThanOrEqual(2))
 
   expect(overlaps).toBe(0)
@@ -147,9 +148,10 @@ test("an authentication failure during a partial Services poll aborts siblings a
     })
   })
 
-  const { unmount } = renderHook(() =>
-    useServices(true, () => (expired += 1), { load: fetchServicesData, everyMs: 5 }),
-  )
+  const onSessionExpired = (): void => {
+    expired += 1
+  }
+  const { unmount } = renderHook(() => useServices(true, onSessionExpired, FAST_FETCH_POLL))
   await waitFor(() => expect(expired).toBe(1))
   await pause(20)
 
