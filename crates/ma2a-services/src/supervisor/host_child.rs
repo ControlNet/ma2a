@@ -29,6 +29,11 @@ fn now_ms() -> u64 {
         })
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    static TERMINATION_WAITERS: Arc<std::sync::atomic::AtomicUsize>;
+}
+
 /// Runs the lifecycle to its final status.
 pub(super) async fn lifecycle(shared: Arc<Shared>, mut requests: mpsc::Receiver<Lifecycle>) {
     if let Some(go) = await_go(&shared, &mut requests).await {
@@ -180,7 +185,14 @@ async fn run(
                     if requested < *deadline {
                         *deadline = requested;
                     }
-                    waiters.push(reply);
+                    waiters.retain(|waiter| !waiter.is_closed());
+                    if !reply.is_closed() {
+                        waiters.push(reply);
+                    }
+                    #[cfg(test)]
+                    let _ = TERMINATION_WAITERS.try_with(|count| {
+                        count.store(waiters.len(), std::sync::atomic::Ordering::Release);
+                    });
                 }
                 None => {}
             },
