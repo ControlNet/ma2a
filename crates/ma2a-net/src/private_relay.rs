@@ -183,23 +183,37 @@ impl Error for PrivateRelayServerError {
 }
 
 impl PrivateRelayServerError {
-    /// Reports only recognized temporary listener failures that can heal on reconciliation.
+    /// Reports only recognized temporary listener or TLS material failures that can heal on reconciliation.
     pub fn is_retryable_configuration(&self) -> bool {
-        let Self::Spawn(error) = self else {
-            return false;
-        };
-        let kind = match error {
-            iroh_relay::server::SpawnError::BindTcpListener { source, .. }
-            | iroh_relay::server::SpawnError::BindTlsListener { source, .. } => source.kind(),
-            _ => return false,
-        };
-        matches!(
-            kind,
-            std::io::ErrorKind::AddrInUse
-                | std::io::ErrorKind::AddrNotAvailable
-                | std::io::ErrorKind::Interrupted
-                | std::io::ErrorKind::WouldBlock
-        )
+        match self {
+            Self::Tls(error) => matches!(
+                error,
+                RelayTlsError::CertificateFile
+                    | RelayTlsError::PrivateKeyFile
+                    | RelayTlsError::InsecurePrivateKeyPermissions
+                    | RelayTlsError::InvalidCertificate
+                    | RelayTlsError::CertificateNotCurrent
+                    | RelayTlsError::InvalidPrivateKey
+                    | RelayTlsError::KeyMismatch
+            ),
+            Self::Spawn(error) => {
+                let kind = match error {
+                    iroh_relay::server::SpawnError::BindTcpListener { source, .. }
+                    | iroh_relay::server::SpawnError::BindTlsListener { source, .. } => {
+                        source.kind()
+                    }
+                    _ => return false,
+                };
+                matches!(
+                    kind,
+                    std::io::ErrorKind::AddrInUse
+                        | std::io::ErrorKind::AddrNotAvailable
+                        | std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                )
+            }
+            Self::Supervisor(_) | Self::MissingListener | Self::MissingRelayService => false,
+        }
     }
 }
 

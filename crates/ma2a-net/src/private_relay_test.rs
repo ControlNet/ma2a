@@ -48,3 +48,25 @@ async fn native_tls_on_every_interface_keeps_its_plain_listener_on_loopback() ->
     let _cleanup = fs::remove_dir_all(&directory);
     Ok(())
 }
+
+#[test]
+fn late_tls_material_errors_are_retryable_configuration_failures() {
+    for error in [
+        crate::RelayTlsError::CertificateFile,
+        crate::RelayTlsError::PrivateKeyFile,
+        crate::RelayTlsError::InsecurePrivateKeyPermissions,
+        crate::RelayTlsError::InvalidCertificate,
+        crate::RelayTlsError::CertificateNotCurrent,
+        crate::RelayTlsError::InvalidPrivateKey,
+        crate::RelayTlsError::KeyMismatch,
+    ] {
+        assert!(
+            crate::PrivateRelayServerError::Tls(error).is_retryable_configuration(),
+            "{error:?} should be retryable"
+        );
+    }
+    assert!(
+        !crate::PrivateRelayServerError::Tls(crate::RelayTlsError::TlsConfiguration)
+            .is_retryable_configuration()
+    );
+}

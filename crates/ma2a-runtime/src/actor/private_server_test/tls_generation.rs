@@ -139,3 +139,65 @@ async fn superseded_maintenance_tls_success_at_same_paths_is_discarded() -> Test
     runtime.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn late_tls_file_error_for_current_generation_keeps_working_listener_and_retries()
+-> TestResult {
+    let _gate_guard = TLS_LOAD_GATE_TEST_LOCK.lock().await;
+    let state = TempState::new("tls-late-file-error")?;
+    let transport = write_tls_fixture(&state)?;
+    let RelayTransportConfiguration::NativeTls {
+        ref certificate_path,
+        ..
+    } = transport
+    else {
+        return Err("expected native TLS transport".into());
+    };
+    let cert_backup = std::fs::read(certificate_path)?;
+
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    let handle = runtime.handle();
+    let space = handle.create_owned_space("tls-late-err".to_owned()).await?;
+    let initial = crate::actor::relay_lifecycle_test::enabled_configuration(vec![space]);
+    handle.set_relay_configuration(initial).await?;
+    let old_addr = handle
+        .relay_status()
+        .await?
+        .private_listen_addr
+        .ok_or("missing initial private relay listener")?;
+
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let new_addr = occupied.local_addr()?;
+    let desired = native_tls_config(space, new_addr, transport.clone());
+    let first_error = handle
+        .set_relay_configuration(desired)
+        .await
+        .expect_err("occupied replacement port must defer convergence");
+    assert!(first_error.is_retryable_background());
+
+    // Make the replacement certificate temporarily unavailable for the active generation.
+    std::fs::remove_file(certificate_path)?;
+    let before_failed_load = TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst);
+    super::tick(&handle).await;
+    drain_tls_completion(&handle, before_failed_load).await?;
+
+    assert!(handle.status().await?.is_ready());
+    let pending = handle.relay_status().await?;
+    assert!(pending.convergence_pending);
+    assert_eq!(pending.private_listen_addr, Some(old_addr));
+    let _old_connection = tokio::net::TcpStream::connect(old_addr).await?;
+
+    // Restore the certificate and free the port; normal maintenance converges.
+    std::fs::write(certificate_path, &cert_backup)?;
+    drop(occupied);
+    let before_recovery = TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst);
+    super::tick(&handle).await;
+    drain_tls_completion(&handle, before_recovery).await?;
+
+    let converged = handle.relay_status().await?;
+    assert!(!converged.convergence_pending);
+    assert_eq!(converged.private_listen_addr, Some(new_addr));
+    assert!(tokio::net::TcpStream::connect(old_addr).await.is_err());
+    runtime.shutdown().await?;
+    Ok(())
+}
