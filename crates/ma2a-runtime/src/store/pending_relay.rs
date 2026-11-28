@@ -68,14 +68,14 @@ impl PendingRelayPublication {
 }
 
 impl StoreBackend {
-    fn reconcile_active_effective_relay_spaces(
+    pub(super) fn reconcile_active_effective_relay_spaces(
         &mut self,
         local_endpoint_id: ma2a_core::EndpointId,
         (config, authorizations): (
             &ma2a_net::PrivateRelayProviderConfig,
             &[ma2a_core::SpaceAuthorizationView],
         ),
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(u64, bool), RuntimeError> {
         let mut active_spaces = Vec::new();
         for authorization in authorizations {
             let space_id = authorization.space_id();
@@ -90,15 +90,14 @@ impl StoreBackend {
             }
         }
         self.repository
-            .reconcile_private_relay_activity(local_endpoint_id, &active_spaces)?;
-        Ok(())
+            .reconcile_private_relay_activity(local_endpoint_id, &active_spaces)
+            .map_err(Into::into)
     }
 
     pub(super) fn prepare_pending_relay_publication(
         &mut self,
-        (publisher, local_endpoint_id, authorizations): (
+        (publisher, authorizations): (
             &ma2a_net::PrivateRelayAdvertisementPublisher,
-            ma2a_core::EndpointId,
             &[ma2a_core::SpaceAuthorizationView],
         ),
         (issued_at_ms, expires_at_ms, expiry_policy, skip_spaces): (
@@ -108,7 +107,7 @@ impl StoreBackend {
             &std::collections::BTreeSet<ma2a_core::SpaceId>,
         ),
     ) -> Result<(), RuntimeError> {
-        let reuse = match self
+        let reuse = self
             .pending_relay_publication
             .as_ref()
             .map_or(Ok(false), |pending| {
@@ -116,16 +115,7 @@ impl StoreBackend {
                     (publisher.config(), authorizations, skip_spaces),
                     (issued_at_ms, expires_at_ms, expiry_policy),
                 )
-            }) {
-            Ok(reuse) => reuse,
-            Err(error) => {
-                self.reconcile_active_effective_relay_spaces(
-                    local_endpoint_id,
-                    (publisher.config(), authorizations),
-                )?;
-                return Err(error);
-            }
-        };
+            })?;
         if !reuse {
             // A changed or renewal-due retained batch cannot complete as a
             // safely fresh publication. The signed replacement becomes pending

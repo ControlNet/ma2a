@@ -114,8 +114,12 @@ impl StoreBackend {
             .iter()
             .map(ma2a_store::ControlSpaceState::authorization)
             .collect::<Vec<_>>();
+        let (_pre_revision, pre_activity_changed) = self.reconcile_active_effective_relay_spaces(
+            local_endpoint_id,
+            (publisher.config(), &authorizations),
+        )?;
         self.prepare_pending_relay_publication(
-            (publisher, local_endpoint_id, &authorizations),
+            (publisher, &authorizations),
             (issued_at_ms, expires_at_ms, expiry_policy, skip_spaces),
         )?;
         let pending = self
@@ -171,7 +175,7 @@ impl StoreBackend {
         self.pending_relay_publication = None;
         Ok(RelayPublicationResult {
             revision,
-            changed: advanced || activity_changed,
+            changed: advanced || pre_activity_changed || activity_changed,
             clock_behind,
             issued_at_ms: effective_issued_at_ms,
             expires_at_ms: effective_expires_at_ms,

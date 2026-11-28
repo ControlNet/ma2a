@@ -165,8 +165,9 @@ async fn clock_behind_retained_partial_batch_still_deactivates_earlier_removed_s
             .is_some_and(|ad| ad.is_active())
     );
 
-    // Reconfigure away from `removed` to `[space_a, space_b]` and fail mid-batch before
-    // durable activity reconciliation completes.
+    // Reconfigure away from `removed` to `[space_a, space_b]` and fail mid-batch after
+    // writing one replacement Space. `removed` must already be inactive and absent from
+    // control export immediately after the error, while the committed replacement is active.
     handle.store.fail_relay_publication_after(1).await?;
     assert!(
         handle
@@ -175,6 +176,26 @@ async fn clock_behind_retained_partial_batch_still_deactivates_earlier_removed_s
             .is_err()
     );
     assert!(handle.store.relay_publication_pending().await?);
+    let repository = Repository::open(&config)?;
+    assert!(
+        !repository
+            .relay_advertisement(removed, endpoint_id)?
+            .ok_or("removed Space advertisement missing")?
+            .is_active()
+    );
+    let ((Some(committed), None) | (None, Some(committed))) = (
+        repository.relay_advertisement(space_a, endpoint_id)?,
+        repository.relay_advertisement(space_b, endpoint_id)?,
+    ) else {
+        return Err("fault did not stop exactly after one replacement Space".into());
+    };
+    assert!(committed.is_active());
+    drop(repository);
+    assert!(!respond_has_relay_advertisement(
+        &config,
+        (endpoint_id, peer_id, removed),
+        u64::try_from(NOW_MS)?,
+    )?);
 
     // Step clock behind the retained partial batch and run maintenance. The retained batch
     // must not replay backdated records, yet `removed` must still be deactivated.
