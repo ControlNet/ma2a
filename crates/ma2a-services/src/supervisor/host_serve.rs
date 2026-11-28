@@ -110,7 +110,7 @@ async fn serve_request(
     shared: &Shared,
 ) -> Result<(), ServiceError> {
     match request {
-        SupervisorRequest::Watch => watch(writer, shared).await,
+        SupervisorRequest::Watch => watch((reader, writer), shared).await,
         SupervisorRequest::Go => {
             let status = match ask(shared, Lifecycle::Go).await {
                 Ok(status) => status,
@@ -135,11 +135,7 @@ async fn serve_request(
             }
         }
         SupervisorRequest::Terminate(grace_ms) => {
-            let status = match ask(shared, |reply| Lifecycle::Terminate(grace_ms, reply)).await {
-                Ok(status) => status,
-                Err(_) => settled(shared)?,
-            };
-            writer.frame(FrameKind::Outcome, &status.to_bytes()).await
+            terminate((reader, writer), shared, grace_ms).await
         }
         SupervisorRequest::Attach(from, stdin) => {
             super::host_attach::attach((reader, writer), shared, (from, stdin)).await
@@ -150,19 +146,82 @@ async fn serve_request(
     }
 }
 
+/// Resolves once the caller closes, breaks, or sends an unexpected frame on its half.
+async fn disconnected(reader: &mut Reader) -> ServiceError {
+    match reader.next().await {
+        Ok(None) | Err(_) => ServiceError::Cancelled,
+        Ok(Some(_)) => ServiceError::InvalidInput,
+    }
+}
+
+/// Writes and flushes one frame while watching for caller disconnect.
+async fn write_or_disconnect(
+    (reader, writer): (&mut Reader, &mut Writer),
+    kind: FrameKind,
+    payload: &[u8],
+) -> Result<(), ServiceError> {
+    let write = async {
+        writer.frame(kind, payload).await?;
+        writer.flush().await
+    };
+    tokio::select! {
+        result = write => result,
+        error = disconnected(reader) => Err(error),
+    }
+}
+
+/// Delivers `Terminate` to the lifecycle task and waits for its outcome or caller disconnect.
+///
+/// A disconnect after delivery ends only this waiter connection; the termination itself keeps
+/// running against the child.
+async fn terminate(
+    (reader, writer): (&mut Reader, &mut Writer),
+    shared: &Shared,
+    grace_ms: u32,
+) -> Result<(), ServiceError> {
+    let (reply, answer) = oneshot::channel();
+    let sent = tokio::select! {
+        sent = shared.requests.send(Lifecycle::Terminate(grace_ms, reply)) => sent,
+        error = disconnected(reader) => return Err(error),
+    };
+    let status = match sent {
+        Ok(()) => tokio::select! {
+            answered = answer => match answered {
+                Ok(status) => status,
+                Err(_) => settled(shared)?,
+            },
+            error = disconnected(reader) => return Err(error),
+        },
+        Err(_) => settled(shared)?,
+    };
+    write_or_disconnect((reader, writer), FrameKind::Outcome, &status.to_bytes()).await
+}
+
 /// Streams every status change, ending with the final status as `outcome`.
-async fn watch(writer: &mut Writer, shared: &Shared) -> Result<(), ServiceError> {
+async fn watch(
+    (reader, writer): (&mut Reader, &mut Writer),
+    shared: &Shared,
+) -> Result<(), ServiceError> {
     let mut changes = shared.status.subscribe();
-    writer.frame(FrameKind::Accept, ACKNOWLEDGED).await?;
+    write_or_disconnect((reader, writer), FrameKind::Accept, ACKNOWLEDGED).await?;
     loop {
         let status = *changes.borrow_and_update();
         if status.is_final() {
-            return writer.frame(FrameKind::Outcome, &status.to_bytes()).await;
+            return write_or_disconnect((reader, writer), FrameKind::Outcome, &status.to_bytes())
+                .await;
         }
-        writer.frame(FrameKind::Control, &status.to_bytes()).await?;
-        writer.flush().await?;
-        if changes.changed().await.is_err() {
-            return Err(ServiceError::Unavailable);
+        write_or_disconnect((reader, writer), FrameKind::Control, &status.to_bytes()).await?;
+        tokio::select! {
+            updated = changes.changed() => {
+                if updated.is_err() {
+                    return Err(ServiceError::Unavailable);
+                }
+            }
+            error = disconnected(reader) => return Err(error),
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "host_serve_tests.rs"]
+mod tests;
