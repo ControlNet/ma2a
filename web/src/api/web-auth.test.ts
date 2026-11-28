@@ -167,3 +167,44 @@ test("logging out one Runtime in a shared host cookie jar keeps the other Runtim
   expect(logoutTokens).toEqual([tokenB])
   expect(currentWebSession()).toEqual({ csrfToken: tokenA })
 })
+
+test("uses the login response CSRF cookie name for later reads and logout retries", async () => {
+  const tokenA = "aa".repeat(32)
+  const tokenB1 = "bb".repeat(32)
+  const tokenB2 = "cc".repeat(32)
+  const cookieA = "ma2a_csrf_11111111111111111111111111111111"
+  const cookieB = "ma2a_csrf_22222222222222222222222222222222"
+  document.head.innerHTML = `<meta name="ma2a-csrf-cookie" content="${cookieA}" />`
+  const jar = new Map<string, string>([
+    [cookieA, tokenA],
+    [cookieB, tokenB1],
+  ])
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    get: () =>
+      Array.from(jar.entries())
+        .map(([name, value]) => `${name}=${value}`)
+        .join("; "),
+  })
+  const logoutTokens: (string | null)[] = []
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+    const request = new Request(input, init)
+    const path = new URL(request.url).pathname
+    if (path === "/api/v1/web/auth/login") {
+      return Response.json({ csrf_token: tokenB1, csrf_cookie: cookieB })
+    }
+    if (path === "/api/v1/web/auth/logout") {
+      const token = request.headers.get("x-csrf-token")
+      logoutTokens.push(token)
+      return new Response(null, { status: token === tokenB2 ? 204 : 403 })
+    }
+    return new Response(null, { status: 204 })
+  })
+
+  const session = await loginAndTouchSession("browser-login-password-9!")
+  jar.set(cookieB, tokenB2)
+
+  expect(currentWebSession()).toEqual({ csrfToken: tokenB2 })
+  await logoutSession(session)
+  expect(logoutTokens).toEqual([tokenB1, tokenB2])
+})

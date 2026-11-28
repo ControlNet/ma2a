@@ -12,8 +12,11 @@ const LoginResponseSchema = z
 
 const CsrfTokenSchema = z.string().regex(/^[0-9a-f]{64}$/)
 const CSRF_COOKIE = "ma2a_csrf"
+const sessionCsrfCookies = new WeakMap<WebSession, string>()
 
-function csrfCookieName(): string {
+function csrfCookieName(session?: WebSession): string {
+  const scoped = session === undefined ? undefined : sessionCsrfCookies.get(session)
+  if (scoped !== undefined) return scoped
   if (typeof document !== "undefined") {
     const content = document
       .querySelector('meta[name="ma2a-csrf-cookie"]')
@@ -23,6 +26,20 @@ function csrfCookieName(): string {
     if (parsed.success) return parsed.data
   }
   return CSRF_COOKIE
+}
+
+function rememberCsrfCookieName(cookieName: string): void {
+  if (typeof document === "undefined") return
+  const existing = document.querySelector('meta[name="ma2a-csrf-cookie"]')
+  if (existing !== null) {
+    existing.setAttribute("content", cookieName)
+    return
+  }
+  if (document.head === null) return
+  const meta = document.createElement("meta")
+  meta.name = "ma2a-csrf-cookie"
+  meta.content = cookieName
+  document.head.appendChild(meta)
 }
 
 const http = ky.create({
@@ -43,8 +60,8 @@ export type WebSession = {
   readonly csrfToken: string
 }
 
-export function currentWebSession(): WebSession | undefined {
-  const csrfCookie = csrfCookieName()
+export function currentWebSession(session?: WebSession): WebSession | undefined {
+  const csrfCookie = csrfCookieName(session)
   const tokens = document.cookie
     .split(";")
     .map((part) => part.trim().split("=", 2))
@@ -54,7 +71,10 @@ export function currentWebSession(): WebSession | undefined {
     return undefined
   }
   const token = tokens[0]
-  return token?.success === true ? { csrfToken: token.data } : undefined
+  if (token?.success !== true) return undefined
+  const current: WebSession = { csrfToken: token.data }
+  sessionCsrfCookies.set(current, csrfCookie)
+  return current
 }
 
 export async function loginAndTouchSession(password: string): Promise<WebSession> {
@@ -68,7 +88,12 @@ export async function loginAndTouchSession(password: string): Promise<WebSession
     await http.post(new URL("/api/v1/web/session/touch", window.location.origin), {
       headers: { "x-csrf-token": session.csrf_token },
     })
-    return { csrfToken: session.csrf_token }
+    const webSession: WebSession = { csrfToken: session.csrf_token }
+    if (session.csrf_cookie !== undefined) {
+      rememberCsrfCookieName(session.csrf_cookie)
+      sessionCsrfCookies.set(webSession, session.csrf_cookie)
+    }
+    return webSession
   } catch (error) {
     throw new WebAuthenticationError(error)
   }
@@ -90,7 +115,7 @@ export async function logoutSession(
     // valid then, so log it out with the token its cookie carries instead of reporting success.
     // A page that has signed in again since sending the request owns that session now, and a
     // late refusal never logs it out.
-    const current = currentWebSession()
+    const current = currentWebSession(session)
     if (
       error instanceof HTTPError &&
       error.response.status === 403 &&

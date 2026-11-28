@@ -12,6 +12,7 @@ afterEach(() => {
   controllers.length = 0
   vi.restoreAllMocks()
   Reflect.deleteProperty(document, "cookie")
+  document.head.innerHTML = ""
   window.history.replaceState(null, "", "/")
 })
 
@@ -55,4 +56,66 @@ test("a late log out refusal during a sign-in after going back keeps the new ses
 
   await screen.findByRole("main", { name: "Runtime content" })
   expect(logouts).toEqual(["cd".repeat(32)])
+})
+
+test("a tab from Runtime A uses Runtime B's CSRF cookie after signing in to B", async () => {
+  const tokenA = "aa".repeat(32)
+  const tokenB1 = "bb".repeat(32)
+  const tokenB2 = "cc".repeat(32)
+  const cookieA = "ma2a_csrf_11111111111111111111111111111111"
+  const cookieB = "ma2a_csrf_22222222222222222222222222222222"
+  document.head.innerHTML = `<meta name="ma2a-csrf-cookie" content="${cookieA}" />`
+  const jar = new Map<string, string>([
+    [cookieA, tokenA],
+    [cookieB, tokenB1],
+  ])
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    get: () =>
+      Array.from(jar.entries())
+        .map(([name, value]) => `${name}=${value}`)
+        .join("; "),
+  })
+  const mutationTokens: (string | null)[] = []
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+    const request = new Request(input, init)
+    const path = new URL(request.url).pathname
+    if (path === "/api/v1/web/auth/login") {
+      return Response.json({ csrf_token: tokenB1, csrf_cookie: cookieB })
+    }
+    if (path === "/api/v1/control-sync/trigger") {
+      mutationTokens.push(request.headers.get("x-csrf-token"))
+      return Response.json({
+        version: 1,
+        request_id: null,
+        revision: 1,
+        result: { type: "control_sync_triggered", payload: { peer_endpoint_ids: [] } },
+      })
+    }
+    return new Response(null, { status: 204 })
+  })
+  window.history.replaceState(null, "", "/endpoint")
+  holdControllers()
+  const user = userEvent.setup()
+  const given = render(<App />)
+  act(() => controllers[0]?.onSessionExpired())
+
+  await user.type(screen.getByLabelText("Password"), "browser-login-password-9!")
+  await user.click(screen.getByRole("button", { name: "Sign in" }))
+  await screen.findByRole("main", { name: "Runtime content" })
+  act(() => controllers[1]?.onRuntime(MANY_RUNTIME_FIXTURE))
+  window.history.replaceState(null, "", "/endpoint")
+  act(() => window.dispatchEvent(new window.PopStateEvent("popstate")))
+
+  const peer = given.container.querySelector<HTMLElement>(".peer")
+  if (peer === null) throw new Error("fixture has a peer")
+  await user.click(peer)
+  await user.click(screen.getByRole("button", { name: "Sync now" }))
+  await screen.findByText("Control round requested.")
+
+  // Another tab signs in to B and rotates B's CSRF cookie while A's cookie stays in the jar.
+  jar.set(cookieB, tokenB2)
+  await user.click(screen.getByRole("button", { name: "Sync now" }))
+
+  expect(mutationTokens).toEqual([tokenB1, tokenB2])
 })

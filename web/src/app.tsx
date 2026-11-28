@@ -151,7 +151,7 @@ export function App({
     if (session === undefined || controller === undefined || pendingSpace === undefined) {
       return undefined
     }
-    const csrfToken = (): string => currentWebSession()?.csrfToken ?? session.csrfToken
+    const csrfToken = (): string => currentWebSession(session)?.csrfToken ?? session.csrfToken
     return createRuntimeActions(
       createRuntimeMutationClient({ csrfToken, pendingSpace }),
       () => controller.refresh(),
