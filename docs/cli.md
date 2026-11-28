@@ -95,7 +95,9 @@ ma2a --state-dir "$STATE_A" space invite lab | ma2a --state-dir "$STATE_B" space
 
 If an acceptance fails with an uncertain remote outcome or a retryable unavailable response, the
 diagnostic prints the attempt's 32-hex `RequestId` and `--state-dir` selection (or asks you to
-keep the original `--state-dir` when the path cannot be safely quoted for the shell) so you can
+keep the original `--state-dir` when the path contains control characters, is non-UTF-8, or on
+Windows ends with `\` or contains characters outside ASCII letters, digits, space, `\`, `:`, `.`,
+`_`, and `-`) so you can
 retry the exact same ticket against the same Runtime with
 `ma2a --state-dir PATH space accept --request-id HEX` without conflicting with an
 already-committed redemption.

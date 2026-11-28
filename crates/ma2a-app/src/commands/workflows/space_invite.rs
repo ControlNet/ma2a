@@ -165,7 +165,8 @@ fn quote_state_dir(state_dir: &Path) -> Option<String> {
     }
     #[cfg(windows)]
     {
-        if raw.ends_with('\\') || raw.contains(['"', '%', '$', '`']) {
+        if raw.is_empty() || raw.ends_with('\\') || !raw.bytes().all(is_safe_windows_state_dir_byte)
+        {
             return None;
         }
         Some(format!("\"{raw}\""))
@@ -174,6 +175,11 @@ fn quote_state_dir(state_dir: &Path) -> Option<String> {
     {
         Some(format!("'{}'", raw.replace('\'', "'\\''")))
     }
+}
+
+#[cfg(windows)]
+const fn is_safe_windows_state_dir_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b' ' | b'\\' | b':' | b'.' | b'_' | b'-')
 }
 
 fn read_invitation() -> Result<String, AppError> {
