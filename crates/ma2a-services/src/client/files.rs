@@ -87,6 +87,11 @@ where
     // answer to a body that was not sent in full is not believed.
     match sent {
         Err(error) if !(frame.kind() == FrameKind::Outcome && failed(&frame).is_err()) => {
+            let error = if error == ServiceError::Cancelled {
+                ServiceError::OutcomeUnknown
+            } else {
+                error
+            };
             Err(ClientError::Stream(error))
         }
         _ => Ok(frame),

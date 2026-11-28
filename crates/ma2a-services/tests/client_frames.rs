@@ -2303,5 +2303,32 @@ async fn torn_frames_and_stream_resets_report_outcome_unknown_across_client_driv
     );
     let res = stdin_after_broken_write(oversized_header).await?;
     assert!(malformed(&res), "hosted::stdin oversized header: {res:?}");
+
+    // Failed write in files::run (FilesRequest::Write) must report OutcomeUnknown when the
+    // target answers with a non-failure frame instead of surfacing write-side Cancelled.
+    let write_req = FilesRequest::Write(RemotePath::parse("docs:/a")?, WriteMode::Replace, 3);
+    let written_ok = Sent::Frame(
+        FrameKind::Outcome,
+        FilesResult::encode_outcome(&Ok(FilesResult::Written(3)))?,
+    );
+    for (label, sent_frames) in [
+        ("ok outcome", vec![accept(&EMPTY_ACCEPT), written_ok]),
+        (
+            "non-outcome data",
+            vec![accept(&EMPTY_ACCEPT), Sent::Data(Channel::Output, b"x")],
+        ),
+    ] {
+        let sent = replies(&sent_frames).await?;
+        let res = within(files::run(
+            (
+                &mut FrameReader::new(sent.as_slice()),
+                &mut FrameWriter::new(Broken),
+            ),
+            &write_req,
+            b"abc",
+        ))
+        .await?;
+        assert!(outcome_unknown(&res), "files write {label}: {res:?}");
+    }
     Ok(())
 }
