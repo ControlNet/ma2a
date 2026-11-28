@@ -203,3 +203,34 @@ fn windows_unshared_reader_on_oldest_segment_bounds_disk_and_recovers() -> TestR
     );
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn finish_syncs_gap_marker_directory_entry() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    if rustix::process::getuid().is_root() {
+        return Ok(());
+    }
+
+    // Given: a log with a pending retention gap whose directory grants write+execute only, so
+    // creating and syncing the marker file succeeds while opening the directory to fsync fails.
+    let limit = 2 * MIB;
+    let directory = TempDirectory::new("finish-dir-sync")?;
+    let (mut writer, _stalled_end, produced) = write_blocked_past_limit(&directory.0, limit)?;
+    std::fs::set_permissions(&directory.0, std::fs::Permissions::from_mode(0o300))?;
+
+    // When: finalization runs with the directory unreadable.
+    let finished = writer.finish();
+    std::fs::set_permissions(&directory.0, std::fs::Permissions::from_mode(0o700))?;
+
+    // Then: finish attempted to sync the directory entry after creating the marker file.
+    assert!(
+        finished.is_err(),
+        "finish must fsync the directory entry of the gap marker file"
+    );
+    assert!(directory.0.join(name(produced)).exists());
+    writer.finish()?;
+    assert_eq!(window(&directory.0)?, LogWindow::new(0, produced));
+    Ok(())
+}

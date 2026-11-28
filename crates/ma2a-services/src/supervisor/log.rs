@@ -182,6 +182,8 @@ impl LogWriter {
             marker.sync_all()?;
         }
         self.discarded = 0;
+        #[cfg(unix)]
+        File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
 
