@@ -180,9 +180,10 @@ Errors:
 | This Runtime does not host Processes | `unavailable`, no effect |
 | Supervisor not answering conclusively | `unavailable`; the Runtime keeps following the Process |
 
-The two mutations use ordinary mutation replay. `process_terminate` holds the local mutation lock
-while it waits for the supervisor: at most the grace period plus 10 s, so other local mutations
-wait up to 70 s behind it. The IPC client waits for a reply without a deadline.
+The two mutations use ordinary mutation replay. While `process_terminate` waits for the
+supervisor (at most the grace period plus 10 s), it keeps its durable request ID reservation
+but releases the local mutation lock, so other local mutations are still answered meanwhile;
+a duplicate request is refused as pending. The IPC client waits for a reply without a deadline.
 
 ### Hosted Agents (Phase 4)
 

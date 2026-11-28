@@ -48,8 +48,13 @@ on restart until the new process observes current state.
 - **The service SDK builds the Runtime.** `ma2a-service` uses the IPC client and local API types
   of `ma2a-runtime`, so a third-party service compiles the Runtime's dependency graph. A smaller
   shared client crate would remove that coupling; it is not split out yet.
-- **Local mutations are serialized.** Every durable local API mutation (commands carrying a
-  `RequestId`) runs under one Runtime-wide replay lock so retries replay deterministically.
+- **Local mutations serialize on the replay lock.** Durable local API mutations (commands
+  carrying a `RequestId`) take a Runtime-wide replay lock to check or durably reserve their
+  `RequestId`. Most hold the lock until they finish; the four remote network mutations
+  (`space_leave`, `space_redeem`, `echo_call`, `control_sync_trigger`) and five blocking
+  Process/Agent lifecycle mutations (`process_terminate`, `agent_define`, `agent_undefine`,
+  `agent_stop`, `agent_start`) release it after reserving the `RequestId`, relying on the
+  durable pending reservation to refuse retries while unrelated local mutations proceed.
   Read-only queries, handshakes, UI lifecycle, and stream/hosted-service upgrades do not take
   the lock.
 - **Control synchronization needs a fresh address.** A peer is dialed for control only through a
