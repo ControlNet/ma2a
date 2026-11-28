@@ -54,6 +54,7 @@ pub(super) fn start_request(
 impl AgentManager {
     /// Makes sure a started Agent has a linked live instance, starting the next one once
     /// its restart backoff has passed.
+    #[cfg(test)]
     pub(super) async fn ensure_instance(&self, agent: &AgentId) {
         let _lifecycle = self.lock_lifecycle(agent).await;
         self.ensure_instance_locked(agent).await;
@@ -230,7 +231,7 @@ impl AgentManager {
     }
 
     /// Schedules the next restart or predecessor-termination attempt with exponential backoff.
-    fn schedule_backoff(&self, agent: &AgentId, reset: bool) {
+    pub(super) fn schedule_backoff(&self, agent: &AgentId, reset: bool) {
         let mut coordination = self.coordination();
         let pause = if reset {
             BACKOFF.0

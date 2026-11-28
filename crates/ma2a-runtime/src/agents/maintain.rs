@@ -2,47 +2,19 @@
 //! second, withdrawal convergence after every durable change, and retention.
 
 use std::{
-    collections::{HashSet, VecDeque},
-    sync::{Arc, Mutex, PoisonError},
+    collections::HashSet,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-use ma2a_core::service::{AgentId, AgentTaskReason, ServiceAccess, ServiceError};
-use tokio::time::Instant;
+use ma2a_core::service::{AgentTaskReason, ServiceAccess, ServiceError};
 
 use super::AgentManager;
 
-/// FIFO admission queue for Agents waiting on one of `start_permits`.
-#[derive(Debug, Default)]
-struct StartQueue {
-    order: VecDeque<AgentId>,
-    members: HashSet<AgentId>,
-}
+#[path = "maintain_starts.rs"]
+mod starts;
 
-impl StartQueue {
-    fn retain(&mut self, needed: &HashSet<AgentId>) {
-        self.order.retain(|agent| needed.contains(agent));
-        self.members.retain(|agent| needed.contains(agent));
-    }
-
-    fn push_back(&mut self, agent: AgentId) {
-        if self.members.insert(agent.clone()) {
-            self.order.push_back(agent);
-        }
-    }
-
-    fn push_front(&mut self, agent: AgentId) {
-        if self.members.insert(agent.clone()) {
-            self.order.push_front(agent);
-        }
-    }
-
-    fn pop_front(&mut self) -> Option<AgentId> {
-        let agent = self.order.pop_front()?;
-        self.members.remove(&agent);
-        Some(agent)
-    }
-}
+use starts::StartQueue;
 
 /// How often instances, assignment, and cancellation grace are checked.
 const TICK: Duration = Duration::from_secs(1);
@@ -121,17 +93,47 @@ impl AgentManager {
         }
     }
 
-    /// Makes sure every started Agent has a linked instance, and assigns queued tasks.
+    /// Makes sure every started Agent has a linked instance, assigns queued tasks, and
+    /// terminates surviving predecessor Processes of disabled Agents.
     ///
-    /// Missing or unbound instances start in bounded background tasks in FIFO queue order so
-    /// slow or failing startups never starve healthy Agents or delay cancellation expiry.
+    /// Missing/unbound instances and disabled-Agent cleanups run in bounded background tasks
+    /// in FIFO queue order so slow or failing work never starves healthy Agents or delays
+    /// cancellation expiry.
     async fn instances(&self, starts: &Arc<Mutex<StartQueue>>) {
-        let Ok((_, agents)) = self.list().await else {
+        let Ok((agents, active)) = self
+            .store(|repository| {
+                Ok((
+                    repository.agents()?.into_value(),
+                    repository.active_processes()?,
+                ))
+            })
+            .await
+        else {
             return;
         };
+        let mut active_ids = HashSet::new();
+        let mut active_bindings = HashSet::new();
+        for process in active
+            .into_iter()
+            .filter(|process| process.creator == self.0.local)
+        {
+            active_ids.insert(process.id);
+            active_bindings.insert(process.request_id);
+        }
         let mut pending = Vec::new();
-        for (record, _) in agents.into_iter().filter(|(record, _)| record.enabled) {
+        for (record, _) in agents {
             let id = &record.definition.id;
+            if !record.enabled {
+                if starts::has_surviving_predecessor(&record, (&active_ids, &active_bindings)) {
+                    pending.push(record.definition.id);
+                } else {
+                    let mut coordination = self.coordination();
+                    if !coordination.starting.contains(id) {
+                        coordination.restarts.remove(id);
+                    }
+                }
+                continue;
+            }
             // A reserved name, started before such names were refused, can never run an
             // instance; it is stopped, so its tasks end and it takes no new ones.
             if super::operator::reserved_name(id.as_str()) {
@@ -150,78 +152,6 @@ impl AgentManager {
         }
         self.enqueue_starts(starts, pending);
         self.drain_starts(starts);
-    }
-
-    /// Prunes Agents that no longer need startup and appends newly eligible ones.
-    fn enqueue_starts(&self, starts: &Arc<Mutex<StartQueue>>, pending: Vec<AgentId>) {
-        let needed: HashSet<AgentId> = pending.iter().cloned().collect();
-        let now = Instant::now();
-        let mut queue = starts.lock().unwrap_or_else(PoisonError::into_inner);
-        let coordination = self.coordination();
-        queue.retain(&needed);
-        for agent in pending {
-            let waiting = coordination
-                .restarts
-                .get(&agent)
-                .is_some_and(|(not_before, _)| now < *not_before);
-            if !waiting && !coordination.starting.contains(&agent) {
-                queue.push_back(agent);
-            }
-        }
-    }
-
-    /// Acquires permits for queued eligible Agents in FIFO order.
-    fn take_admitted(
-        &self,
-        starts: &Arc<Mutex<StartQueue>>,
-    ) -> Vec<(AgentId, tokio::sync::OwnedSemaphorePermit)> {
-        let now = Instant::now();
-        let mut admitted = Vec::new();
-        let mut queue = starts.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut coordination = self.coordination();
-        while let Some(agent) = queue.pop_front() {
-            let waiting = coordination
-                .restarts
-                .get(&agent)
-                .is_some_and(|(not_before, _)| now < *not_before);
-            if waiting || coordination.starting.contains(&agent) {
-                continue;
-            }
-            let Ok(permit) = Arc::clone(&self.0.start_permits).try_acquire_owned() else {
-                queue.push_front(agent);
-                break;
-            };
-            admitted.push((agent.clone(), permit));
-            coordination.starting.insert(agent);
-        }
-        drop(coordination);
-        drop(queue);
-        admitted
-    }
-
-    /// Admits queued Agents in FIFO order up to `start_permits` and hands freed slots to
-    /// waiting Agents as soon as a start task finishes.
-    fn drain_starts(&self, starts: &Arc<Mutex<StartQueue>>) {
-        if self.0.shutdown.is_cancelled() {
-            return;
-        }
-        let admitted = self.take_admitted(starts);
-        for (agent, permit) in admitted {
-            let (manager, starts) = (self.clone(), Arc::clone(starts));
-            self.0.tasks.spawn(async move {
-                let shutdown = manager.0.shutdown.clone();
-                tokio::select! {
-                    () = shutdown.cancelled() => {}
-                    () = async {
-                        manager.ensure_instance(&agent).await;
-                        manager.assign(&agent).await;
-                    } => {}
-                }
-                manager.coordination().starting.remove(&agent);
-                drop(permit);
-                manager.drain_starts(&starts);
-            });
-        }
     }
 
     /// Ends every task whose instance did not confirm its cancellation in time.

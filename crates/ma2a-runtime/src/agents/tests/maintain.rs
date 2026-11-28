@@ -605,3 +605,349 @@ async fn ninth_healthy_agent_claims_slot_when_failing_supervisor_releases_permit
     }
     Ok(())
 }
+
+/// Mock supervisor that drops the first `fail_count` Terminate requests, then ends the Process.
+async fn run_flaky_terminate_supervisor(
+    (address, credentials): (
+        ma2a_services::supervisor::SupervisorAddress,
+        ma2a_services::supervisor::Credentials,
+    ),
+    (fail_count, attempts, shutdown): (
+        usize,
+        Arc<std::sync::atomic::AtomicUsize>,
+        CancellationToken,
+    ),
+) -> TestResult {
+    use std::sync::atomic::Ordering;
+
+    use interprocess::local_socket::tokio::prelude::*;
+    use ma2a_core::service::{FrameKind, Termination};
+    use ma2a_services::{
+        FrameReader, FrameWriter,
+        supervisor::{
+            EndCause, SupervisorStatus,
+            proof::{prove_supervisor, read_challenge},
+        },
+    };
+
+    let listener = address.bind()?;
+    loop {
+        let mut stream = tokio::select! {
+            () = shutdown.cancelled() => return Ok(()),
+            accepted = listener.accept() => accepted?,
+        };
+        let challenge = read_challenge(&mut FrameReader::new(&mut stream)).await?;
+        let (recv, send) = stream.split();
+        let (mut reader, mut writer) = (FrameReader::new(recv), FrameWriter::new(send));
+        prove_supervisor(challenge, (&mut reader, &mut writer), &credentials).await?;
+        let _request = reader.expect().await?;
+        let seen = attempts.fetch_add(1, Ordering::SeqCst);
+        if seen < fail_count {
+            drop((reader, writer));
+            continue;
+        }
+        let ended = SupervisorStatus::Ended(Termination::Signaled(15), EndCause::Terminated, 9_000);
+        writer.frame(FrameKind::Outcome, &ended.to_bytes()).await?;
+        return Ok(());
+    }
+}
+
+struct MaintainEnv {
+    dir: PathBuf,
+    sockets_dir: PathBuf,
+    config: StoreConfig,
+    store: StoreClient,
+    store_task: tokio::task::JoinHandle<()>,
+    local: EndpointId,
+    shutdown: CancellationToken,
+    processes: ProcessManager,
+    manager: AgentManager,
+}
+
+impl MaintainEnv {
+    async fn new(prefix: &str) -> TestResult<Self> {
+        let mut nonce = [0_u8; 8];
+        getrandom::fill(&mut nonce)?;
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}", u64::from_le_bytes(nonce)));
+        std::fs::create_dir(&dir)?;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let sockets_dir = dir.join("run-v1").join("p");
+        std::fs::create_dir_all(&sockets_dir)?;
+        let config = StoreConfig::new(&dir);
+        let backend = StoreBackend::open(&config)?;
+        let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
+        let store_task = tokio::task::spawn_blocking(move || backend.run(receiver));
+        let store = StoreClient::new(sender);
+        let local = store.initialize().await?.endpoint_id;
+        let shutdown = CancellationToken::new();
+        let clock: Arc<dyn RuntimeClock> = Arc::new(TokioClock::new(1_000_000));
+        let processes = ProcessManager::new(
+            (local, store.clone(), Arc::clone(&clock)),
+            (&dir, None),
+            shutdown.clone(),
+        );
+        let manager = AgentManager::new(
+            (local, store.clone(), clock),
+            (&dir, processes.clone()),
+            shutdown.clone(),
+        );
+        Ok(Self {
+            dir,
+            sockets_dir,
+            config,
+            store,
+            store_task,
+            local,
+            shutdown,
+            processes,
+            manager,
+        })
+    }
+
+    async fn tick_seconds(&self, seconds: usize) -> TestResult {
+        for _ in 0..8 {
+            let _rev = self.store.revision().await?;
+            tokio::task::yield_now().await;
+        }
+        for _ in 0..seconds {
+            for _ in 0..50 {
+                tokio::time::advance(Duration::from_millis(20)).await;
+                tokio::task::yield_now().await;
+            }
+            for _ in 0..8 {
+                let _rev = self.store.revision().await?;
+                tokio::task::yield_now().await;
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_supervisor(
+        &self,
+        (pid, secret): (ProcessId, [u8; 32]),
+        fail_count: usize,
+    ) -> (
+        Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<TestResult>,
+    ) {
+        use std::sync::atomic::AtomicUsize;
+
+        use ma2a_services::supervisor::{Credentials, SupervisorAddress};
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let address = SupervisorAddress::new(
+            self.sockets_dir
+                .join(format!("{pid}.sock"))
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let handle = tokio::spawn(run_flaky_terminate_supervisor(
+            (address, Credentials::new(pid, secret)),
+            (fail_count, Arc::clone(&attempts), self.shutdown.clone()),
+        ));
+        (attempts, handle)
+    }
+
+    async fn finish(
+        self,
+        runner: tokio::task::JoinHandle<()>,
+        supervisors: Vec<tokio::task::JoinHandle<TestResult>>,
+    ) -> TestResult {
+        self.shutdown.cancel();
+        for _ in 0..20 {
+            let _rev = self.store.revision().await?;
+            tokio::task::yield_now().await;
+            if runner.is_finished() && supervisors.iter().all(tokio::task::JoinHandle::is_finished)
+            {
+                break;
+            }
+        }
+        if !runner.is_finished() {
+            runner.abort();
+        }
+        let _joined = runner.await;
+        for supervisor in supervisors {
+            if !supervisor.is_finished() {
+                supervisor.abort();
+            }
+            let _joined = supervisor.await;
+        }
+        drop(self.manager);
+        drop(self.processes);
+        self.store.stop().await?;
+        self.store_task.await?;
+        let _cleanup = std::fs::remove_dir_all(&self.dir);
+        Ok(())
+    }
+}
+
+fn seed_running_agent_process(
+    (config, local): (&StoreConfig, EndpointId),
+    (name, pid_byte, bind_process): (&str, u8, bool),
+) -> TestResult<(AgentId, u64, ProcessId, [u8; 32])> {
+    let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
+    let start_bytes = ProcessStart::new(spec, true, MAX_LOG_LIMIT)?.to_bytes()?;
+    let mut repository = Repository::open(config)?;
+    let id = AgentId::new(name)?;
+    let defined = repository
+        .define_agent(
+            &AgentDefinition {
+                id: id.clone(),
+                description: String::new(),
+                start: start_bytes.clone(),
+                tools: 0,
+                max_tasks: 1,
+            },
+            1,
+        )?
+        .into_value();
+    let ma2a_store::AgentDefine::Defined(defined, _) = defined else {
+        return Err("agent was not defined".into());
+    };
+    repository.set_agent_enabled(&id, (true, 2))?;
+    let generation = repository
+        .begin_agent_instance(&id, 3)?
+        .into_value()
+        .and_then(|record| record.instance)
+        .ok_or("no instance began")?
+        .generation;
+    let request_id = if bind_process {
+        RequestId::random()?
+    } else {
+        super::instance::start_request(&id, (defined.times.0, generation))?
+    };
+    let pid = ProcessId::from_bytes([pid_byte; 16]);
+    let secret = [pid_byte.wrapping_add(1); 32];
+    repository.create_process(&NewProcess {
+        id: pid,
+        binding: (local, request_id),
+        fingerprint: [pid_byte.wrapping_add(2); 32],
+        start: (&start_bytes, None),
+        secret,
+        created_ms: 4,
+    })?;
+    for (to, at_ms) in [(ProcessState::Starting, 5), (ProcessState::Running, 6)] {
+        repository.transition_process(
+            pid,
+            ProcessTransition {
+                to,
+                reason: None,
+                termination: None,
+                at_ms,
+            },
+        )?;
+    }
+    if bind_process {
+        repository.bind_agent_process((&id, generation), pid)?;
+    }
+    Ok((id, generation, pid, secret))
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_stop_termination_reports_error_and_maintenance_reconciles_disabled_agent()
+-> TestResult {
+    use std::sync::atomic::Ordering;
+
+    use ma2a_core::service::ServiceError;
+
+    // Given: an enabled Agent with a running Process whose supervisor drops the first Terminate
+    // request and answers the second with Ended.
+    let env = MaintainEnv::new("ma2a-stop-fail").await?;
+    let (agent, generation, pid, secret) =
+        seed_running_agent_process((&env.config, env.local), ("stop-retry", 0x51, true))?;
+    let (attempts, supervisor) = env.spawn_supervisor((pid, secret), 1);
+    tokio::task::yield_now().await;
+
+    // When: operator stop commits disabled while the first Terminate fails, then maintenance runs.
+    let stop_result = env.manager.stop(&agent).await;
+    let after_stop_agent = Repository::open(&env.config)?
+        .agent(&agent)?
+        .ok_or("agent missing after stop")?;
+    let after_stop_process = env
+        .processes
+        .local_record(pid)
+        .await?
+        .ok_or("process missing after stop")?;
+
+    let runner = tokio::spawn(crate::agents::run(env.manager.clone()));
+    env.tick_seconds(4).await?;
+
+    let final_agent = Repository::open(&env.config)?
+        .agent(&agent)?
+        .ok_or("agent missing after maintenance")?;
+    let final_process = env
+        .processes
+        .local_record(pid)
+        .await?
+        .ok_or("process missing after maintenance")?;
+    env.finish(runner, vec![supervisor]).await?;
+
+    // Then: stop reported Unavailable while committing disabled, and maintenance finished
+    // terminating the Process without re-enabling or replacing the Agent.
+    assert_eq!(stop_result.err(), Some(ServiceError::Unavailable));
+    assert!(!after_stop_agent.enabled);
+    assert_eq!(after_stop_process.state, ProcessState::Running);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(final_process.state, ProcessState::Terminated);
+    assert!(!final_agent.enabled);
+    assert_eq!(final_agent.generation, generation);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn restart_after_disable_commit_terminates_surviving_bound_and_unbound_processes()
+-> TestResult {
+    use std::sync::atomic::Ordering;
+
+    // Given: two Agents disabled in SQLite just before daemon restart (one bound Process, one
+    // unbound Process resolved via deterministic start RequestId), both still Running.
+    let env = MaintainEnv::new("ma2a-stop-boot").await?;
+    let (bound_agent, bound_gen, bound_pid, bound_secret) =
+        seed_running_agent_process((&env.config, env.local), ("disabled-bound", 0x61, true))?;
+    let (unbound_agent, unbound_gen, unbound_pid, unbound_secret) =
+        seed_running_agent_process((&env.config, env.local), ("disabled-unbound", 0x64, false))?;
+    {
+        let mut repository = Repository::open(&env.config)?;
+        repository.set_agent_enabled(&bound_agent, (false, 7))?;
+        repository.set_agent_enabled(&unbound_agent, (false, 7))?;
+    }
+    let (bound_attempts, bound_sup) = env.spawn_supervisor((bound_pid, bound_secret), 0);
+    let (unbound_attempts, unbound_sup) = env.spawn_supervisor((unbound_pid, unbound_secret), 0);
+    tokio::task::yield_now().await;
+
+    // When: the new Runtime starts Agent maintenance after restart.
+    let runner = tokio::spawn(crate::agents::run(env.manager.clone()));
+    env.tick_seconds(2).await?;
+
+    let bound_record = Repository::open(&env.config)?
+        .agent(&bound_agent)?
+        .ok_or("bound agent missing")?;
+    let unbound_record = Repository::open(&env.config)?
+        .agent(&unbound_agent)?
+        .ok_or("unbound agent missing")?;
+    let bound_process = env
+        .processes
+        .local_record(bound_pid)
+        .await?
+        .ok_or("bound process missing")?;
+    let unbound_process = env
+        .processes
+        .local_record(unbound_pid)
+        .await?
+        .ok_or("unbound process missing")?;
+    env.finish(runner, vec![bound_sup, unbound_sup]).await?;
+
+    // Then: maintenance terminated both surviving Processes while leaving both Agents disabled.
+    assert_eq!(bound_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(unbound_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(bound_process.state, ProcessState::Terminated);
+    assert_eq!(unbound_process.state, ProcessState::Terminated);
+    assert!(!bound_record.enabled);
+    assert!(!unbound_record.enabled);
+    assert_eq!(bound_record.generation, bound_gen);
+    assert_eq!(unbound_record.generation, unbound_gen);
+    Ok(())
+}

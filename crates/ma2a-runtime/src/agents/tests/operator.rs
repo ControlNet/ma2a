@@ -355,7 +355,7 @@ async fn unbound_previous_process_blocks_undefine_and_replacement() -> TestResul
 
     // When: operator stops the Agent before binding, tries to undefine, then re-enables and
     // asks maintenance to ensure a live instance.
-    reserved.manager.stop(&agent).await?;
+    let stop_while_created = reserved.manager.stop(&agent).await;
     let undefine_while_live = reserved.manager.undefine(&agent).await;
     Repository::open(&reserved.config)?.set_agent_enabled(&agent, (true, 6))?;
     reserved.manager.ensure_instance(&agent).await;
@@ -367,7 +367,7 @@ async fn unbound_previous_process_blocks_undefine_and_replacement() -> TestResul
         .ok_or("instance missing")?;
 
     // And once the unbound Process reaches a terminal state, undefine succeeds.
-    reserved.manager.stop(&agent).await?;
+    let second_stop = reserved.manager.stop(&agent).await;
     Repository::open(&reserved.config)?.transition_process(
         process_id,
         ma2a_store::ProcessTransition {
@@ -380,7 +380,10 @@ async fn unbound_previous_process_blocks_undefine_and_replacement() -> TestResul
     let undefine_after_terminal = reserved.manager.undefine(&agent).await;
     reserved.finish().await?;
 
-    // Then: neither undefine nor replacement launch proceeded while the unbound Process lived.
+    // Then: stop reported Unavailable while committing disabled, and neither undefine nor
+    // replacement launch proceeded while the unbound Process lived.
+    assert_eq!(stop_while_created.err(), Some(ServiceError::Unavailable));
+    assert_eq!(second_stop.err(), Some(ServiceError::Unavailable));
     assert_eq!(undefine_while_live.err(), Some(ServiceError::Unavailable));
     assert_eq!(during_live.generation, first.generation);
     assert!(during_live.ended_ms.is_some());

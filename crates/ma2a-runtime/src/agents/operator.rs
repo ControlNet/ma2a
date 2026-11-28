@@ -2,7 +2,7 @@
 
 use ma2a_agent::tools::ToolFamily;
 use ma2a_core::service::{
-    AgentCard, AgentId, MAX_LOG_LIMIT, ProcessReason, ProcessSpec, ProcessStart, ServiceError,
+    AgentCard, AgentId, MAX_LOG_LIMIT, ProcessSpec, ProcessStart, ServiceError,
 };
 use ma2a_store::{AgentDefine, AgentDefinition, AgentRecord};
 
@@ -156,10 +156,11 @@ impl AgentManager {
             .await?;
         let record = record.ok_or(ServiceError::UnknownAgent)?;
         // The stop ended the instance; its Process still runs until terminated here.
-        if let Some(process) = self.instance_process(&record.0).await.ok().flatten() {
-            let reason = (STOP_GRACE_MS, ProcessReason::Requested);
-            let _ended = self.0.processes.terminate((None, process), reason).await;
+        if !self.previous_instance_terminal(&record.0).await {
+            self.schedule_backoff(agent, false);
+            return Err(ServiceError::Unavailable);
         }
+        self.coordination().restarts.remove(agent);
         Ok((record, revision))
     }
 
