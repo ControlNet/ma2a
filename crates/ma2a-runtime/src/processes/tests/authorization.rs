@@ -935,3 +935,119 @@ async fn lease_expiry_abort_decision_persists_across_transient_settlement_failur
     second_shutdown.cancel();
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_starting_row_active_after_go_hold_expires_re_adopts_authorized_child() -> TestResult
+{
+    let harness = Harness::new("a04-active-expiry").await?;
+    let (prior_manager, prior_shutdown) = harness.manager();
+    let marker = harness.state.0.join("child-a04-active");
+    let start_spec = start(&format!("touch {}; sleep 2", marker.display()))?;
+    let (creation, credentials) = prior_manager
+        .create((harness.creator, request_id(124)?), &start_spec)
+        .await?;
+    let ProcessCreation::Created(created) = creation else {
+        return Err("expected Created row".into());
+    };
+    let _watch = prior_manager.launch(credentials, start_spec).await?;
+    harness
+        .store
+        .processes(move |repo| {
+            repo.transition_process(
+                created.id,
+                ProcessTransition {
+                    to: ProcessState::Starting,
+                    reason: None,
+                    termination: None,
+                    at_ms: 10,
+                },
+            )
+        })
+        .await??;
+    let go_channel = prior_manager
+        .address(created.id)
+        .connect(&credentials)
+        .await?;
+    let reported = crate::processes::follow::request(go_channel, SupervisorRequest::Go).await?;
+    assert!(
+        matches!(reported, SupervisorStatus::Running(_, _)),
+        "expected Running after prior Go, got {reported:?}"
+    );
+    prior_shutdown.cancel();
+
+    harness
+        .store
+        .set_go_dispatch_hold(Duration::from_millis(80))
+        .await;
+    let (second, second_shutdown) = harness.manager();
+    let (entered_rx, release_tx) = second.arm_after_final_authorize_gate();
+    second.reconcile().await;
+
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    harness.store.advance_revision().await?;
+    let _released = release_tx.send(());
+
+    let running = reaches(&second, created.id, ProcessState::Running).await?;
+    assert_eq!(running.state, ProcessState::Running);
+    assert!(marker.exists(), "authorized child must keep running");
+    let _ended = second
+        .terminate((None, created.id), (100, ProcessReason::Requested))
+        .await;
+    second_shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_starting_row_active_after_go_hold_expires_and_withdrawal_terminates() -> TestResult
+{
+    let harness = Harness::new("a04-active-withdrawn").await?;
+    let (prior_manager, prior_shutdown) = harness.manager();
+    let marker = harness.state.0.join("child-a04-withdrawn");
+    let start_spec = start(&format!("touch {}; sleep 5", marker.display()))?;
+    let (creation, credentials) = prior_manager
+        .create((harness.creator, request_id(126)?), &start_spec)
+        .await?;
+    let ProcessCreation::Created(created) = creation else {
+        return Err("expected Created row".into());
+    };
+    let _watch = prior_manager.launch(credentials, start_spec).await?;
+    harness
+        .store
+        .processes(move |repo| {
+            repo.transition_process(
+                created.id,
+                ProcessTransition {
+                    to: ProcessState::Starting,
+                    reason: None,
+                    termination: None,
+                    at_ms: 10,
+                },
+            )
+        })
+        .await??;
+    let go_channel = prior_manager
+        .address(created.id)
+        .connect(&credentials)
+        .await?;
+    let reported = crate::processes::follow::request(go_channel, SupervisorRequest::Go).await?;
+    assert!(matches!(reported, SupervisorStatus::Running(_, _)));
+    prior_shutdown.cancel();
+
+    harness
+        .store
+        .set_go_dispatch_hold(Duration::from_millis(80))
+        .await;
+    let (second, second_shutdown) = harness.manager();
+    let (entered_rx, release_tx) = second.arm_after_final_authorize_gate();
+    second.reconcile().await;
+
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    harness.withdraw_creator().await?;
+    let _released = release_tx.send(());
+
+    let ended = reaches(&second, created.id, ProcessState::Terminated).await?;
+    assert_eq!(ended.reason, Some(ProcessReason::Unauthorized));
+    second_shutdown.cancel();
+    Ok(())
+}

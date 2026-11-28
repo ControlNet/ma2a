@@ -470,8 +470,10 @@ is terminated with a 5 s grace period and reason `unauthorized`.
   Process) so a withdrawal that completes before `go` is sent cannot start a child. If authorization
   was lost or the Store dispatch hold expired before `go` was written, the Runtime aborts the
   supervisor (`failed(interrupted)`) without starting a child and keeps that abort decision across
-  transient settlement failures; if the check is temporarily unavailable, the Runtime retries without
-  sending `go`.
+  transient settlement failures; if a resumed `starting` supervisor already has a running child
+  (`process_active`), a confirmed withdrawal terminates it (`terminated(unauthorized)`), whereas a
+  hold expiry rechecks authorization and re-adopts the child if still authorized. If the
+  authorization check is temporarily unavailable, the Runtime retries without sending `go`.
 
 The same sweep restarts the follower of any live Process that lost it.
 

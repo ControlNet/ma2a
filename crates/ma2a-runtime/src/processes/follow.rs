@@ -4,14 +4,26 @@
 
 use std::time::Duration;
 
-use ma2a_core::service::{FrameKind, ProcessId, ProcessReason, ProcessState, ServiceError};
+use ma2a_core::{
+    EndpointId,
+    service::{FrameKind, ProcessId, ProcessReason, ProcessState, ServiceError},
+};
 use ma2a_services::{
     FrameReader,
     supervisor::{Channel, Credentials, SupervisorRequest, SupervisorStatus},
 };
 use ma2a_store::ProcessRecord;
 
-use super::{ProcessManager, credentials, go::GoDispatch};
+use super::{
+    ProcessManager, credentials,
+    go::{AbortCause, GoDispatch},
+};
+
+/// Outcome of settling a `starting` Process abort.
+pub(super) enum AbortOutcome {
+    Aborted,
+    StillAuthorizedActive,
+}
 
 /// Longest pause between attempts to reach a supervisor that answered too slowly.
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
@@ -98,11 +110,15 @@ impl ProcessManager {
                 .get(&record.id)
                 .copied();
             let channel = address.connect(credentials).await?;
-            if abort_cause.is_some() {
-                return self
-                    .settle_starting_abort(record.id, channel)
+            if let Some(cause) = abort_cause {
+                return match self
+                    .settle_starting_abort(((record.id, record.creator), cause), channel)
                     .await
-                    .map(|()| None);
+                {
+                    Ok(AbortOutcome::Aborted) => Ok(None),
+                    Ok(AbortOutcome::StillAuthorizedActive) => Err(ServiceError::Unavailable),
+                    Err(error) => Err(error),
+                };
             }
             match self
                 .dispatch_go((credentials, record.creator), channel)
@@ -122,13 +138,28 @@ impl ProcessManager {
 
     pub(super) async fn settle_starting_abort(
         &self,
-        id: ProcessId,
+        ((id, creator), cause): ((ProcessId, EndpointId), AbortCause),
         channel: Channel,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<AbortOutcome, ServiceError> {
         match request(channel, SupervisorRequest::Abort).await {
-            Ok(reported) => self.apply(id, reported).await.map(|_| ()),
+            Ok(reported) => self
+                .apply(id, reported)
+                .await
+                .map(|_| AbortOutcome::Aborted),
             Err(ServiceError::ProcessActive) => {
-                // A previous boot already sent `go` before crashing; terminate the running child.
+                if cause == AbortCause::Expired {
+                    match self.authorize_remote(creator).await {
+                        Ok(()) => {
+                            self.clear_expired_abort(id);
+                            return Ok(AbortOutcome::StillAuthorizedActive);
+                        }
+                        Err(ServiceError::Unauthorized) => {
+                            self.record_aborted_starting(id, AbortCause::Unauthorized);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                // A previous boot already sent `go` and authorization is withdrawn; terminate.
                 self.terminate(
                     (None, id),
                     (
@@ -137,7 +168,7 @@ impl ProcessManager {
                     ),
                 )
                 .await
-                .map(|_| ())
+                .map(|_| AbortOutcome::Aborted)
             }
             // Do not pass supervisor-side `Unauthorized` back to `follower`'s proof-loss arm.
             Err(ServiceError::Unauthorized) => Err(ServiceError::Unavailable),

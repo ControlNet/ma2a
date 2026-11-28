@@ -11,7 +11,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 
 use super::{
     ProcessManager,
-    follow::{ANSWER_MARGIN, read_supervisor_status, request},
+    follow::{ANSWER_MARGIN, AbortOutcome, read_supervisor_status, request},
 };
 use crate::store::GoDispatchLease;
 
@@ -135,6 +135,13 @@ impl ProcessManager {
             .or_insert(cause);
     }
 
+    pub(super) fn clear_expired_abort(&self, id: ProcessId) {
+        let mut coordination = self.coordination();
+        if coordination.aborted_starting.get(&id) == Some(&AbortCause::Expired) {
+            coordination.aborted_starting.remove(&id);
+        }
+    }
+
     pub(super) fn clear_process_coordination(&self, id: ProcessId) {
         let mut coordination = self.coordination();
         coordination.terminating.remove(&id);
@@ -160,7 +167,10 @@ impl ProcessManager {
             Ok(()) => {}
             Err(ServiceError::Unauthorized) => {
                 return self
-                    .abort_starting((credentials.id(), AbortCause::Unauthorized), channel)
+                    .abort_starting(
+                        ((credentials.id(), creator), AbortCause::Unauthorized),
+                        channel,
+                    )
                     .await;
             }
             Err(error) => return GoDispatch::Deferred(error),
@@ -173,12 +183,18 @@ impl ProcessManager {
 
     async fn abort_starting(
         &self,
-        (id, cause): (ProcessId, AbortCause),
+        ((id, creator), cause): ((ProcessId, EndpointId), AbortCause),
         channel: Channel,
     ) -> GoDispatch {
         self.record_aborted_starting(id, cause);
-        match self.settle_starting_abort(id, channel).await {
-            Ok(()) => GoDispatch::Aborted,
+        match self
+            .settle_starting_abort(((id, creator), cause), channel)
+            .await
+        {
+            Ok(AbortOutcome::Aborted) => GoDispatch::Aborted,
+            Ok(AbortOutcome::StillAuthorizedActive) => {
+                GoDispatch::Deferred(ServiceError::Unavailable)
+            }
             Err(error) => GoDispatch::AbortFailed(error),
         }
     }
@@ -198,7 +214,7 @@ impl ProcessManager {
         {
             drop(guard);
             return if error == ServiceError::Unauthorized {
-                self.abort_starting((id, AbortCause::Unauthorized), (reader, writer))
+                self.abort_starting(((id, creator), AbortCause::Unauthorized), (reader, writer))
                     .await
             } else {
                 GoDispatch::Deferred(error)
@@ -224,7 +240,7 @@ impl ProcessManager {
                 self.record_aborted_starting(id, AbortCause::Expired);
                 return match self.address(id).connect(credentials).await {
                     Ok(channel) => {
-                        self.abort_starting((id, AbortCause::Expired), channel)
+                        self.abort_starting(((id, creator), AbortCause::Expired), channel)
                             .await
                     }
                     Err(error) => GoDispatch::AbortFailed(error),
