@@ -542,9 +542,10 @@ async fn ninth_healthy_agent_claims_slot_when_failing_supervisor_releases_permit
         shutdown.clone(),
     );
 
-    // When: maintenance fills all 8 start permits with the 8 failing predecessor recoveries,
-    // then the supervisors drop their Terminate connections to free the permits.
-    let runner = tokio::spawn(crate::agents::run(manager.clone()));
+    // When: one reconciliation pass fills all 8 start permits with the 8 failing predecessor
+    // recoveries (holding the periodic tick so no later 1 s tick can admit `healthy`), then the
+    // supervisors drop their Terminate connections to free the permits.
+    manager.reconcile().await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while connected.load(Ordering::SeqCst) < 8 {
         assert!(
@@ -583,7 +584,8 @@ async fn ninth_healthy_agent_claims_slot_when_failing_supervisor_releases_permit
     };
 
     shutdown.cancel();
-    let _joined = tokio::time::timeout(Duration::from_secs(5), runner).await;
+    manager.0.tasks.close();
+    let _drained = tokio::time::timeout(Duration::from_secs(5), manager.0.tasks.wait()).await;
     for server in servers {
         let _joined = tokio::time::timeout(Duration::from_secs(2), server).await;
     }
