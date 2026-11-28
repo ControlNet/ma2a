@@ -117,7 +117,7 @@ impl RunningServer {
         let assets = WebAssets::new(&[
             (
                 "index.html",
-                b"<!doctype html><main id=main-content>MA2A</main>",
+                b"<!doctype html><head></head><main id=main-content>MA2A</main>",
             ),
             ("assets/app.js", b"export {}"),
         ]);

@@ -174,7 +174,7 @@ async fn asset(State(state): State<WebState>, request: axum::extract::Request) -
     if path.starts_with("api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if path.contains('.') {
+    if path.contains('.') && path != "index.html" {
         return asset_response(&state.assets, path);
     }
     let Ok(setup_required) = state.auth.setup_required().await else {
@@ -182,7 +182,7 @@ async fn asset(State(state): State<WebState>, request: axum::extract::Request) -
     };
     if setup_required {
         return if path == "setup" {
-            asset_response(&state.assets, "index.html")
+            index_response(&state).await
         } else {
             Redirect::temporary("/setup").into_response()
         };
@@ -197,13 +197,12 @@ async fn asset(State(state): State<WebState>, request: axum::extract::Request) -
             Err(status) => return status.into_response(),
         }
     }
-    let requested = if path.is_empty() || !path.contains('.') {
-        "index.html"
-    } else {
-        path
-    };
-    let response = asset_response(&state.assets, requested);
-    if requested == "index.html" && response.status() == StatusCode::OK {
+    index_response(&state).await
+}
+
+async fn index_response(state: &WebState) -> Response {
+    let response = asset_response(&state.assets, "index.html");
+    if response.status() == StatusCode::OK {
         return with_csrf_cookie_meta(response, state.auth.csrf_cookie_name()).await;
     }
     response

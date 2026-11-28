@@ -369,3 +369,71 @@ fn same_origin_post(
     }
     request(port, "POST", path, &headers, body)
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn index_html_follows_setup_auth_routing_and_carries_csrf_meta() -> TestResult {
+    let state = TempState::new("index-html-routing")?;
+    let auth = WebAuthService::open(
+        StoreConfig::new(state.path()),
+        clock(1_000),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let csrf_cookie_name = auth.csrf_cookie_name().to_owned();
+    let session_cookie_name = auth.session_cookie_name().to_owned();
+    let expected_meta =
+        format!("<meta name=\"ma2a-csrf-cookie\" content=\"{csrf_cookie_name}\" />");
+    let server = RunningServer::start(auth.clone(), WebServerConfig::default()).await?;
+
+    let index_during_setup = server
+        .request(&request(server.port(), "GET", "/index.html", &[], b""))
+        .await?;
+    assert_eq!(index_during_setup.status, 307);
+    assert_eq!(
+        index_during_setup
+            .headers
+            .get("location")
+            .map(String::as_str),
+        Some("/setup")
+    );
+
+    let setup_page = server
+        .request(&request(server.port(), "GET", "/setup", &[], b""))
+        .await?;
+    assert_eq!(setup_page.status, 200);
+    assert!(
+        String::from_utf8_lossy(&setup_page.body).contains(&expected_meta),
+        "/setup omitted CSRF cookie meta"
+    );
+
+    auth.change_password(PasswordAction::Set, password())
+        .await?;
+
+    let unauth_index = server
+        .request(&request(server.port(), "GET", "/index.html", &[], b""))
+        .await?;
+    assert_eq!(unauth_index.status, 307);
+    assert_eq!(
+        unauth_index.headers.get("location").map(String::as_str),
+        Some("/login")
+    );
+
+    let login = auth.login(password()).await?;
+    let cookie = format!("{session_cookie_name}={}", login.bearer());
+    let auth_index = server
+        .request(&request(
+            server.port(),
+            "GET",
+            "/index.html",
+            &[("Cookie", &cookie)],
+            b"",
+        ))
+        .await?;
+    assert_eq!(auth_index.status, 200);
+    assert!(
+        String::from_utf8_lossy(&auth_index.body).contains(&expected_meta),
+        "/index.html omitted CSRF cookie meta"
+    );
+
+    server.stop().await
+}
