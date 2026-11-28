@@ -148,16 +148,26 @@ impl Actor {
                 skip_spaces.clone(),
             )
             .await;
-        if write_result.is_err() {
-            // A reserved sequence or a subset of advertisements may already
-            // be durable. The Store retries that exact signed batch, and any
-            // Space outside `skip_spaces` may now differ from the actor cache.
-            self.maintenance
-                .published_relay
-                .retain(|space_id, _| skip_spaces.contains(space_id));
-            self.maintenance.relay_followup_pending = true;
-        }
-        let publication_result = write_result?;
+        let publication_result = match write_result {
+            Ok(result) => result,
+            Err(error) => {
+                // Pre-write deactivation, a reserved sequence, or a subset of
+                // advertisements may already be durable. Drop unskipped
+                // freshness entries and refresh candidates without masking the
+                // publication error unless follow-up hits a fatal error.
+                self.maintenance
+                    .published_relay
+                    .retain(|space_id, _| skip_spaces.contains(space_id));
+                self.maintenance.relay_followup_pending = true;
+                if let Err(followup_error) = self.finish_relay_publication().await
+                    && !followup_error.is_retryable_background()
+                    && error.is_retryable_background()
+                {
+                    return Err(followup_error);
+                }
+                return Err(error);
+            }
+        };
         self.state.revision = self.state.revision.max(publication_result.revision);
         self.maintenance
             .published_relay
