@@ -245,7 +245,7 @@ export function App({
     pendingSpaceCreation,
     selectedPeer,
     syncMessage: syncStatus?.endpointId === selectedPeer ? syncStatus?.text : undefined,
-    onSelectPeer: setSelectedPeer,
+    onSelectPeer: (id) => setSelectedPeer((current) => (current === id ? undefined : id)),
     onSync: sync,
     onNavigate: navigate,
     onLogout: logout,

@@ -213,3 +213,21 @@ test("clicking a peer on the Map updates the inspector to PeerInspector", async 
   expect(screen.getByText("Retained observations")).toBeVisible()
   expect(screen.getByRole("button", { name: "Sync now" })).toBeInTheDocument()
 })
+
+test("clicking the selected peer on the Map again restores the Map summary", async () => {
+  const user = userEvent.setup()
+  render(<App initialPath="/" runtime={MANY_RUNTIME_FIXTURE} />)
+
+  const peerButton = screen.getByRole("button", { name: /field-station-2/ })
+  expect(screen.getByText("Control rounds")).toBeVisible()
+  await user.click(peerButton)
+  expect(peerButton).toHaveAttribute("aria-pressed", "true")
+  expect(screen.queryByText("Control rounds")).not.toBeInTheDocument()
+
+  await user.click(peerButton)
+
+  expect(peerButton).toHaveAttribute("aria-pressed", "false")
+  expect(screen.getByRole("heading", { name: "Nothing selected" })).toBeVisible()
+  expect(screen.getByText("Control rounds")).toBeVisible()
+  expect(screen.queryByText("Retained observations")).not.toBeInTheDocument()
+})
