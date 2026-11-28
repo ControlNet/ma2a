@@ -225,12 +225,23 @@ async fn clock_rollback_does_not_replay_future_partial_batch() -> TestResult {
             .await
             .is_err()
     );
-    assert!(fixture.handle.store.relay_publication_pending().await?);
-    assert!(
-        Repository::open(&fixture.config)?
-            .relay_advertisement(fixture.missing_space, fixture.endpoint_id)?
-            .is_none()
+    assert!(!fixture.handle.store.relay_publication_pending().await?);
+    let repository = Repository::open(&fixture.config)?;
+    let kept = repository
+        .relay_advertisement(fixture.committed_space, fixture.endpoint_id)?
+        .ok_or("committed Space advertisement missing")?;
+    assert_eq!(kept.sequence(), fixture.committed.sequence());
+    assert_eq!(
+        kept.signed_advertisement(),
+        fixture.committed.signed_advertisement()
     );
+    let rebuilt = repository
+        .relay_advertisement(fixture.missing_space, fixture.endpoint_id)?
+        .ok_or("eligible Space advertisement missing")?;
+    assert_eq!(rebuilt.sequence(), fixture.committed.sequence() + 1);
+    assert_eq!(rebuilt.issued_at_ms(), NOW_MS - 1);
+    assert_eq!(rebuilt.expires_at_ms(), NOW_MS + 599_999);
+    drop(repository);
     fixture.clock.0.store(NOW_MS, Ordering::Relaxed);
     fixture
         .handle

@@ -36,9 +36,6 @@ impl PendingRelayPublication {
             return Ok(false);
         }
         let (issued_at_ms, expires_at_ms) = self.effective_window()?;
-        if now_ms < issued_at_ms {
-            return Err(RuntimeError::new(RuntimeErrorKind::ClockBehind));
-        }
         let expiry_matches = match expiry_policy {
             RelayExpiryPolicy::AtLeast => desired_expires_at_ms >= expires_at_ms,
             RelayExpiryPolicy::Exact => desired_expires_at_ms == expires_at_ms,
@@ -117,9 +114,9 @@ impl StoreBackend {
                 )
             })?;
         if !reuse {
-            // A changed or renewal-due retained batch cannot complete as a
-            // safely fresh publication. The signed replacement becomes pending
-            // before any per-Space write.
+            // A changed, renewal-due, or future-issued retained batch cannot be
+            // reused. Discard it so per-Space durable high-water checks protect
+            // already committed rows without blocking eligible Spaces.
             self.pending_relay_publication = None;
             let request = ma2a_net::AdvertisementPublicationRequest::new(
                 authorizations,

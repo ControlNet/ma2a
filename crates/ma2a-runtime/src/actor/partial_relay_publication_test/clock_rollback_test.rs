@@ -6,7 +6,10 @@ use std::sync::{
 use ma2a_core::SpaceId;
 use ma2a_store::{Repository, StoreConfig, StoreError};
 
-use super::{NOW_MS, PublicationClock, TempState, TestResult, enabled_configuration};
+use super::{
+    NOW_MS, PublicationClock, TempState, TestResult, enabled_configuration, maintenance_tick,
+    partial_relay_fixture,
+};
 use crate::{Runtime, RuntimeClock, actor::maintenance::FaultPoint, api, error::RuntimeError};
 
 async fn covered_private_relay_spaces(
@@ -144,6 +147,108 @@ async fn private_relay_candidates_refresh_when_clock_behind_returns_after_reconc
             .await?
             .contains(&removed_hex)
     );
+
+    runtime.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn future_pending_partial_batch_publishes_eligible_space_on_clock_rollback() -> TestResult {
+    let (_state, fixture) = partial_relay_fixture("future-batch-eligible").await?;
+    let stepped_back_ms = NOW_MS - 1_000;
+    fixture.clock.0.store(stepped_back_ms, Ordering::Relaxed);
+    maintenance_tick(&fixture.handle).await;
+
+    assert!(!fixture.handle.store.relay_publication_pending().await?);
+    let repository = Repository::open(&fixture.config)?;
+    let kept = repository
+        .relay_advertisement(fixture.committed_space, fixture.endpoint_id)?
+        .ok_or("committed Space advertisement missing")?;
+    assert_eq!(kept.sequence(), fixture.committed.sequence());
+    assert_eq!(
+        kept.signed_advertisement(),
+        fixture.committed.signed_advertisement()
+    );
+    assert_eq!(kept.issued_at_ms(), NOW_MS);
+    assert!(kept.is_active());
+
+    let published = repository
+        .relay_advertisement(fixture.missing_space, fixture.endpoint_id)?
+        .ok_or("eligible Space did not publish after clock rollback")?;
+    assert!(published.is_active());
+    assert_eq!(published.sequence(), fixture.committed.sequence() + 1);
+    assert_eq!(published.issued_at_ms(), stepped_back_ms);
+    assert_eq!(published.expires_at_ms(), stepped_back_ms + 600_000);
+    drop(repository);
+
+    assert_eq!(
+        covered_private_relay_spaces(&fixture.handle).await?,
+        vec![api::encode_hex(fixture.missing_space.as_bytes())]
+    );
+
+    fixture
+        .clock
+        .0
+        .store(stepped_back_ms + 500, Ordering::Relaxed);
+    maintenance_tick(&fixture.handle).await;
+    let repository = Repository::open(&fixture.config)?;
+    assert_eq!(
+        repository
+            .relay_advertisement(fixture.committed_space, fixture.endpoint_id)?
+            .ok_or("committed Space missing after follow-up tick")?
+            .sequence(),
+        fixture.committed.sequence()
+    );
+    assert_eq!(
+        repository
+            .relay_advertisement(fixture.missing_space, fixture.endpoint_id)?
+            .ok_or("eligible Space missing after follow-up tick")?
+            .sequence(),
+        published.sequence()
+    );
+
+    fixture.runtime.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn future_unpublished_batch_does_not_block_spaces_after_clock_rollback() -> TestResult {
+    let state = TempState::new("future-unpublished-batch")?;
+    let config = StoreConfig::new(&state.0);
+    let clock = Arc::new(PublicationClock(AtomicI64::new(NOW_MS)));
+    let runtime =
+        Runtime::start_with_clock(config.clone(), Arc::clone(&clock) as Arc<dyn RuntimeClock>)
+            .await?;
+    let handle = runtime.handle();
+    let endpoint_id = handle.status().await?.endpoint_id();
+    let spaces = [
+        handle.create_owned_space("unwritten-a".to_owned()).await?,
+        handle.create_owned_space("unwritten-b".to_owned()).await?,
+    ];
+
+    handle.store.fail_relay_publication_after(0).await?;
+    assert!(
+        handle
+            .set_relay_configuration(enabled_configuration(spaces.to_vec()))
+            .await
+            .is_err()
+    );
+    assert!(handle.store.relay_publication_pending().await?);
+
+    let stepped_back_ms = NOW_MS - 1_000;
+    clock.0.store(stepped_back_ms, Ordering::Relaxed);
+    maintenance_tick(&handle).await;
+
+    assert!(!handle.store.relay_publication_pending().await?);
+    let repository = Repository::open(&config)?;
+    for space_id in spaces {
+        let published = repository
+            .relay_advertisement(space_id, endpoint_id)?
+            .ok_or("Space did not publish after discarding unpublished future batch")?;
+        assert!(published.is_active());
+        assert_eq!(published.issued_at_ms(), stepped_back_ms);
+        assert_eq!(published.expires_at_ms(), stepped_back_ms + 600_000);
+    }
 
     runtime.shutdown().await?;
     Ok(())

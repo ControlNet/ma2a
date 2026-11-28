@@ -197,12 +197,13 @@ async fn clock_behind_retained_partial_batch_still_deactivates_earlier_removed_s
         u64::try_from(NOW_MS)?,
     )?);
 
-    // Step clock behind the retained partial batch and run maintenance. The retained batch
-    // must not replay backdated records, yet `removed` must still be deactivated.
+    // Step clock behind the retained partial batch and run maintenance. The future batch is
+    // discarded so the eligible replacement publishes at the corrected time while `removed`
+    // stays inactive.
     clock.0.store(NOW_MS - 1_000, Ordering::Relaxed);
     maintenance_tick(&handle).await;
 
-    assert!(handle.store.relay_publication_pending().await?);
+    assert!(!handle.store.relay_publication_pending().await?);
     assert!(
         !Repository::open(&config)?
             .relay_advertisement(removed, endpoint_id)?
