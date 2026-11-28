@@ -123,10 +123,20 @@ export function createRuntimeApiClient(
       const source = createEventSource(`${eventsPath}?${params.toString()}`, {
         withCredentials: true,
       })
-      source.addEventListener("open", () => callbacks.onOpen())
+      let closed = false
+      const close = (): void => {
+        if (closed) return
+        closed = true
+        source.close()
+      }
+      source.addEventListener("open", () => {
+        if (closed) return
+        callbacks.onOpen()
+      })
       source.addEventListener("message", (message) => {
+        if (closed) return
         if (!(message instanceof MessageEvent)) {
-          source.close()
+          close()
           callbacks.onPayloadError(new RuntimeApiPayloadError(["event data is not a message"]))
           callbacks.onResyncRequired()
           return
@@ -139,7 +149,7 @@ export function createRuntimeApiClient(
           if (!(error instanceof RuntimeApiPayloadError) && !(error instanceof SyntaxError)) {
             throw error
           }
-          source.close()
+          close()
           const payloadError =
             error instanceof RuntimeApiPayloadError
               ? error
@@ -151,14 +161,16 @@ export function createRuntimeApiClient(
         callbacks.onEvent(event)
       })
       source.addEventListener("resync-required", () => {
-        source.close()
+        if (closed) return
+        close()
         callbacks.onResyncRequired()
       })
       source.addEventListener("error", () => {
-        source.close()
+        if (closed) return
+        close()
         callbacks.onDisconnect()
       })
-      return () => source.close()
+      return close
     },
   }
 }

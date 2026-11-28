@@ -217,4 +217,32 @@ describe("runtime API boundary", () => {
     const source = FakeEventSource.latest()
     expect(source.url).toBe(`/api/v1/events?since=41&boot_id=${"ab".repeat(16)}&view_sequence=7`)
   })
+
+  test("suppresses callbacks after unsubscribe or stream close", () => {
+    const calls: string[] = []
+    const given = createRuntimeApiClient(
+      { snapshot: "/api/v1/snapshot", events: "/api/v1/events" },
+      (url, init) => new FakeEventSource(url, init.withCredentials ?? false),
+    )
+    const unsubscribe = given.subscribe(1, "ab".repeat(16), {
+      onOpen: () => calls.push("open"),
+      onEvent: () => calls.push("event"),
+      onResyncRequired: () => calls.push("resync"),
+      onDisconnect: () => calls.push("disconnect"),
+      onPayloadError: () => calls.push("payload"),
+    })
+    const source = FakeEventSource.latest()
+    unsubscribe()
+    source.dispatch("open", new Event("open"))
+    source.dispatch(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({ type: "spaces_changed", revision: 2, changed: { space_ids: [] } }),
+      }),
+    )
+    source.dispatch("resync-required", new Event("resync-required"))
+    source.dispatch("error", new Event("error"))
+    expect(source.closed).toBe(true)
+    expect(calls).toEqual([])
+  })
 })

@@ -39,6 +39,7 @@ export const UNCERTAIN_GRACE_MS = 400
 export class RuntimeController {
   private readonly coordinator: RuntimeStateCoordinator
   private closeEvents: (() => void) | undefined
+  private subscriptionEpoch = 0
   private latest: StampedRuntimeSnapshot | undefined
   private cancelRetry: (() => void) | undefined
   private retryAttempt = 0
@@ -129,6 +130,7 @@ export class RuntimeController {
   }
 
   private dropEvents(): void {
+    this.subscriptionEpoch += 1
     this.closeEvents?.()
     this.closeEvents = undefined
   }
@@ -145,13 +147,9 @@ export class RuntimeController {
     if (this.latest !== undefined && this.latest.bootId !== stamped.bootId) this.clearDetails()
     const { snapshot } = stamped
     this.latest = stamped
+    const hashes = new Map(snapshot.spaces.map((space) => [space.space_id, space.chain_hash]))
     for (const [id, detail] of this.details) {
-      if (
-        !snapshot.spaces.some(
-          (space) => space.space_id === id && space.chain_hash === detail.space.chain_hash,
-        )
-      )
-        this.details.delete(id)
+      if (hashes.get(id) !== detail.space.chain_hash) this.details.delete(id)
     }
     this.failedDetails.clear()
     this.offline = false
@@ -165,28 +163,30 @@ export class RuntimeController {
     // only losing one reconnects at once. A refused stream missed no event, so the details
     // being loaded for this snapshot still stand.
     let opened = false
+    const epoch = this.subscriptionEpoch
+    const guard = (fn: () => void) => (): void => {
+      if (epoch === this.subscriptionEpoch && !this.stopped && !this.offline) fn()
+    }
+    const resync = (): void => {
+      this.clearDetails()
+      void this.refresh()
+    }
     this.closeEvents = this.client.subscribe(
       snapshot.revision,
       stamped.bootId,
       {
-        onOpen: () => {
+        onOpen: guard(() => {
           opened = true
           this.retryAttempt = 0
+        }),
+        onEvent: guard(() => void this.refresh()),
+        onResyncRequired: guard(resync),
+        onDisconnect: guard(() => (opened ? resync() : this.scheduleRetry())),
+        onPayloadError: (error) => {
+          if (epoch === this.subscriptionEpoch && !this.stopped && !this.offline) {
+            this.handleError(error)
+          }
         },
-        onEvent: () => {
-          if (!this.offline) void this.refresh()
-        },
-        onResyncRequired: () => {
-          this.clearDetails()
-          void this.refresh()
-        },
-        onDisconnect: () => {
-          if (opened) {
-            this.clearDetails()
-            void this.refresh()
-          } else this.scheduleRetry()
-        },
-        onPayloadError: (error) => this.handleError(error),
       },
       snapshot.view_sequence,
     )
