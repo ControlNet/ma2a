@@ -569,8 +569,10 @@ frame:
 | `signal` | `4 ‖ index` |
 | `terminate` | `5 ‖ grace u32 BE` |
 | `abort` | `6` |
+| `attach_strict` | `7 ‖ from` |
 
 In these encodings, `from` is `0` (start), `1` (now), or `2 ‖ u64 BE` (cursor).
+`attach_strict` (`AttachStrict`) takes the stdin writer lease and detaches if child stdin closes.
 
 **Two-phase start.** The child is spawned only after an authenticated `go`. Without `go` within
 30 s, or on `abort` or `terminate` before `go`, the supervisor records `never_started` and exits.
