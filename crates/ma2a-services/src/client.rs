@@ -246,15 +246,18 @@ pub(crate) async fn write_watching<C: Future<Output = ()>>(
     Written::Cancelled { finished }
 }
 
-/// Reads one frame, treating a stream that ends without a terminal as an unknown outcome.
+/// Reads one frame, treating stream loss, torn frames, and EOF without a terminal as an
+/// unknown outcome.
 pub(crate) async fn next<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,
 ) -> Result<Frame, ClientError> {
-    reader
-        .next()
-        .await
-        .map_err(ClientError::Stream)?
-        .ok_or(ClientError::Stream(ServiceError::OutcomeUnknown))
+    match reader.next().await {
+        Ok(Some(frame)) => Ok(frame),
+        Ok(None) | Err(ServiceError::Cancelled) => {
+            Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+        }
+        Err(error) => Err(ClientError::Stream(error)),
+    }
 }
 
 /// Checks that an `accept` carries the empty header of a family that sends none.

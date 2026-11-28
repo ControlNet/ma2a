@@ -13,7 +13,7 @@ use ma2a_core::{
 use ma2a_runtime::ipc::{IpcPaths, LocalApiClient, LocalStream, StreamUpgrade};
 use ma2a_services::{Frame, FrameReader, FrameWriter};
 use serde_json::{Map, json};
-use tokio::io::{AsyncWrite, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 
 use crate::{
     Error,
@@ -68,11 +68,7 @@ impl CallStream {
     /// Returns [`Error::Protocol`] for a malformed frame or once the call ended, and
     /// [`Error::Service`] when the connection ends without a terminal.
     pub async fn next(&mut self) -> Result<Received, Error> {
-        if self.seen.finished {
-            return Err(Error::Protocol("the call already ended"));
-        }
-        let frame = self.reader.expect().await?;
-        received(frame, &mut self.seen)
+        read_received(&mut self.reader, &mut self.seen).await
     }
 
     /// Sends 1–64 KiB on one channel; input is channel 0, the only one a caller sends on.
@@ -116,6 +112,55 @@ impl CallStream {
     }
 }
 
+/// Reads one frame from the target, turning stream loss, torn frames, and EOF without a
+/// terminal into `outcome_unknown` and a malformed frame header or length into a protocol error.
+async fn next_frame<R: AsyncRead + Unpin>(reader: &mut FrameReader<R>) -> Result<Frame, Error> {
+    match reader.next().await {
+        Ok(Some(frame)) => Ok(frame),
+        Ok(None) | Err(ServiceError::Cancelled) => {
+            Err(Error::Service(ServiceError::OutcomeUnknown))
+        }
+        Err(ServiceError::InvalidInput) => {
+            Err(Error::Protocol("the service sent a malformed frame"))
+        }
+        Err(error) => Err(Error::Service(error)),
+    }
+}
+
+/// Reads and checks the service's next frame for [`CallStream::next`].
+async fn read_received<R: AsyncRead + Unpin>(
+    reader: &mut FrameReader<R>,
+    seen: &mut Seen,
+) -> Result<Received, Error> {
+    if seen.finished {
+        return Err(Error::Protocol("the call already ended"));
+    }
+    let frame = next_frame(reader).await?;
+    received(frame, seen)
+}
+
+/// Reads and checks one `describe` reply for [`Caller::describe`].
+async fn read_describe<R: AsyncRead + Unpin>(
+    reader: &mut FrameReader<R>,
+    after: Option<&str>,
+) -> Result<DescribePage, Error> {
+    let frame = next_frame(reader).await?;
+    match frame.kind() {
+        FrameKind::Reject => {
+            Err(Error::Service(frame.rejection().map_err(|_| {
+                Error::Protocol("the service sent a malformed frame")
+            })?))
+        }
+        FrameKind::Outcome => DescribePage::decode_outcome(frame.payload())
+            .map_err(|_| Error::Protocol("the target sent a malformed page"))?
+            .map_err(Error::Service)
+            .and_then(|page| continuing(page, after)),
+        _ => Err(Error::Protocol(
+            "describe is answered by one outcome or reject",
+        )),
+    }
+}
+
 /// What one service frame means to a call after what the service sent so far, which it
 /// updates.
 ///
@@ -150,14 +195,14 @@ fn received(frame: Frame, seen: &mut Seen) -> Result<Received, Error> {
             Received::Accepted(header)
         }
         FrameKind::Data => {
-            let (channel, bytes) = frame.data()?;
+            let (channel, bytes) = frame.data().map_err(|_| malformed)?;
             Received::Data(open(channel, false)?, bytes.to_vec())
         }
-        FrameKind::End => Received::End(open(frame.end()?, true)?),
+        FrameKind::End => Received::End(open(frame.end().map_err(|_| malformed)?, true)?),
         FrameKind::Control => Received::Control(frame.into_payload()),
         FrameKind::Reject => {
             seen.finished = true;
-            Received::Rejected(frame.rejection()?)
+            Received::Rejected(frame.rejection().map_err(|_| malformed)?)
         }
         FrameKind::Outcome => {
             seen.finished = true;
@@ -217,17 +262,7 @@ impl Caller {
         let request = ServiceRequest::Describe(after.map(str::to_owned));
         let answered = async {
             let mut stream = self.open((target, wire::request_id()?), request).await?;
-            let frame = stream.reader.expect().await?;
-            match frame.kind() {
-                FrameKind::Reject => Err(Error::Service(frame.rejection()?)),
-                FrameKind::Outcome => DescribePage::decode_outcome(frame.payload())
-                    .map_err(|_| Error::Protocol("the target sent a malformed page"))?
-                    .map_err(Error::Service)
-                    .and_then(|page| continuing(page, after)),
-                _ => Err(Error::Protocol(
-                    "describe is answered by one outcome or reject",
-                )),
-            }
+            read_describe(&mut stream.reader, after).await
         };
         tokio::time::timeout(DESCRIBE_DEADLINE, answered)
             .await

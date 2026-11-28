@@ -2033,3 +2033,212 @@ async fn queued_completed_exec_and_service_outcomes_flag_interrupted_delivery() 
     assert!(!res?.delivery_interrupted);
     Ok(())
 }
+
+/// An [`AsyncRead`] that yields a prefix and then fails with `ConnectionReset`.
+struct ResetAfter {
+    prefix: Vec<u8>,
+    offset: usize,
+}
+
+impl ResetAfter {
+    const fn new(prefix: Vec<u8>) -> Self {
+        Self { prefix, offset: 0 }
+    }
+}
+
+impl tokio::io::AsyncRead for ResetAfter {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if let Some(remaining) = self
+            .prefix
+            .get(self.offset..)
+            .filter(|rest| !rest.is_empty())
+        {
+            let take = remaining.len().min(buffer.remaining());
+            if let Some(chunk) = remaining.get(..take) {
+                buffer.put_slice(chunk);
+                self.offset += take;
+                return Poll::Ready(Ok(()));
+            }
+        }
+        Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
+    }
+}
+
+const fn outcome_unknown<T>(result: &Result<T, ClientError>) -> bool {
+    matches!(
+        result,
+        Err(ClientError::Stream(ServiceError::OutcomeUnknown))
+    )
+}
+
+async fn assert_streaming_drivers_unknown<R, F>(label: &str, mut make: F) -> TestResult
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: FnMut(&[u8]) -> R,
+{
+    use ma2a_core::service::{LogFrom, LogWindow, ProcessAccept, ProcessId, ProcessState};
+    use ma2a_services::client::hosted;
+
+    let empty_accept = replies(&[accept(&EMPTY_ACCEPT)]).await?;
+    let call_accept = replies(&[accept(&encode_call_accept(b"")?)]).await?;
+    let attach_accept = replies(&[accept(
+        &ProcessAccept::Reading {
+            state: ProcessState::Running,
+            start: 0,
+            window: LogWindow::new(0, 0),
+            truncated: false,
+        }
+        .encode()?,
+    )])
+    .await?;
+
+    let res = within(process::run(
+        (
+            &mut FrameReader::new(make(&empty_accept)),
+            &mut FrameWriter::new(tokio::io::sink()),
+        ),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: Vec::new(),
+            error: Some(Vec::new()),
+        },
+        ProcessControl {
+            resizes: None,
+            cancel: std::future::pending(),
+        },
+    ))
+    .await?;
+    assert!(outcome_unknown(&res), "process {label}: {res:?}");
+
+    let res = within(service::call(
+        (
+            &mut FrameReader::new(make(&call_accept)),
+            &mut FrameWriter::new(tokio::io::sink()),
+        ),
+        ProcessIo {
+            input: None::<&[u8]>,
+            output: Vec::new(),
+            error: Some(Vec::new()),
+        },
+        std::future::pending(),
+    ))
+    .await?;
+    assert!(outcome_unknown(&res), "service::call {label}: {res:?}");
+
+    let res = within(proxy::run(
+        (
+            &mut FrameReader::new(make(&empty_accept)),
+            &mut FrameWriter::new(tokio::io::sink()),
+        ),
+        (&b""[..], Vec::new()),
+        (Duration::from_secs(60), std::future::pending()),
+    ))
+    .await?;
+    assert!(outcome_unknown(&res), "proxy {label}: {res:?}");
+
+    let res = within(hosted::attach(
+        (
+            &mut FrameReader::new(make(&attach_accept)),
+            &mut FrameWriter::new(tokio::io::sink()),
+        ),
+        (
+            (ProcessId::from_bytes([1; 16]), LogFrom::Now),
+            ProcessIo {
+                input: None::<&[u8]>,
+                output: Vec::new(),
+                error: None::<Vec<u8>>,
+            },
+        ),
+        std::future::pending(),
+    ))
+    .await?;
+    assert!(outcome_unknown(&res), "hosted::attach {label}: {res:?}");
+    Ok(())
+}
+
+async fn assert_request_drivers_unknown<R, F>(label: &str, mut make: F) -> TestResult
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: FnMut(&[u8]) -> R,
+{
+    let empty_accept = replies(&[accept(&EMPTY_ACCEPT)]).await?;
+    let read_req = FilesRequest::Read(RemotePath::parse("docs:/a")?, 0, 64);
+    let stat_req = FilesRequest::Stat(RemotePath::parse("docs:/a")?);
+
+    let res = within(files::run(
+        (
+            &mut FrameReader::new(make(&empty_accept)),
+            &mut FrameWriter::new(tokio::io::sink()),
+        ),
+        &read_req,
+        &[],
+    ))
+    .await?;
+    assert!(outcome_unknown(&res), "files read {label}: {res:?}");
+
+    let res = within(files::run(
+        (
+            &mut FrameReader::new(make(&[])),
+            &mut FrameWriter::new(tokio::io::sink()),
+        ),
+        &stat_req,
+        &[],
+    ))
+    .await?;
+    assert!(outcome_unknown(&res), "files stat {label}: {res:?}");
+
+    let res = within(service::describe(&mut FrameReader::new(make(&[])), None)).await?;
+    assert!(outcome_unknown(&res), "service::describe {label}: {res:?}");
+
+    let (mut sink, mut hasher) = (Vec::new(), blake3::Hasher::new());
+    let res = within(transfer::download_content(
+        &mut FrameReader::new(make(&[])),
+        (&mut sink, &mut hasher),
+        (ContentIdentity::new(16, 1), 0),
+    ))
+    .await?;
+    assert!(outcome_unknown(&res), "transfer {label}: {res:?}");
+
+    let res = within(agent::call(&mut FrameReader::new(make(&[])))).await?;
+    assert!(outcome_unknown(&res), "agent::call {label}: {res:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn torn_frames_and_stream_resets_report_outcome_unknown_across_client_drivers() -> TestResult
+{
+    for (label, tail) in [
+        ("truncated payload", &[4_u8, 0, 0, 0, 10, 1, b'a', b'b'][..]),
+        ("truncated header", &[4_u8, 0][..]),
+    ] {
+        let with_tail = |prefix: &[u8]| {
+            let mut bytes = prefix.to_vec();
+            bytes.extend_from_slice(tail);
+            std::io::Cursor::new(bytes)
+        };
+        assert_streaming_drivers_unknown(label, with_tail).await?;
+        assert_request_drivers_unknown(label, with_tail).await?;
+    }
+    let reset = |prefix: &[u8]| ResetAfter::new(prefix.to_vec());
+    assert_streaming_drivers_unknown("connection reset", reset).await?;
+    assert_request_drivers_unknown("connection reset", reset).await?;
+
+    // A malformed frame header is still InvalidInput, not OutcomeUnknown.
+    let stat_req = FilesRequest::Stat(RemotePath::parse("docs:/a")?);
+    let oversized_header: &[u8] = &[4, 0, 0x10, 0, 2];
+    let res = within(files::run(
+        (
+            &mut FrameReader::new(oversized_header),
+            &mut FrameWriter::new(tokio::io::sink()),
+        ),
+        &stat_req,
+        &[],
+    ))
+    .await?;
+    assert!(malformed(&res), "oversized header: {res:?}");
+    Ok(())
+}

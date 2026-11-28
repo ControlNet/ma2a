@@ -1,3 +1,8 @@
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use ma2a_core::{
     ServiceKind,
     service::{
@@ -7,7 +12,7 @@ use ma2a_core::{
 };
 use ma2a_services::{FrameReader, FrameWriter};
 
-use super::{Received, Seen, continuing, control, received};
+use super::{Received, Seen, continuing, control, read_describe, read_received, received};
 use crate::Error;
 
 #[test]
@@ -139,6 +144,98 @@ async fn a_call_takes_frames_only_in_the_order_and_direction_services_v1_allows(
             "{sent:?}: {taken:?}"
         );
         assert!(taken.iter().rev().skip(1).all(Result::is_ok), "{sent:?}");
+    }
+    Ok(())
+}
+
+/// An [`AsyncRead`] that immediately fails with `ConnectionReset`.
+struct Reset;
+
+impl tokio::io::AsyncRead for Reset {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        _buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
+    }
+}
+
+const fn unknown<T>(result: &Result<T, Error>) -> bool {
+    matches!(result, Err(Error::Service(ServiceError::OutcomeUnknown)))
+}
+
+#[tokio::test]
+async fn stream_loss_eof_and_torn_frames_report_outcome_unknown()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (label, wire) in [
+        ("clean eof", &[][..]),
+        ("truncated header", &[4, 0][..]),
+        ("truncated payload", &[4, 0, 0, 0, 10, 1, b'a', b'b'][..]),
+    ] {
+        let mut reader = FrameReader::new(wire);
+        assert!(
+            unknown(&read_received(&mut reader, &mut Seen::default()).await),
+            "{label}"
+        );
+        let mut reader = FrameReader::new(wire);
+        assert!(unknown(&read_describe(&mut reader, None).await), "{label}");
+    }
+    let mut reader = FrameReader::new(Reset);
+    assert!(unknown(
+        &read_received(&mut reader, &mut Seen::default()).await
+    ));
+    let mut reader = FrameReader::new(Reset);
+    assert!(unknown(&read_describe(&mut reader, None).await));
+
+    let mut accepted = FrameWriter::new(Vec::new());
+    accepted
+        .frame(FrameKind::Accept, &encode_call_accept(b"h")?)
+        .await?;
+    let wire = accepted.into_inner();
+    let mut reader = FrameReader::new(wire.as_slice());
+    let mut seen = Seen::default();
+    assert!(matches!(
+        read_received(&mut reader, &mut seen).await,
+        Ok(Received::Accepted(_))
+    ));
+    assert!(unknown(&read_received(&mut reader, &mut seen).await));
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_frames_report_protocol_error() -> Result<(), Box<dyn std::error::Error>> {
+    for wire in [
+        &[4_u8, 0, 0x10, 0, 2][..],
+        &[99, 0, 0, 0, 0][..],
+        &[3, 0, 0, 0, 1, 250][..],
+    ] {
+        let mut reader = FrameReader::new(wire);
+        assert!(matches!(
+            read_received(&mut reader, &mut Seen::default()).await,
+            Err(Error::Protocol(_))
+        ));
+        let mut reader = FrameReader::new(wire);
+        assert!(matches!(
+            read_describe(&mut reader, None).await,
+            Err(Error::Protocol(_))
+        ));
+    }
+    let mut accepted = FrameWriter::new(Vec::new());
+    accepted
+        .frame(FrameKind::Accept, &encode_call_accept(b"")?)
+        .await?;
+    let accept_wire = accepted.into_inner();
+    for tail in [&[4_u8, 0, 0, 0, 2, 99, b'x'][..], &[5, 0, 0, 0, 1, 99][..]] {
+        let mut wire = accept_wire.clone();
+        wire.extend_from_slice(tail);
+        let mut reader = FrameReader::new(wire.as_slice());
+        let mut seen = Seen::default();
+        assert!(read_received(&mut reader, &mut seen).await.is_ok());
+        assert!(matches!(
+            read_received(&mut reader, &mut seen).await,
+            Err(Error::Protocol(_))
+        ));
     }
     Ok(())
 }
