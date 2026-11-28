@@ -98,7 +98,12 @@ export async function readSnapshot(response: Response): Promise<StampedRuntimeSn
     if (error instanceof RuntimeApiPayloadError) throw error
     return invalid("invalid snapshot stream")
   } finally {
-    await reader.cancel()
-    reader.releaseLock()
+    try {
+      await reader.cancel()
+    } catch {
+      // Stream errors are already normalized in catch; still release the reader lock.
+    } finally {
+      reader.releaseLock()
+    }
   }
 }

@@ -1,3 +1,4 @@
+import { RuntimeApiPayloadError } from "./codec"
 import { RUNTIME_BOOT_ID_HEADER, readSnapshot } from "./snapshot-stream"
 import { runtimeSnapshot as snapshot } from "./test-fixtures"
 
@@ -95,4 +96,23 @@ test("incomplete, reordered, mixed-revision, mixed-boot and extra frames never p
   ).rejects.toThrow()
   await expect(readSnapshot(response(encoded, "ef".repeat(16)))).rejects.toThrow()
   await expect(readSnapshot(response([...encoded, first]))).rejects.toThrow()
+})
+
+test("errored snapshot stream preserves RuntimeApiPayloadError and releases its reader lock", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.error(new TypeError("network reset"))
+    },
+  })
+  const errored = new Response(body, {
+    headers: { "content-type": "application/x-ndjson" },
+  })
+
+  try {
+    await readSnapshot(errored)
+    expect.unreachable("expected readSnapshot to reject")
+  } catch (error) {
+    expect(error).toBeInstanceOf(RuntimeApiPayloadError)
+  }
+  expect(body.locked).toBe(false)
 })
