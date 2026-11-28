@@ -78,7 +78,9 @@ async fn superseded_maintenance_tls_failure_at_same_paths_does_not_stop_runtime(
     assert!(released_in_time.load(Ordering::SeqCst));
 
     drop(occupied);
+    let before_recovery = TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst);
     super::tick(&handle).await;
+    drain_tls_completion(&handle, before_recovery).await?;
     let status = handle.relay_status().await?;
     assert!(!status.convergence_pending);
     assert_eq!(status.private_listen_addr, Some(address));
@@ -132,7 +134,9 @@ async fn superseded_maintenance_tls_success_at_same_paths_is_discarded() -> Test
     assert!(after_stale.applied_private.is_none());
     assert!(released_in_time.load(Ordering::SeqCst));
 
+    let before_recovery = TLS_LOAD_COMPLETIONS.load(Ordering::SeqCst);
     super::tick(&handle).await;
+    drain_tls_completion(&handle, before_recovery).await?;
     let converged = handle.relay_status().await?;
     assert!(!converged.convergence_pending);
     assert_eq!(converged.private_listen_addr, Some(address));
