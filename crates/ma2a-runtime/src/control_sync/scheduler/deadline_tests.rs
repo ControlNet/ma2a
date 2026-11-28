@@ -1,3 +1,4 @@
+mod admitted_projection;
 mod admitted_queue;
 mod fixture;
 mod no_effect_timeout;
@@ -143,6 +144,7 @@ async fn deadline_after_manifest_commit_drops_removed_peer_from_synchronized_vie
         !f.actor.synchronized_control_peers.contains(&f.peer_b_id),
         "removed peer stayed in synchronized_control_peers after deadline-aborted round"
     );
+    f.actor.reconcile_control_completion().await?;
     let triggers = f
         .actor
         .control_schedule_events

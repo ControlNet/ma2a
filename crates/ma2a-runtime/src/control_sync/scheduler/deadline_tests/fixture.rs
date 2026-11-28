@@ -98,6 +98,7 @@ pub(super) struct Fixture {
     pub(super) local_dir: TempState,
     _owner_dir: TempState,
     pub(super) actor: Actor,
+    pub(super) handle: crate::RuntimeHandle,
     pub(super) store_task: tokio::task::JoinHandle<()>,
     pub(super) space_id: SpaceId,
     pub(super) owner_id: EndpointId,
@@ -130,7 +131,7 @@ pub(super) fn seed_address(
 async fn build_actor(
     local_cfg: &StoreConfig,
     seed: u8,
-) -> TestResult<(Actor, tokio::task::JoinHandle<()>)> {
+) -> TestResult<(Actor, crate::RuntimeHandle, tokio::task::JoinHandle<()>)> {
     let backend = StoreBackend::open(local_cfg)?;
     let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
     let store_task = tokio::task::spawn_blocking(move || backend.run(receiver));
@@ -163,7 +164,7 @@ async fn build_actor(
         direct_reachable: false,
         relay: crate::reachability::RelayReachabilityState::new(map),
     };
-    let (actor, _, _) = Actor::new(
+    let (actor, handle, _) = Actor::new(
         state,
         endpoint,
         store,
@@ -175,13 +176,13 @@ async fn build_actor(
         Arc::new(FixedClock(10_000)),
         None,
     );
-    Ok((actor, store_task))
+    Ok((actor, handle, store_task))
 }
 
 pub(super) async fn setup_fixture(label: &str, seed: u8) -> TestResult<Fixture> {
     let local_dir = TempState::new(label)?;
     let local_cfg = StoreConfig::new(&local_dir.0);
-    let (mut actor, store_task) = build_actor(&local_cfg, seed).await?;
+    let (mut actor, handle, store_task) = build_actor(&local_cfg, seed).await?;
     let local_id = actor.state.endpoint_id;
     let owner_key = SecretKey::from_bytes(&[seed; 32]);
     let peer_b_key = SecretKey::from_bytes(&[seed.wrapping_add(1); 32]);
@@ -248,6 +249,7 @@ pub(super) async fn setup_fixture(label: &str, seed: u8) -> TestResult<Fixture> 
         local_dir,
         _owner_dir: owner_dir,
         actor,
+        handle,
         store_task,
         space_id,
         owner_id,

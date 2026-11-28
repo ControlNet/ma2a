@@ -4,6 +4,7 @@ use ma2a_net::IrohRelayObservation;
 pub(crate) struct Maintenance {
     pub(crate) fatal: Option<crate::RuntimeError>,
     pub(crate) control_completion: Option<crate::control_actor::completion::PendingControl>,
+    pub(crate) control_projections: tokio::task::JoinSet<()>,
     pub(crate) relay_configuration: Option<super::relay_server::RelayCompletion>,
     pub(crate) relay_configuration_generation: u64,
     pub(crate) relay_tls_loading: Option<u64>,

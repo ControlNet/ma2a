@@ -150,6 +150,7 @@ async fn last_response_held_in_store_queue_across_deadline_fails_and_keeps_commi
     assert_eq!(last_round.outcome, "failed");
     assert!(f.actor.state.revision >= committed_rev);
     assert!(!f.actor.synchronized_control_peers.contains(&f.peer_b_id));
+    f.actor.reconcile_control_completion().await?;
     let triggers = f
         .actor
         .control_schedule_events

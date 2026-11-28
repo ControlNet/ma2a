@@ -110,7 +110,7 @@ impl Actor {
             scheduled.membership_generation() == self.synchronized_control_peers.generation();
         let before_view = self.view_sequence;
         let mut failure = None;
-        let (peers, dialed, had_effects) = match outcome {
+        let (peers, dialed) = match outcome {
             Ok(Some(outcome)) => {
                 if let Some(revision) = outcome.revision {
                     self.state.revision = self.state.revision.max(revision);
@@ -120,35 +120,45 @@ impl Actor {
                 } else {
                     BTreeSet::new()
                 };
-                let had_effects = !outcome.changes.is_empty() || !peers.is_empty();
-                if had_effects {
+                if !outcome.changes.is_empty() || !peers.is_empty() {
                     self.retain_control_completion(outcome.changes, peers.clone());
                 }
                 if outcome.incomplete {
                     // The round failed before finishing; its committed changes still stay.
                     failure = Some(ma2a_net::ControlRejection::Unavailable.into());
                 }
-                (peers, Some(outcome.dialed_peers), had_effects)
+                (peers, Some(outcome.dialed_peers))
             }
-            Ok(None) => (BTreeSet::new(), Some(BTreeSet::new()), false),
+            Ok(None) => (BTreeSet::new(), Some(BTreeSet::new())),
             Err(error) => {
                 failure = Some(error);
-                (BTreeSet::new(), None, false)
+                (BTreeSet::new(), None)
             }
         };
-        let reconciled = if had_effects || failure.is_none() {
-            self.reconcile_control_completion().await
-        } else {
-            Ok(())
-        };
-        let succeeded = failure.is_none() && reconciled.is_ok();
+        if let Some(error) = failure {
+            self.record_control_round((false, &peers), before_view);
+            self.schedule_control_projection();
+            self.complete_control_waiters(round_id, false, &peers, dialed.as_ref());
+            Self::control_failure(error)?;
+            return Ok(());
+        }
+        let reconciled = self.reconcile_control_completion().await;
+        let succeeded = reconciled.is_ok();
         self.record_control_round((succeeded, &peers), before_view);
         self.complete_control_waiters(round_id, succeeded, &peers, dialed.as_ref());
         Self::absorb_background("control projection", reconciled)?;
-        if let Some(error) = failure {
-            Self::control_failure(error)?;
-        }
         Ok(())
+    }
+
+    fn schedule_control_projection(&mut self) {
+        if self.maintenance.control_completion.is_some()
+            && self.maintenance.control_projections.is_empty()
+        {
+            let store = self.store.clone();
+            self.maintenance.control_projections.spawn(async move {
+                let _ = store.revision().await;
+            });
+        }
     }
 
     /// Retains a bounded in-memory round history. It is a diagnostic, never a log:

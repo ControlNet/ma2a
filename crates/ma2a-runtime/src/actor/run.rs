@@ -190,6 +190,13 @@ impl Actor {
                         self.finish_control_round(result).await?;
                     }
                 },
+                joined = self.maintenance.control_projections.join_next(), if !self.maintenance.control_projections.is_empty() => {
+                    if let Some(joined) = joined {
+                        joined.map_err(RuntimeError::from)?;
+                        let reconciled = self.reconcile_control_completion().await;
+                        Self::absorb_background("control projection", reconciled)?;
+                    }
+                },
                 joined = self.maintenance.relay_tls_loads.join_next(), if !self.maintenance.relay_tls_loads.is_empty() => {
                     if let Some(loaded) = joined {
                         let applied = self

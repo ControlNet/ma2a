@@ -9,9 +9,7 @@ use std::{
 
 use iroh::SecretKey;
 use ma2a_core::{
-    AddressEndpointDataV1, AddressRecordScope, AddressRecordValidity, ControlArtifactKind,
-    ControlArtifactV1, ControlPageV1, ControlResponseV1, EndpointId, MemberCapabilities,
-    SpaceAddressRecordV1, SpaceId, SpaceManifestMembership, SpaceMemberV1, SpacePolicyV1,
+    EndpointId, MemberCapabilities, SpaceManifestMembership, SpaceMemberV1, SpacePolicyV1,
 };
 use ma2a_net::CONTROL_ROUND_DEADLINE;
 use ma2a_store::{OwnedSpaceUpdate, Repository, SpaceCreation, StoreConfig};
@@ -19,14 +17,14 @@ use tokio::sync::oneshot;
 
 use super::{
     DialDropGuard,
+    admitted_projection::{
+        finish_round_without_blocking, hold_store, sign_address_seq2, wait_for_address_sequence,
+    },
     fixture::{Fixture, TestResult, seed_address, setup_fixture},
 };
-use crate::{
-    control_sync::{
-        ControlFailure, ControlRoundOutcome, ControlRoundRequest, ControlRoundRunner,
-        ControlRoundScope, ControlRoundTrigger,
-    },
-    store::{ServiceStoreCommand, StoreClient, StoreCommand},
+use crate::control_sync::{
+    ControlFailure, ControlRoundOutcome, ControlRoundRequest, ControlRoundRunner,
+    ControlRoundScope, ControlRoundTrigger,
 };
 
 fn seed_hanging_peer(dir: &Path, local_id: EndpointId, seed: u8) -> TestResult<EndpointId> {
@@ -52,55 +50,6 @@ fn seed_hanging_peer(dir: &Path, local_id: EndpointId, seed: u8) -> TestResult<E
     ))?;
     seed_address(&mut repo, (space_id, advanced.chain()), &peer_key)?;
     Ok(peer_id)
-}
-
-fn sign_address_seq2(space_id: SpaceId, peer_seed: u8) -> TestResult<Vec<u8>> {
-    let peer_key = SecretKey::from_bytes(&[peer_seed; 32]);
-    let peer_id = EndpointId::from(peer_key.public());
-    let signed = SpaceAddressRecordV1::new(
-        AddressRecordScope::new(space_id, peer_id),
-        AddressRecordValidity::new(2, 10_000, 610_000)?,
-        AddressEndpointDataV1::new(Vec::new())?,
-    )
-    .sign(&peer_key)?;
-    let artifact = ControlArtifactV1::new(
-        ControlArtifactKind::ADDRESS_RECORD,
-        signed.canonical_bytes().to_vec(),
-    )?;
-    let page = ControlPageV1::new(space_id, false, vec![artifact])?;
-    Ok(ControlResponseV1::new(vec![page])?.encode()?)
-}
-
-async fn wait_for_address_sequence(
-    store: &StoreClient,
-    (space_id, peer_id): (SpaceId, EndpointId),
-    expected: u64,
-) -> TestResult {
-    while store
-        .address_record(space_id, peer_id)
-        .await?
-        .is_none_or(|record| record.sequence() < expected)
-    {
-        tokio::task::yield_now().await;
-    }
-    Ok(())
-}
-
-async fn hold_store(store: &StoreClient) -> TestResult<std::sync::mpsc::SyncSender<()>> {
-    let (entered_tx, entered_rx) = oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(0);
-    store
-        .sender
-        .send(StoreCommand::Services(ServiceStoreCommand::Process(
-            Box::new(move |_| {
-                let _ = entered_tx.send(());
-                let _ = release_rx.recv();
-            }),
-        )))
-        .await
-        .map_err(crate::store::channel_error)?;
-    entered_rx.await?;
-    Ok(release_tx)
 }
 
 struct RoundHarness {
@@ -164,6 +113,37 @@ fn spawn_admitted_queue_round(
     }
 }
 
+async fn verify_post_release_projection(f: &mut Fixture) -> TestResult {
+    let chain = f
+        .actor
+        .store
+        .load_space_chain(f.space_id)
+        .await?
+        .ok_or("chain missing")?;
+    assert_eq!(
+        chain.latest_generation(),
+        1,
+        "queued response started applying after the round deadline expired"
+    );
+
+    f.actor.reconcile_control_completion().await?;
+    let triggers = f
+        .actor
+        .control_schedule_events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        triggers.contains(&ControlRoundTrigger::AddressAdvanced),
+        "earlier committed address change did not reach the actor"
+    );
+    assert!(
+        !triggers.contains(&ControlRoundTrigger::ManifestAdvanced),
+        "skipped post-deadline response must not trigger ManifestAdvanced"
+    );
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn admitted_response_skips_apply_and_stops_dials_when_deadline_fires() -> TestResult {
     const SEED: u8 = 0x71;
@@ -171,12 +151,19 @@ async fn admitted_response_skips_apply_and_stops_dials_when_deadline_fires() -> 
     let hanging_peer = seed_hanging_peer(&f.local_dir.0, f.actor.state.endpoint_id, 0x91)?;
     let peer_b_seq2 = sign_address_seq2(f.space_id, SEED.wrapping_add(1))?;
 
-    let (reply, waiter) = oneshot::channel();
+    let (reply, mut waiter) = oneshot::channel();
     let global = f
         .actor
         .control_queue
         .request(ControlRoundScope::all(), Some(reply))
         .ok_or("no global round")?;
+    assert!(
+        f.actor
+            .control_queue
+            .request(ControlRoundScope::peer(f.owner_id), None)
+            .is_none(),
+        "follow-up round must queue behind active round"
+    );
     let request = ControlRoundRequest {
         local_endpoint_id: f.actor.state.endpoint_id,
         rotation: global.rotation(),
@@ -223,40 +210,25 @@ async fn admitted_response_skips_apply_and_stops_dials_when_deadline_fires() -> 
         "expired round stayed blocked behind queued Store command"
     );
     let outcome = harness.round_task.await?;
-    drop(release_store);
-    let chain = f
-        .actor
-        .store
-        .load_space_chain(f.space_id)
-        .await?
-        .ok_or("chain missing")?;
-    assert_eq!(
-        chain.latest_generation(),
-        1,
-        "queued response started applying after the round deadline expired"
+    finish_round_without_blocking(&mut f.actor, global, outcome).await?;
+    assert!(
+        waiter.try_recv()?.is_err(),
+        "explicit waiter must receive failure before Store blocker is released"
     );
-
-    f.actor.finish_control_round(Ok((global, outcome))).await?;
-    assert!(waiter.await?.is_err(), "expired round must fail its waiter");
+    assert!(
+        !f.actor.control_rounds.is_empty(),
+        "follow-up round must launch before Store blocker is released"
+    );
     assert!(
         f.actor.state.revision >= committed_rev,
         "earlier committed response revision did not reach the actor"
     );
-    let triggers = f
-        .actor
-        .control_schedule_events
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    assert!(
-        triggers.contains(&ControlRoundTrigger::AddressAdvanced),
-        "earlier committed address change did not reach the actor"
-    );
-    assert!(
-        !triggers.contains(&ControlRoundTrigger::ManifestAdvanced),
-        "skipped post-deadline response must not trigger ManifestAdvanced"
-    );
 
+    drop(release_store);
+    verify_post_release_projection(&mut f).await?;
+
+    f.actor.control_rounds.abort_all();
+    while f.actor.control_rounds.join_next().await.is_some() {}
     f.actor.finish(false).await?;
     f.store_task.await?;
     Ok(())

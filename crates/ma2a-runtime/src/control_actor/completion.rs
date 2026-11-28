@@ -12,6 +12,7 @@ pub(crate) struct PendingControl {
     peers: BTreeSet<EndpointId>,
     generation: u64,
     announced: bool,
+    cleared: bool,
 }
 
 impl Actor {
@@ -28,7 +29,8 @@ impl Actor {
         changes: ControlChanges,
         peers: BTreeSet<EndpointId>,
     ) {
-        if changes.manifest && peers.is_empty() {
+        let cleared_now = changes.manifest && peers.is_empty();
+        if cleared_now {
             // A manifest error committed outside a round invalidates in-flight rounds immediately.
             self.clear_synchronized_control_peers();
         }
@@ -44,18 +46,23 @@ impl Actor {
         if pending.generation != generation {
             pending.peers.clear();
             pending.generation = generation;
+            pending.cleared = false;
         }
         if changes.manifest {
             pending.announced = false;
             pending.peers.clear();
+            pending.cleared = cleared_now;
         }
         pending.peers.extend(peers);
     }
 
     pub(crate) async fn reconcile_control_completion(&mut self) -> Result<(), RuntimeError> {
         let before_peers = self.synchronized_control_peers.peers().clone();
+        let before_relay = self.state.relay.clone();
         let result = self.reconcile_control_completion_inner().await;
-        if self.synchronized_control_peers.peers() != &before_peers {
+        if self.synchronized_control_peers.peers() != &before_peers
+            || self.state.relay != before_relay
+        {
             self.view_sequence = self.view_sequence.saturating_add(1);
         }
         result
@@ -72,16 +79,19 @@ impl Actor {
         };
         let manifest_advanced = pending.changes.manifest;
         let already_announced = pending.announced;
+        let already_cleared =
+            pending.cleared && pending.generation == self.synchronized_control_peers.generation();
         // A completed task may be older than a local departure. Read one current
         // Store receipt, never install the task's stale lookup/membership snapshot.
         let projection = self.store.memberships(self.state.endpoint_id).await?;
         let changed = self.state.memberships != *projection.value();
         self.state.revision = self.state.revision.max(projection.revision());
         self.state.memberships = projection.into_value();
-        if changed || manifest_advanced {
+        if (changed || manifest_advanced) && !already_cleared {
             self.synchronized_control_peers.clear();
             if let Some(pending) = self.maintenance.control_completion.as_mut() {
                 pending.generation = self.synchronized_control_peers.generation();
+                pending.cleared = true;
                 if !manifest_advanced {
                     pending.peers.clear();
                 }
