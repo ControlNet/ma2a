@@ -9,9 +9,12 @@ use crate::{
     actor::{Actor, RuntimeHandle, ShutdownAck},
     clock::{RuntimeAddressLookupClock, SystemClock},
     error::{RuntimeError, RuntimeErrorKind},
-    state::{Connectivity, RuntimeStatus, ShutdownReport},
+    state::ShutdownReport,
     store::{STORE_CAPACITY, StoreBackend, StoreClient},
 };
+
+mod initial_status;
+use initial_status::{boot_id, initial_status};
 
 enum TaskExit {
     Actor(ShutdownAck),
@@ -122,18 +125,15 @@ impl Runtime {
         let endpoint_data = endpoint
             .endpoint_data()
             .map_err(|_| RuntimeError::new(RuntimeErrorKind::Control))?;
-        let state = RuntimeStatus {
-            endpoint_id: identity.endpoint_id,
-            endpoint_addr: endpoint.endpoint_addr(),
-            endpoint_data,
-            boot_id,
-            revision: boot_revision.max(relay_observation_revision),
-            memberships: identity.memberships,
-            ready: true,
-            connectivity: Connectivity::DIRECT_ONLY,
-            direct_reachable: false,
-            relay: crate::reachability::RelayReachabilityState::new(relay_map),
-        };
+        let state = initial_status(
+            (identity.endpoint_id, identity.memberships),
+            (&endpoint, endpoint_data),
+            (
+                boot_id,
+                boot_revision.max(relay_observation_revision),
+                relay_map,
+            ),
+        );
         let process_clock = Arc::clone(&clock);
         let (mut actor, handle, cancellation) = Actor::new(
             state,
@@ -271,12 +271,6 @@ fn spawn_service_host(
         crate::stream_host::run(calls, host).await;
         Ok(TaskExit::Services)
     });
-}
-
-fn boot_id() -> Result<[u8; 16], RuntimeError> {
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes).map_err(|_| RuntimeError::new(RuntimeErrorKind::Random))?;
-    Ok(bytes)
 }
 
 #[cfg(test)]

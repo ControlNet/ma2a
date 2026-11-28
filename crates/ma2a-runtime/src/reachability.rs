@@ -240,6 +240,8 @@ impl Actor {
                 revision = self.store.advance_revision().await?;
             }
             staged.revision = revision;
+        } else if staged.direct_reachable != self.state.direct_reachable {
+            self.view_sequence = self.view_sequence.saturating_add(1);
         }
         self.state = staged;
         self.maintenance.pending_observation = None;

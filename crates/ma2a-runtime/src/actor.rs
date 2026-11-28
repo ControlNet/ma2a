@@ -29,6 +29,8 @@ mod control_view_sequence_test;
 mod departure_authority_test;
 #[cfg(test)]
 mod departure_test;
+#[cfg(test)]
+mod direct_reachability_test;
 mod echo;
 #[cfg(test)]
 mod effective_data_test;
