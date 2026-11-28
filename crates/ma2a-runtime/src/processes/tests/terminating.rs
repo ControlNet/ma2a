@@ -333,3 +333,140 @@ async fn transient_conclude_error_preserves_unauthorized_reason() -> TestResult 
     shutdown.cancel();
     Ok(())
 }
+
+async fn accept_proven_request(
+    listener: &interprocess::local_socket::tokio::Listener,
+    credentials: &ma2a_services::supervisor::Credentials,
+    expected: SupervisorRequest,
+) -> TestResult<(
+    FrameReader<interprocess::local_socket::tokio::RecvHalf>,
+    FrameWriter<interprocess::local_socket::tokio::SendHalf>,
+)> {
+    let mut stream = listener.accept().await?;
+    let challenge = read_challenge(&mut FrameReader::new(&mut stream)).await?;
+    let (recv, send) = stream.split();
+    let (mut reader, mut writer) = (FrameReader::new(recv), FrameWriter::new(send));
+    prove_supervisor(challenge, (&mut reader, &mut writer), credentials).await?;
+    let req = reader.expect().await?;
+    assert_eq!(SupervisorRequest::from_bytes(req.payload())?, expected);
+    Ok((reader, writer))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_pre_connect_withdrawal_during_requested_terminate_retries_on_next_converge()
+-> TestResult {
+    // Given: a running Process whose mock supervisor holds a 60 s Requested terminate open and
+    // drops the first Unauthorized connection before proving itself (pre-connect Unavailable).
+    let harness = Harness::new("term-a05-retry").await?;
+    let (manager, shutdown) = harness.manager();
+    let id = recorded(&harness, &manager, (55, ProcessState::Running)).await?;
+    let record = manager.record(id).await?.ok_or("missing record")?;
+    let secret = record.secret.ok_or("missing secret")?;
+    let credentials = ma2a_services::supervisor::Credentials::new(id, secret);
+    let address = manager.address(id);
+    if let Some(parent) = std::path::Path::new(address.as_str()).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = address.bind()?;
+    let watch_ready = std::sync::Arc::new(Notify::new());
+    let first_connected = std::sync::Arc::new(Notify::new());
+    let second_dropped = std::sync::Arc::new(Notify::new());
+    let mut server = tokio::spawn({
+        let watch_ready = std::sync::Arc::clone(&watch_ready);
+        let first_connected = std::sync::Arc::clone(&first_connected);
+        let second_dropped = std::sync::Arc::clone(&second_dropped);
+        async move {
+            // 0. Keep the follower's Watch connection parked so converge() does not dial Watch.
+            let (_reader_watch, mut writer_watch) =
+                accept_proven_request(&listener, &credentials, SupervisorRequest::Watch).await?;
+            writer_watch
+                .frame(
+                    FrameKind::Accept,
+                    ma2a_services::supervisor::protocol::ACKNOWLEDGED,
+                )
+                .await?;
+            writer_watch.flush().await?;
+            watch_ready.notify_one();
+
+            // 1. Requested terminate(60_000) connects and blocks in the supervisor.
+            let (_reader_one, writer_one) = accept_proven_request(
+                &listener,
+                &credentials,
+                SupervisorRequest::Terminate(60_000),
+            )
+            .await?;
+            first_connected.notify_one();
+
+            // 2. First Unauthorized withdrawal drops before proving itself (pre-connect error).
+            drop(listener.accept().await?);
+            second_dropped.notify_one();
+
+            // 3. The next converge() must retry Unauthorized immediately rather than waiting 60 s.
+            let (_reader_three, writer_three) = tokio::time::timeout(
+                Duration::from_secs(3),
+                accept_proven_request(&listener, &credentials, SupervisorRequest::Terminate(5_000)),
+            )
+            .await
+            .map_err(|_| "converge skipped retrying Unauthorized after pre-connect failure")??;
+            let ended = SupervisorStatus::Ended(Termination::Signaled(15), EndCause::Terminated, 9);
+            for mut writer in [writer_three, writer_one, writer_watch] {
+                writer.frame(FrameKind::Outcome, &ended.to_bytes()).await?;
+                writer.shutdown().await?;
+            }
+            TestResult::Ok(())
+        }
+    });
+
+    manager.reconcile().await;
+    tokio::select! {
+        res = tokio::time::timeout(Duration::from_secs(2), watch_ready.notified()) => {
+            res.map_err(|_| "timed out waiting for watch_ready")?;
+        }
+        server_res = &mut server => {
+            return Err(format!("server exited before watch_ready: {server_res:?}").into());
+        }
+    }
+
+    let req_manager = manager.clone();
+    let creator = Some(harness.creator);
+    let requested = tokio::spawn(async move {
+        req_manager
+            .terminate((creator, id), (60_000, ProcessReason::Requested))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), first_connected.notified())
+        .await
+        .map_err(|_| "timed out waiting for first_connected")?;
+
+    // When: authorization is withdrawn, first converge() hits pre-connect failure, then a second
+    // converge() runs while Requested is still in flight.
+    harness.withdraw_creator().await?;
+    manager.converge().await;
+    tokio::time::timeout(Duration::from_secs(2), second_dropped.notified())
+        .await
+        .map_err(|_| "timed out waiting for second_dropped")?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while manager
+        .coordination()
+        .terminating
+        .get(&id)
+        .is_none_or(|entry| entry.in_flight != 1)
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "failed Unauthorized call did not finish"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    manager.converge().await;
+
+    // Then: the retry runs promptly and commits Terminated(Unauthorized).
+    server.await??;
+    let ended = tokio::time::timeout(Duration::from_secs(5), requested).await???;
+    assert_eq!(ended.value().state, ProcessState::Terminated);
+    assert_eq!(ended.value().reason, Some(ProcessReason::Unauthorized));
+    assert!(!manager.coordination().terminating.contains_key(&id));
+    shutdown.cancel();
+    Ok(())
+}

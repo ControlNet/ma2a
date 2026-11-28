@@ -45,6 +45,7 @@ const PROCESSES_DIR: &str = "processes-v1";
 struct Terminating {
     reason: ProcessReason,
     in_flight: usize,
+    unauthorized_in_flight: usize,
     keep: bool,
 }
 
@@ -54,6 +55,7 @@ impl Terminating {
         Self {
             reason,
             in_flight: 0,
+            unauthorized_in_flight: 0,
             keep: false,
         }
     }
@@ -106,6 +108,7 @@ pub(crate) struct ProcessManager(Arc<Inner>);
 pub(super) struct TerminateGuard<'a> {
     manager: &'a ProcessManager,
     id: ProcessId,
+    reason: ProcessReason,
 }
 
 impl Drop for TerminateGuard<'_> {
@@ -115,6 +118,9 @@ impl Drop for TerminateGuard<'_> {
             return;
         };
         entry.in_flight = entry.in_flight.saturating_sub(1);
+        if self.reason == ProcessReason::Unauthorized {
+            entry.unauthorized_in_flight = entry.unauthorized_in_flight.saturating_sub(1);
+        }
         if entry.in_flight == 0 && !entry.keep {
             coordination.terminating.remove(&self.id);
         }
@@ -127,10 +133,12 @@ impl ProcessManager {
         id: ProcessId,
         reason: ProcessReason,
     ) -> TerminateGuard<'_> {
+        let unauthorized = usize::from(reason == ProcessReason::Unauthorized);
         let mut coordination = self.coordination();
         match coordination.terminating.get_mut(&id) {
             Some(entry) => {
                 entry.in_flight += 1;
+                entry.unauthorized_in_flight += unauthorized;
                 if reason == ProcessReason::Unauthorized {
                     entry.reason = ProcessReason::Unauthorized;
                 }
@@ -141,13 +149,18 @@ impl ProcessManager {
                     Terminating {
                         reason,
                         in_flight: 1,
+                        unauthorized_in_flight: unauthorized,
                         keep: false,
                     },
                 );
             }
         }
         drop(coordination);
-        TerminateGuard { manager: self, id }
+        TerminateGuard {
+            manager: self,
+            id,
+            reason,
+        }
     }
 
     /// Creates the manager for one state directory; without `hosting`, `start` is refused

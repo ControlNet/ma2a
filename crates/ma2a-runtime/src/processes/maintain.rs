@@ -203,9 +203,7 @@ impl ProcessManager {
                     .coordination()
                     .terminating
                     .get(&record.id)
-                    .is_some_and(|entry| {
-                        entry.reason == ProcessReason::Unauthorized && entry.in_flight > 0
-                    })
+                    .is_some_and(|entry| entry.unauthorized_in_flight > 0)
             {
                 continue;
             }
