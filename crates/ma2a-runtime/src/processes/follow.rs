@@ -36,22 +36,56 @@ enum Followed {
     Broken,
 }
 
+/// Ownership of a Process's follower slot held by `bring_up` until handed off to a
+/// background follower task or released on completion.
+pub(super) struct FollowGuard {
+    manager: ProcessManager,
+    id: ProcessId,
+    armed: bool,
+}
+
+impl Drop for FollowGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.manager.coordination().followed.remove(&self.id);
+        }
+    }
+}
+
 impl ProcessManager {
+    /// Claims the follower slot of `id` for initial bring-up unless a follower already owns it.
+    pub(super) fn claim_follow(&self, id: ProcessId) -> Option<FollowGuard> {
+        self.coordination()
+            .followed
+            .insert(id)
+            .then(|| FollowGuard {
+                manager: self.clone(),
+                id,
+                armed: true,
+            })
+    }
+
+    /// Transfers an owned bring-up follower slot directly to the background follower task.
+    pub(super) fn handoff_follow(&self, guard: Option<FollowGuard>, watching: Option<Channel>) {
+        if let Some(mut guard) = guard {
+            guard.armed = false;
+            let manager = self.clone();
+            let id = guard.id;
+            self.0.tasks.spawn(async move {
+                let shutdown = manager.0.shutdown.clone();
+                tokio::select! {
+                    () = shutdown.cancelled() => {}
+                    () = manager.follower(id, watching) => {}
+                }
+                manager.coordination().followed.remove(&id);
+            });
+        }
+    }
+
     /// Starts the follower of one Process unless one already runs; `watching` is a proven
     /// connection on which `watch` was already accepted.
     pub(super) fn follow(&self, id: ProcessId, watching: Option<Channel>) {
-        if !self.coordination().followed.insert(id) {
-            return;
-        }
-        let manager = self.clone();
-        self.0.tasks.spawn(async move {
-            let shutdown = manager.0.shutdown.clone();
-            tokio::select! {
-                () = shutdown.cancelled() => {}
-                () = manager.follower(id, watching) => {}
-            }
-            manager.coordination().followed.remove(&id);
-        });
+        self.handoff_follow(self.claim_follow(id), watching);
     }
 
     /// Follows until the Process is terminal or gone; a transient Store or supervisor
@@ -104,21 +138,15 @@ impl ProcessManager {
     ) -> Result<Option<Channel>, ServiceError> {
         let address = self.address(credentials.id());
         if record.state == ProcessState::Starting {
-            let abort_cause = self
-                .coordination()
-                .aborted_starting
-                .get(&record.id)
-                .copied();
             let channel = address.connect(credentials).await?;
-            if let Some(cause) = abort_cause {
-                return match self
+            if let Some(cause) = self.aborted_starting_cause(record.id) {
+                return self
                     .settle_starting_abort(((record.id, record.creator), cause), channel)
                     .await
-                {
-                    Ok(AbortOutcome::Aborted) => Ok(None),
-                    Ok(AbortOutcome::StillAuthorizedActive) => Err(ServiceError::Unavailable),
-                    Err(error) => Err(error),
-                };
+                    .and_then(|outcome| match outcome {
+                        AbortOutcome::Aborted => Ok(None),
+                        AbortOutcome::StillAuthorizedActive => Err(ServiceError::Unavailable),
+                    });
             }
             match self
                 .dispatch_go((credentials, record.creator), channel)

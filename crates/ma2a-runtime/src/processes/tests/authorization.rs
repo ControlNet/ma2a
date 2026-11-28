@@ -1116,3 +1116,134 @@ fn start_abort_error_maps_supervisor_and_cancelled_errors_to_unavailable() {
         ServiceError::UnknownProcess
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_start_lease_expiry_with_convergence_does_not_send_go() -> TestResult {
+    let harness = Harness::new("a01-converge-race").await?;
+    harness
+        .store
+        .set_go_dispatch_hold(Duration::from_millis(80))
+        .await;
+    let (manager, shutdown) = harness.manager();
+    let (entered_rx, release_tx) = manager.arm_after_final_authorize_gate();
+
+    let marker = harness.state.0.join("child-a01-converge-race");
+    let start_spec = start(&format!("touch {}; sleep 1", marker.display()))?;
+    let req = request_id(127)?;
+    let ((mut reader, _writer), (mut host_reader, mut host_writer)) = pipe();
+    let stop = CancellationToken::new();
+    let host = tokio::spawn({
+        let manager = manager.clone();
+        let creator = harness.creator;
+        async move {
+            let scope = ((creator, req), ProcessRequest::Start(start_spec), &stop);
+            serve(&manager, scope, (&mut host_reader, &mut host_writer)).await
+        }
+    });
+    let caller = tokio::spawn(async move { hosted::call(&mut reader).await });
+
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    let row = harness
+        .store
+        .processes(move |repo| repo.process_by_binding(harness.creator, req))
+        .await??
+        .ok_or("missing Starting Process")?;
+    assert_eq!(row.state, ProcessState::Starting);
+
+    // Run convergence both while bring-up still holds the lease and after the hold expires.
+    manager.converge().await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    harness.store.advance_revision().await?;
+    manager.converge().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !marker.exists(),
+        "convergence must not start the child while bring-up owns Starting"
+    );
+    assert_eq!(
+        status::read(&manager.directory(row.id))?,
+        None,
+        "supervisor must not receive Go from convergence while bring-up owns Starting"
+    );
+
+    let _released = release_tx.send(());
+    let (_accept, reply) = tokio::time::timeout(Duration::from_secs(10), caller).await???;
+    let _report = tokio::time::timeout(Duration::from_secs(10), host).await??;
+    let ProcessReply::Summary(summary) = reply else {
+        return Err(format!("expected Summary reply, got {reply:?}").into());
+    };
+    assert_eq!(summary.state, ProcessState::Failed);
+    assert_eq!(summary.reason, Some(ProcessReason::Interrupted));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!marker.exists(), "child must not start after abort");
+    let recorded = status::read(&manager.directory(summary.id))?;
+    assert!(
+        matches!(recorded, Some(SupervisorStatus::NeverStarted(_))),
+        "expected NeverStarted supervisor status, got {recorded:?}"
+    );
+    shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aborted_starting_recorded_before_go_write_diverts_to_abort() -> TestResult {
+    let harness = Harness::new("a01-recheck-abort").await?;
+    let (prior_manager, prior_shutdown) = harness.manager();
+    let start_spec = start("sleep 1")?;
+    let (creation, credentials) = prior_manager
+        .create((harness.creator, request_id(128)?), &start_spec)
+        .await?;
+    let ProcessCreation::Created(created) = creation else {
+        return Err("expected Created row".into());
+    };
+    harness
+        .store
+        .processes(move |repo| {
+            repo.transition_process(
+                created.id,
+                ProcessTransition {
+                    to: ProcessState::Starting,
+                    reason: None,
+                    termination: None,
+                    at_ms: 10,
+                },
+            )
+        })
+        .await??;
+    prior_shutdown.cancel();
+
+    let (manager, shutdown) = harness.manager();
+    let address = manager.address(created.id);
+    if let Some(parent) = std::path::Path::new(address.as_str()).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = address.bind()?;
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut reader, mut writer) = accept_proven_connection(&listener, &credentials).await?;
+        let req = reader.expect().await?;
+        let parsed = SupervisorRequest::from_bytes(req.payload())?;
+        let _sent = seen_tx.send(parsed);
+        let reply = match parsed {
+            SupervisorRequest::Abort => SupervisorStatus::NeverStarted(10),
+            _ => SupervisorStatus::Running(1, 10),
+        };
+        writer.frame(FrameKind::Outcome, &reply.to_bytes()).await?;
+        writer.shutdown().await?;
+        TestResult::Ok(())
+    });
+
+    let (entered_rx, release_tx) = manager.arm_after_final_authorize_gate();
+    manager.follow(created.id, None);
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    manager.record_aborted_starting(created.id, crate::processes::go::AbortCause::Expired);
+    let _released = release_tx.send(());
+
+    let parsed = tokio::time::timeout(Duration::from_secs(5), seen_rx).await??;
+    assert_eq!(parsed, SupervisorRequest::Abort);
+    server.await??;
+    let failed = reaches(&manager, created.id, ProcessState::Failed).await?;
+    assert_eq!(failed.reason, Some(ProcessReason::Interrupted));
+    shutdown.cancel();
+    Ok(())
+}

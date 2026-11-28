@@ -142,6 +142,10 @@ impl ProcessManager {
         }
     }
 
+    pub(super) fn aborted_starting_cause(&self, id: ProcessId) -> Option<AbortCause> {
+        self.coordination().aborted_starting.get(&id).copied()
+    }
+
     pub(super) fn clear_process_coordination(&self, id: ProcessId) {
         let mut coordination = self.coordination();
         coordination.terminating.remove(&id);
@@ -155,6 +159,11 @@ impl ProcessManager {
         (credentials, creator): (&Credentials, EndpointId),
         channel: Channel,
     ) -> GoDispatch {
+        if let Some(cause) = self.aborted_starting_cause(credentials.id()) {
+            return self
+                .abort_starting(((credentials.id(), creator), cause), channel)
+                .await;
+        }
         if creator == self.0.local {
             return match request(channel, SupervisorRequest::Go).await {
                 Ok(reported) => GoDispatch::Reported(reported),
@@ -162,7 +171,7 @@ impl ProcessManager {
             };
         }
         #[cfg(test)]
-        self.wait_before_go_gate().await;
+        Self::wait_gate(&self.0.gates.before_go).await;
         match self.authorize_remote(creator).await {
             Ok(()) => {}
             Err(ServiceError::Unauthorized) => {
@@ -176,7 +185,7 @@ impl ProcessManager {
             Err(error) => return GoDispatch::Deferred(error),
         }
         #[cfg(test)]
-        self.wait_after_authorize_gate().await;
+        Self::wait_gate(&self.0.gates.after_authorize).await;
         self.authorize_and_send_go((credentials, creator), channel)
             .await
     }
@@ -205,6 +214,11 @@ impl ProcessManager {
         (mut reader, mut writer): Channel,
     ) -> GoDispatch {
         let id = credentials.id();
+        if let Some(cause) = self.aborted_starting_cause(id) {
+            return self
+                .abort_starting(((id, creator), cause), (reader, writer))
+                .await;
+        }
         let lease = GoDispatchLease::new();
         let guard = GoDispatchGuard(lease.clone());
         if let Err(error) = self
@@ -221,7 +235,13 @@ impl ProcessManager {
             };
         }
         #[cfg(test)]
-        self.wait_after_final_authorize_gate().await;
+        Self::wait_gate(&self.0.gates.after_final_authorize).await;
+        if let Some(cause) = self.aborted_starting_cause(id) {
+            drop(guard);
+            return self
+                .abort_starting(((id, creator), cause), (reader, writer))
+                .await;
+        }
         let Ok(frame) = go_frame() else {
             drop(guard);
             return GoDispatch::Deferred(ServiceError::InvalidInput);
@@ -265,20 +285,5 @@ impl ProcessManager {
             let _entered = entered.send(());
             let _released = release.await;
         }
-    }
-
-    #[cfg(test)]
-    async fn wait_before_go_gate(&self) {
-        Self::wait_gate(&self.0.gates.before_go).await;
-    }
-
-    #[cfg(test)]
-    async fn wait_after_authorize_gate(&self) {
-        Self::wait_gate(&self.0.gates.after_authorize).await;
-    }
-
-    #[cfg(test)]
-    async fn wait_after_final_authorize_gate(&self) {
-        Self::wait_gate(&self.0.gates.after_final_authorize).await;
     }
 }

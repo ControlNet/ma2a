@@ -198,6 +198,9 @@ impl ProcessManager {
         };
         fault("after_launch");
         let watching = open_watch(proven).await;
+        // Own the follower slot before committing `starting`, so `converge()` never spawns a
+        // parallel follower while bring-up drives `starting` -> `go`-or-`abort`.
+        let follow_guard = self.claim_follow(id);
         let stepped = match self.step(id, (ProcessState::Starting, None)).await {
             Ok(committed) => committed.into_value(),
             Err(error) => {
@@ -230,7 +233,7 @@ impl ProcessManager {
                 }
                 GoDispatch::AbortFailed(error) => {
                     drop(watching);
-                    self.follow(id, None);
+                    self.handoff_follow(follow_guard, None);
                     return Err(start_abort_error(error));
                 }
                 GoDispatch::Deferred(error) => Err(error),
@@ -239,13 +242,13 @@ impl ProcessManager {
         };
         fault("after_go");
         if let Ok(reported) = reported {
-            self.follow(id, watching.ok());
+            self.handoff_follow(follow_guard, watching.ok());
             return self.apply(id, reported).await.map(Committed::into_value);
         }
         // Without the open watch the follower reaches the supervisor itself, and for a
         // Process still `starting` that sends `go` again; a repeated `go` has no effect.
         drop(watching);
-        self.follow(id, None);
+        self.handoff_follow(follow_guard, None);
         self.record(id).await?.ok_or(ServiceError::UnknownProcess)
     }
 }
