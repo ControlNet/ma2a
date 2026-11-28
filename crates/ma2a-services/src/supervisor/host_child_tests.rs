@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use super::super::{
     host::{Lifecycle, Shared},
-    host_attach,
+    host_attach::{self, StdinRelay},
     log::{self, LogWriter, MAX_RECORD_LEN, SEGMENT_BYTES},
     proof::Credentials,
     status::{EndCause, SupervisorStatus},
@@ -213,7 +213,7 @@ async fn child_exit_while_retention_is_blocked_signals_discarded_tail_to_live_an
     let live = host_attach::attach(
         (&mut host_reader, &mut host_writer),
         &shared,
-        (LogFrom::Start, false),
+        (LogFrom::Start, StdinRelay::Disabled),
     );
     let reading = tokio::spawn(async move { read_attachment(&mut reader).await });
 
@@ -247,7 +247,7 @@ async fn child_exit_while_retention_is_blocked_signals_discarded_tail_to_live_an
     let reopened = host_attach::attach(
         (&mut r_host_reader, &mut r_host_writer),
         &shared,
-        (LogFrom::Cursor(stalled_end), false),
+        (LogFrom::Cursor(stalled_end), StdinRelay::Disabled),
     );
     let reopened_read = tokio::spawn(async move { read_attachment(&mut reopened_reader).await });
     reopened.await?;
