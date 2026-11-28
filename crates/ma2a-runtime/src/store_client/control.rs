@@ -44,14 +44,15 @@ impl StoreClient {
 
     pub(crate) async fn admit_control_response(
         &self,
-        input: ControlExchangeInput,
-        requested: Vec<ma2a_core::SpaceId>,
+        (input, requested): (ControlExchangeInput, Vec<ma2a_core::SpaceId>),
+        deadline: tokio::time::Instant,
     ) -> Result<oneshot::Receiver<Result<ControlApplyOutcome, ControlFailure>>, ControlFailure>
     {
         let permit = self.sender.reserve().await.map_err(channel_error)?;
         let (reply, response) = oneshot::channel();
         permit.send(StoreCommand::ApplyControlResponse {
             input: (input, requested),
+            deadline,
             reply,
         });
         Ok(response)

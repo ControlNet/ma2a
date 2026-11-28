@@ -212,8 +212,16 @@ impl StoreBackend {
             StoreCommand::AuthorizeControl { input, reply } => {
                 local_control::authorize(&self.repository, &input, reply);
             }
-            StoreCommand::ApplyControlResponse { input, reply } => {
-                local_control::apply(&mut self.repository, &input, reply);
+            StoreCommand::ApplyControlResponse {
+                input,
+                deadline,
+                reply,
+            } => {
+                if tokio::time::Instant::now() >= deadline {
+                    let _unsent = reply.send(Err(ma2a_net::ControlRejection::Unavailable.into()));
+                } else {
+                    local_control::apply(&mut self.repository, &input, reply);
+                }
             }
             StoreCommand::AuthorizeEcho {
                 local_endpoint_id,

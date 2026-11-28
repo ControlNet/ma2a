@@ -160,8 +160,9 @@ pub(crate) enum StoreCommand {
         reply: oneshot::Sender<Result<(), crate::control_sync::ControlFailure>>,
     },
     ApplyControlResponse {
-        /// The response, and the Spaces the request it answers asked about.
+        /// The response, the Spaces the request it answers asked about, and the round deadline.
         input: (ControlExchangeInput, Vec<ma2a_core::SpaceId>),
+        deadline: tokio::time::Instant,
         reply: oneshot::Sender<Result<ControlApplyOutcome, crate::control_sync::ControlFailure>>,
     },
     AuthorizeEcho {

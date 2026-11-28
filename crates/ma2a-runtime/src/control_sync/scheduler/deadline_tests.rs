@@ -1,3 +1,4 @@
+mod admitted_queue;
 mod fixture;
 mod store_queue;
 
@@ -15,6 +16,16 @@ use crate::{
     },
     error::RuntimeErrorKind,
 };
+
+struct DialDropGuard(Option<oneshot::Sender<()>>);
+
+impl Drop for DialDropGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.0.take() {
+            let _ = tx.send(());
+        }
+    }
+}
 
 async fn wait_for_generation(
     store: &crate::store::StoreClient,
@@ -185,5 +196,52 @@ async fn local_error_after_manifest_commit_keeps_changes_or_propagates_fatal() -
     assert!(matches!(outcome, Err(ControlFailure::Runtime(_))));
     fatal.actor.finish(false).await?;
     fatal.store_task.await?;
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn running_store_apply_keeps_receipt_while_stopping_dials_at_deadline() -> TestResult {
+    let mut dials = tokio::task::JoinSet::<super::DialOutcome<std::io::Error>>::new();
+    let (dial_dropped_tx, mut dial_dropped_rx) = oneshot::channel::<()>();
+    let (dial_started_tx, dial_started_rx) = oneshot::channel::<()>();
+    let peer = ma2a_net::EndpointSecret::parse(&[0x44; 32])?.endpoint_id();
+    dials.spawn(async move {
+        let _guard = DialDropGuard(Some(dial_dropped_tx));
+        let _ = dial_started_tx.send(());
+        pending::<()>().await;
+        (peer, Vec::new(), Ok(Vec::new()))
+    });
+    dial_started_rx.await?;
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let wait_task = tokio::spawn(async move {
+        let deadline = tokio::time::sleep(ma2a_net::CONTROL_ROUND_DEADLINE);
+        tokio::pin!(deadline);
+        super::await_store_apply_receipt(&mut deadline, &mut dials, reply_rx).await
+    });
+    tokio::task::yield_now().await;
+    assert!(dial_dropped_rx.try_recv().is_err());
+
+    tokio::time::advance(ma2a_net::CONTROL_ROUND_DEADLINE).await;
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        dial_dropped_rx.try_recv().is_ok(),
+        "outstanding dials must stop when deadline fires during a running Store apply"
+    );
+
+    let outcome = crate::control_sync::ControlApplyOutcome {
+        revision: 42,
+        changes: crate::control_sync::ControlChanges {
+            manifest: true,
+            ..crate::control_sync::ControlChanges::default()
+        },
+    };
+    let _ = reply_tx.send(Ok(outcome));
+    let received = wait_task.await??;
+    let applied = received?;
+    assert_eq!(applied.revision, 42);
+    assert!(applied.changes.manifest);
     Ok(())
 }

@@ -95,7 +95,7 @@ impl Drop for TempState {
 }
 
 pub(super) struct Fixture {
-    _local_dir: TempState,
+    pub(super) local_dir: TempState,
     _owner_dir: TempState,
     pub(super) actor: Actor,
     pub(super) store_task: tokio::task::JoinHandle<()>,
@@ -106,7 +106,7 @@ pub(super) struct Fixture {
     pub(super) empty_response: Vec<u8>,
 }
 
-fn seed_address(
+pub(super) fn seed_address(
     repo: &mut Repository,
     (space_id, chain): (SpaceId, &SpaceChain),
     peer_key: &SecretKey,
@@ -245,7 +245,7 @@ pub(super) async fn setup_fixture(label: &str, seed: u8) -> TestResult<Fixture> 
     actor.synchronized_control_peers.extend([peer_b_id]);
     assert!(actor.synchronized_control_peers.contains(&peer_b_id));
     Ok(Fixture {
-        _local_dir: local_dir,
+        local_dir,
         _owner_dir: owner_dir,
         actor,
         store_task,
