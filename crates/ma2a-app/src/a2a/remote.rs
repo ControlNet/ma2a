@@ -34,10 +34,10 @@ pub(super) fn task_id(task: &str) -> Result<AgentTaskId, Refusal> {
 
 /// Longest wait for a target to answer one content-free operation, so a target that never
 /// answers fails the request instead of holding one of the adapter's connections.
-const CALL_DEADLINE: Duration = Duration::from_secs(30);
+pub(super) const CALL_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Runs `call` under `deadline`, failing as `timed_out` once it passes.
-async fn bounded<T>(
+pub(super) async fn bounded<T>(
     deadline: Duration,
     call: impl Future<Output = Result<T, Refusal>>,
 ) -> Result<T, Refusal> {

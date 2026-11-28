@@ -17,11 +17,12 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse as _, Response},
 };
-use ma2a_core::service::{AgentRequest, OpenBody, ServiceError};
-use ma2a_services::client;
+use ma2a_core::service::{AgentRequest, ContentIdentity, OpenBody, ServiceError};
+use ma2a_runtime::ipc::LocalStream;
+use ma2a_services::{FrameReader, FrameWriter, client};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncWrite, DuplexStream},
+    io::{AsyncWrite, DuplexStream, ReadHalf, WriteHalf},
     sync::{mpsc, oneshot},
 };
 use tokio_stream::{Stream, wrappers::ReceiverStream};
@@ -89,14 +90,17 @@ pub(super) async fn serve(
             Body::from_stream(ReceiverStream::new(received))
         }
         Route::Remote(..) => {
+            let accepted = match admit(&backend, (&route, &task, &name)).await {
+                Ok(accepted) => accepted,
+                Err(refusal) if refusal.is_transient() => {
+                    return status(StatusCode::SERVICE_UNAVAILABLE);
+                }
+                Err(_) => return status(StatusCode::NOT_FOUND),
+            };
             let (mut writer, reader) = tokio::io::duplex(PIPE);
             let (outcome, verdict) = oneshot::channel();
             tokio::spawn(relay(outcome, async move {
-                let reference = (
-                    (&route, task.as_str(), name.as_str()),
-                    (size, blake3.as_str()),
-                );
-                let streamed = download(&backend, reference, &mut writer).await;
+                let streamed = download(accepted, (size, blake3.as_str()), &mut writer).await;
                 drop(writer);
                 streamed
             }));
@@ -177,14 +181,18 @@ async fn local(backend: &Backend, (task, name): (&str, &str), chunks: &Chunks) -
     }
 }
 
-/// Streams one artifact's verified content into `sink`. Content that is not what `reference`
-/// names, the size and BLAKE3 hex of the task's artifact reference, is refused: a wrong size
-/// before any byte, a wrong hash at the end.
-async fn download<S: AsyncWrite + Unpin>(
+type Accepted = (
+    FrameReader<ReadHalf<LocalStream>>,
+    FrameWriter<WriteHalf<LocalStream>>,
+    ContentIdentity,
+);
+
+/// Opens a remote artifact download and waits up to [`remote::CALL_DEADLINE`] for the target
+/// to admit it.
+async fn admit(
     backend: &Backend,
-    ((route, task, name), reference): ((&Route, &str, &str), (u64, &str)),
-    sink: &mut S,
-) -> Result<(), Refusal> {
+    (route, task, name): (&Route, &str, &str),
+) -> Result<Accepted, Refusal> {
     let (endpoint, agent) = remote::parts(route)?;
     let request = AgentRequest::Artifact(
         agent.clone(),
@@ -193,11 +201,25 @@ async fn download<S: AsyncWrite + Unpin>(
         0,
         None,
     );
-    let (mut reader, _writer) =
-        open_as(&backend.paths, (endpoint, None), OpenBody::Agent(request)).await?;
-    let identity = client::transfer::download_accepted(&mut reader)
-        .await
-        .map_err(|error| remote::refusal(&error))?;
+    remote::bounded(remote::CALL_DEADLINE, async {
+        let (mut reader, writer) =
+            open_as(&backend.paths, (endpoint, None), OpenBody::Agent(request)).await?;
+        let identity = client::transfer::download_accepted(&mut reader)
+            .await
+            .map_err(|error| remote::refusal(&error))?;
+        Ok((reader, writer, identity))
+    })
+    .await
+}
+
+/// Streams one admitted artifact's verified content into `sink`. Content that is not what
+/// `reference` names, the size and BLAKE3 hex of the task's artifact reference, is refused:
+/// a wrong size before any byte, a wrong hash at the end.
+async fn download<S: AsyncWrite + Unpin>(
+    (mut reader, _writer, identity): Accepted,
+    reference: (u64, &str),
+    sink: &mut S,
+) -> Result<(), Refusal> {
     let mismatch = || Refusal::named(ServiceError::IntegrityMismatch.name());
     if identity.size() != reference.0 {
         return Err(mismatch());
@@ -220,64 +242,5 @@ fn matches_reference((size, blake3): (u64, &str), (got, hash): (u64, &[u8; 32]))
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use tokio::sync::oneshot;
-
-    use super::{Refusal, matches_reference, relay};
-
-    #[test]
-    fn content_must_be_what_the_artifact_reference_names() {
-        let hash = *blake3::hash(b"result").as_bytes();
-        let hex = blake3::hash(b"result").to_hex();
-        assert!(matches_reference((6, &hex), (6, &hash)));
-        // Another size, another hash, or a reference that names no hash.
-        assert!(!matches_reference((7, &hex), (6, &hash)));
-        let other = blake3::hash(b"forged").to_hex();
-        assert!(!matches_reference((6, &other), (6, &hash)));
-        assert!(!matches_reference((6, ""), (6, &hash)));
-    }
-
-    /// The status of an artifact request through a target answering every stream with `script`.
-    #[cfg(unix)]
-    async fn served(script: crate::test_daemon::Script) -> crate::test_daemon::TestResult<u16> {
-        let daemon = crate::test_daemon::Daemon::start("artifact", script)?;
-        let (backend, route) = super::Backend::standing_in(&daemon)?;
-        let task = "01".repeat(16);
-        let response = super::serve(backend, (route, task, "result".to_owned())).await;
-        Ok(response.status().as_u16())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn only_a_missing_task_or_artifact_answers_not_found() -> crate::test_daemon::TestResult {
-        use ma2a_core::service::{FrameKind, ServiceError};
-        let refused = |error: ServiceError| vec![(FrameKind::Reject, vec![error.code()])];
-        // A task the target does not have, or one this Endpoint may not see.
-        assert_eq!(served(refused(ServiceError::UnknownTask)).await?, 404);
-        assert_eq!(served(refused(ServiceError::Unauthorized)).await?, 404);
-        // A target that cannot answer now may answer later.
-        assert_eq!(served(refused(ServiceError::Unavailable)).await?, 503);
-        assert_eq!(served(refused(ServiceError::Unreachable)).await?, 503);
-        assert_eq!(
-            served(refused(ServiceError::ConcurrencyExceeded)).await?,
-            503
-        );
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_client_that_left_ends_a_stalled_download() {
-        // Given: a target that never sends, and a client that left.
-        let (outcome, verdict) = oneshot::channel();
-        drop(verdict);
-
-        // When
-        let download = std::future::pending::<Result<(), Refusal>>();
-        let relayed = tokio::time::timeout(Duration::from_secs(60), relay(outcome, download)).await;
-
-        // Then
-        assert!(relayed.is_ok());
-    }
-}
+#[path = "artifact_tests.rs"]
+mod tests;
