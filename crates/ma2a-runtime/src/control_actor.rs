@@ -162,7 +162,7 @@ impl Actor {
         Ok(())
     }
 
-    fn schedule_control_projection(&mut self) {
+    pub(crate) fn schedule_control_projection(&mut self) {
         if self.maintenance.control_completion.is_some()
             && self.maintenance.control_projections.is_empty()
         {

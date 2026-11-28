@@ -195,6 +195,7 @@ impl Actor {
                         joined.map_err(RuntimeError::from)?;
                         let reconciled = self.reconcile_control_completion().await;
                         Self::absorb_background("control projection", reconciled)?;
+                        self.schedule_control_projection();
                     }
                 },
                 joined = self.maintenance.relay_tls_loads.join_next(), if !self.maintenance.relay_tls_loads.is_empty() => {

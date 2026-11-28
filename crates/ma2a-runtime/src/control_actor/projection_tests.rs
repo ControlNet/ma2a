@@ -16,7 +16,10 @@ use tokio::sync::mpsc;
 
 use crate::{
     RuntimeError,
-    actor::{Actor, maintenance::FaultPoint},
+    actor::{
+        Actor, RuntimeHandle,
+        maintenance::{ControlRoundGate, FaultPoint},
+    },
     control_sync::{ControlChanges, ControlRoundOutcome, ControlRoundScope, ControlRoundTrigger},
     state::{Connectivity, RuntimeStatus},
     store::{STORE_CAPACITY, StoreBackend, StoreClient},
@@ -52,7 +55,9 @@ impl Drop for TempState {
     }
 }
 
-async fn fixture(config: &StoreConfig) -> TestResult<(Actor, tokio::task::JoinHandle<()>)> {
+async fn fixture(
+    config: &StoreConfig,
+) -> TestResult<(Actor, RuntimeHandle, tokio::task::JoinHandle<()>)> {
     let backend = StoreBackend::open(config)?;
     let (sender, receiver) = mpsc::channel(STORE_CAPACITY);
     let store_task = tokio::task::spawn_blocking(move || backend.run(receiver));
@@ -81,7 +86,7 @@ async fn fixture(config: &StoreConfig) -> TestResult<(Actor, tokio::task::JoinHa
         direct_reachable: false,
         relay: crate::reachability::RelayReachabilityState::new(map),
     };
-    let (actor, _, _) = Actor::new(
+    let (actor, handle, _) = Actor::new(
         state,
         endpoint,
         store,
@@ -93,14 +98,14 @@ async fn fixture(config: &StoreConfig) -> TestResult<(Actor, tokio::task::JoinHa
         Arc::new(crate::clock::SystemClock),
         None,
     );
-    Ok((actor, store_task))
+    Ok((actor, handle, store_task))
 }
 
 #[tokio::test]
 async fn transient_inline_reconciliation_failure_schedules_control_projection() -> TestResult {
     let directory = TempState::new("inline-retry")?;
     let config = StoreConfig::new(&directory.0);
-    let (mut actor, store_task) = fixture(&config).await?;
+    let (mut actor, _handle, store_task) = fixture(&config).await?;
     let member = SpaceMemberV1::new(
         actor.state.endpoint_id,
         "owner".to_owned(),
@@ -159,5 +164,96 @@ async fn transient_inline_reconciliation_failure_schedules_control_projection() 
 
     actor.finish(false).await?;
     store_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn transient_retry_failure_reschedules_control_projection() -> TestResult {
+    let directory = TempState::new("retry-reschedule")?;
+    let config = StoreConfig::new(&directory.0);
+    let (mut actor, handle, store_task) = fixture(&config).await?;
+    let member = SpaceMemberV1::new(
+        actor.state.endpoint_id,
+        "owner".to_owned(),
+        MemberCapabilities::new(true, true),
+    )?;
+    let created = Repository::open(&config)?.create_owned_space(&SpaceCreation::new(
+        10,
+        member,
+        SpacePolicyV1::phase_one_default(),
+    ))?;
+
+    let scheduled = actor
+        .control_queue
+        .request(ControlRoundScope::all(), None)
+        .ok_or("no control round")?;
+    actor.maintenance.fail_once(
+        FaultPoint::RelayCandidateLoad,
+        RuntimeError::from(StoreError::Io(std::io::ErrorKind::Interrupted.into())),
+    );
+    let outcome = ControlRoundOutcome {
+        revision: Some(created.revision()),
+        dialed_peers: BTreeSet::new(),
+        synchronized_peers: BTreeSet::new(),
+        changes: ControlChanges {
+            manifest: true,
+            address: false,
+            relay: false,
+        },
+        incomplete: false,
+    };
+    actor
+        .finish_control_round(Ok((scheduled, Ok(Some(outcome)))))
+        .await?;
+    assert_eq!(handle.candidate_refresh_attempts(), 1);
+    assert!(actor.maintenance.control_completion.is_some());
+
+    // Fail the first scheduled retry too, and hold Startup's control round so
+    // only a rescheduled control projection can complete reconciliation.
+    actor.maintenance.fail_once(
+        FaultPoint::RelayCandidateLoad,
+        RuntimeError::from(StoreError::Io(std::io::ErrorKind::Interrupted.into())),
+    );
+    let (entered_tx, _entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    *actor
+        .maintenance
+        .control_round_gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ControlRoundGate {
+        entered: entered_tx,
+        release: release_rx,
+    });
+    let events = Arc::clone(&actor.control_schedule_events);
+    let actor_task = tokio::spawn(actor.run());
+
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let scheduled_manifest = events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&ControlRoundTrigger::ManifestAdvanced);
+            if handle.candidate_refresh_attempts() >= 3 && scheduled_manifest {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    let _released = release_tx.send(());
+    handle.shutdown().await?;
+    actor_task.await??;
+    store_task.await?;
+
+    let attempts = handle.candidate_refresh_attempts();
+    let triggers = events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        observed.is_ok(),
+        "transient failure on control_projections retry must reschedule projection (attempts={attempts}, triggers={triggers:?})"
+    );
     Ok(())
 }
