@@ -512,11 +512,13 @@ Other codes used by Process:
 | `cancelled` | a detached `stdin` operation |
 | `outcome_unknown` | caller side only |
 
-`start`, `list`, and `inspect` refuse only with `reject` frames. `signal`, `terminate`, and
-`delete` `reject` only what is decided before any effect: `unknown_process`, `not_running`, and
-`process_active`. Every later failure, including a supervisor that is gone, unproven, or slow, is
-`accept` Admitted followed by a failed `outcome`, so a caller never mistakes a possible effect for
-a refusal.
+`list` and `inspect` refuse only with `reject` frames. `start` refuses pre-commit checks with
+`reject` frames, and reports post-commit bring-up or abort-settlement failures as `accept` Started
+followed by a failed `outcome` (mapping supervisor loss and abort-settlement errors to
+`unavailable`). `signal`, `terminate`, and `delete` `reject` only what is decided before any
+effect: `unknown_process`, `not_running`, and `process_active`. Every later failure, including a
+supervisor that is gone, unproven, or slow, is `accept` Admitted followed by a failed `outcome`, so
+a caller never mistakes a possible effect for a refusal.
 
 ## Supervisor (informative)
 
