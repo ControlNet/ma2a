@@ -116,7 +116,7 @@ impl ControlRoundRequest {
         eligible
             .iter()
             .copied()
-            .filter(|peer| self.scope.peers.contains(peer))
+            .filter(|peer| *peer != self.local_endpoint_id && self.scope.peers.contains(peer))
             .collect()
     }
 }
@@ -132,5 +132,33 @@ impl ControlRoundTrigger {
             | Self::EnrollmentCompleted
             | Self::Periodic => ControlRoundScope::all(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_net::EndpointSecret;
+
+    use super::{ControlRoundRequest, ControlRoundScope};
+
+    #[test]
+    fn targeted_scope_excludes_local_endpoint_id()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let local = EndpointSecret::parse(&[0x11; 32])?.endpoint_id();
+        let other = EndpointSecret::parse(&[0x22; 32])?.endpoint_id();
+
+        let selected = ControlRoundRequest {
+            local_endpoint_id: local,
+            rotation: 0,
+            now_ms: 0,
+            scope: ControlRoundScope::peer(local),
+        }
+        .select(&[local, other]);
+
+        assert!(
+            selected.is_empty(),
+            "self must never be selected: {selected:?}"
+        );
+        Ok(())
     }
 }

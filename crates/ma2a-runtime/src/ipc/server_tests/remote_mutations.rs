@@ -146,3 +146,67 @@ async fn control_sync_trigger_for_an_unrelated_peer_releases_its_request_id() ->
     assert_eq!(replay, None);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_sync_trigger_for_self_releases_its_request_id() -> TestResult {
+    // Given: a Runtime holding an owned Space with its own published address record.
+    let state = TempState::new_named("sync-self")?;
+    let runtime = Runtime::start(StoreConfig::new(&state.0)).await?;
+    runtime
+        .handle()
+        .create_owned_space("self-sync".to_owned())
+        .await?;
+    let local_hex = api::encode_hex(runtime.handle().status().await?.endpoint_id().as_bytes());
+    let control = CurrentUserRuntime::open_at(
+        &state.0,
+        Arc::new(SystemClock::default()),
+        WebAuthConfig::default(),
+    )
+    .await?;
+    let paths = IpcPaths::new(&state.0)?;
+    let server = LiveServer::spawn(
+        LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?,
+    );
+    let trigger_json = format!(
+        r#"{{"version":1,"operation":"control_sync_trigger","request_id":"97979797979797979797979797979797","peer_endpoint_id":"{local_hex}"}}"#
+    );
+    let trigger = api::decode_command(trigger_json.as_bytes())?;
+    let request_id = trigger.request_id().ok_or("request id missing")?;
+
+    // When: targeting self twice with the same request ID.
+    let client = LocalApiClient::new(paths.clone());
+    let first: serde_json::Value = serde_json::from_slice(&client.call(&trigger).await?)?;
+    let replay = runtime.handle().mutation_replay(request_id).await?;
+    let second_cmd = api::decode_command(
+        br#"{"version":1,"operation":"space_create","request_id":"97979797979797979797979797979797","name":"reused-after-self-sync"}"#,
+    )?;
+    let second: serde_json::Value = serde_json::from_slice(&client.call(&second_cmd).await?)?;
+    let snapshot = runtime.handle().snapshot().await?.to_value();
+
+    // Then: self was never dialed, the request ID was released, and no failed self-dial was recorded.
+    server.cancel().await?;
+    paths.remove_stale_endpoint()?;
+    runtime.shutdown().await?;
+    assert_eq!(
+        first.get("error").and_then(serde_json::Value::as_str),
+        Some(ProtocolError::UNAVAILABLE.name())
+    );
+    assert_eq!(first.get("remediation"), Some(&serde_json::Value::Null));
+    assert_eq!(replay, None);
+    assert_eq!(
+        second.get("error"),
+        None,
+        "released request ID should be reusable: {second}"
+    );
+    let rounds = snapshot
+        .get("control_rounds")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("control_rounds missing")?;
+    assert!(
+        rounds.iter().all(
+            |entry| entry.get("outcome").and_then(serde_json::Value::as_str) != Some("failed")
+        ),
+        "self-targeted control sync must not record a failed self-dial: {rounds:?}"
+    );
+    Ok(())
+}
