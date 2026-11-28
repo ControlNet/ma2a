@@ -130,10 +130,19 @@ impl LocalStdout {
         #[cfg(windows)]
         let cloned = {
             use std::os::windows::io::AsHandle as _;
-            io::stdout()
-                .as_handle()
-                .try_clone_to_owned()
-                .map(std::fs::File::from)
+            // Native Windows consoles need `std::io::stdout()` (`WriteConsoleW`) so UTF-8 does
+            // not pass through `WriteFile` and the legacy console output code page. Using
+            // `terminal::size()` (`GetConsoleScreenBufferInfo`) instead of `IsTerminal` matches
+            // only native console screen buffers, excludes MSYS/Cygwin PTY pipes, and avoids
+            // `GetFileInformationByHandleEx(FileNameInfo)` blocking on busy synchronous pipes.
+            if ma2a_services::client::terminal::size().is_some() {
+                Err(io::Error::from(io::ErrorKind::Unsupported))
+            } else {
+                io::stdout()
+                    .as_handle()
+                    .try_clone_to_owned()
+                    .map(std::fs::File::from)
+            }
         };
         #[cfg(not(any(unix, windows)))]
         let cloned: io::Result<std::fs::File> = Err(io::Error::from(io::ErrorKind::Unsupported));
@@ -215,4 +224,8 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for TrackedWrite<W> {
 
 #[cfg(all(test, unix))]
 #[path = "stdio_tests.rs"]
+mod tests;
+
+#[cfg(all(test, windows))]
+#[path = "stdio_tests_windows.rs"]
 mod tests;
