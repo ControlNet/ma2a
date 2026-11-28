@@ -32,6 +32,9 @@ pub(super) fn decode_ticket(bytes: &[u8]) -> Result<SignedInviteTicket, Protocol
         .map_err(|_| ProtocolError::INVALID_INPUT)?
         .endpoint_addr()
         .clone();
+    if owner_addr.id != creator.to_public_key()? {
+        return Err(ProtocolError::INVALID_INPUT);
+    }
     let secret = take_slice(bytes, &mut cursor, 32)?;
     let signature = take_slice(bytes, &mut cursor, 64)?;
     if cursor != bytes.len() {
@@ -106,5 +109,51 @@ mod tests {
 
         // Then
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn mismatched_owner_address_endpoint_id_is_rejected_at_decode() {
+        // Given
+        let creator_secret = SecretKey::generate();
+        let other_secret = SecretKey::generate();
+        let creator_id = EndpointId::from(creator_secret.public());
+        let authority = SpaceAuthoritySecret::from_bytes([0x94; 32]);
+        let ticket = SignedInviteTicket::sign(
+            SpaceId::derive(b"codec-mismatch-space"),
+            creator_id,
+            EndpointAddr::new(creator_secret.public()),
+            InviteValidity::new(100, 200).expect("valid test interval"),
+            &InviteEntropy::from_bytes([0x95; 16], [0x96; 32]),
+            &authority,
+        )
+        .expect("valid test ticket");
+        let original = ticket.encode_bytes();
+        let len_bytes: [u8; 2] = original
+            .get(97..99)
+            .and_then(|slice| slice.try_into().ok())
+            .expect("owner address length bytes present");
+        let original_addr_len = usize::from(u16::from_be_bytes(len_bytes));
+        let mismatched_addr =
+            iroh_tickets::endpoint::EndpointTicket::new(EndpointAddr::new(other_secret.public()))
+                .encode_bytes();
+        let mismatched_len =
+            u16::try_from(mismatched_addr.len()).expect("test endpoint ticket fits u16");
+        let mut malformed = Vec::new();
+        malformed.extend_from_slice(original.get(..97).expect("ticket prefix present"));
+        malformed.extend_from_slice(&mismatched_len.to_be_bytes());
+        malformed.extend_from_slice(&mismatched_addr);
+        malformed.extend_from_slice(
+            original
+                .get(99 + original_addr_len..)
+                .expect("ticket suffix present"),
+        );
+
+        // When
+        let decoded = decode_ticket(&malformed);
+        let parsed = SignedInviteTicket::decode_bytes(&malformed);
+
+        // Then
+        assert_eq!(decoded, Err(crate::ProtocolError::INVALID_INPUT));
+        assert!(parsed.is_err());
     }
 }
