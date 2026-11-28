@@ -951,3 +951,172 @@ async fn restart_after_disable_commit_terminates_surviving_bound_and_unbound_pro
     assert_eq!(unbound_record.generation, unbound_gen);
     Ok(())
 }
+
+/// Handles one proven connection on the unready-attach mock supervisor.
+async fn serve_unready_connection(
+    mut stream: interprocess::local_socket::tokio::Stream,
+    credentials: ma2a_services::supervisor::Credentials,
+    (attach_count, term_count, fail_count, ended_tx, shutdown): (
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        usize,
+        Arc<tokio::sync::watch::Sender<bool>>,
+        CancellationToken,
+    ),
+) -> TestResult {
+    use std::sync::atomic::Ordering;
+
+    use interprocess::local_socket::tokio::prelude::*;
+    use ma2a_core::service::{FrameKind, Termination};
+    use ma2a_services::{
+        FrameReader, FrameWriter,
+        supervisor::{
+            EndCause, SupervisorRequest, SupervisorStatus,
+            proof::{prove_supervisor, read_challenge},
+            protocol::encode_reading,
+        },
+    };
+
+    let challenge = read_challenge(&mut FrameReader::new(&mut stream)).await?;
+    let (recv, send) = stream.split();
+    let (mut reader, mut writer) = (FrameReader::new(recv), FrameWriter::new(send));
+    prove_supervisor(challenge, (&mut reader, &mut writer), &credentials).await?;
+    let request = reader.expect().await?;
+    let ended = SupervisorStatus::Ended(Termination::Signaled(15), EndCause::Terminated, 1_031_000);
+    match SupervisorRequest::from_bytes(request.payload())? {
+        SupervisorRequest::Attach(..) => {
+            attach_count.fetch_add(1, Ordering::SeqCst);
+            let reading = encode_reading((0, 0, 0), false);
+            writer.frame(FrameKind::Accept, &reading).await?;
+            let mut ended_rx = ended_tx.subscribe();
+            let done = tokio::select! {
+                () = shutdown.cancelled() => false,
+                res = ended_rx.wait_for(|done| *done) => res.is_ok(),
+            };
+            if done {
+                let _sent = writer.frame(FrameKind::Outcome, &ended.to_bytes()).await;
+            }
+        }
+        SupervisorRequest::Terminate(_) => {
+            let seen = term_count.fetch_add(1, Ordering::SeqCst);
+            if seen < fail_count {
+                drop((reader, writer));
+                return Ok(());
+            }
+            writer.frame(FrameKind::Outcome, &ended.to_bytes()).await?;
+            let _sent = ended_tx.send(true);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Mock supervisor that keeps an Attach stream open without announcing `ready`, drops the first
+/// `fail_count` Terminate connections, and terminates on the next one.
+async fn run_unready_attach_supervisor(
+    (address, credentials): (
+        ma2a_services::supervisor::SupervisorAddress,
+        ma2a_services::supervisor::Credentials,
+    ),
+    (attach_count, term_count, fail_count): (
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        usize,
+    ),
+    shutdown: CancellationToken,
+) -> TestResult {
+    use interprocess::local_socket::tokio::prelude::*;
+
+    let listener = address.bind()?;
+    let ended_tx = Arc::new(tokio::sync::watch::channel(false).0);
+    let mut handlers = Vec::new();
+    loop {
+        let stream = tokio::select! {
+            () = shutdown.cancelled() => break,
+            accepted = listener.accept() => accepted?,
+        };
+        handlers.push(tokio::spawn(serve_unready_connection(
+            stream,
+            credentials,
+            (
+                Arc::clone(&attach_count),
+                Arc::clone(&term_count),
+                fail_count,
+                Arc::clone(&ended_tx),
+                shutdown.clone(),
+            ),
+        )));
+    }
+    for handler in handlers {
+        handler.abort();
+        let _joined = handler.await;
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn overdue_unready_instance_retries_terminate_and_starts_replacement() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use ma2a_services::supervisor::{Credentials, SupervisorAddress};
+
+    // Given: an enabled Agent whose live generation-1 instance started at t=1_000_000, stays
+    // attached without announcing `ready`, and whose supervisor drops the first Terminate request.
+    let env = MaintainEnv::new("ma2a-ready-retry").await?;
+    let (agent, generation, pid, secret) =
+        seed_running_agent_process((&env.config, env.local), ("unready-retry", 0x71, true))?;
+    rusqlite::Connection::open(env.config.database_path())?.execute(
+        "UPDATE agent_instances SET started_at_ms = 1000000 WHERE agent_id = ?1",
+        [agent.as_str()],
+    )?;
+    let attach_count = Arc::new(AtomicUsize::new(0));
+    let term_count = Arc::new(AtomicUsize::new(0));
+    let address = SupervisorAddress::new(
+        env.sockets_dir
+            .join(format!("{pid}.sock"))
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let supervisor = tokio::spawn(run_unready_attach_supervisor(
+        (address, Credentials::new(pid, secret)),
+        (Arc::clone(&attach_count), Arc::clone(&term_count), 1),
+        env.shutdown.clone(),
+    ));
+    tokio::task::yield_now().await;
+
+    // When: maintenance attaches the link, stays attached before the 30 s ready deadline, then
+    // crosses the deadline so the first Terminate fails and retries with backoff.
+    let runner = tokio::spawn(crate::agents::run(env.manager.clone()));
+    env.tick_seconds(1).await?;
+    let attached_before_deadline = attach_count.load(Ordering::SeqCst);
+    let terms_before_deadline = term_count.load(Ordering::SeqCst);
+
+    tokio::time::advance(Duration::from_secs(28)).await;
+    tokio::task::yield_now().await;
+    env.tick_seconds(5).await?;
+
+    let final_agent = Repository::open(&env.config)?
+        .agent(&agent)?
+        .ok_or("agent missing after overdue retry")?;
+    let final_process = env
+        .processes
+        .local_record(pid)
+        .await?
+        .ok_or("process missing after overdue retry")?;
+    env.finish(runner, vec![supervisor]).await?;
+
+    // Then: the attachment remained live until the deadline, the failed Terminate was retried,
+    // the old Process reached Terminated, and a replacement generation began.
+    assert_eq!(attached_before_deadline, 1);
+    assert_eq!(terms_before_deadline, 0);
+    assert!(
+        term_count.load(Ordering::SeqCst) >= 2,
+        "overdue ready deadline did not retry Terminate"
+    );
+    assert_eq!(final_process.state, ProcessState::Terminated);
+    assert!(
+        final_agent.generation > generation,
+        "replacement generation did not start after overdue instance ended: {final_agent:?}"
+    );
+    Ok(())
+}

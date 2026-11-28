@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ma2a_core::service::{
     AgentId, Channel as DataChannel, FrameKind, LogFrom, MAX_DATA_CHUNK_LEN, ProcessReason,
-    decode_skipped,
+    ServiceError, decode_skipped,
 };
 use ma2a_services::{
     FrameReader, FrameWriter,
@@ -26,6 +26,8 @@ mod drain;
 
 /// How long a new instance has to announce `ready`.
 const READY_DEADLINE_MS: u64 = 30_000;
+/// Shortest pause between attempts to reach an instance's supervisor.
+const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 /// Longest pause between attempts to reach an instance's supervisor.
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
@@ -62,7 +64,7 @@ impl AgentManager {
     }
 
     pub(super) async fn follow_instance(&self, agent: &AgentId, generation: u64) {
-        let mut backoff = Duration::from_millis(250);
+        let mut backoff = INITIAL_BACKOFF;
         loop {
             let Some(instance) = self.live_instance(agent, generation).await else {
                 return;
@@ -193,7 +195,9 @@ impl AgentManager {
         }
     }
 
-    /// Ends an instance that does not announce `ready` in time; never completes otherwise.
+    /// Ends an instance that does not announce `ready` in time; never completes while ready.
+    ///
+    /// Retries termination with backoff while the same generation remains live and unready.
     async fn ready_deadline(
         &self,
         (agent, instance): (&AgentId, AgentInstanceRecord),
@@ -205,19 +209,26 @@ impl AgentManager {
         let deadline = instance.started_ms.saturating_add(READY_DEADLINE_MS);
         let wait = deadline.saturating_sub(self.now_ms());
         tokio::time::sleep(Duration::from_millis(wait)).await;
-        if self.overdue(agent, instance.generation).await {
+        let mut backoff = INITIAL_BACKOFF;
+        while self.overdue(agent, instance.generation).await {
             let reason = (1_000, ProcessReason::Requested);
-            let _ended = self.0.processes.terminate((None, process), reason).await;
+            match self.0.processes.terminate((None, process), reason).await {
+                Ok(committed) if committed.value().state.is_terminal() => return,
+                Err(ServiceError::UnknownProcess) => return,
+                _ => {
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                }
+            }
         }
         std::future::pending::<()>().await;
     }
 
-    /// Whether instance `generation` of `agent` has still not announced `ready`.
+    /// Whether instance `generation` of `agent` is still live and has not announced `ready`.
     pub(super) async fn overdue(&self, agent: &AgentId, generation: u64) -> bool {
-        !self
-            .instance(agent)
+        self.live_instance(agent, generation)
             .await
-            .is_some_and(|current| current.ready || current.generation != generation)
+            .is_some_and(|current| !current.ready)
     }
 
     /// Instance `generation` of `agent` while it is still live.
