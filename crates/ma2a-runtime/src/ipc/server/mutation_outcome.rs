@@ -138,7 +138,9 @@ pub(super) async fn record_failure(
                 ma2a_store::MutationReplayRecord::new(admitted.0, revision, encoded.clone())
                     .map_err(crate::RuntimeError::from)?;
             // If completion persistence fails, the durable Pending reservation
-            // remains: neither a crash nor transport failure reopens execution.
+            // remains: a transport failure answers unavailable while running,
+            // and a restart only reopens an exact retry if the fence was already
+            // retryable (such as an initial space_redeem).
             context.handle.record_mutation_replay(record).await?;
         }
     }
