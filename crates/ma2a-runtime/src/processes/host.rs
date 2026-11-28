@@ -33,7 +33,11 @@ where
 {
     let viewer = Some(peer);
     match request {
-        ProcessRequest::Start(start) => manager.start(((peer, request_id), start), writer).await,
+        ProcessRequest::Start(start) => {
+            manager
+                .start((((peer, request_id), start), stop), writer)
+                .await
+        }
         ProcessRequest::List(after) => answer(writer, manager.list(viewer, after).await).await,
         ProcessRequest::Inspect(id) => answer(writer, manager.inspect(viewer, id).await).await,
         ProcessRequest::Logs(id, from, max) => {

@@ -25,7 +25,7 @@ use std::{
 
 use ma2a_core::{
     EndpointId,
-    service::{ProcessId, ProcessReason, ServiceError},
+    service::{ProcessId, ProcessReason, ServiceAccess, ServiceError},
 };
 use ma2a_services::supervisor::{Credentials, SupervisorAddress};
 use ma2a_store::{Committed, ProcessRecord};
@@ -88,6 +88,13 @@ struct Inner {
     admit: tokio::sync::watch::Sender<bool>,
     tasks: TaskTracker,
     coordination: Mutex<Coordination>,
+    #[cfg(test)]
+    before_go_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 
 /// Every Process this Runtime hosts; cheap to clone.
@@ -167,6 +174,8 @@ impl ProcessManager {
             admit: tokio::sync::watch::Sender::new(true),
             tasks: TaskTracker::new(),
             coordination: Mutex::new(Coordination::default()),
+            #[cfg(test)]
+            before_go_gate: Mutex::new(None),
         }))
     }
 
@@ -180,12 +189,25 @@ impl ProcessManager {
         self.0.admit.send_replace(true);
     }
 
-    /// Waits until the startup recovery scan has claimed prior-boot rows.
-    pub(super) async fn wait_for_startup(&self) -> Result<(), ServiceError> {
+    /// Waits until the startup recovery scan has claimed prior-boot rows, or `stop` cancels.
+    pub(super) async fn wait_for_startup(
+        &self,
+        stop: Option<&CancellationToken>,
+    ) -> Result<(), ServiceError> {
+        if stop.is_some_and(CancellationToken::is_cancelled) {
+            return Err(ServiceError::Unavailable);
+        }
         let mut admitted = self.0.admit.subscribe();
         while !*admitted.borrow_and_update() {
             tokio::select! {
+                biased;
                 () = self.0.shutdown.cancelled() => return Err(ServiceError::Unavailable),
+                () = async {
+                    match stop {
+                        Some(stop) => stop.cancelled().await,
+                        None => std::future::pending().await,
+                    }
+                } => return Err(ServiceError::Unavailable),
                 updated = admitted.changed() => {
                     if updated.is_err() {
                         return Err(ServiceError::Unavailable);
@@ -194,6 +216,17 @@ impl ProcessManager {
             }
         }
         Ok(())
+    }
+
+    /// Rechecks durable `Process` authorization for a remote creator; local Processes need none.
+    pub(super) async fn authorize_remote(&self, creator: EndpointId) -> Result<(), ServiceError> {
+        if creator == self.0.local {
+            return Ok(());
+        }
+        self.store()
+            .authorize_service((self.0.local, creator), ServiceAccess::Process)
+            .await
+            .map(|_| ())
     }
 
     fn coordination(&self) -> MutexGuard<'_, Coordination> {

@@ -457,8 +457,12 @@ is terminated with a 5 s grace period and reason `unauthorized`.
   other termination is in flight; if an overlapping `requested` termination is still in flight,
   that call keeps the upgraded `unauthorized` reason while it runs (and retains it if it later
   fails after reaching the supervisor or storing the end).
-- A `created` Process is not checked: it has no child, and it is decided at bring-up or at the
-  next start.
+- A `created` Process is not checked by the periodic sweep: it has no child, and it is decided at
+  bring-up or at the next start. A remote `start` waiting on startup recovery honors authorization
+  withdrawal, and current authorization is rechecked before recording a new remote start and before
+  sending `go` (both on initial bring-up and when resuming a `starting` Process). If authorization
+  was lost before `go`, the supervisor is aborted (`failed(interrupted)`) without starting a child;
+  if the check is temporarily unavailable, the Runtime retries without sending `go`.
 
 The same sweep restarts the follower of any live Process that lost it.
 

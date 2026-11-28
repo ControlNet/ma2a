@@ -36,7 +36,7 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 /// How often ended Processes are archived and tombstones pruned.
 const EXPIRE_INTERVAL: Duration = Duration::from_secs(60);
 /// Grace period of a Process ended because its creator lost authorization.
-const WITHDRAWN_GRACE_MS: u32 = 5_000;
+pub(super) const WITHDRAWN_GRACE_MS: u32 = 5_000;
 /// Bound on followers observing shutdown.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 

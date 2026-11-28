@@ -4,12 +4,10 @@
 use std::{os::unix::fs::PermissionsExt as _, time::Duration};
 
 use ma2a_core::{
-    EndpointId, RequestId,
-    service::{ProcessRequest, ProcessSpec, ProcessStart},
+    RequestId,
+    service::{ProcessSpec, ProcessStart},
 };
-use ma2a_services::{FrameReader, FrameWriter};
 use serde_json::{Value, json};
-use tokio_util::sync::CancellationToken;
 
 use super::{
     services::{call, text},
@@ -17,7 +15,7 @@ use super::{
 };
 use crate::processes::ProcessHosting;
 
-/// Starts one Process that exits at once, as a remote `start` would, and returns its ID.
+/// Starts one local Process that exits at once and returns its ID.
 async fn exited(runtime: &Runtime, client: &LocalApiClient) -> TestResult<String> {
     let manager = runtime.handle().processes().ok_or("no Processes")?.clone();
     let spec = ProcessSpec::new(
@@ -26,16 +24,9 @@ async fn exited(runtime: &Runtime, client: &LocalApiClient) -> TestResult<String
         Some("/".to_owned()),
     )?;
     let start = ProcessStart::new(spec, false, 1_048_576)?;
-    let (host, _caller) = tokio::io::duplex(1 << 16);
-    let (read, write) = tokio::io::split(host);
-    let (mut reader, mut writer) = (FrameReader::new(read), FrameWriter::new(write));
-    let creator: EndpointId = iroh::SecretKey::generate().public().into();
-    let scope = (
-        (creator, RequestId::try_from([9_u8; 16].as_slice())?),
-        ProcessRequest::Start(start),
-        &CancellationToken::new(),
-    );
-    let _report = crate::processes::serve(&manager, scope, (&mut reader, &mut writer)).await;
+    manager
+        .start_local(RequestId::try_from([9_u8; 16].as_slice())?, start)
+        .await?;
     let list = json!({"version": 1, "operation": "process_list", "after": null});
     for _ in 0..500 {
         let listed = call(client, list.clone()).await?;

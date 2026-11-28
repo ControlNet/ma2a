@@ -4,8 +4,9 @@
 
 use std::time::Duration;
 
-use ma2a_core::service::{FrameKind, ProcessId, ProcessState, ServiceError};
+use ma2a_core::service::{FrameKind, ProcessId, ProcessReason, ProcessState, ServiceError};
 use ma2a_services::supervisor::{Channel, Credentials, SupervisorRequest, SupervisorStatus};
+use ma2a_store::ProcessRecord;
 
 use super::{ProcessManager, credentials};
 
@@ -56,17 +57,18 @@ impl ProcessManager {
                 return;
             };
             let channel = match watching.take() {
-                Some(channel) => Ok(channel),
-                None => self.watch(&credentials, record.state).await,
+                Some(channel) => Ok(Some(channel)),
+                None => self.watch_record(&record, &credentials).await,
             };
             match channel {
-                Ok(channel) => {
+                Ok(Some(channel)) => {
                     if matches!(self.relay_statuses(id, channel).await, Followed::Final) {
                         return;
                     }
                     // A broken watch is reopened promptly, but never in a tight loop.
                     backoff = pause(Duration::from_millis(250)).await;
                 }
+                Ok(None) => {}
                 // Nothing listens, or something that cannot prove the secret does.
                 Err(ServiceError::Unreachable | ServiceError::Unauthorized) => {
                     if self.conclude(&record).await.is_ok() {
@@ -80,20 +82,90 @@ impl ProcessManager {
         }
     }
 
-    /// Opens a proven `watch`; a Process still `starting` is sent `go` first, which a
-    /// supervisor that already spawned its child answers without effect.
+    async fn watch_record(
+        &self,
+        record: &ProcessRecord,
+        credentials: &Credentials,
+    ) -> Result<Option<Channel>, ServiceError> {
+        let address = self.address(credentials.id());
+        if record.state == ProcessState::Starting {
+            let channel = address.connect(credentials).await?;
+            #[cfg(test)]
+            self.wait_before_go_gate().await;
+            match self.authorize_remote(record.creator).await {
+                Ok(()) => {}
+                Err(ServiceError::Unauthorized) => {
+                    self.settle_unauthorized_starting(record.id, channel)
+                        .await?;
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            }
+            let reported = request(channel, SupervisorRequest::Go).await?;
+            self.apply(credentials.id(), reported).await?;
+        }
+        super::start::open_watch(address.connect(credentials).await?)
+            .await
+            .map(Some)
+    }
+
+    pub(super) async fn settle_unauthorized_starting(
+        &self,
+        id: ProcessId,
+        channel: Channel,
+    ) -> Result<(), ServiceError> {
+        match request(channel, SupervisorRequest::Abort).await {
+            Ok(reported) => self.apply(id, reported).await.map(|_| ()),
+            Err(ServiceError::ProcessActive) => {
+                // A previous boot already sent `go` before crashing; terminate the running child.
+                self.terminate(
+                    (None, id),
+                    (
+                        super::maintain::WITHDRAWN_GRACE_MS,
+                        ProcessReason::Unauthorized,
+                    ),
+                )
+                .await
+                .map(|_| ())
+            }
+            // Do not pass supervisor-side `Unauthorized` back to `follower`'s proof-loss arm.
+            Err(ServiceError::Unauthorized) => Err(ServiceError::Unavailable),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) async fn wait_before_go_gate(&self) {
+        let gate = self
+            .0
+            .before_go_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((entered, release)) = gate {
+            let _entered = entered.send(());
+            let _released = release.await;
+        }
+    }
+
+    /// Opens a proven `watch`; used by tests on already-running Processes.
+    #[cfg(all(test, unix))]
     pub(super) async fn watch(
         &self,
         credentials: &Credentials,
         state: ProcessState,
     ) -> Result<Channel, ServiceError> {
-        let address = self.address(credentials.id());
-        if state == ProcessState::Starting {
-            let reported =
-                request(address.connect(credentials).await?, SupervisorRequest::Go).await?;
-            self.apply(credentials.id(), reported).await?;
+        if state == ProcessState::Running {
+            let address = self.address(credentials.id());
+            return super::start::open_watch(address.connect(credentials).await?).await;
         }
-        super::start::open_watch(address.connect(credentials).await?).await
+        let record = self
+            .record(credentials.id())
+            .await?
+            .ok_or(ServiceError::UnknownProcess)?;
+        self.watch_record(&record, credentials)
+            .await?
+            .ok_or(ServiceError::NotRunning)
     }
 
     async fn relay_statuses(&self, id: ProcessId, (mut reader, _writer): Channel) -> Followed {

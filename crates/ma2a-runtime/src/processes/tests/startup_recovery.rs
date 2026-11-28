@@ -65,15 +65,29 @@ async fn startup_fence_holds_new_starts_until_recovery_scans_prior_rows() -> Tes
     let real_store = harness.store.sender.clone();
     let scan_entered = std::sync::Arc::new(tokio::sync::Notify::new());
     let release_scan = std::sync::Arc::new(tokio::sync::Notify::new());
+    let scan_released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let other_before_release = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let entered = std::sync::Arc::clone(&scan_entered);
     let release = std::sync::Arc::clone(&release_scan);
+    let released = std::sync::Arc::clone(&scan_released);
+    let other_count = std::sync::Arc::clone(&other_before_release);
     tokio::spawn(async move {
         let mut paused_once = false;
         while let Some(command) = store_rx.recv().await {
             if !paused_once {
                 paused_once = true;
-                entered.notify_one();
-                release.notified().await;
+                let entered = std::sync::Arc::clone(&entered);
+                let release = std::sync::Arc::clone(&release);
+                let real_store = real_store.clone();
+                tokio::spawn(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    let _sent = real_store.send(command).await;
+                });
+                continue;
+            }
+            if !released.load(std::sync::atomic::Ordering::Acquire) {
+                other_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
             if real_store.send(command).await.is_err() {
                 break;
@@ -103,14 +117,21 @@ async fn startup_fence_holds_new_starts_until_recovery_scans_prior_rows() -> Tes
     let new_start = start("echo ok; exit 0")?;
     let mut start_task =
         tokio::spawn(async move { start_manager.start_local(new_req, new_start).await });
-    // The new start must stay fenced while the recovery scan is still in progress.
+    // The new start must stay fenced while the recovery scan is still in progress, and no create
+    // request may reach the otherwise responsive Store before release.
     assert!(
         tokio::time::timeout(Duration::from_millis(150), &mut start_task)
             .await
             .is_err(),
         "new start must wait until startup recovery finishes scanning prior-boot rows"
     );
+    assert_eq!(
+        other_before_release.load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "create reached Store before startup scan released the fence"
+    );
 
+    scan_released.store(true, std::sync::atomic::Ordering::Release);
     release_scan.notify_one();
     reconcile_task.await?;
     let started_record = tokio::time::timeout(Duration::from_secs(5), start_task).await???;

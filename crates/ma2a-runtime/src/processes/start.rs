@@ -8,7 +8,7 @@ use ma2a_core::{
     EndpointId, RequestId,
     service::{
         FrameKind, ProcessAccept, ProcessId, ProcessReason, ProcessReply, ProcessStart,
-        ProcessState, ServiceError,
+        ProcessState, ServiceAccess, ServiceError,
     },
 };
 use ma2a_services::{
@@ -17,6 +17,7 @@ use ma2a_services::{
 };
 use ma2a_store::{Committed, NewProcess, ProcessCreation};
 use tokio::io::AsyncWrite;
+use tokio_util::sync::CancellationToken;
 
 use super::{ProcessManager, follow::request, host::finish};
 
@@ -40,12 +41,13 @@ fn fault(point: &str) {
 
 impl ProcessManager {
     /// Records one start for `creator`, or answers the Process its `RequestId` already made.
+    #[cfg(all(test, unix))]
     pub(super) async fn create(
         &self,
         binding: (EndpointId, RequestId),
         start: &ProcessStart,
     ) -> Result<(ProcessCreation, Credentials), ServiceError> {
-        let ((creation, _), credentials) = self.create_inner(binding, (start, false)).await?;
+        let ((creation, _), credentials) = self.create_inner(binding, (start, false, None)).await?;
         Ok((creation, credentials))
     }
 
@@ -55,50 +57,63 @@ impl ProcessManager {
         binding: (EndpointId, RequestId),
         start: &ProcessStart,
     ) -> Result<((ProcessCreation, Option<ProcessId>), Credentials), ServiceError> {
-        self.create_inner(binding, (start, true)).await
+        self.create_inner(binding, (start, true, None)).await
     }
 
     async fn create_inner(
         &self,
         (creator, request_id): (EndpointId, RequestId),
-        (start, reclaim_retained): (&ProcessStart, bool),
+        (start, reclaim_retained, stop): (&ProcessStart, bool, Option<&CancellationToken>),
     ) -> Result<((ProcessCreation, Option<ProcessId>), Credentials), ServiceError> {
-        self.wait_for_startup().await?;
+        self.wait_for_startup(stop).await?;
         let bytes = start.to_bytes().map_err(|_| ServiceError::InvalidInput)?;
         let name = start.name().map(str::to_owned);
         let id = ProcessId::random().map_err(|_| ServiceError::Internal)?;
         let mut secret = [0; 32];
         getrandom::fill(&mut secret).map_err(|_| ServiceError::Internal)?;
         let created_ms = self.now_ms();
-        let outcome = self
-            .store()
-            .processes(move |repository| {
-                let new = NewProcess {
-                    id,
-                    binding: (creator, request_id),
-                    fingerprint: fingerprint(&bytes),
-                    start: (&bytes, name.as_deref()),
-                    secret,
-                    created_ms,
-                };
-                if reclaim_retained {
-                    repository.create_local_process(&new)
-                } else {
-                    repository.create_process(&new).map(|committed| {
-                        Committed::new(committed.revision(), (committed.into_value(), None))
-                    })
-                }
-            })
-            .await?
-            .map_err(|_| ServiceError::Unavailable)?
-            .into_value();
+        let local = self.0.local;
+        let outcome =
+            self.store()
+                .processes(
+                    move |repository| -> Result<
+                        Committed<(ProcessCreation, Option<ProcessId>)>,
+                        ServiceError,
+                    > {
+                        if !reclaim_retained && creator != local {
+                            crate::store::authorize(
+                                repository,
+                                (local, creator),
+                                &ServiceAccess::Process,
+                            )?;
+                        }
+                        let new = NewProcess {
+                            id,
+                            binding: (creator, request_id),
+                            fingerprint: fingerprint(&bytes),
+                            start: (&bytes, name.as_deref()),
+                            secret,
+                            created_ms,
+                        };
+                        if reclaim_retained {
+                            repository.create_local_process(&new)
+                        } else {
+                            repository.create_process(&new).map(|committed| {
+                                Committed::new(committed.revision(), (committed.into_value(), None))
+                            })
+                        }
+                        .map_err(|_| ServiceError::Unavailable)
+                    },
+                )
+                .await??
+                .into_value();
         Ok((outcome, Credentials::new(id, secret)))
     }
 
     /// Serves one remote `start`.
     pub(super) async fn start<W: AsyncWrite + Unpin + Send>(
         &self,
-        (binding, start): ((EndpointId, RequestId), ProcessStart),
+        ((binding, start), stop): (((EndpointId, RequestId), ProcessStart), &CancellationToken),
         writer: &mut FrameWriter<W>,
     ) -> OperationReport {
         if self.0.hosting.is_none() {
@@ -109,7 +124,10 @@ impl ProcessManager {
         if start.spec().cwd().is_some_and(relative) {
             return super::host::refuse(writer, ServiceError::InvalidInput).await;
         }
-        let (creation, credentials) = match self.create(binding, &start).await {
+        let ((creation, _), credentials) = match self
+            .create_inner(binding, (&start, false, Some(stop)))
+            .await
+        {
             Ok(created) => created,
             Err(error) => return super::host::refuse(writer, error).await,
         };
@@ -190,7 +208,29 @@ impl ProcessManager {
         }
         let address = self.address(id);
         let reported = match address.connect(&credentials).await {
-            Ok(channel) => request(channel, SupervisorRequest::Go).await,
+            Ok(channel) => {
+                #[cfg(test)]
+                self.wait_before_go_gate().await;
+                match self.authorize_remote(stepped.creator).await {
+                    Ok(()) => request(channel, SupervisorRequest::Go).await,
+                    Err(ServiceError::Unauthorized) => {
+                        drop(watching);
+                        return match self.settle_unauthorized_starting(id, channel).await {
+                            Ok(()) => self.record(id).await?.ok_or(ServiceError::UnknownProcess),
+                            Err(error) => {
+                                self.follow(id, None);
+                                Err(error)
+                            }
+                        };
+                    }
+                    Err(_) => {
+                        drop(channel);
+                        drop(watching);
+                        self.follow(id, None);
+                        return self.record(id).await?.ok_or(ServiceError::UnknownProcess);
+                    }
+                }
+            }
             Err(error) => Err(error),
         };
         fault("after_go");

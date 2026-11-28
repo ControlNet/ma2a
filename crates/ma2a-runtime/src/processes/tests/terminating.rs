@@ -129,7 +129,8 @@ async fn withdrawn_authorization_shortens_long_requested_terminate() -> TestResu
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    // When: withdrawal convergence observes the unauthorized creator.
+    // When: creator loses authorization and withdrawal convergence runs.
+    harness.withdraw_creator().await?;
     manager.converge().await;
 
     // Then: termination completes near WITHDRAWN_GRACE_MS (5 s), not 60 s, as Unauthorized.

@@ -1,7 +1,9 @@
 //! The Process manager against a real Store, real sockets, and in-process supervisors.
 #![cfg(unix)]
 
+mod authorization;
 mod driver;
+mod lifecycle;
 mod local_limit;
 mod logs;
 mod recovery;
@@ -14,17 +16,20 @@ mod watch;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use ma2a_core::{
-    EndpointId, RequestId,
+    EndpointId, MemberCapabilities, RequestId, SpaceId, SpaceManifestMembership, SpaceMemberV1,
+    SpacePolicyV1,
     service::{ProcessId, ProcessSpec, ProcessStart, ProcessState},
 };
-use ma2a_store::{ProcessCreation, ProcessRecord, StoreConfig};
+use ma2a_store::{
+    LocalExposure, OwnedSpaceUpdate, ProcessCreation, ProcessRecord, SpaceCreation, StoreConfig,
+};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{ProcessHosting, ProcessManager};
 use crate::{
     clock::SystemClock,
-    store::{STORE_CAPACITY, StoreBackend, StoreClient},
+    store::{OwnedMemberGrant, STORE_CAPACITY, StoreBackend, StoreClient},
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -61,6 +66,7 @@ struct Harness {
     store: StoreClient,
     local: EndpointId,
     creator: EndpointId,
+    space: SpaceId,
 }
 
 impl Harness {
@@ -71,13 +77,70 @@ impl Harness {
         tokio::task::spawn_blocking(move || backend.run(receiver));
         let store = StoreClient::new(sender);
         let local = store.initialize().await?.endpoint_id;
-        let creator = iroh::SecretKey::generate().public().into();
+        let creator: EndpointId = iroh::SecretKey::generate().public().into();
+        let owner = SpaceMemberV1::new(
+            local,
+            "owner".to_owned(),
+            MemberCapabilities::new(true, false),
+        )?;
+        let peer = SpaceMemberV1::new(
+            creator,
+            "creator".to_owned(),
+            MemberCapabilities::new(true, false),
+        )?;
+        let space = store
+            .create_owned_space(SpaceCreation::new(
+                1_000,
+                owner.clone(),
+                SpacePolicyV1::phase_one_default(),
+            ))
+            .await?
+            .space_id();
+        store
+            .processes(move |repository| -> Result<(), ma2a_store::StoreError> {
+                let mut members = vec![owner, peer];
+                members.sort_by_key(SpaceMemberV1::endpoint_id);
+                repository.advance_owned_space(&OwnedSpaceUpdate::new(
+                    space,
+                    2_000,
+                    SpaceManifestMembership::new(members, Vec::new()),
+                ))?;
+                repository.expose_service(space, &LocalExposure::Process)?;
+                Ok(())
+            })
+            .await??;
+        store
+            .grant_owned_space_member(OwnedMemberGrant {
+                space_id: space,
+                endpoint_id: creator,
+                services: [true; 8],
+                issued_at_ms: 3_000,
+                local_endpoint_id: local,
+            })
+            .await?
+            .map_err(|refusal| format!("{refusal:?}"))?;
         Ok(Self {
             state,
             store,
             local,
             creator,
+            space,
         })
+    }
+
+    /// Revokes `creator`'s `Process` capability in the shared Space.
+    async fn withdraw_creator(&self) -> TestResult {
+        self.store
+            .grant_owned_space_member(OwnedMemberGrant {
+                space_id: self.space,
+                endpoint_id: self.creator,
+                services: [false; 8],
+                issued_at_ms: 4_000,
+                local_endpoint_id: self.local,
+            })
+            .await?
+            .map_err(|refusal| format!("{refusal:?}"))?;
+        Ok(())
     }
 
     /// A manager as one daemon incarnation would run it; cancel the token to end it.
@@ -166,126 +229,4 @@ async fn reaches(
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_started_process_runs_and_its_exit_is_recorded() -> TestResult {
-    let harness = Harness::new("exit").await?;
-    let (manager, shutdown) = harness.manager();
-    let record = started(&harness, &manager, (1, "echo hi; sleep 0.2; exit 4")).await?;
-    assert!(
-        matches!(record.state, ProcessState::Running | ProcessState::Exited),
-        "{:?}",
-        record.state
-    );
-    let ended = reaches(&manager, record.id, ProcessState::Exited).await?;
-    assert_eq!(
-        ended.termination,
-        Some(ma2a_core::service::Termination::Exited(4))
-    );
-    assert!(ended.secret.is_none(), "the secret is gone once terminal");
-    assert_eq!(manager.window(&record).await?.end, 3);
-    shutdown.cancel();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_request_id_binds_exactly_one_process() -> TestResult {
-    let harness = Harness::new("binding").await?;
-    let (manager, shutdown) = harness.manager();
-    let first = started(&harness, &manager, (2, "sleep 60")).await?;
-    let binding = (harness.creator, request_id(2)?);
-    let (again, _) = manager.create(binding, &start("sleep 60")?).await?;
-    let ProcessCreation::Existing(existing) = again else {
-        return Err("a retry must answer the existing Process".into());
-    };
-    assert_eq!(existing.id, first.id);
-    let (different, _) = manager.create(binding, &start("sleep 61")?).await?;
-    assert!(matches!(different, ProcessCreation::Conflict));
-    let target = (None, first.id);
-    let ended = manager
-        .terminate(
-            target,
-            (1_000, ma2a_core::service::ProcessReason::Requested),
-        )
-        .await?;
-    assert_eq!(ended.value().state, ProcessState::Terminated);
-    assert_eq!(
-        ended.value().reason,
-        Some(ma2a_core::service::ProcessReason::Requested)
-    );
-    shutdown.cancel();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_new_daemon_readopts_a_running_process_through_the_proof() -> TestResult {
-    let harness = Harness::new("readopt").await?;
-    let (first, first_shutdown) = harness.manager();
-    let record = started(&harness, &first, (3, "sleep 60")).await?;
-    reaches(&first, record.id, ProcessState::Running).await?;
-    // The daemon goes away; its supervisor and child keep running.
-    first_shutdown.cancel();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let (second, second_shutdown) = harness.manager();
-    second.reconcile().await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let still = reaches(&second, record.id, ProcessState::Running).await?;
-    assert_eq!(still.times.started_ms, record.times.started_ms);
-    let ended = second
-        .terminate(
-            (None, record.id),
-            (1_000, ma2a_core::service::ProcessReason::Requested),
-        )
-        .await?;
-    assert_eq!(ended.value().state, ProcessState::Terminated);
-    second_shutdown.cancel();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn withdrawn_authorization_terminates_the_creators_processes() -> TestResult {
-    let harness = Harness::new("withdrawn").await?;
-    let (manager, shutdown) = harness.manager();
-    let record = started(&harness, &manager, (4, "sleep 60")).await?;
-    reaches(&manager, record.id, ProcessState::Running).await?;
-    // This creator shares no Space with this Runtime, so it holds no authorization path.
-    manager.converge().await;
-    let ended = reaches(&manager, record.id, ProcessState::Terminated).await?;
-    assert_eq!(
-        ended.reason,
-        Some(ma2a_core::service::ProcessReason::Unauthorized)
-    );
-    shutdown.cancel();
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn local_starts_make_room_by_archiving_the_oldest_ended_local_process() -> TestResult {
-    let harness = Harness::new("local-room").await?;
-    let (manager, shutdown) = harness.manager();
-    let retained = u8::try_from(ma2a_store::MAX_RETAINED_PROCESSES_PER_CREATOR)?;
-    let mut ended = Vec::new();
-    for byte in 1..=retained {
-        let record = manager
-            .start_local(request_id(byte)?, start("exit 0")?)
-            .await?;
-        ended.push(reaches(&manager, record.id, ProcessState::Exited).await?.id);
-    }
-
-    // Every retained slot holds an ended instance, yet the next one still starts.
-    let next = manager
-        .start_local(request_id(retained + 1)?, start("exit 0")?)
-        .await?;
-    let (first, rest) = ended.split_first().ok_or("no Process")?;
-    let oldest = manager.local_record(*first).await?.ok_or("no record")?;
-    assert!(oldest.times.archived_ms.is_some(), "{oldest:?}");
-    for kept in rest {
-        let kept = manager.local_record(*kept).await?.ok_or("no record")?;
-        assert!(kept.times.archived_ms.is_none(), "{kept:?}");
-    }
-    reaches(&manager, next.id, ProcessState::Exited).await?;
-    shutdown.cancel();
-    Ok(())
 }
