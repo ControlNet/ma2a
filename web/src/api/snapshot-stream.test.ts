@@ -168,8 +168,24 @@ test.each([
     "malformed ndjson",
     { "content-type": "application/x-ndjson", [RUNTIME_BOOT_ID_HEADER]: "not-hex" },
   ],
+  [
+    "malformed csrf cookie",
+    {
+      "content-type": "application/json",
+      [RUNTIME_BOOT_ID_HEADER]: "ab".repeat(16),
+      "x-ma2a-csrf-cookie": "ma2a_session_1234",
+    },
+  ],
+  [
+    "malformed ndjson csrf cookie",
+    {
+      "content-type": "application/x-ndjson",
+      [RUNTIME_BOOT_ID_HEADER]: "ab".repeat(16),
+      "x-ma2a-csrf-cookie": "",
+    },
+  ],
 ])(
-  "cancels and releases unread response body when boot id header is %s",
+  "cancels and releases unread response body when snapshot headers are %s",
   async (_label, headers) => {
     let cancelled = false
     const body = new ReadableStream<Uint8Array>({
@@ -185,3 +201,25 @@ test.each([
     expect(body.locked).toBe(false)
   },
 )
+
+test("reads optional validated x-ma2a-csrf-cookie header from JSON and NDJSON snapshots", async () => {
+  const bootId = "ab".repeat(16)
+  const csrfCookie = "ma2a_csrf_11111111111111111111111111111111"
+  const small = snapshot(5)
+  const jsonResponse = Response.json(small, {
+    headers: { [RUNTIME_BOOT_ID_HEADER]: bootId, "x-ma2a-csrf-cookie": csrfCookie },
+  })
+  expect(await readSnapshot(jsonResponse)).toEqual({ snapshot: small, bootId, csrfCookie })
+
+  const large = largeSnapshot(7)
+  const encoded = frames(large, 7, bootId)
+  const encoder = new TextEncoder()
+  const ndjsonResponse = new Response(encoder.encode(`${encoded.join("\n")}\n`), {
+    headers: {
+      "content-type": "application/x-ndjson",
+      [RUNTIME_BOOT_ID_HEADER]: bootId,
+      "x-ma2a-csrf-cookie": csrfCookie,
+    },
+  })
+  expect(await readSnapshot(ndjsonResponse)).toEqual({ snapshot: large, bootId, csrfCookie })
+})

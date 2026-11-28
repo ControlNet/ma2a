@@ -9,6 +9,7 @@ import {
 } from "./api/pending-space"
 import type { ServicesData } from "./api/services"
 import {
+  adoptCsrfCookieName,
   currentWebSession,
   loginAndTouchSession,
   logoutSession,
@@ -165,6 +166,9 @@ export function App({
       onRuntime: (nextRuntime) => {
         setRuntimeLoadFailed(false)
         setLiveRuntime(nextRuntime)
+      },
+      onCsrfCookie: (cookieName) => {
+        if (sessionRef.current === session) adoptCsrfCookieName(cookieName, session)
       },
       onSessionExpired: signedOut,
       onError: () => setRuntimeLoadFailed(true),

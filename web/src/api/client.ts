@@ -23,7 +23,11 @@ export {
   type RuntimeStateCoordinatorOptions,
   StaleRuntimeSnapshotError,
 } from "./coordinator"
-export { RUNTIME_BOOT_ID_HEADER, type StampedRuntimeSnapshot } from "./snapshot-stream"
+export {
+  CSRF_COOKIE_HEADER,
+  RUNTIME_BOOT_ID_HEADER,
+  type StampedRuntimeSnapshot,
+} from "./snapshot-stream"
 
 // A path is resolved as the browser resolves it, which reads a backslash as a slash and drops
 // tabs and newlines. Checking two distinct origins ensures any path carrying its own host fails at

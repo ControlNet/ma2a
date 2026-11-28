@@ -18,6 +18,7 @@ import type { ConnectionState, RuntimeViewData } from "./view-model"
 
 export type RuntimeControllerCallbacks = {
   readonly onRuntime: (runtime: RuntimeViewData | undefined) => void
+  readonly onCsrfCookie?: (cookieName: string) => void
   readonly onSessionExpired: () => void
   readonly onError: (error: unknown) => void
 }
@@ -155,6 +156,7 @@ export class RuntimeController {
     this.offline = false
     this.cancelRetry?.()
     this.cancelRetry = undefined
+    if (stamped.csrfCookie !== undefined) this.callbacks.onCsrfCookie?.(stamped.csrfCookie)
     this.emit("online")
     this.loadDetails()
     this.dropEvents()
@@ -217,15 +219,15 @@ export class RuntimeController {
       )
         continue
       const epoch = this.detailEpoch
+      const currentSpace = () =>
+        this.latest?.snapshot.spaces.find((item) => item.space_id === space.space_id)
       this.detailWorkers += 1
       this.detailPending.add(key)
       void this.client
         .fetchSpaceDetails(space.space_id)
         .then((detail) => {
           if (this.stopped || epoch !== this.detailEpoch) return
-          const current = this.latest?.snapshot.spaces.find(
-            (item) => item.space_id === space.space_id,
-          )
+          const current = currentSpace()
           if (current === undefined || current.chain_hash !== space.chain_hash) return
           if (!detailMatchesSpace(detail, current)) {
             this.failedDetails.add(space.space_id)
@@ -238,10 +240,7 @@ export class RuntimeController {
         })
         .catch((error: unknown) => {
           if (this.stopped || epoch !== this.detailEpoch) return
-          const current = this.latest?.snapshot.spaces.find(
-            (item) => item.space_id === space.space_id,
-          )
-          if (current?.chain_hash !== space.chain_hash) return
+          if (currentSpace()?.chain_hash !== space.chain_hash) return
           this.failedDetails.add(space.space_id)
           this.handleError(error)
         })

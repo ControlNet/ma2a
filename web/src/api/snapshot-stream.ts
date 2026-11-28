@@ -1,14 +1,17 @@
 import { z } from "zod"
 
 import { parseRuntimeSnapshot, RuntimeApiPayloadError, type RuntimeSnapshot } from "./codec"
+import { CsrfCookieNameSchema } from "./web-auth"
 
 export const RUNTIME_BOOT_ID_HEADER = "x-ma2a-runtime-boot-id"
+export const CSRF_COOKIE_HEADER = "x-ma2a-csrf-cookie"
 
 const BootIdSchema = z.string().regex(/^[0-9a-f]{32}$/)
 
 export type StampedRuntimeSnapshot = {
   readonly snapshot: RuntimeSnapshot
   readonly bootId: string
+  readonly csrfCookie?: string
 }
 
 const FragmentSchema = z.strictObject({
@@ -34,6 +37,22 @@ function parseBootHeader(response: Response): string | undefined {
   const parsed = BootIdSchema.safeParse(raw)
   if (!parsed.success) invalid("invalid runtime boot id")
   return parsed.data
+}
+
+function parseCsrfCookieHeader(response: Response): string | undefined {
+  const raw = response.headers.get(CSRF_COOKIE_HEADER)
+  if (raw === null) return undefined
+  const parsed = CsrfCookieNameSchema.safeParse(raw)
+  if (!parsed.success) invalid("invalid csrf cookie name")
+  return parsed.data
+}
+
+function stampedSnapshot(
+  snapshot: RuntimeSnapshot,
+  bootId: string,
+  csrfCookie?: string,
+): StampedRuntimeSnapshot {
+  return csrfCookie === undefined ? { snapshot, bootId } : { snapshot, bootId, csrfCookie }
 }
 
 function abortError(signal: AbortSignal): unknown {
@@ -77,12 +96,13 @@ async function releaseReader(reader: ReadableStreamDefaultReader<Uint8Array>): P
 async function readJsonSnapshot(
   response: Response,
   bootId: string,
+  csrfCookie: string | undefined,
   signal?: AbortSignal,
 ): Promise<StampedRuntimeSnapshot> {
   const reader = response.body?.getReader()
   if (reader === undefined) {
     if (signal?.aborted) throw abortError(signal)
-    return { snapshot: parseRuntimeSnapshot(await response.json()), bootId }
+    return stampedSnapshot(parseRuntimeSnapshot(await response.json()), bootId, csrfCookie)
   }
   const decoder = new TextDecoder("utf-8", { fatal: true })
   const parts: string[] = []
@@ -93,7 +113,7 @@ async function readJsonSnapshot(
       parts.push(decoder.decode(value, { stream: true }))
     }
     parts.push(decoder.decode())
-    return { snapshot: parseRuntimeSnapshot(JSON.parse(parts.join(""))), bootId }
+    return stampedSnapshot(parseRuntimeSnapshot(JSON.parse(parts.join(""))), bootId, csrfCookie)
   } finally {
     await releaseReader(reader)
   }
@@ -116,8 +136,10 @@ export async function readSnapshot(
   signal?: AbortSignal,
 ): Promise<StampedRuntimeSnapshot> {
   let headerBoot: string | undefined
+  let csrfCookie: string | undefined
   try {
     headerBoot = parseBootHeader(response)
+    csrfCookie = parseCsrfCookieHeader(response)
   } catch (error) {
     await cancelUnreadBody(response)
     throw error
@@ -127,7 +149,7 @@ export async function readSnapshot(
       await cancelUnreadBody(response)
       invalid("missing runtime boot id")
     }
-    return readJsonSnapshot(response, headerBoot, signal)
+    return readJsonSnapshot(response, headerBoot, csrfCookie, signal)
   }
   const reader = response.body?.getReader()
   if (reader === undefined) return invalid("missing snapshot stream")
@@ -178,7 +200,7 @@ export async function readSnapshot(
     if (headerBoot !== undefined && headerBoot !== boot) invalid("inconsistent snapshot stream")
     const snapshot = parseRuntimeSnapshot(JSON.parse(parts.join("")))
     if (snapshot.revision !== revision) invalid("snapshot revision mismatch")
-    return { snapshot, bootId: boot }
+    return stampedSnapshot(snapshot, boot, csrfCookie)
   } catch (error) {
     if (signal?.aborted) throw error
     if (error instanceof RuntimeApiPayloadError) throw error

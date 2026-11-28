@@ -323,6 +323,13 @@ async fn full_spaces_keep_snapshot_details_and_events_within_the_frame_budget() 
         .ok_or("missing x-ma2a-runtime-boot-id header")?
         .to_str()?
         .to_owned();
+    let http_csrf_cookie = response
+        .headers()
+        .get("x-ma2a-csrf-cookie")
+        .ok_or("missing x-ma2a-csrf-cookie header")?
+        .to_str()?
+        .to_owned();
+    assert_eq!(http_csrf_cookie, auth.web_auth().csrf_cookie_name());
     let payload: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await?)?;
     assert_eq!(

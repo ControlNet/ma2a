@@ -1,7 +1,7 @@
 import ky, { HTTPError } from "ky"
 import { z } from "zod"
 
-const CsrfCookieNameSchema = z.string().regex(/^ma2a_csrf(?:_[0-9a-f]+)?$/)
+export const CsrfCookieNameSchema = z.string().regex(/^ma2a_csrf(?:_[0-9a-f]+)?$/)
 
 const LoginResponseSchema = z
   .strictObject({
@@ -60,6 +60,14 @@ export type WebSession = {
   readonly csrfToken: string
 }
 
+export function adoptCsrfCookieName(cookieName: string, session?: WebSession): void {
+  const parsed = CsrfCookieNameSchema.parse(cookieName)
+  rememberCsrfCookieName(parsed)
+  if (session !== undefined) {
+    sessionCsrfCookies.set(session, parsed)
+  }
+}
+
 export function currentWebSession(session?: WebSession): WebSession | undefined {
   const csrfCookie = csrfCookieName(session)
   const tokens = document.cookie
@@ -90,8 +98,7 @@ export async function loginAndTouchSession(password: string): Promise<WebSession
     })
     const webSession: WebSession = { csrfToken: session.csrf_token }
     if (session.csrf_cookie !== undefined) {
-      rememberCsrfCookieName(session.csrf_cookie)
-      sessionCsrfCookies.set(webSession, session.csrf_cookie)
+      adoptCsrfCookieName(session.csrf_cookie, webSession)
     }
     return webSession
   } catch (error) {

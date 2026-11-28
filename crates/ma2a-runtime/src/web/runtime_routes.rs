@@ -34,7 +34,9 @@ pub(super) async fn snapshot(State(state): State<WebState>, headers: HeaderMap) 
         return status.into_response();
     }
     match fetch_snapshot(&state).await {
-        Ok((stamp, payload)) => snapshot_stream::response(stamp, payload),
+        Ok((stamp, payload)) => {
+            snapshot_stream::response(stamp, state.auth.csrf_cookie_name(), payload)
+        }
         Err(status) => status.into_response(),
     }
 }
