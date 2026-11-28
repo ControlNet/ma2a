@@ -123,16 +123,10 @@ impl PrivateRelayServer {
 
     /// Applies coherent authorization state and disconnects sessions losing all eligibility.
     pub fn replace_from_spaces(&self, authorizations: &[SpaceAuthorizationView]) {
-        let mut deferred = Vec::new();
-        for (endpoint_id, connection_id) in self.access.replace_from_spaces(authorizations) {
-            if !self.clients.disconnect(endpoint_id, Some(connection_id)) {
-                deferred.push((endpoint_id, connection_id));
-            }
-        }
-        self.pending_disconnects.retain_revoked(&self.access);
-        if !deferred.is_empty() {
-            self.pending_disconnects.enqueue(deferred);
-        }
+        crate::relay_access::apply_space_authorizations(
+            (&self.access, &self.clients, &self.pending_disconnects),
+            authorizations,
+        );
     }
 
     /// Gracefully stops the relay and all admitted connections.
