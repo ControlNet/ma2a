@@ -1,3 +1,6 @@
+import { expect, test, vi } from "vitest"
+
+import { createRuntimeApiClient } from "./client"
 import { RuntimeApiPayloadError } from "./codec"
 import { RUNTIME_BOOT_ID_HEADER, readSnapshot } from "./snapshot-stream"
 import { runtimeSnapshot as snapshot } from "./test-fixtures"
@@ -116,3 +119,44 @@ test("errored snapshot stream preserves RuntimeApiPayloadError and releases its 
   }
   expect(body.locked).toBe(false)
 })
+
+test.each(["application/json", "application/x-ndjson"])(
+  "aborts stalled %s snapshot bodies after headers and releases the reader lock",
+  async (contentType) => {
+    vi.useFakeTimers()
+    try {
+      const body = new ReadableStream<Uint8Array>({ start() {} })
+      let requestSignal: AbortSignal | undefined
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        requestSignal = input instanceof Request ? input.signal : (init?.signal ?? undefined)
+        return new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": contentType,
+            [RUNTIME_BOOT_ID_HEADER]: "ab".repeat(16),
+          },
+        })
+      })
+      const client = createRuntimeApiClient({
+        snapshot: "/api/v1/snapshot",
+        events: "/api/v1/events",
+      })
+      let rejected = false
+      const pending = client.fetchSnapshot().catch(() => {
+        rejected = true
+      })
+
+      for (let i = 0; i < 10; i += 1) await Promise.resolve()
+      vi.advanceTimersByTime(30_000)
+      for (let i = 0; i < 10; i += 1) await Promise.resolve()
+
+      expect(requestSignal?.aborted).toBe(true)
+      expect(rejected).toBe(true)
+      expect(body.locked).toBe(false)
+      await pending
+    } finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
+  },
+)

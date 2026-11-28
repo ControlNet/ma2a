@@ -36,13 +36,79 @@ function parseBootHeader(response: Response): string | undefined {
   return parsed.data
 }
 
+function abortError(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Snapshot read aborted", "AbortError")
+}
+
+async function readChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal?: AbortSignal,
+): ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]> {
+  if (signal === undefined) return reader.read()
+  if (signal.aborted) throw abortError(signal)
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(abortError(signal))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    reader.read().then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(result)
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
+async function releaseReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  try {
+    await reader.cancel()
+  } catch {
+    // Stream errors are already normalized in catch; still release the reader lock.
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+async function readJsonSnapshot(
+  response: Response,
+  bootId: string,
+  signal?: AbortSignal,
+): Promise<StampedRuntimeSnapshot> {
+  const reader = response.body?.getReader()
+  if (reader === undefined) {
+    if (signal?.aborted) throw abortError(signal)
+    return { snapshot: parseRuntimeSnapshot(await response.json()), bootId }
+  }
+  const decoder = new TextDecoder("utf-8", { fatal: true })
+  const parts: string[] = []
+  try {
+    for (;;) {
+      const { value, done } = await readChunk(reader, signal)
+      if (done) break
+      parts.push(decoder.decode(value, { stream: true }))
+    }
+    parts.push(decoder.decode())
+    return { snapshot: parseRuntimeSnapshot(JSON.parse(parts.join(""))), bootId }
+  } finally {
+    await releaseReader(reader)
+  }
+}
+
 // Publish only a complete, ordered frozen snapshot. A new request starts afresh;
 // fragments from different revisions/boots are never combined.
-export async function readSnapshot(response: Response): Promise<StampedRuntimeSnapshot> {
+export async function readSnapshot(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<StampedRuntimeSnapshot> {
   const headerBoot = parseBootHeader(response)
   if (!response.headers.get("content-type")?.startsWith("application/x-ndjson")) {
     if (headerBoot === undefined) invalid("missing runtime boot id")
-    return { snapshot: parseRuntimeSnapshot(await response.json()), bootId: headerBoot }
+    return readJsonSnapshot(response, headerBoot, signal)
   }
   const reader = response.body?.getReader()
   if (reader === undefined) return invalid("missing snapshot stream")
@@ -56,7 +122,7 @@ export async function readSnapshot(response: Response): Promise<StampedRuntimeSn
   const parts: string[] = []
   try {
     for (;;) {
-      const { value, done } = await reader.read()
+      const { value, done } = await readChunk(reader, signal)
       if (done) break
       buffered += decoder.decode(value, { stream: true })
       for (let end = buffered.indexOf("\n"); end >= 0; end = buffered.indexOf("\n")) {
@@ -95,15 +161,10 @@ export async function readSnapshot(response: Response): Promise<StampedRuntimeSn
     if (snapshot.revision !== revision) invalid("snapshot revision mismatch")
     return { snapshot, bootId: boot }
   } catch (error) {
+    if (signal?.aborted) throw error
     if (error instanceof RuntimeApiPayloadError) throw error
     return invalid("invalid snapshot stream")
   } finally {
-    try {
-      await reader.cancel()
-    } catch {
-      // Stream errors are already normalized in catch; still release the reader lock.
-    } finally {
-      reader.releaseLock()
-    }
+    await releaseReader(reader)
   }
 }

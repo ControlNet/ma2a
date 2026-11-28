@@ -91,6 +91,8 @@ export type RuntimeApiClient = {
   ) => () => void
 }
 
+const SNAPSHOT_TIMEOUT_MS = 30_000
+
 const createBrowserEventSource: RuntimeEventSourceFactory = (url, init) =>
   new EventSource(url, init)
 
@@ -104,16 +106,28 @@ export function createRuntimeApiClient(
     credentials: "same-origin",
     headers: { accept: "application/json" },
     retry: 0,
-    timeout: 30_000,
+    timeout: SNAPSHOT_TIMEOUT_MS,
   })
 
   return {
     fetchSpaceDetails: async (spaceId) => {
       if (!/^[0-9a-f]{64}$/.test(spaceId)) throw new RuntimeApiPathError(spaceId)
-      return parseSpaceDetails(await http.get(`/api/v1/spaces/${spaceId}`).json())
+      return parseSpaceDetails(
+        await http.get(new URL(`/api/v1/spaces/${spaceId}`, window.location.origin)).json(),
+      )
     },
     fetchSnapshot: async () => {
-      return readSnapshot(await http.get(snapshotPath))
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), SNAPSHOT_TIMEOUT_MS)
+      try {
+        const response = await http.get(new URL(snapshotPath, window.location.origin), {
+          signal: controller.signal,
+          timeout: false,
+        })
+        return await readSnapshot(response, controller.signal)
+      } finally {
+        clearTimeout(timer)
+      }
     },
     subscribe: (revision, bootId, callbacks, viewSequence) => {
       const params = new URLSearchParams({ since: String(revision), boot_id: bootId })

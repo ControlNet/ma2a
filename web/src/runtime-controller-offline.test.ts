@@ -1,7 +1,16 @@
-import { expect, test } from "vitest"
+import { waitFor } from "@testing-library/react"
+import { expect, test, vi } from "vitest"
 
-import { RuntimeApiPayloadError } from "./api/client"
-import { stampedRuntimeSnapshot as runtimeSnapshot } from "./api/test-fixtures"
+import {
+  createRuntimeApiClient,
+  RUNTIME_BOOT_ID_HEADER,
+  RuntimeApiPayloadError,
+} from "./api/client"
+import {
+  DEFAULT_BOOT_ID,
+  runtimeSnapshot as rawSnapshot,
+  stampedRuntimeSnapshot as runtimeSnapshot,
+} from "./api/test-fixtures"
 import { RuntimeController, UNCERTAIN_GRACE_MS } from "./runtime-controller"
 import { fakeClient, flushRecovery, ManualScheduler } from "./test/runtime-controller-fakes"
 
@@ -80,4 +89,66 @@ test("ignores late callbacks from a closed subscription while in offline backoff
   expect(scheduler.delays.filter((delay) => delay !== UNCERTAIN_GRACE_MS)).toEqual([250, 1_000])
   expect(errors).toHaveLength(2)
   controller.stop()
+})
+
+test("recovers from a stalled snapshot body so the next refresh can run", async () => {
+  vi.useFakeTimers()
+  try {
+    let calls = 0
+    const stalled = new ReadableStream<Uint8Array>({ start() {} })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls += 1
+      if (calls === 2) {
+        return new Response(stalled, {
+          status: 200,
+          headers: {
+            "content-type": "application/x-ndjson",
+            [RUNTIME_BOOT_ID_HEADER]: DEFAULT_BOOT_ID,
+          },
+        })
+      }
+      return Response.json(rawSnapshot(calls === 1 ? 10 : 11), {
+        headers: { [RUNTIME_BOOT_ID_HEADER]: DEFAULT_BOOT_ID },
+      })
+    })
+    const scheduler = new ManualScheduler()
+    const connections: (string | undefined)[] = []
+    const client = createRuntimeApiClient(
+      { snapshot: "/api/v1/snapshot", events: "/api/v1/events" },
+      () => ({ addEventListener: () => undefined, close: () => undefined }),
+    )
+    const controller = new RuntimeController(
+      {
+        onRuntime: (runtime) => connections.push(runtime?.connection),
+        onSessionExpired: () => undefined,
+        onError: () => undefined,
+      },
+      client,
+      scheduler,
+    )
+    await controller.start()
+
+    let settled = false
+    const refreshing = controller.refresh().finally(() => {
+      settled = true
+    })
+    for (let i = 0; i < 30; i += 1) await Promise.resolve()
+    vi.advanceTimersByTime(30_000)
+    for (let i = 0; i < 30; i += 1) await Promise.resolve()
+
+    expect(settled).toBe(true)
+    await refreshing
+    expect(stalled.locked).toBe(false)
+    expect(connections.at(-1)).toBe("offline")
+    expect(scheduler.pending()).toBe(1)
+
+    scheduler.runNext()
+    vi.useRealTimers()
+    await waitFor(() => expect(connections.at(-1)).toBe("online"))
+    expect(calls).toBe(3)
+    controller.stop()
+  } finally {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  }
 })
