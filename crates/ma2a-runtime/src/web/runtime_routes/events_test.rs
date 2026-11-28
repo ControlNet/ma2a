@@ -199,7 +199,11 @@ pub(super) async fn start_test_router()
         .web_auth()
         .login(Zeroizing::new("test-only-sse-boot-restart-8!".to_owned()))
         .await?;
-    let cookie = format!("ma2a_session={}", session.bearer());
+    let cookie = format!(
+        "{}={}",
+        control.web_auth().session_cookie_name(),
+        session.bearer()
+    );
     let paths = IpcPaths::new(&path)?;
     let server =
         LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control.clone(), None)

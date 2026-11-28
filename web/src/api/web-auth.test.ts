@@ -5,6 +5,7 @@ import { currentWebSession, loginAndTouchSession, logoutSession, sessionIsGone }
 afterEach(() => {
   vi.restoreAllMocks()
   Reflect.deleteProperty(document, "cookie")
+  document.head.innerHTML = ""
 })
 
 test("uses the login CSRF token through logout without browser storage", async () => {
@@ -108,4 +109,61 @@ test("signs the page out only when the Runtime reports the session gone", async 
   expect(sessionIsGone(refused)).toBe(false)
   expect(sessionIsGone(gone)).toBe(true)
   expect(sessionIsGone(new Error("offline"))).toBe(false)
+})
+
+test("selects this Runtime's scoped CSRF cookie when another Runtime shares the host", () => {
+  const tokenA = "aa".repeat(32)
+  const tokenB = "bb".repeat(32)
+  const meta = document.createElement("meta")
+  meta.name = "ma2a-csrf-cookie"
+  meta.content = "ma2a_csrf_11111111111111111111111111111111"
+  document.head.appendChild(meta)
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    value: [
+      `ma2a_csrf_11111111111111111111111111111111=${tokenA}`,
+      `ma2a_csrf_22222222222222222222222222222222=${tokenB}`,
+    ].join("; "),
+  })
+
+  const session = currentWebSession()
+
+  expect(session).toEqual({ csrfToken: tokenA })
+})
+
+test("logging out one Runtime in a shared host cookie jar keeps the other Runtime signed in", async () => {
+  const tokenA = "aa".repeat(32)
+  const tokenB = "bb".repeat(32)
+  const cookieA = "ma2a_csrf_11111111111111111111111111111111"
+  const cookieB = "ma2a_csrf_22222222222222222222222222222222"
+  const jar = new Map<string, string>([
+    [cookieA, tokenA],
+    [cookieB, tokenB],
+  ])
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    get: () =>
+      Array.from(jar.entries())
+        .map(([name, value]) => `${name}=${value}`)
+        .join("; "),
+  })
+  const setMeta = (name: string): void => {
+    document.head.innerHTML = `<meta name="ma2a-csrf-cookie" content="${name}" />`
+  }
+  const logoutTokens: (string | null)[] = []
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init): Promise<Response> => {
+    const request = new Request(input, init)
+    logoutTokens.push(request.headers.get("x-csrf-token"))
+    jar.delete(cookieB)
+    return new Response(null, { status: 204 })
+  })
+
+  setMeta(cookieB)
+  const sessionB = currentWebSession()
+  if (sessionB === undefined) throw new Error("expected Runtime B session")
+  await logoutSession(sessionB)
+
+  setMeta(cookieA)
+  expect(logoutTokens).toEqual([tokenB])
+  expect(currentWebSession()).toEqual({ csrfToken: tokenA })
 })

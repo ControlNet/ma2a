@@ -132,6 +132,16 @@ async fn production_binary_serves_authenticated_embedded_console() -> TestResult
     let cookies = login.headers("set-cookie");
     let session = cookie_pair(cookies, "ma2a_session")?;
     let csrf_cookie = cookie_pair(cookies, "ma2a_csrf")?;
+    let csrf_cookie_name = csrf_cookie
+        .split_once('=')
+        .map(|(name, _)| name)
+        .ok_or("malformed CSRF cookie")?;
+    assert!(
+        index.contains(&format!(
+            "<meta name=\"ma2a-csrf-cookie\" content=\"{csrf_cookie_name}\" />"
+        )),
+        "index.html did not expose the matching CSRF cookie name"
+    );
     let cookie_header = format!("{session}; {csrf_cookie}");
     let snapshot = fixture.get("/api/v1/snapshot", Some(&cookie_header))?;
     assert_eq!(snapshot.status, 200);
@@ -144,6 +154,68 @@ async fn production_binary_serves_authenticated_embedded_console() -> TestResult
     assert_eq!(deep_route.body, login_page.body);
     assert_revoke_all_signs_out(&fixture, &cookie_header, csrf)?;
     fixture.shutdown()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_runtimes_on_same_host_keep_independent_sessions() -> TestResult {
+    let first = Fixture::start()?;
+    let second = Fixture::start()?;
+    let mut jar = std::collections::BTreeMap::<String, String>::new();
+
+    let first_html = first.get("/login", None)?;
+    let second_html = second.get("/login", None)?;
+    let first_meta = csrf_cookie_meta(std::str::from_utf8(&first_html.body)?)?;
+    let second_meta = csrf_cookie_meta(std::str::from_utf8(&second_html.body)?)?;
+    assert_ne!(first_meta, second_meta);
+
+    let login_body = serde_json::json!({"password": PASSWORD}).to_string();
+    let first_login = first.post("/api/v1/web/auth/login", (&login_body, ""))?;
+    let second_login = second.post("/api/v1/web/auth/login", (&login_body, ""))?;
+    assert_eq!(first_login.status, 200);
+    assert_eq!(second_login.status, 200);
+    apply_set_cookies(&mut jar, first_login.headers("set-cookie"));
+    apply_set_cookies(&mut jar, second_login.headers("set-cookie"));
+    let second_csrf = jar
+        .get(second_meta)
+        .ok_or("shared host jar lost second runtime CSRF cookie")?
+        .clone();
+
+    let first_snapshot = first.get("/api/v1/snapshot", Some(&jar_header(&jar)))?;
+    let second_snapshot = second.get("/api/v1/snapshot", Some(&jar_header(&jar)))?;
+    assert_eq!(first_snapshot.status, 200);
+    assert_eq!(second_snapshot.status, 200);
+    let first_body: Value = serde_json::from_slice(&first_snapshot.body)?;
+    let second_body: Value = serde_json::from_slice(&second_snapshot.body)?;
+    assert_ne!(
+        first_body.pointer("/endpoint/endpoint_id"),
+        second_body.pointer("/endpoint/endpoint_id")
+    );
+
+    let logout_headers = format!(
+        "Cookie: {}\r\nX-CSRF-Token: {second_csrf}\r\n",
+        jar_header(&jar)
+    );
+    let second_logout = second.post("/api/v1/web/auth/logout", ("", &logout_headers))?;
+    assert_eq!(second_logout.status, 204);
+    apply_set_cookies(&mut jar, second_logout.headers("set-cookie"));
+    assert!(jar.contains_key(first_meta));
+    assert!(!jar.contains_key(second_meta));
+
+    assert_eq!(
+        first
+            .get("/api/v1/snapshot", Some(&jar_header(&jar)))?
+            .status,
+        200
+    );
+    assert_eq!(
+        second
+            .get("/api/v1/snapshot", Some(&jar_header(&jar)))?
+            .status,
+        401
+    );
+
+    first.shutdown()?;
+    second.shutdown()
 }
 
 fn start_web_ui(state_dir: &Path) -> TestValue<u16> {
@@ -204,22 +276,65 @@ fn assert_revoke_all_signs_out(fixture: &Fixture, cookie_header: &str, csrf: &st
     let headers = format!("Cookie: {cookie_header}\r\nX-CSRF-Token: {csrf}\r\n");
     let response = fixture.post("/api/v1/sessions/revoke-all", (&body, &headers))?;
     assert_eq!(response.status, 200);
+    let session_name = cookie_header
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find(|(name, _)| name.starts_with("ma2a_session"))
+        .map(|(name, _)| name)
+        .ok_or("session cookie missing from header")?;
+    let csrf_name = cookie_header
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find(|(name, _)| name.starts_with("ma2a_csrf"))
+        .map(|(name, _)| name)
+        .ok_or("CSRF cookie missing from header")?;
+    assert!(response.headers("set-cookie").iter().any(|cookie| {
+        cookie == &format!("{session_name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+    }));
     assert!(
         response.headers("set-cookie").iter().any(|cookie| {
-            cookie == "ma2a_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+            cookie == &format!("{csrf_name}=; Path=/; SameSite=Strict; Max-Age=0")
         })
-    );
-    assert!(
-        response
-            .headers("set-cookie")
-            .iter()
-            .any(|cookie| { cookie == "ma2a_csrf=; Path=/; SameSite=Strict; Max-Age=0" })
     );
     assert_eq!(
         fixture.get("/api/v1/snapshot", Some(cookie_header))?.status,
         401
     );
     Ok(())
+}
+
+fn csrf_cookie_meta(html: &str) -> TestValue<&str> {
+    let marker = "<meta name=\"ma2a-csrf-cookie\" content=\"";
+    let rest = html
+        .split_once(marker)
+        .ok_or("ma2a-csrf-cookie meta missing")?
+        .1;
+    rest.split_once('"')
+        .map(|(value, _)| value)
+        .ok_or_else(|| "ma2a-csrf-cookie meta unterminated".into())
+}
+
+fn apply_set_cookies(jar: &mut std::collections::BTreeMap<String, String>, headers: &[String]) {
+    for raw in headers {
+        let Some((pair, attrs)) = raw.split_once(';') else {
+            continue;
+        };
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if attrs.contains("Max-Age=0") || value.is_empty() {
+            jar.remove(name.trim());
+        } else {
+            jar.insert(name.trim().to_owned(), value.trim().to_owned());
+        }
+    }
+}
+
+fn jar_header(jar: &std::collections::BTreeMap<String, String>) -> String {
+    jar.iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn assert_html_security(response: &http::HttpResponse) -> TestResult {
@@ -247,9 +362,14 @@ fn embedded_asset<'a>(index: &'a str, prefix: &str) -> TestValue<&'a str> {
 }
 
 fn cookie_pair<'a>(headers: &'a [String], name: &str) -> TestValue<&'a str> {
+    let prefix = format!("{name}_");
     headers
         .iter()
         .filter_map(|value| value.split_once(';').map(|(pair, _)| pair))
-        .find(|pair| pair.starts_with(&format!("{name}=")))
+        .find(|pair| {
+            pair.split_once('=').is_some_and(|(cookie_name, _)| {
+                cookie_name == name || cookie_name.starts_with(&prefix)
+            })
+        })
         .ok_or_else(|| format!("login response has no {name} cookie").into())
 }

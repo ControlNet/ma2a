@@ -21,9 +21,9 @@ async fn a_refused_logout_answers_403_while_the_session_lives_and_401_once_it_is
     auth.change_password(PasswordAction::Set, password())
         .await?;
     let session = auth.login(password()).await?;
+    let cookie = format!("{}={}", auth.session_cookie_name(), session.bearer());
     let server = RunningServer::start(auth, WebServerConfig::default()).await?;
     let origin = format!("http://127.0.0.1:{}", server.port());
-    let cookie = format!("ma2a_session={}", session.bearer());
     let old_token = "ab".repeat(32);
     let logout = |token: &str| {
         request(

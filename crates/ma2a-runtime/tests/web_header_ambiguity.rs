@@ -19,6 +19,7 @@ async fn duplicate_security_headers_and_session_cookies_fail_closed() -> TestRes
     auth.change_password(PasswordAction::Set, password())
         .await?;
     let session = auth.login(password()).await?;
+    let cookie = format!("{}={}", auth.session_cookie_name(), session.bearer());
     let server = RunningServer::start(auth, WebServerConfig::default()).await?;
     let origin = format!("http://127.0.0.1:{}", server.port());
 
@@ -58,7 +59,6 @@ async fn duplicate_security_headers_and_session_cookies_fail_closed() -> TestRes
             b"{}",
         ))
         .await?;
-    let cookie = format!("ma2a_session={}", session.bearer());
     let duplicate_cookie = server
         .request(&request(
             server.port(),

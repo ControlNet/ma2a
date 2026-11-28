@@ -56,7 +56,11 @@ async fn sse_queue_overflow_resyncs_and_dropped_receiver_releases_permit() -> Te
         43_211,
     )
     .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12_346))));
-    let cookie = format!("ma2a_session={}", session.bearer());
+    let cookie = format!(
+        "{}={}",
+        control.web_auth().session_cookie_name(),
+        session.bearer()
+    );
     let revision = current_revision(&router, &cookie).await?;
     let mut streams = Vec::new();
     for _ in 0..8 {

@@ -1,14 +1,29 @@
 import ky, { HTTPError } from "ky"
 import { z } from "zod"
 
+const CsrfCookieNameSchema = z.string().regex(/^ma2a_csrf(?:_[0-9a-f]+)?$/)
+
 const LoginResponseSchema = z
   .strictObject({
     csrf_token: z.string().regex(/^[0-9a-f]{64}$/),
+    csrf_cookie: CsrfCookieNameSchema.optional(),
   })
   .readonly()
 
 const CsrfTokenSchema = z.string().regex(/^[0-9a-f]{64}$/)
 const CSRF_COOKIE = "ma2a_csrf"
+
+function csrfCookieName(): string {
+  if (typeof document !== "undefined") {
+    const content = document
+      .querySelector('meta[name="ma2a-csrf-cookie"]')
+      ?.getAttribute("content")
+      ?.trim()
+    const parsed = CsrfCookieNameSchema.safeParse(content)
+    if (parsed.success) return parsed.data
+  }
+  return CSRF_COOKIE
+}
 
 const http = ky.create({
   credentials: "same-origin",
@@ -29,10 +44,11 @@ export type WebSession = {
 }
 
 export function currentWebSession(): WebSession | undefined {
+  const csrfCookie = csrfCookieName()
   const tokens = document.cookie
     .split(";")
     .map((part) => part.trim().split("=", 2))
-    .filter(([name]) => name === CSRF_COOKIE)
+    .filter(([name]) => name === csrfCookie)
     .map(([, value]) => CsrfTokenSchema.safeParse(value))
   if (tokens.length !== 1) {
     return undefined

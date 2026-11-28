@@ -13,7 +13,7 @@ mod types;
 
 use axum::{
     Json,
-    body::to_bytes,
+    body::{Body, to_bytes},
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse as _, Redirect, Response},
@@ -34,15 +34,13 @@ pub use types::{
     SystemClock, WebAuthConfig,
 };
 
-const SESSION_COOKIE: &str = "ma2a_session";
-const CSRF_COOKIE: &str = "ma2a_csrf";
-
 async fn auth_state(State(state): State<WebState>) -> Response {
     state.auth.setup_required().await.map_or_else(
         |_| StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         |required| {
             Json(json!({
-                "state": if required { "setup_required" } else { "configured" }
+                "state": if required { "setup_required" } else { "configured" },
+                "csrf_cookie": state.auth.csrf_cookie_name(),
             }))
             .into_response()
         },
@@ -72,22 +70,12 @@ async fn login(State(state): State<WebState>, request: axum::extract::Request) -
     };
     match state.auth.login(Zeroizing::new(request.password)).await {
         Ok(session) => {
-            let max_age = WebAuthConfig::ABSOLUTE_TIMEOUT_MS / 1_000;
-            let cookie = format!(
-                "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}",
-                session.bearer()
-            );
-            let csrf_cookie = format!(
-                "{CSRF_COOKIE}={}; Path=/; SameSite=Strict; Max-Age={max_age}",
-                session.csrf_token()
-            );
-            let mut response = Json(json!({ "csrf_token": session.csrf_token() })).into_response();
-            if let Ok(value) = csrf_cookie.parse() {
-                response.headers_mut().append(header::SET_COOKIE, value);
-            }
-            if let Ok(value) = cookie.parse() {
-                response.headers_mut().append(header::SET_COOKIE, value);
-            }
+            let mut response = Json(json!({
+                "csrf_token": session.csrf_token(),
+                "csrf_cookie": state.auth.csrf_cookie_name(),
+            }))
+            .into_response();
+            append_session_cookies(&state, &mut response, Some(&session));
             response
         }
         Err(AuthFailure::Unauthorized | AuthFailure::Conflict) => {
@@ -108,24 +96,42 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Response {
     match state.auth.logout(session).await {
         Ok(()) => {
             let mut response = StatusCode::NO_CONTENT.into_response();
-            expire_session_cookies(&mut response);
+            expire_session_cookies(&state, &mut response);
             response
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
-pub(super) fn expire_session_cookies(response: &mut Response) {
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        header::HeaderValue::from_static("ma2a_csrf=; Path=/; SameSite=Strict; Max-Age=0"),
+fn expire_session_cookies(state: &WebState, response: &mut Response) {
+    append_session_cookies(state, response, None);
+}
+
+fn append_session_cookies(
+    state: &WebState,
+    response: &mut Response,
+    session: Option<&LoginSession>,
+) {
+    let (bearer, csrf_token, max_age) = session.map_or(("", "", 0), |session| {
+        (
+            session.bearer(),
+            session.csrf_token(),
+            WebAuthConfig::ABSOLUTE_TIMEOUT_MS / 1_000,
+        )
+    });
+    let csrf = format!(
+        "{}={csrf_token}; Path=/; SameSite=Strict; Max-Age={max_age}",
+        state.auth.csrf_cookie_name()
     );
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        header::HeaderValue::from_static(
-            "ma2a_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
-        ),
+    let session = format!(
+        "{}={bearer}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}",
+        state.auth.session_cookie_name()
     );
+    for header_line in [csrf, session] {
+        if let Ok(value) = header_line.parse() {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
+    }
 }
 
 async fn touch_session(State(state): State<WebState>, headers: HeaderMap) -> Response {
@@ -142,7 +148,7 @@ async fn authenticated_mutation(
     state: &WebState,
     headers: &HeaderMap,
 ) -> Result<AuthenticatedSession, Response> {
-    let bearer = cookie(headers).ok_or_else(|| StatusCode::UNAUTHORIZED.into_response())?;
+    let bearer = cookie(state, headers).ok_or_else(|| StatusCode::UNAUTHORIZED.into_response())?;
     let csrf =
         headers::single_header_value(headers, &header::HeaderName::from_static("x-csrf-token"))
             .ok_or_else(|| StatusCode::FORBIDDEN.into_response())?;
@@ -196,13 +202,36 @@ async fn asset(State(state): State<WebState>, request: axum::extract::Request) -
     } else {
         path
     };
-    asset_response(&state.assets, requested)
+    let response = asset_response(&state.assets, requested);
+    if requested == "index.html" && response.status() == StatusCode::OK {
+        return with_csrf_cookie_meta(response, state.auth.csrf_cookie_name()).await;
+    }
+    response
+}
+
+async fn with_csrf_cookie_meta(response: Response, csrf_cookie: &str) -> Response {
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = to_bytes(body, 1_048_576).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Some(html) = std::str::from_utf8(&bytes)
+        .ok()
+        .filter(|text| text.contains("</head>"))
+    else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    let injected = html.replacen(
+        "</head>",
+        &format!("<meta name=\"ma2a-csrf-cookie\" content=\"{csrf_cookie}\" /></head>"),
+        1,
+    );
+    Response::from_parts(parts, Body::from(injected))
 }
 
 /// Authenticates a read. Only a request without a live session is 401; an internal failure is
 /// 500, so a browser never signs out a session that is still valid.
 async fn authenticated_read(state: &WebState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    let bearer = cookie(headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let bearer = cookie(state, headers).ok_or(StatusCode::UNAUTHORIZED)?;
     state
         .auth
         .authenticate(bearer)
@@ -219,7 +248,8 @@ const fn read_status(failure: AuthFailure) -> StatusCode {
     }
 }
 
-fn cookie(headers: &HeaderMap) -> Option<&str> {
+fn cookie<'a>(state: &WebState, headers: &'a HeaderMap) -> Option<&'a str> {
+    let expected = state.auth.session_cookie_name();
     let mut bearer = None;
     for raw in headers.get_all(header::COOKIE) {
         let value = raw.to_str().ok()?;
@@ -231,7 +261,7 @@ fn cookie(headers: &HeaderMap) -> Option<&str> {
             let Some((name, token)) = part.split_once('=') else {
                 continue;
             };
-            if name == SESSION_COOKIE {
+            if name == expected {
                 if token.is_empty() || bearer.is_some() {
                     return None;
                 }

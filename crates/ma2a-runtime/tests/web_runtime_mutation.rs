@@ -104,7 +104,11 @@ async fn runtime_mutation_requires_authentication_csrf_and_typed_json() -> TestR
         43_210,
     )
     .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12_345))));
-    let cookie = format!("ma2a_session={}", session.bearer());
+    let cookie = format!(
+        "{}={}",
+        control.web_auth().session_cookie_name(),
+        session.bearer()
+    );
     let command = br#"{"version":1,"operation":"session_revoke_all","request_id":"00112233445566778899aabbccddeeff"}"#;
 
     // When
@@ -141,17 +145,7 @@ async fn runtime_mutation_requires_authentication_csrf_and_typed_json() -> TestR
     assert_eq!(malformed.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(accepted.status(), StatusCode::OK);
-    let cookies = accepted.headers().get_all("set-cookie");
-    assert!(
-        cookies.iter().any(|value| {
-            value == "ma2a_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
-        })
-    );
-    assert!(
-        cookies
-            .iter()
-            .any(|value| value == "ma2a_csrf=; Path=/; SameSite=Strict; Max-Age=0")
-    );
+    assert_expired_cookies(accepted.headers(), control.web_auth());
     let response: serde_json::Value =
         serde_json::from_slice(&to_bytes(accepted.into_body(), 65_536).await?)?;
     assert_eq!(
@@ -191,6 +185,27 @@ async fn mutation_request(
         .await?)
 }
 
+fn assert_expired_cookies(
+    headers: &axum::http::HeaderMap,
+    auth: &ma2a_runtime::web::WebAuthService,
+) {
+    let cookies = headers.get_all("set-cookie");
+    assert!(cookies.iter().any(|value| {
+        value
+            == &format!(
+                "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+                auth.session_cookie_name()
+            )
+    }));
+    assert!(cookies.iter().any(|value| {
+        value
+            == &format!(
+                "{}=; Path=/; SameSite=Strict; Max-Age=0",
+                auth.csrf_cookie_name()
+            )
+    }));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_revoked_while_the_body_arrives_dispatches_nothing() -> TestResult {
     // Given: a Runtime client that reaches no Runtime, so any dispatch answers 503.
@@ -227,7 +242,10 @@ async fn a_session_revoked_while_the_body_arrives_dispatches_nothing() -> TestRe
         .header("origin", "http://127.0.0.1:43210")
         .header("sec-fetch-site", "same-origin")
         .header("content-type", "application/json")
-        .header("cookie", format!("ma2a_session={}", session.bearer()))
+        .header(
+            "cookie",
+            format!("{}={}", auth.session_cookie_name(), session.bearer()),
+        )
         .header("x-csrf-token", session.csrf_token())
         .body(Body::from_stream(
             tokio_stream::wrappers::ReceiverStream::new(chunks),

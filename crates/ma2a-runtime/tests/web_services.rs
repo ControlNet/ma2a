@@ -137,7 +137,11 @@ async fn exposures_operations_processes_agents_and_hosted_services_need_a_sessio
         .change_password(ma2a_runtime::web::PasswordAction::Set, support::password())
         .await?;
     let session = control.web_auth().login(support::password()).await?;
-    let cookie = format!("ma2a_session={}", session.bearer());
+    let cookie = format!(
+        "{}={}",
+        control.web_auth().session_cookie_name(),
+        session.bearer()
+    );
     let paths = IpcPaths::new(state.path())?;
     let api_server =
         LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control.clone(), None)

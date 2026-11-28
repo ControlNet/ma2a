@@ -78,7 +78,11 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
         43_210,
     )
     .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12_345))));
-    let cookie = format!("ma2a_session={}", session.bearer());
+    let cookie = format!(
+        "{}={}",
+        control.web_auth().session_cookie_name(),
+        session.bearer()
+    );
 
     // When
     let unauthorized = router
@@ -195,7 +199,11 @@ async fn authenticated_snapshot_and_stale_sse_use_the_daemon_projection() -> Tes
         .web_auth()
         .login(Zeroizing::new("web-runtime-passphrase-9!".to_owned()))
         .await?;
-    let expiring_cookie = format!("ma2a_session={}", expiring_session.bearer());
+    let expiring_cookie = format!(
+        "{}={}",
+        control.web_auth().session_cookie_name(),
+        expiring_session.bearer()
+    );
     let expiring_snapshot = router
         .clone()
         .oneshot(
@@ -260,7 +268,11 @@ async fn full_spaces_keep_snapshot_details_and_events_within_the_frame_budget() 
         .change_password(ma2a_runtime::web::PasswordAction::Set, support::password())
         .await?;
     let session = control.web_auth().login(support::password()).await?;
-    let cookie = format!("ma2a_session={}", session.bearer());
+    let cookie = format!(
+        "{}={}",
+        control.web_auth().session_cookie_name(),
+        session.bearer()
+    );
     let paths = IpcPaths::new(state.path())?;
     let api_server =
         LocalApiServer::bind_for_launch(paths.clone(), runtime.handle(), control, None).await?;

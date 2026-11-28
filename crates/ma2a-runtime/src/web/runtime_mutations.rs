@@ -40,7 +40,7 @@ pub(super) async fn mutation(State(state): State<WebState>, request: Request) ->
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     // Sessions may have been revoked while the body arrived; the admission above is stale then.
-    let current = match super::cookie(&headers) {
+    let current = match super::cookie(&state, &headers) {
         Some(bearer) => state
             .auth
             .validate(bearer)
@@ -61,7 +61,7 @@ pub(super) async fn mutation(State(state): State<WebState>, request: Request) ->
                     let succeeded = payload.get("error").is_none();
                     let mut response = Json(payload).into_response();
                     if revoke_sessions && succeeded {
-                        super::expire_session_cookies(&mut response);
+                        super::expire_session_cookies(&state, &mut response);
                     }
                     response
                 },

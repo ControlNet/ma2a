@@ -53,6 +53,6 @@ test("the only cookie a script reads is the CSRF value, never the session bearer
 
   expect(readers.toSorted()).toEqual(COOKIE_ALLOWLIST.toSorted())
   const [, webAuth] = (await sources()).find(([path]) => path === "api/web-auth.ts") ?? []
-  expect(webAuth).toMatch(/name === CSRF_COOKIE/)
+  expect(webAuth).toMatch(/name === csrfCookie/)
   expect(webAuth).not.toMatch(/ma2a_session/)
 })

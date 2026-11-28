@@ -25,9 +25,9 @@ async fn authenticated_session_touch_requires_matching_csrf() -> TestResult {
     auth.change_password(PasswordAction::Set, password())
         .await?;
     let login = auth.login(password()).await?;
+    let cookie = format!("{}={}", auth.session_cookie_name(), login.bearer());
     let server = RunningServer::start(auth, WebServerConfig::default()).await?;
     let origin = format!("http://127.0.0.1:{}", server.port());
-    let cookie = format!("ma2a_session={}", login.bearer());
 
     // When
     clock.set(3_500);

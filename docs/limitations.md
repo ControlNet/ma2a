@@ -32,9 +32,9 @@ on restart until the new process observes current state.
   at once ([authorization](protocol/authorization.md#inbound-connection-bound)), but there is no
   Runtime-wide connection bound. Endpoint keys cost nothing to make, so many keys can still keep
   many idle connections open; a Runtime-wide bound would let those same keys lock out members.
-- **A late logout can sign out a newer session.** Logout revokes its own session and expires the
-  `ma2a_session` and `ma2a_csrf` cookies by name. If another tab signs in before a slow logout
-  answers, that answer clears the new session's cookies too, and the user signs in again.
+- **A late logout can sign out a newer session.** Logout revokes its own session and expires
+  this Runtime's scoped session and CSRF cookies by name. If another tab signs in before a slow
+  logout answers, that answer clears the new session's cookies too, and the user signs in again.
 - **Request fences grow.** Every admitted local mutation leaves a permanent RequestId fingerprint
   (no command body) so that the request can never run twice, even after its cached response was
   evicted. Fences have no expiry; their growth follows the number of admitted mutations,

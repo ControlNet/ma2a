@@ -53,7 +53,7 @@ pub(crate) async fn events(
     headers: HeaderMap,
     Query(query): Query<EventsQuery>,
 ) -> Response {
-    let Some(bearer) = cookie(&headers).map(str::to_owned) else {
+    let Some(bearer) = cookie(&state, &headers).map(str::to_owned) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if let Err(failure) = state.auth.validate(&bearer).await {
