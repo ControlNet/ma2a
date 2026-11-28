@@ -1,6 +1,10 @@
 //! Store-thread handling of streaming service authorization and upload staging.
 
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Condvar, Mutex, PoisonError},
+    time::{Duration, Instant},
+};
 
 use ma2a_core::SpaceId;
 use ma2a_core::{
@@ -26,11 +30,22 @@ pub(crate) struct ServiceGrant {
 /// One Process read or step, run on the store thread against the repository.
 pub(crate) type ProcessJob = Box<dyn FnOnce(&mut Repository) + Send>;
 
+/// Upper bound on holding the Store thread while the daemon writes `go` to a local supervisor.
+const GO_DISPATCH_HOLD: Duration = Duration::from_secs(6);
+
+/// Shared completion signal between `StoreBackend::authorize_process_go` and `ProcessManager`.
+pub(crate) type GoDispatchSignal = Arc<(Mutex<bool>, Condvar)>;
+
 pub(crate) enum ServiceStoreCommand {
     Authorize {
         endpoints: (EndpointId, EndpointId),
         access: ServiceAccess,
         reply: oneshot::Sender<Result<ServiceGrant, ServiceError>>,
+    },
+    AuthorizeProcessGo {
+        endpoints: (EndpointId, EndpointId),
+        dispatched: GoDispatchSignal,
+        reply: oneshot::Sender<Result<(), ServiceError>>,
     },
     RecordStaging {
         path: String,
@@ -117,6 +132,11 @@ impl StoreBackend {
                 access,
                 reply,
             } => drop(reply.send(authorize(&self.repository, endpoints, &access))),
+            ServiceStoreCommand::AuthorizeProcessGo {
+                endpoints,
+                dispatched,
+                reply,
+            } => self.authorize_process_go(endpoints, (&dispatched, reply)),
             ServiceStoreCommand::RecordStaging {
                 path,
                 request_id,
@@ -156,6 +176,37 @@ impl StoreBackend {
             }
             ServiceStoreCommand::Process(job) => job(&mut self.repository),
         }
+    }
+
+    /// Authorizes `Process` access and holds the Store thread until the caller writes `go`
+    /// (signalled via `dispatched`), ordering `go` dispatch with authorization withdrawals.
+    fn authorize_process_go(
+        &self,
+        endpoints: (EndpointId, EndpointId),
+        (dispatched, reply): (&GoDispatchSignal, oneshot::Sender<Result<(), ServiceError>>),
+    ) {
+        let decision = authorize(&self.repository, endpoints, &ServiceAccess::Process).map(|_| ());
+        let ok = decision.is_ok();
+        if reply.send(decision).is_err() || !ok {
+            return;
+        }
+        let (done, signal) = &**dispatched;
+        let deadline = Instant::now() + GO_DISPATCH_HOLD;
+        let mut guard = done.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*guard {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, waited) = signal
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(PoisonError::into_inner);
+            guard = next;
+            if waited.timed_out() {
+                break;
+            }
+        }
+        drop(guard);
     }
 
     /// Removes every recorded staging file and its record; run before serving any stream.

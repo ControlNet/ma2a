@@ -5,10 +5,13 @@
 use std::time::Duration;
 
 use ma2a_core::service::{FrameKind, ProcessId, ProcessReason, ProcessState, ServiceError};
-use ma2a_services::supervisor::{Channel, Credentials, SupervisorRequest, SupervisorStatus};
+use ma2a_services::{
+    FrameReader,
+    supervisor::{Channel, Credentials, SupervisorRequest, SupervisorStatus},
+};
 use ma2a_store::ProcessRecord;
 
-use super::{ProcessManager, credentials};
+use super::{ProcessManager, credentials, go::GoDispatch};
 
 /// Longest pause between attempts to reach a supervisor that answered too slowly.
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
@@ -90,19 +93,13 @@ impl ProcessManager {
         let address = self.address(credentials.id());
         if record.state == ProcessState::Starting {
             let channel = address.connect(credentials).await?;
-            #[cfg(test)]
-            self.wait_before_go_gate().await;
-            match self.authorize_remote(record.creator).await {
-                Ok(()) => {}
-                Err(ServiceError::Unauthorized) => {
-                    self.settle_unauthorized_starting(record.id, channel)
-                        .await?;
-                    return Ok(None);
+            match self.dispatch_go((record.id, record.creator), channel).await {
+                GoDispatch::Reported(reported) => {
+                    self.apply(credentials.id(), reported).await?;
                 }
-                Err(error) => return Err(error),
+                GoDispatch::Aborted => return Ok(None),
+                GoDispatch::AbortFailed(error) | GoDispatch::Deferred(error) => return Err(error),
             }
-            let reported = request(channel, SupervisorRequest::Go).await?;
-            self.apply(credentials.id(), reported).await?;
         }
         super::start::open_watch(address.connect(credentials).await?)
             .await
@@ -131,20 +128,6 @@ impl ProcessManager {
             // Do not pass supervisor-side `Unauthorized` back to `follower`'s proof-loss arm.
             Err(ServiceError::Unauthorized) => Err(ServiceError::Unavailable),
             Err(error) => Err(error),
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) async fn wait_before_go_gate(&self) {
-        let gate = self
-            .0
-            .before_go_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some((entered, release)) = gate {
-            let _entered = entered.send(());
-            let _released = release.await;
         }
     }
 
@@ -194,6 +177,28 @@ async fn pause(backoff: Duration) -> Duration {
 /// Longest wait for a supervisor's answer beyond the time its request may take by design.
 pub(super) const ANSWER_MARGIN: Duration = Duration::from_secs(10);
 
+pub(super) async fn read_supervisor_status<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut FrameReader<R>,
+    deadline: Duration,
+) -> Result<SupervisorStatus, ServiceError> {
+    let frame = tokio::time::timeout(deadline, reader.expect())
+        .await
+        .map_err(|_| ServiceError::Unavailable)??;
+    decode_supervisor_status(&frame)
+}
+
+fn decode_supervisor_status(
+    frame: &ma2a_services::Frame,
+) -> Result<SupervisorStatus, ServiceError> {
+    match frame.kind() {
+        FrameKind::Outcome => {
+            SupervisorStatus::from_bytes(frame.payload()).map_err(|_| ServiceError::Unavailable)
+        }
+        FrameKind::Reject => Err(frame.rejection()?),
+        _ => Err(ServiceError::Unavailable),
+    }
+}
+
 /// Sends one request on a proven connection and returns the status in its `outcome`.
 ///
 /// A supervisor that does not answer in time is `Unavailable`, never lost: `terminate`
@@ -213,12 +218,5 @@ pub(super) async fn request(
         reader.expect().await
     })
     .await;
-    let frame = answered.map_err(|_| ServiceError::Unavailable)??;
-    match frame.kind() {
-        FrameKind::Outcome => {
-            SupervisorStatus::from_bytes(frame.payload()).map_err(|_| ServiceError::Unavailable)
-        }
-        FrameKind::Reject => Err(frame.rejection()?),
-        _ => Err(ServiceError::Unavailable),
-    }
+    decode_supervisor_status(&answered.map_err(|_| ServiceError::Unavailable)??)
 }

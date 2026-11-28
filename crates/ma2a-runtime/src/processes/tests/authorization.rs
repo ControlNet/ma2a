@@ -25,20 +25,36 @@ use crate::{
 };
 
 impl ProcessManager {
-    pub(in crate::processes) fn arm_before_go_gate(
-        &self,
+    fn arm_gate(
+        slot: &crate::processes::TestGate,
     ) -> (
         tokio::sync::oneshot::Receiver<()>,
         tokio::sync::oneshot::Sender<()>,
     ) {
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        *self
-            .0
-            .before_go_gate
+        *slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((entered_tx, release_rx));
         (entered_rx, release_tx)
+    }
+
+    pub(in crate::processes) fn arm_before_go_gate(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        Self::arm_gate(&self.0.before_go_gate)
+    }
+
+    pub(in crate::processes) fn arm_after_authorize_gate(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        Self::arm_gate(&self.0.after_authorize_gate)
     }
 }
 
@@ -463,5 +479,153 @@ async fn unavailable_auth_check_before_go_retries_without_sending_go() -> TestRe
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert!(!marker.exists(), "child ran after retry");
     shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_start_withdrawn_after_authorize_reply_before_go_aborts_without_child() -> TestResult
+{
+    let harness = Harness::new("c07-start-post-auth").await?;
+    let (manager, shutdown) = harness.manager();
+    let (entered_rx, release_tx) = manager.arm_after_authorize_gate();
+
+    let marker = harness.state.0.join("child-c07-start");
+    let start_spec = start(&format!("touch {}; sleep 1", marker.display()))?;
+    let req = request_id(117)?;
+    let ((mut reader, _writer), (mut host_reader, mut host_writer)) = pipe();
+    let stop = CancellationToken::new();
+    let host = tokio::spawn({
+        let manager = manager.clone();
+        let creator = harness.creator;
+        async move {
+            let scope = ((creator, req), ProcessRequest::Start(start_spec), &stop);
+            serve(&manager, scope, (&mut host_reader, &mut host_writer)).await
+        }
+    });
+    let caller = tokio::spawn(async move { hosted::call(&mut reader).await });
+
+    // Pause right after the authorization reply and before Go dispatch, then withdraw.
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    harness.withdraw_creator().await?;
+    let _released = release_tx.send(());
+
+    let (_accept, reply) = tokio::time::timeout(Duration::from_secs(5), caller).await???;
+    let _report = tokio::time::timeout(Duration::from_secs(5), host).await??;
+    let ProcessReply::Summary(summary) = reply else {
+        return Err(format!("expected Summary reply, got {reply:?}").into());
+    };
+    assert_eq!(summary.state, ProcessState::Failed);
+    assert_eq!(summary.reason, Some(ProcessReason::Interrupted));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !marker.exists(),
+        "child must never start after post-authorize withdrawal"
+    );
+    let recorded = status::read(&manager.directory(summary.id))?;
+    assert!(
+        matches!(recorded, Some(SupervisorStatus::NeverStarted(_))),
+        "expected NeverStarted supervisor status, got {recorded:?}"
+    );
+    shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_starting_row_withdrawn_after_authorize_reply_before_go_aborts() -> TestResult {
+    let harness = Harness::new("c07-restart-post-auth").await?;
+    let (prior_manager, prior_shutdown) = harness.manager();
+    let marker = harness.state.0.join("child-c07-restart");
+    let start_spec = start(&format!("touch {}; sleep 1", marker.display()))?;
+    let (creation, credentials) = prior_manager
+        .create((harness.creator, request_id(118)?), &start_spec)
+        .await?;
+    let ProcessCreation::Created(created) = creation else {
+        return Err("expected Created row".into());
+    };
+    let _proven = prior_manager.launch(credentials, start_spec).await?;
+    harness
+        .store
+        .processes(move |repo| {
+            repo.transition_process(
+                created.id,
+                ProcessTransition {
+                    to: ProcessState::Starting,
+                    reason: None,
+                    termination: None,
+                    at_ms: 10,
+                },
+            )
+        })
+        .await??;
+    prior_shutdown.cancel();
+
+    let (second, second_shutdown) = harness.manager();
+    let (entered_rx, release_tx) = second.arm_after_authorize_gate();
+    second.reconcile().await;
+
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    harness.withdraw_creator().await?;
+    let _released = release_tx.send(());
+
+    let failed = reaches(&second, created.id, ProcessState::Failed).await?;
+    assert_eq!(failed.reason, Some(ProcessReason::Interrupted));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !marker.exists(),
+        "resumed Starting row started child after post-authorize withdrawal"
+    );
+    let recorded = status::read(&second.directory(created.id))?;
+    assert!(
+        matches!(recorded, Some(SupervisorStatus::NeverStarted(_))),
+        "expected NeverStarted supervisor status, got {recorded:?}"
+    );
+    second_shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_starting_row_still_authorized_starts_on_recovery() -> TestResult {
+    let harness = Harness::new("c07-restart-auth-ok").await?;
+    let (prior_manager, prior_shutdown) = harness.manager();
+    let marker = harness.state.0.join("child-c07-restart-ok");
+    let start_spec = start(&format!("touch {}; exit 0", marker.display()))?;
+    let (creation, credentials) = prior_manager
+        .create((harness.creator, request_id(119)?), &start_spec)
+        .await?;
+    let ProcessCreation::Created(created) = creation else {
+        return Err("expected Created row".into());
+    };
+    let _proven = prior_manager.launch(credentials, start_spec).await?;
+    harness
+        .store
+        .processes(move |repo| {
+            repo.transition_process(
+                created.id,
+                ProcessTransition {
+                    to: ProcessState::Starting,
+                    reason: None,
+                    termination: None,
+                    at_ms: 10,
+                },
+            )
+        })
+        .await??;
+    prior_shutdown.cancel();
+
+    let (second, second_shutdown) = harness.manager();
+    let (entered_rx, release_tx) = second.arm_after_authorize_gate();
+    second.reconcile().await;
+
+    // An unrelated Store revision bump while Go is pending must not abort a still-authorized start.
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    harness.store.advance_revision().await?;
+    let _released = release_tx.send(());
+
+    reaches(&second, created.id, ProcessState::Exited).await?;
+    assert!(
+        marker.exists(),
+        "still-authorized resumed Starting row should start and run child"
+    );
+    second_shutdown.cancel();
     Ok(())
 }

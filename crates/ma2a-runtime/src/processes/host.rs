@@ -81,7 +81,7 @@ pub(super) async fn refuse<W: AsyncWrite + Unpin + Send>(
 }
 
 /// Longest wait to write the frame that opens or ends an operation.
-const FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+pub(super) const FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Writes `accept` within [`FRAME_GRACE`]: `timed_out` when the caller did not take it in
 /// time, `cancelled` when the stream failed.

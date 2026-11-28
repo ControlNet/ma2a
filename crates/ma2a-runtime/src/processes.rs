@@ -8,6 +8,7 @@
 mod apply;
 mod attach;
 mod follow;
+mod go;
 mod host;
 mod launch;
 mod local;
@@ -74,6 +75,14 @@ struct Coordination {
     readers: HashMap<ProcessId, usize>,
 }
 
+#[cfg(test)]
+type TestGate = Mutex<
+    Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
+>;
+
 #[derive(Debug)]
 struct Inner {
     local: EndpointId,
@@ -91,12 +100,9 @@ struct Inner {
     tasks: TaskTracker,
     coordination: Mutex<Coordination>,
     #[cfg(test)]
-    before_go_gate: Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
+    before_go_gate: TestGate,
+    #[cfg(test)]
+    after_authorize_gate: TestGate,
 }
 
 /// Every Process this Runtime hosts; cheap to clone.
@@ -189,6 +195,8 @@ impl ProcessManager {
             coordination: Mutex::new(Coordination::default()),
             #[cfg(test)]
             before_go_gate: Mutex::new(None),
+            #[cfg(test)]
+            after_authorize_gate: Mutex::new(None),
         }))
     }
 

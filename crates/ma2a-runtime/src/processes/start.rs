@@ -19,7 +19,7 @@ use ma2a_store::{Committed, NewProcess, ProcessCreation};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
-use super::{ProcessManager, follow::request, host::finish};
+use super::{ProcessManager, follow::request, go::GoDispatch, host::finish};
 
 /// Fingerprints a canonical start body; a retry must send exactly the same bytes.
 fn fingerprint(start: &[u8]) -> [u8; 32] {
@@ -208,29 +208,19 @@ impl ProcessManager {
         }
         let address = self.address(id);
         let reported = match address.connect(&credentials).await {
-            Ok(channel) => {
-                #[cfg(test)]
-                self.wait_before_go_gate().await;
-                match self.authorize_remote(stepped.creator).await {
-                    Ok(()) => request(channel, SupervisorRequest::Go).await,
-                    Err(ServiceError::Unauthorized) => {
-                        drop(watching);
-                        return match self.settle_unauthorized_starting(id, channel).await {
-                            Ok(()) => self.record(id).await?.ok_or(ServiceError::UnknownProcess),
-                            Err(error) => {
-                                self.follow(id, None);
-                                Err(error)
-                            }
-                        };
-                    }
-                    Err(_) => {
-                        drop(channel);
-                        drop(watching);
-                        self.follow(id, None);
-                        return self.record(id).await?.ok_or(ServiceError::UnknownProcess);
-                    }
+            Ok(channel) => match self.dispatch_go((id, stepped.creator), channel).await {
+                GoDispatch::Reported(reported) => Ok(reported),
+                GoDispatch::Aborted => {
+                    drop(watching);
+                    return self.record(id).await?.ok_or(ServiceError::UnknownProcess);
                 }
-            }
+                GoDispatch::AbortFailed(error) => {
+                    drop(watching);
+                    self.follow(id, None);
+                    return Err(error);
+                }
+                GoDispatch::Deferred(error) => Err(error),
+            },
             Err(error) => Err(error),
         };
         fault("after_go");

@@ -26,7 +26,9 @@ pub(crate) use membership::{OwnedMemberRevocation, RemovedMember};
 pub(crate) use mutation_replay::MutationReplayCommand;
 pub(crate) use pending_relay::RelayExpiryPolicy;
 pub(crate) use relay_state::with_parsed_relay_urls;
-pub(crate) use services::{ProcessJob, ServiceGrant, ServiceStoreCommand, authorize};
+pub(crate) use services::{
+    GoDispatchSignal, ProcessJob, ServiceGrant, ServiceStoreCommand, authorize,
+};
 
 /// Everything one enrollment commit needs from the caller.
 pub(crate) struct EnrollmentPersistence {
