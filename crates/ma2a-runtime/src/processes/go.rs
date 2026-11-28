@@ -15,6 +15,13 @@ use super::{
 };
 use crate::store::GoDispatchLease;
 
+/// Why a `starting` Process must be aborted instead of sending `go` on retries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AbortCause {
+    Expired,
+    Unauthorized,
+}
+
 /// Outcome of deciding and dispatching `go` on an authenticated supervisor channel.
 pub(super) enum GoDispatch {
     /// `go` was sent and the supervisor reported this status.
@@ -115,6 +122,25 @@ pub(super) async fn write_go_with_lease<W: AsyncWrite + Unpin>(
 }
 
 impl ProcessManager {
+    pub(super) fn record_aborted_starting(&self, id: ProcessId, cause: AbortCause) {
+        let mut coordination = self.coordination();
+        coordination
+            .aborted_starting
+            .entry(id)
+            .and_modify(|existing| {
+                if cause == AbortCause::Unauthorized {
+                    *existing = AbortCause::Unauthorized;
+                }
+            })
+            .or_insert(cause);
+    }
+
+    pub(super) fn clear_process_coordination(&self, id: ProcessId) {
+        let mut coordination = self.coordination();
+        coordination.terminating.remove(&id);
+        coordination.aborted_starting.remove(&id);
+    }
+
     /// Checks remote authorization (if remote), then orders `go` dispatch with authorization
     /// changes on the Store so a completed withdrawal aborts instead of starting the child.
     pub(super) async fn dispatch_go(
@@ -133,7 +159,9 @@ impl ProcessManager {
         match self.authorize_remote(creator).await {
             Ok(()) => {}
             Err(ServiceError::Unauthorized) => {
-                return self.abort_unauthorized(credentials.id(), channel).await;
+                return self
+                    .abort_starting((credentials.id(), AbortCause::Unauthorized), channel)
+                    .await;
             }
             Err(error) => return GoDispatch::Deferred(error),
         }
@@ -143,8 +171,13 @@ impl ProcessManager {
             .await
     }
 
-    async fn abort_unauthorized(&self, id: ProcessId, channel: Channel) -> GoDispatch {
-        match self.settle_unauthorized_starting(id, channel).await {
+    async fn abort_starting(
+        &self,
+        (id, cause): (ProcessId, AbortCause),
+        channel: Channel,
+    ) -> GoDispatch {
+        self.record_aborted_starting(id, cause);
+        match self.settle_starting_abort(id, channel).await {
             Ok(()) => GoDispatch::Aborted,
             Err(error) => GoDispatch::AbortFailed(error),
         }
@@ -165,7 +198,8 @@ impl ProcessManager {
         {
             drop(guard);
             return if error == ServiceError::Unauthorized {
-                self.abort_unauthorized(id, (reader, writer)).await
+                self.abort_starting((id, AbortCause::Unauthorized), (reader, writer))
+                    .await
             } else {
                 GoDispatch::Deferred(error)
             };
@@ -185,15 +219,16 @@ impl ProcessManager {
         drop(guard);
         match sent {
             Ok(WriteGoOutcome::Sent) => {}
-            Ok(WriteGoOutcome::Expired { wrote_any }) => {
-                if wrote_any {
-                    drop((reader, writer));
-                    return match self.address(id).connect(credentials).await {
-                        Ok(channel) => self.abort_unauthorized(id, channel).await,
-                        Err(error) => GoDispatch::AbortFailed(error),
-                    };
-                }
-                return self.abort_unauthorized(id, (reader, writer)).await;
+            Ok(WriteGoOutcome::Expired { .. }) => {
+                drop((reader, writer));
+                self.record_aborted_starting(id, AbortCause::Expired);
+                return match self.address(id).connect(credentials).await {
+                    Ok(channel) => {
+                        self.abort_starting((id, AbortCause::Expired), channel)
+                            .await
+                    }
+                    Err(error) => GoDispatch::AbortFailed(error),
+                };
             }
             Ok(WriteGoOutcome::Failed(error)) => return GoDispatch::Deferred(error),
             Err(_) => return GoDispatch::Deferred(ServiceError::Unavailable),

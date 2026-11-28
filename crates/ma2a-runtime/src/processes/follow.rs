@@ -92,7 +92,18 @@ impl ProcessManager {
     ) -> Result<Option<Channel>, ServiceError> {
         let address = self.address(credentials.id());
         if record.state == ProcessState::Starting {
+            let abort_cause = self
+                .coordination()
+                .aborted_starting
+                .get(&record.id)
+                .copied();
             let channel = address.connect(credentials).await?;
+            if abort_cause.is_some() {
+                return self
+                    .settle_starting_abort(record.id, channel)
+                    .await
+                    .map(|()| None);
+            }
             match self
                 .dispatch_go((credentials, record.creator), channel)
                 .await
@@ -109,7 +120,7 @@ impl ProcessManager {
             .map(Some)
     }
 
-    pub(super) async fn settle_unauthorized_starting(
+    pub(super) async fn settle_starting_abort(
         &self,
         id: ProcessId,
         channel: Channel,

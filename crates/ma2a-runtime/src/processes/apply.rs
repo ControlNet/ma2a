@@ -95,7 +95,7 @@ impl ProcessManager {
             Err(error) => *error == ServiceError::UnknownProcess,
         };
         if transition.to.is_terminal() && ended {
-            self.coordination().terminating.remove(&id);
+            self.clear_process_coordination(id);
         }
         answer
     }
@@ -135,11 +135,11 @@ impl ProcessManager {
         reported: SupervisorStatus,
     ) -> Result<Committed<ProcessRecord>, ServiceError> {
         let Ok(current) = found(self.record_at(id).await?) else {
-            self.coordination().terminating.remove(&id);
+            self.clear_process_coordination(id);
             return Err(ServiceError::UnknownProcess);
         };
         if current.value().state.is_terminal() {
-            self.coordination().terminating.remove(&id);
+            self.clear_process_coordination(id);
             return Ok(current);
         }
         let requested = self

@@ -71,6 +71,8 @@ struct Coordination {
     settling: HashSet<ProcessId>,
     /// Why this Runtime asked a Process to terminate, until that end is recorded.
     terminating: HashMap<ProcessId, Terminating>,
+    /// `starting` Processes whose `go` dispatch was aborted by withdrawal or hold expiry.
+    aborted_starting: HashMap<ProcessId, go::AbortCause>,
     /// Attached readers per Process.
     readers: HashMap<ProcessId, usize>,
 }

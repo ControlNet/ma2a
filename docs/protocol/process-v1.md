@@ -468,9 +468,10 @@ is terminated with a 5 s grace period and reason `unauthorized`.
   withdrawal, and current authorization is rechecked before recording a new remote start and ordered
   with dispatching `go` on the Store (both on initial bring-up and when resuming a `starting`
   Process) so a withdrawal that completes before `go` is sent cannot start a child. If authorization
-  was lost or the Store dispatch hold expired before `go` was written, the supervisor is aborted
-  (`failed(interrupted)`) without starting a child; if the check is temporarily unavailable, the
-  Runtime retries without sending `go`.
+  was lost or the Store dispatch hold expired before `go` was written, the Runtime aborts the
+  supervisor (`failed(interrupted)`) without starting a child and keeps that abort decision across
+  transient settlement failures; if the check is temporarily unavailable, the Runtime retries without
+  sending `go`.
 
 The same sweep restarts the follower of any live Process that lost it.
 

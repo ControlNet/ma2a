@@ -8,10 +8,18 @@ use std::{
     time::Duration,
 };
 
-use ma2a_core::service::{ProcessReason, ProcessReply, ProcessRequest, ProcessState, ServiceError};
+use interprocess::local_socket::tokio::prelude::*;
+use ma2a_core::service::{
+    FrameKind, ProcessReason, ProcessReply, ProcessRequest, ProcessState, ServiceError,
+};
 use ma2a_services::{
+    FrameReader, FrameWriter,
     client::{ClientError, hosted},
-    supervisor::{SupervisorStatus, status},
+    supervisor::{
+        Credentials, SupervisorRequest, SupervisorStatus,
+        proof::{prove_supervisor, read_challenge},
+        status,
+    },
 };
 use ma2a_store::{ProcessCreation, ProcessTransition};
 use tokio::sync::{Notify, mpsc};
@@ -780,5 +788,150 @@ async fn go_write_stops_mid_frame_when_lease_expires() -> TestResult {
     let mut received = Vec::new();
     reader.read_to_end(&mut received).await?;
     assert_eq!(Some(received.as_slice()), frame.get(..2));
+    Ok(())
+}
+
+async fn accept_proven_connection(
+    listener: &interprocess::local_socket::tokio::Listener,
+    credentials: &Credentials,
+) -> TestResult<(
+    FrameReader<interprocess::local_socket::tokio::RecvHalf>,
+    FrameWriter<interprocess::local_socket::tokio::SendHalf>,
+)> {
+    let mut stream = listener.accept().await?;
+    let challenge = read_challenge(&mut FrameReader::new(&mut stream)).await?;
+    let (recv, send) = stream.split();
+    let (mut reader, mut writer) = (FrameReader::new(recv), FrameWriter::new(send));
+    prove_supervisor(challenge, (&mut reader, &mut writer), credentials).await?;
+    Ok((reader, writer))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_start_lease_expiry_with_production_deadlines_and_unchanged_membership_aborts()
+-> TestResult {
+    let harness = Harness::new("c02-prod-expiry").await?;
+    let (manager, shutdown) = harness.manager();
+    let (entered_rx, release_tx) = manager.arm_after_final_authorize_gate();
+
+    let marker = harness.state.0.join("child-c02-prod-expiry");
+    let start_spec = start(&format!("touch {}; sleep 1", marker.display()))?;
+    let req = request_id(122)?;
+    let ((mut reader, _writer), (mut host_reader, mut host_writer)) = pipe();
+    let stop = CancellationToken::new();
+    let host = tokio::spawn({
+        let manager = manager.clone();
+        let creator = harness.creator;
+        async move {
+            let scope = ((creator, req), ProcessRequest::Start(start_spec), &stop);
+            serve(&manager, scope, (&mut host_reader, &mut host_writer)).await
+        }
+    });
+    let caller = tokio::spawn(async move { hosted::call(&mut reader).await });
+
+    // Wait until Store authorization finished, then let both the 5 s supervisor connect
+    // deadline and the 6 s production Store Go hold expire with unchanged membership.
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    tokio::time::sleep(Duration::from_secs(6) + Duration::from_millis(200)).await;
+    harness.store.advance_revision().await?;
+    let _released = release_tx.send(());
+
+    let (_accept, reply) = tokio::time::timeout(Duration::from_secs(10), caller).await???;
+    let _report = tokio::time::timeout(Duration::from_secs(10), host).await??;
+    let ProcessReply::Summary(summary) = reply else {
+        return Err(format!("expected Summary reply, got {reply:?}").into());
+    };
+    assert_eq!(summary.state, ProcessState::Failed);
+    assert_eq!(summary.reason, Some(ProcessReason::Interrupted));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !marker.exists(),
+        "child started after Go dispatch lease expired"
+    );
+    let recorded = status::read(&manager.directory(summary.id))?;
+    assert!(
+        matches!(recorded, Some(SupervisorStatus::NeverStarted(_))),
+        "expected NeverStarted supervisor status, got {recorded:?}"
+    );
+    shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lease_expiry_abort_decision_persists_across_transient_settlement_failure() -> TestResult {
+    let harness = Harness::new("c02-abort-retry").await?;
+    let (prior_manager, prior_shutdown) = harness.manager();
+    let start_spec = start("sleep 1")?;
+    let (creation, credentials) = prior_manager
+        .create((harness.creator, request_id(123)?), &start_spec)
+        .await?;
+    let ProcessCreation::Created(created) = creation else {
+        return Err("expected Created row".into());
+    };
+    harness
+        .store
+        .processes(move |repo| {
+            repo.transition_process(
+                created.id,
+                ProcessTransition {
+                    to: ProcessState::Starting,
+                    reason: None,
+                    termination: None,
+                    at_ms: 10,
+                },
+            )
+        })
+        .await??;
+    prior_shutdown.cancel();
+
+    let (second, second_shutdown) = harness.manager();
+    let address = second.address(created.id);
+    if let Some(parent) = std::path::Path::new(address.as_str()).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = address.bind()?;
+    let (initial_dropped_tx, initial_dropped_rx) = tokio::sync::oneshot::channel();
+    let (abort_seen_tx, abort_seen_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        // 1. Initial connection for dispatch_go closes once the lease expires (simulating
+        //    supervisor CONNECT_DEADLINE < GO_DISPATCH_HOLD).
+        let initial = accept_proven_connection(&listener, &credentials).await?;
+        let _closed = initial_dropped_rx.await;
+        drop(initial);
+        // 2. First Abort reconnect drops before proving itself (transient Unavailable).
+        drop(listener.accept().await?);
+        // 3. Follower retry MUST send Abort, never Go, even with unchanged membership.
+        let (mut reader, mut writer) = accept_proven_connection(&listener, &credentials).await?;
+        let req = reader.expect().await?;
+        let parsed = SupervisorRequest::from_bytes(req.payload())?;
+        let _sent = abort_seen_tx.send(parsed);
+        writer
+            .frame(
+                FrameKind::Outcome,
+                &SupervisorStatus::NeverStarted(10).to_bytes(),
+            )
+            .await?;
+        writer.shutdown().await?;
+        TestResult::Ok(())
+    });
+
+    harness
+        .store
+        .set_go_dispatch_hold(Duration::from_millis(80))
+        .await;
+    let (entered_rx, release_tx) = second.arm_after_final_authorize_gate();
+    second.reconcile().await;
+
+    tokio::time::timeout(Duration::from_secs(5), entered_rx).await??;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    harness.store.advance_revision().await?;
+    let _close_initial = initial_dropped_tx.send(());
+    let _released = release_tx.send(());
+
+    let parsed = tokio::time::timeout(Duration::from_secs(5), abort_seen_rx).await??;
+    assert_eq!(parsed, SupervisorRequest::Abort);
+    server.await??;
+    let failed = reaches(&second, created.id, ProcessState::Failed).await?;
+    assert_eq!(failed.reason, Some(ProcessReason::Interrupted));
+    second_shutdown.cancel();
     Ok(())
 }
