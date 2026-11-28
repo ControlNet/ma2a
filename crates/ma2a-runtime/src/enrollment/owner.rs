@@ -170,8 +170,10 @@ impl Actor {
         match bootstrap {
             Ok(frames) => call.respond(0, frames),
             Err(error) => {
+                // `respond_with_bootstrap` runs only after `Redeemed` commits or on an owner-side
+                // `Retry`, so a deferred bootstrap failure must not reuse pre-commit status 6.
                 let status = if error.is_deferred_publication() {
-                    6
+                    7
                 } else {
                     255
                 };

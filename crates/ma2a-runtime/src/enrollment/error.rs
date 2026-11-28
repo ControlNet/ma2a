@@ -30,6 +30,7 @@ enum EnrollmentErrorKind {
     Conflict,
     SpaceFull,
     AddressUnavailable,
+    BootstrapUnavailable,
     Busy,
     Internal,
 }
@@ -53,6 +54,9 @@ impl EnrollmentErrorCode {
     /// The Space owner has no usable published address yet; the invitation stayed unused and
     /// the same redemption can be retried once publication recovers.
     pub const ADDRESS_UNAVAILABLE: Self = Self(EnrollmentErrorKind::AddressUnavailable);
+    /// The Space owner had no usable published address while building the bootstrap response after
+    /// committing or replaying the invitation; only an exact retry of the same `RequestId` is safe.
+    pub const BOOTSTRAP_UNAVAILABLE: Self = Self(EnrollmentErrorKind::BootstrapUnavailable);
     /// Too many redemptions are already waiting on their Space owners, or the owner was serving
     /// as many enrollments as it allows; nothing was done, so the same redemption can be retried
     /// once one of them ends.
@@ -83,6 +87,7 @@ impl EnrollmentError {
                 4 => EnrollmentErrorKind::Conflict,
                 5 => EnrollmentErrorKind::SpaceFull,
                 6 => EnrollmentErrorKind::AddressUnavailable,
+                7 => EnrollmentErrorKind::BootstrapUnavailable,
                 _ => EnrollmentErrorKind::Internal,
             },
             None,
@@ -159,6 +164,9 @@ impl fmt::Display for EnrollmentError {
             }
             EnrollmentErrorKind::AddressUnavailable => {
                 "Space owner address is not published yet; retry once available"
+            }
+            EnrollmentErrorKind::BootstrapUnavailable => {
+                "Space owner bootstrap address is unavailable after redemption; retry the exact same request once available"
             }
             EnrollmentErrorKind::Busy => {
                 "too many invitation redemptions are pending; retry once one ends"

@@ -39,6 +39,44 @@ async fn consume_without_persisting(
     Ok(())
 }
 
+async fn assert_owner_replay_bootstrap_fenced(
+    cand_client: &LocalApiClient,
+    first_attempt: &serde_json::Value,
+    req_1: &str,
+) -> TestResult {
+    assert_eq!(
+        first_attempt
+            .get("error")
+            .and_then(serde_json::Value::as_str),
+        Some(ProtocolError::UNAVAILABLE.name()),
+        "{first_attempt}"
+    );
+    let remediation = first_attempt
+        .get("remediation")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("owner-replay bootstrap failure must carry remote-effect remediation")?;
+    assert!(
+        remediation.contains("remote") && remediation.contains("retry"),
+        "unexpected remediation: {remediation}"
+    );
+    let reused = call_json(
+        cand_client,
+        serde_json::json!({
+            "version": 1,
+            "operation": "space_create",
+            "request_id": req_1,
+            "name": "conflict-check",
+        }),
+    )
+    .await?;
+    assert_eq!(
+        reused.get("error").and_then(serde_json::Value::as_str),
+        Some(ProtocolError::CONFLICT.name()),
+        "{reused}"
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn consumed_invitation_recovers_with_exact_request_id_through_candidate_ipc() -> TestResult {
     let owner = ServedRuntime::start("enroll-ipc-retry-owner").await?;
@@ -84,13 +122,7 @@ async fn consumed_invitation_recovers_with_exact_request_id_through_candidate_ip
         }),
     )
     .await?;
-    assert_eq!(
-        first_attempt
-            .get("error")
-            .and_then(serde_json::Value::as_str),
-        Some(ProtocolError::UNAVAILABLE.name()),
-        "{first_attempt}"
-    );
+    assert_owner_replay_bootstrap_fenced(&cand_client, &first_attempt, req_1).await?;
     assert!(owner.runtime.handle().status().await?.is_ready());
 
     owner.runtime.handle().clear_background_faults();

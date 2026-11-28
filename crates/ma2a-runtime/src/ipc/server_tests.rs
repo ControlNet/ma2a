@@ -56,8 +56,12 @@ mod space_leave;
 mod space_leave_outcomes;
 #[path = "server_tests/space_redeem_full.rs"]
 mod space_redeem_full;
+#[path = "server_tests/space_redeem_lost_expire.rs"]
+mod space_redeem_lost_expire;
 #[path = "server_tests/space_redeem_owner_address.rs"]
 mod space_redeem_owner_address;
+#[path = "server_tests/space_redeem_post_commit.rs"]
+mod space_redeem_post_commit;
 #[path = "server_tests/space_redeem_retry.rs"]
 mod space_redeem_retry;
 #[path = "server_tests/space_redeem_support.rs"]

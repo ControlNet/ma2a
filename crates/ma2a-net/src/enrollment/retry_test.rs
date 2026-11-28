@@ -21,6 +21,7 @@ enum FirstResponse {
     Denied,
     Busy,
     LostThenBusy,
+    LostThenExpired,
 }
 
 #[derive(Clone, Debug)]
@@ -49,7 +50,9 @@ impl ProtocolHandler for ResponseLoss {
             || (attempt == 1
                 && matches!(
                     self.first,
-                    FirstResponse::Lost | FirstResponse::LostThenBusy
+                    FirstResponse::Lost
+                        | FirstResponse::LostThenBusy
+                        | FirstResponse::LostThenExpired
                 ))
         {
             connection.close(1_u8.into(), b"test response loss");
@@ -64,6 +67,7 @@ impl ProtocolHandler for ResponseLoss {
             | FirstResponse::LostThenBusy => &[0, 0, 1, 0, 0, 0, 1, 42],
             FirstResponse::Invalid => &[0, 0, 0],
             FirstResponse::Denied => &[1, 0, 0],
+            FirstResponse::LostThenExpired => &[2, 0, 0],
         };
         send.write_all(bytes).await.map_err(io::Error::other)?;
         send.finish().map_err(io::Error::other)?;
@@ -130,6 +134,11 @@ async fn scenario(first: FirstResponse, replayable: bool) -> TestResult {
             assert!(result.is_err_and(|error| error.is_lost_enrollment_response()));
             assert_eq!(requests.len(), 1);
         }
+        // A retry that sees Expired cannot prove the lost first attempt did not commit.
+        FirstResponse::LostThenExpired => {
+            assert!(result.is_err_and(|error| error.is_lost_enrollment_response()));
+            assert_eq!(requests.len(), 2);
+        }
     }
     assert!(requests.iter().all(|bytes| bytes == request));
     drop(requests);
@@ -166,4 +175,9 @@ async fn a_busy_owner_is_reported_as_busy_without_a_retry() -> TestResult {
 #[tokio::test]
 async fn a_busy_retry_after_a_lost_answer_stays_unknown() -> TestResult {
     scenario(FirstResponse::LostThenBusy, true).await
+}
+
+#[tokio::test]
+async fn an_expired_retry_after_a_lost_answer_stays_unknown() -> TestResult {
+    scenario(FirstResponse::LostThenExpired, true).await
 }

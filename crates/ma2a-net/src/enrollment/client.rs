@@ -117,9 +117,11 @@ pub(crate) async fn exchange_replayable(
             Err(error) if error.is_lost_enrollment_response() => {
                 eprintln!("retrying exact enrollment redemption after {error}");
                 match exchange_bounded(endpoint, owner, request).await {
-                    // The first request may have taken effect, so the outcome stays unknown.
-                    Err(retry) if retry.is_enrollment_busy() => Err(error),
-                    outcome => outcome,
+                    // Only a bootstrap reply conclusively resolves an attempt whose first answer
+                    // was lost; any refusal (such as Expired) or retry error keeps the earlier
+                    // uncertainty so the candidate does not drop its RequestId fence.
+                    Ok((0, pages)) => Ok((0, pages)),
+                    _ => Err(error),
                 }
             }
             outcome => outcome,

@@ -213,6 +213,7 @@ fn enrollment_protocol_error(error: &crate::EnrollmentError) -> ProtocolError {
         ProtocolError::CONFLICT
     } else if error.code() == crate::EnrollmentErrorCode::BUSY
         || error.code() == crate::EnrollmentErrorCode::ADDRESS_UNAVAILABLE
+        || error.code() == crate::EnrollmentErrorCode::BOOTSTRAP_UNAVAILABLE
     {
         ProtocolError::UNAVAILABLE
     } else {
