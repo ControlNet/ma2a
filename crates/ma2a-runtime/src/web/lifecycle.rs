@@ -66,10 +66,7 @@ impl WebLifecycle {
         // A different requested socket can be bound before stopping the old service.
         if running.as_ref().is_some_and(|web| {
             addresses.iter().any(|address| {
-                address.port() == web.address.port()
-                    && (address.ip() == web.address.ip()
-                        || address.ip().is_unspecified()
-                        || web.address.ip().is_unspecified())
+                crate::actor::relay_server::listeners_conflict(web.address, *address)
             })
         }) {
             stop_running(&mut running).await;
