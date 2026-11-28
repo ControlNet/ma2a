@@ -265,15 +265,67 @@ fn a_record_cut_short_by_a_failed_write_never_corrupts_the_next_one() -> TestRes
     let failed = with_file_size_limit(15, || writer.append(Channel::Output, b"LOST-RECORD"))?;
     assert!(failed.is_err(), "{failed:?}");
 
-    // And: a later record is written in full.
-    assert_eq!(writer.append(Channel::Output, b"NEXT")?, 6);
+    // And: a later record is written in full past the failed-write gap.
+    assert_eq!(writer.append(Channel::Output, b"NEXT")?, 17);
     writer.sync()?;
 
-    // Then: the live cursor, the window on disk, and the bytes read back agree.
-    assert_eq!(writer.window(), LogWindow::new(0, 6));
-    assert_eq!(log::window(root.path())?, LogWindow::new(0, 6));
-    let read = log::read(root.path(), 0, 1024)?;
-    assert_eq!(joined(&read), b"OKNEXT");
-    assert_eq!(read.next, 6);
+    // Then: the live cursor, the window on disk, and the bytes read back agree without splicing.
+    assert_eq!(writer.window(), LogWindow::new(0, 17));
+    assert_eq!(log::window(root.path())?, LogWindow::new(0, 17));
+    let before = log::read(root.path(), 0, 1024)?;
+    assert_eq!(joined(&before), b"OK");
+    assert_eq!(before.next, 2);
+    let after = log::read(root.path(), before.next, 1024)?;
+    assert_eq!((after.start, after.truncated, after.next), (13, true, 17));
+    assert_eq!(joined(&after), b"NEXT");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_write_records_gap_for_reopened_readers_and_exit_marker() -> TestResult {
+    // Given: a prefix written before a failed mid-line write.
+    let root = TempRoot::new("log-failed-gap")?;
+    let mut writer = LogWriter::create(root.path(), MIB)?;
+    assert_eq!(writer.append(Channel::Output, b"result: should ")?, 15);
+
+    // When: the next chunk fails mid-write (15 content + 5 header = 20 bytes already on disk)
+    // and rolls back, then writing resumes.
+    let failed = with_file_size_limit(27, || writer.append(Channel::Output, b"never "))?;
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(writer.append(Channel::Output, b"commit\n")?, 28);
+    writer.sync()?;
+
+    // Then: the gap is persisted in the next segment so reopened readers see truncation, not a
+    // spliced line.
+    assert_eq!(writer.window(), LogWindow::new(0, 28));
+    assert_eq!(log::window(root.path())?, LogWindow::new(0, 28));
+    let before = log::read(root.path(), 0, 1024)?;
+    assert_eq!(
+        (before.start, before.truncated, before.next),
+        (0, false, 15)
+    );
+    assert_eq!(
+        before.records,
+        vec![(Channel::Output, b"result: should ".to_vec())]
+    );
+    let after = log::read(root.path(), before.next, 1024)?;
+    assert_eq!((after.start, after.truncated, after.next), (21, true, 28));
+    assert_eq!(after.records, vec![(Channel::Output, b"commit\n".to_vec())]);
+
+    // And: when no further output arrives after a failed write, finish persists the gap marker.
+    let tail_root = TempRoot::new("log-failed-tail")?;
+    let mut tail_writer = LogWriter::create(tail_root.path(), MIB)?;
+    assert_eq!(tail_writer.append(Channel::Output, b"head")?, 4);
+    let tail_failed =
+        with_file_size_limit(15, || tail_writer.append(Channel::Output, b"lost-tail"))?;
+    assert!(tail_failed.is_err(), "{tail_failed:?}");
+    tail_writer.finish()?;
+
+    assert_eq!(tail_writer.window(), LogWindow::new(0, 13));
+    assert_eq!(log::window(tail_root.path())?, LogWindow::new(0, 13));
+    let tail = log::read(tail_root.path(), 4, 1024)?;
+    assert_eq!((tail.start, tail.truncated, tail.next), (13, true, 13));
+    assert!(tail.records.is_empty());
     Ok(())
 }

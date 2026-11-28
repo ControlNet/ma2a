@@ -323,7 +323,11 @@ The supervisor appends every chunk it reads from the child's stdout (channel 1) 
   space, then recorded as a cursor gap when writing resumes or when the child ends. Output written in many small records
   therefore keeps less than `log_limit` content bytes, but the disk it takes stays bounded.
 - **Skipped.** The `control` payload `[1, cursor: uint]` means that output before `cursor` was
-  dropped by retention before this reader received it. The next byte has this cursor.
+  dropped by retention or a failed log write before this reader received it. The next byte has
+  this cursor.
+- **Write failures.** If appending a valid chunk fails, any partly written record is rolled back,
+  the open segment is sealed, and the lost byte count is recorded as a cursor gap when the next
+  segment opens or when the child ends, rather than splicing bytes around the loss.
 
 ## State machine
 

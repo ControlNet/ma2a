@@ -69,6 +69,17 @@ impl Shared {
         self.status.send_replace(next);
     }
 
+    fn publish_window(&self, window: LogWindow) {
+        self.output.send_if_modified(|current| {
+            if *current == window {
+                false
+            } else {
+                *current = window;
+                true
+            }
+        });
+    }
+
     /// Makes all appended output durable and finalizes any trailing retention gap, on the
     /// blocking pool.
     pub(super) async fn sync_log(self: &Arc<Self>) {
@@ -80,23 +91,15 @@ impl Shared {
         })
         .await;
         if let Ok(window) = window {
-            self.output.send_if_modified(|current| {
-                if *current == window {
-                    false
-                } else {
-                    *current = window;
-                    true
-                }
-            });
+            self.publish_window(window);
         }
     }
 
     /// Appends one output chunk and publishes the new window.
     pub(super) fn append(&self, channel: ma2a_core::service::Channel, bytes: &[u8]) {
         let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
-        if log.append(channel, bytes).is_ok() {
-            self.output.send_replace(log.window());
-        }
+        let _appended = log.append(channel, bytes);
+        self.publish_window(log.window());
     }
 
     /// Takes the single stdin writer lease.

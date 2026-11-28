@@ -5,6 +5,7 @@
 //! channels in record order, so a reader that knows where it started knows every position.
 //! Retention deletes whole oldest segments and never blocks the writer.
 
+mod format;
 mod read;
 
 #[cfg(test)]
@@ -16,6 +17,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use format::{HEADER, content_len, name, parse, segments};
 use ma2a_core::service::{Channel, LogWindow};
 
 pub use read::{LogRead, read, window};
@@ -24,7 +26,6 @@ pub use read::{LogRead, read, window};
 pub const SEGMENT_BYTES: u64 = 1_048_576;
 /// Largest content of one record: one data frame.
 pub const MAX_RECORD_LEN: u32 = 65_535;
-const HEADER: usize = 5;
 
 /// One retained output chunk.
 pub type LogRecord = (Channel, Vec<u8>);
@@ -44,64 +45,6 @@ impl Segment {
             file_bytes: 0,
         }
     }
-}
-
-fn name(first: u64) -> String {
-    format!("{first:020}.seg")
-}
-
-const fn channel(code: u8) -> Option<Channel> {
-    match code {
-        1 => Some(Channel::Output),
-        2 => Some(Channel::Error),
-        _ => None,
-    }
-}
-
-/// Lists segment first cursors in ascending order.
-fn segments(directory: &Path) -> io::Result<Vec<u64>> {
-    let mut firsts = Vec::new();
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let Some(stem) = file_name
-            .to_str()
-            .and_then(|text| text.strip_suffix(".seg"))
-        else {
-            continue;
-        };
-        if stem.len() == 20
-            && stem.bytes().all(|byte| byte.is_ascii_digit())
-            && let Ok(first) = stem.parse()
-        {
-            firsts.push(first);
-        }
-    }
-    firsts.sort_unstable();
-    Ok(firsts)
-}
-
-/// Parses complete records of one segment; a torn final record is ignored.
-fn parse(bytes: &[u8]) -> Vec<(Channel, &[u8])> {
-    let mut records = Vec::new();
-    let mut rest = bytes;
-    while let Some((header, body)) = rest.split_first_chunk::<HEADER>() {
-        let [code, length @ ..] = *header;
-        let length = usize::try_from(u32::from_be_bytes(length)).unwrap_or(usize::MAX);
-        let (Some(channel), Some(content)) = (channel(code), body.get(..length)) else {
-            break;
-        };
-        records.push((channel, content));
-        rest = body.get(length..).unwrap_or_default();
-    }
-    records
-}
-
-fn content_len(records: &[(Channel, &[u8])]) -> u64 {
-    records
-        .iter()
-        .map(|(_, bytes)| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-        .sum()
 }
 
 /// Appends output and enforces the retention bound.
@@ -169,20 +112,17 @@ impl LogWriter {
             if self.retention_blocked(record_len) {
                 // Close the open segment before discarding so resumed output starts a new
                 // segment past the discarded cursor gap rather than appending across it.
-                if self.current.is_some() {
-                    let _synced = self.sync();
-                    self.current = None;
-                }
+                self.seal();
                 self.discarded = self.discarded.saturating_add(u64::from(length));
                 return Ok(self.end);
             }
-            if self.discarded > 0 {
-                self.end = self.end.saturating_add(self.discarded);
-                self.discarded = 0;
-            }
         }
-        if self.needs_rotate() {
-            self.rotate()?;
+        if self.needs_rotate()
+            && let Err(error) = self.rotate()
+        {
+            self.seal();
+            self.discarded = self.discarded.saturating_add(u64::from(length));
+            return Err(error);
         }
         let file = self
             .current
@@ -193,17 +133,15 @@ impl LogWriter {
         record.extend_from_slice(&length.to_be_bytes());
         record.extend_from_slice(bytes);
         if let Err(error) = file.write_all(&record) {
-            // A partly written record would shift every later one, so the segment is cut back
-            // to its last whole record. If that fails, the next append starts a new segment
-            // and the torn record stays last in this one, where reads ignore it; a segment
-            // with no whole record is started again instead.
+            // Roll back any partly written record, seal the segment, and account the dropped
+            // chunk as a pending gap so the next segment or exit marker records a skip rather
+            // than splicing bytes around the loss.
             let whole = self.segments.back().map_or(0, |last| last.file_bytes);
-            let cut = file
+            let _cut = file
                 .set_len(whole)
                 .and_then(|()| file.seek(SeekFrom::Start(whole)));
-            if cut.is_err() {
-                self.current = None;
-            }
+            self.seal();
+            self.discarded = self.discarded.saturating_add(u64::from(length));
             return Err(error);
         }
         let added = u64::from(length);
@@ -271,24 +209,35 @@ impl LogWriter {
         }
     }
 
+    fn seal(&mut self) {
+        if self.current.is_some() {
+            let _synced = self.sync();
+            self.current = None;
+        }
+    }
+
     fn rotate(&mut self) -> io::Result<()> {
         self.sync()?;
+        let next_end = self.end.saturating_add(self.discarded);
         // A segment still without a whole record lost its first one and could not be cut back:
         // it is this writer's own, at this cursor, and is started again empty.
-        let again = self
-            .segments
-            .back()
-            .is_some_and(|last| last.content == 0 && last.first == self.end);
+        let again = self.discarded == 0
+            && self
+                .segments
+                .back()
+                .is_some_and(|last| last.content == 0 && last.first == next_end);
         // Written in place rather than appended: on Windows an append-only handle cannot be
         // truncated back after a failed write.
         let file = OpenOptions::new()
             .create_new(!again)
             .write(true)
             .truncate(again)
-            .open(self.directory.join(name(self.end)))?;
+            .open(self.directory.join(name(next_end)))?;
         self.current = Some(file);
+        self.end = next_end;
+        self.discarded = 0;
         if !again {
-            self.segments.push_back(Segment::empty(self.end));
+            self.segments.push_back(Segment::empty(next_end));
         }
         Ok(())
     }

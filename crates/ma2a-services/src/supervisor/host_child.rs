@@ -274,6 +274,9 @@ fn signal_group(spawned: &mut Spawned, signal: ProcessSignal) -> Result<(), Serv
     }
 }
 
+#[cfg(all(test, unix))]
+#[path = "host_child_log_tests.rs"]
+mod log_tests;
 #[cfg(test)]
 #[path = "host_child_tests.rs"]
 mod tests;

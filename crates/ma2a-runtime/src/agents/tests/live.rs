@@ -1339,3 +1339,97 @@ async fn retention_pressure_refuses_new_start_when_every_ended_process_is_bound(
     live.finish().await?;
     Ok(())
 }
+
+#[cfg(unix)]
+fn with_file_size_limit<T>(limit: u64, write: impl FnOnce() -> T) -> TestResult<T> {
+    use rustix::process::{Resource, Signal, getrlimit, setrlimit};
+    let _caught = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(
+        Signal::XFSZ.as_raw(),
+    ))?;
+    let previous = getrlimit(Resource::Fsize);
+    let mut lowered = previous;
+    lowered.current = Some(limit);
+    setrlimit(Resource::Fsize, lowered)?;
+    let result = write();
+    setrlimit(Resource::Fsize, previous)?;
+    Ok(result)
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_log_write_resets_agent_parser_so_cut_line_is_discarded() -> TestResult {
+    use ma2a_core::service::{Channel, ProcessState, Termination};
+    use ma2a_services::supervisor::{log::LogWriter, log_directory};
+    use ma2a_store::{NewProcess, ProcessTransition};
+
+    // Given: a running Agent task whose bound Process writes a JSON line split across a failed
+    // log write, followed by a valid completion line.
+    let live = Live::new().await?;
+    let process = ProcessId::from_bytes([4; 16]);
+    let mut repository = Repository::open(&live.config)?;
+    let local = repository.endpoint()?.ok_or("no endpoint")?.endpoint_id();
+    let spec = ProcessSpec::new(Some("/bin/true".to_owned()), Vec::new(), None)?;
+    let start = ProcessStart::new(spec, true, MAX_LOG_LIMIT)?.to_bytes()?;
+    let new = NewProcess {
+        id: process,
+        binding: (local, RequestId::random()?),
+        fingerprint: [7; 32],
+        start: (&start, None),
+        secret: [8; 32],
+        created_ms: 3,
+    };
+    repository.create_process(&new)?;
+    for (to, termination, at_ms) in [
+        (ProcessState::Starting, None, 4),
+        (ProcessState::Running, None, 5),
+        (ProcessState::Exited, Some(Termination::Exited(0)), 9),
+    ] {
+        repository.transition_process(
+            process,
+            ProcessTransition {
+                to,
+                reason: None,
+                termination,
+                at_ms,
+            },
+        )?;
+    }
+    drop(repository);
+
+    let dir = live.dir.join("processes-v1").join(process.to_string());
+    let mut log = LogWriter::create(&log_directory(&dir), u64::from(MAX_LOG_LIMIT))?;
+    log.append(Channel::Output, b"\n")?;
+    let cut_prefix = format!(
+        r#"{{"t":"state","task":"{}","state":"completed","message":{{"role":"agent","parts":[{{"kind":"text","text":"should "#,
+        live.task
+    );
+    log.append(Channel::Output, cut_prefix.as_bytes())?;
+    let file_bytes = u64::try_from((5 + 1) + (5 + cut_prefix.len()))?;
+    let failed = with_file_size_limit(file_bytes + 7, || log.append(Channel::Output, b"never "))?;
+    assert!(failed.is_err(), "{failed:?}");
+    let after_skip = format!(
+        "commit\"}}]}}}}\n{{\"t\":\"state\",\"task\":\"{}\",\"state\":\"completed\",\"message\":{{\"role\":\"agent\",\"parts\":[{{\"kind\":\"text\",\"text\":\"valid after skip\"}}]}}}}\n",
+        live.task
+    );
+    log.append(Channel::Output, after_skip.as_bytes())?;
+    log.finish()?;
+
+    // When: the link drains the instance output.
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        live.manager.follow_instance(&live.agent, live.generation),
+    )
+    .await?;
+
+    // Then: the cut line was discarded across the gap rather than spliced as "should commit", and
+    // the next complete line took effect.
+    let repository = Repository::open(&live.config)?;
+    let record = repository.agent_task(live.task)?.ok_or("missing task")?;
+    live.finish().await?;
+    assert_eq!(record.summary.state, AgentTaskState::Completed);
+    assert_eq!(
+        record.result,
+        Some(AgentMessage::text(MessageRole::Agent, "valid after skip")?)
+    );
+    Ok(())
+}
