@@ -83,11 +83,7 @@ where
         First::Accepted(frame) => accepted(&frame)?,
     };
     let start = reading(&accept, from)?;
-    let ProcessIo {
-        input,
-        output,
-        error,
-    } = local;
+    let (input, output, error) = (local.input, local.output, local.error);
     let (lost, stop) = (Notify::new(), CancellationToken::new());
     let outbound = outbound(reader, (output, error), (&lost, &stop, start));
     tokio::pin!(outbound);
@@ -209,6 +205,7 @@ where
     let mut discarding = false;
     loop {
         let frame = next(reader).await?;
+        let stopped = unwritten.is_some() || discarding || stop.is_cancelled();
         match frame.kind() {
             FrameKind::Outcome => {
                 return Ok(Received {
@@ -222,7 +219,9 @@ where
             }
             FrameKind::Control => {
                 reached = skipped(&mut gaps, &frame, reached)?;
-                if !discarding && !stop.is_cancelled() && unwritten.is_none() {
+                if stopped {
+                    discarding = true;
+                } else {
                     delivered = reached;
                 }
             }
@@ -233,12 +232,14 @@ where
                 }
                 reached = advanced(reached, bytes.len())?;
                 if channel == Channel::Error && error.is_none() {
-                    if !discarding && !stop.is_cancelled() && unwritten.is_none() {
+                    if stopped {
+                        discarding = true;
+                    } else {
                         delivered = reached;
                     }
                     continue;
                 }
-                if unwritten.is_some() || discarding || stop.is_cancelled() {
+                if stopped {
                     discarding = true;
                     continue;
                 }

@@ -956,3 +956,80 @@ async fn a_detached_attachment_exposes_a_safe_resume_cursor_and_preserves_omitte
     assert!(attached.delivery_interrupted);
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn skipped_and_omitted_stderr_after_cancel_flag_delivery_interrupted() -> TestResult {
+    // 1. Control(Skipped) arriving after stop cancels, followed directly by Completed outcome,
+    //    must set delivery_interrupted so the caller does not report a clean end at cursor 0.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let target = async {
+        let (kind, accept) = reading(0, (0, 0))?;
+        target_writer.frame(kind, &accept).await?;
+        target_writer.flush().await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        let (kind, skip) = skipped(1000)?;
+        target_writer.frame(kind, &skip).await?;
+        let (kind, outcome) = detached(EndReason::Completed, process(1), 1000)?;
+        target_writer.frame(kind, &outcome).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (
+            (process(1), LogFrom::Start),
+            ProcessIo {
+                input: None::<&[u8]>,
+                output: Vec::new(),
+                error: None::<Vec<u8>>,
+            },
+        ),
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (attached, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    let attached = attached?;
+    assert_eq!(attached.reason, EndReason::Completed);
+    assert_eq!(attached.cursor, 0);
+    assert_eq!(attached.gaps.count, 1);
+    assert_eq!(attached.gaps.resumed_at, Some(1000));
+    assert!(attached.delivery_interrupted);
+
+    // 2. Dropped stderr Data (error: None) arriving after stop cancels, followed directly by
+    //    Completed outcome, must also set delivery_interrupted.
+    let ((mut reader, mut writer), (mut target_reader, mut target_writer)) = pipe();
+    let err_data = (
+        FrameKind::Data,
+        [&[Channel::Error as u8][..], b"err"].concat(),
+    );
+    let target = async {
+        let (kind, accept) = reading(0, (0, 0))?;
+        target_writer.frame(kind, &accept).await?;
+        target_writer.flush().await?;
+        assert_eq!(target_reader.expect().await?.kind(), FrameKind::Cancel);
+        target_writer.frame(err_data.0, &err_data.1).await?;
+        let (kind, outcome) = detached(EndReason::Completed, process(1), 3)?;
+        target_writer.frame(kind, &outcome).await?;
+        target_writer.flush().await?;
+        TestResult::Ok(())
+    };
+    let caller = hosted::attach(
+        (&mut reader, &mut writer),
+        (
+            (process(1), LogFrom::Start),
+            ProcessIo {
+                input: None::<&[u8]>,
+                output: Vec::new(),
+                error: None::<Vec<u8>>,
+            },
+        ),
+        tokio::time::sleep(Duration::from_millis(50)),
+    );
+    let (attached, scripted) = within(async { tokio::join!(caller, target) }).await?;
+    scripted?;
+    let attached = attached?;
+    assert_eq!(attached.reason, EndReason::Completed);
+    assert_eq!(attached.cursor, 0);
+    assert!(attached.delivery_interrupted);
+    Ok(())
+}
