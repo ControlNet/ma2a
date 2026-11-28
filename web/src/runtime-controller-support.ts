@@ -1,4 +1,4 @@
-import type { StampedRuntimeSnapshot } from "./api/client"
+import type { RuntimeSnapshot, SpaceDetails, StampedRuntimeSnapshot } from "./api/client"
 
 export type RuntimeRetryScheduler = {
   readonly schedule: (delayMs: number, task: () => void) => () => void
@@ -22,4 +22,22 @@ export function isSnapshotAtLeast(
     return candidate.snapshot.revision > current.snapshot.revision
   }
   return candidate.snapshot.view_sequence >= current.snapshot.view_sequence
+}
+
+export function detailMatchesSpace(
+  detail: SpaceDetails,
+  space: RuntimeSnapshot["spaces"][number],
+): boolean {
+  return (
+    detail.space.space_id === space.space_id &&
+    detail.space.chain_hash === space.chain_hash &&
+    detail.space.member_count === space.member_count &&
+    detail.space.generation === space.generation
+  )
+}
+
+export function retryDelayMs(attempt: number, hasSnapshot: boolean): number | undefined {
+  return hasSnapshot
+    ? RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]
+    : RETRY_DELAYS_MS[attempt]
 }

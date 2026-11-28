@@ -8,9 +8,10 @@ import {
 import type { SpaceDetails } from "./api/codec"
 import {
   browserRetryScheduler,
+  detailMatchesSpace,
   isSnapshotAtLeast,
-  RETRY_DELAYS_MS,
   type RuntimeRetryScheduler,
+  retryDelayMs,
 } from "./runtime-controller-support"
 import { runtimeViewFromSnapshot } from "./runtime-view"
 import type { ConnectionState, RuntimeViewData } from "./view-model"
@@ -109,6 +110,8 @@ export class RuntimeController {
     if (this.stopped) return
     if (this.coordinator.currentState().kind === "uncertain") {
       this.offline = true
+      this.refreshQueued = false
+      this.dropEvents()
       this.emit("offline")
       this.scheduleRetry()
     } else if (this.refreshQueued) {
@@ -122,6 +125,10 @@ export class RuntimeController {
     this.clearDetails()
     this.cancelRetry?.()
     this.cancelRetry = undefined
+    this.dropEvents()
+  }
+
+  private dropEvents(): void {
     this.closeEvents?.()
     this.closeEvents = undefined
   }
@@ -152,7 +159,7 @@ export class RuntimeController {
     this.cancelRetry = undefined
     this.emit("online")
     this.loadDetails()
-    this.closeEvents?.()
+    this.dropEvents()
     // A stream the Runtime refuses at once, as when every event connection is taken, would
     // otherwise reload the snapshot in a tight loop. Only an open stream resets the pause, and
     // only losing one reconnects at once. A refused stream missed no event, so the details
@@ -166,7 +173,9 @@ export class RuntimeController {
           opened = true
           this.retryAttempt = 0
         },
-        onEvent: () => void this.refresh(),
+        onEvent: () => {
+          if (!this.offline) void this.refresh()
+        },
         onResyncRequired: () => {
           this.clearDetails()
           void this.refresh()
@@ -218,12 +227,7 @@ export class RuntimeController {
             (item) => item.space_id === space.space_id,
           )
           if (current === undefined || current.chain_hash !== space.chain_hash) return
-          if (
-            detail.space.space_id !== space.space_id ||
-            detail.space.chain_hash !== current.chain_hash ||
-            detail.space.member_count !== current.member_count ||
-            detail.space.generation !== current.generation
-          ) {
+          if (!detailMatchesSpace(detail, current)) {
             this.failedDetails.add(space.space_id)
             this.callbacks.onError(
               new Error("Space membership changed while loading; refresh to retry."),
@@ -270,10 +274,7 @@ export class RuntimeController {
 
   private scheduleRetry(): void {
     if (this.stopped || this.cancelRetry !== undefined) return
-    const delay =
-      this.latest === undefined
-        ? RETRY_DELAYS_MS[this.retryAttempt]
-        : RETRY_DELAYS_MS[Math.min(this.retryAttempt, RETRY_DELAYS_MS.length - 1)]
+    const delay = retryDelayMs(this.retryAttempt, this.latest !== undefined)
     if (delay === undefined) return
     this.retryAttempt += 1
     this.cancelRetry = this.scheduler.schedule(delay, () => {
