@@ -6,7 +6,7 @@ use std::time::Duration;
 use ma2a_agent::protocol::ToolError;
 use ma2a_core::{
     RequestId, ServiceKind,
-    service::{FrameKind, OpenBody, OpenHeader, ServiceError},
+    service::{OpenBody, OpenHeader, ServiceError},
 };
 use ma2a_services::{FrameReader, FrameWriter};
 use serde_json::{Value, json};
@@ -88,13 +88,17 @@ impl Call<'_> {
         let header = OpenHeader::new(request_id, target, body)
             .encode()
             .map_err(|_| ToolError::new("invalid_tool", "the request exceeds a protocol bound"))?;
-        writer
-            .frame(FrameKind::Open, &header)
-            .await
-            .map_err(status)?;
-        writer.flush().await.map_err(status)?;
+        write_open_header(&mut writer, &header).await?;
         Ok((reader, writer))
     }
+}
+
+/// Writes and flushes the initial `open` frame of one remote tool call.
+async fn write_open_header<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut FrameWriter<W>,
+    header: &[u8],
+) -> Result<(), ToolError> {
+    writer.write_open(header).await.map_err(status)
 }
 
 impl Call<'_> {
@@ -157,4 +161,80 @@ fn refused(response: &[u8]) -> ToolError {
         .and_then(Value::as_str)
         .unwrap_or("this Runtime refused the stream");
     ToolError::new(code, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use ma2a_services::FrameWriter;
+
+    use super::write_open_header;
+
+    struct FailsAfterWrite {
+        remaining: usize,
+        fail_flush: bool,
+    }
+
+    impl tokio::io::AsyncWrite for FailsAfterWrite {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.remaining == 0 {
+                return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+            }
+            let take = buffer.len().min(self.remaining);
+            self.remaining -= take;
+            Poll::Ready(Ok(take))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.fail_flush {
+                Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn broken_open_write_after_sent_bytes_reports_outcome_unknown() {
+        let mut before_any_byte = FrameWriter::new(FailsAfterWrite {
+            remaining: 0,
+            fail_flush: false,
+        });
+        let early = write_open_header(&mut before_any_byte, b"open-header")
+            .await
+            .expect_err("write before any byte fails");
+        assert_eq!(early.code, "cancelled");
+
+        for (remaining, fail_flush) in [(2, false), (5, false), (7, false), (usize::MAX, true)] {
+            let mut writer = FrameWriter::new(FailsAfterWrite {
+                remaining,
+                fail_flush,
+            });
+            let error = write_open_header(&mut writer, b"open-header")
+                .await
+                .expect_err("partial write or failed flush fails");
+            assert_eq!(
+                error.code, "outcome_unknown",
+                "remaining={remaining}, fail_flush={fail_flush}"
+            );
+        }
+    }
 }
