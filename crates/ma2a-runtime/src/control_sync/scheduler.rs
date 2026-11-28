@@ -1,10 +1,10 @@
-use std::{collections::BTreeSet, future::Future, sync::Arc};
+use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
 
 use ma2a_net::{
     CONTROL_DIAL_CONCURRENCY, CONTROL_ROUND_DEADLINE, ControlClient, exchange_control_with_retry,
 };
 use tokio::task::JoinSet;
-use tokio::time::timeout;
+use tokio::time::Sleep;
 
 use crate::{
     RuntimeClock,
@@ -39,31 +39,57 @@ impl ControlRoundRunner {
         self,
         request: ControlRoundRequest,
     ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
-        with_control_deadline(self.run_within_deadline(request)).await?
+        let client = self.client.clone();
+        self.run_with_dialer(request, move |peer, request| {
+            let client = client.clone();
+            async move { exchange_control_with_retry(&client, peer, &request).await }
+        })
+        .await
     }
 
-    async fn run_within_deadline(
+    async fn run_with_dialer<Dial, DialFuture, DialError>(
         self,
         request: ControlRoundRequest,
-    ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
+        dial: Dial,
+    ) -> Result<Option<ControlRoundOutcome>, ControlFailure>
+    where
+        Dial: Fn(ma2a_core::EndpointId, Vec<u8>) -> DialFuture + Clone + Send + 'static,
+        DialFuture: Future<Output = Result<Vec<u8>, DialError>> + Send + 'static,
+        DialError: Send + 'static,
+    {
+        let mut progress = RoundProgress::default();
+        let deadline = tokio::time::sleep(CONTROL_ROUND_DEADLINE);
+        tokio::pin!(deadline);
+        match self
+            .run_within_deadline((request, dial), (&mut progress, deadline))
+            .await
+        {
+            Ok(outcome) => Ok(outcome),
+            Err(failure) => progress.finish_error(failure),
+        }
+    }
+
+    async fn run_within_deadline<Dial, DialFuture, DialError>(
+        self,
+        (request, dial): (ControlRoundRequest, Dial),
+        (progress, mut deadline): (&mut RoundProgress, Pin<&mut Sleep>),
+    ) -> Result<Option<ControlRoundOutcome>, ControlFailure>
+    where
+        Dial: Fn(ma2a_core::EndpointId, Vec<u8>) -> DialFuture + Clone + Send + 'static,
+        DialFuture: Future<Output = Result<Vec<u8>, DialError>> + Send + 'static,
+        DialError: Send + 'static,
+    {
         let local_endpoint_id = request.local_endpoint_id;
-        let prepared = self.store.prepare_control_round(request).await?;
-        let dialed_peers: BTreeSet<_> = prepared.iter().map(|entry| entry.peer).collect();
+        let prepared =
+            run_before_deadline(&mut deadline, self.store.prepare_control_round(request)).await??;
+        progress.dialed_peers = prepared.iter().map(|entry| entry.peer).collect();
         let mut pending = DialQueue::new(prepared);
         let had_peers = !pending.is_empty();
         let mut dials = JoinSet::new();
-        let mut latest = None;
         let mut synchronized_peers = BTreeSet::new();
-        let mut changes = crate::control_sync::ControlChanges::default();
         while !pending.is_empty() || !dials.is_empty() {
-            spawn_control_dials(&mut pending, &mut dials, {
-                let client = self.client.clone();
-                move |peer, request| {
-                    let client = client.clone();
-                    async move { exchange_control_with_retry(&client, peer, &request).await }
-                }
-            });
-            let Some(joined) = dials.join_next().await else {
+            spawn_control_dials(&mut pending, &mut dials, dial.clone());
+            let Some(joined) = run_before_deadline(&mut deadline, dials.join_next()).await? else {
                 break;
             };
             let (peer, spaces, response) = joined.map_err(RuntimeError::from)?;
@@ -101,32 +127,70 @@ impl ControlRoundRunner {
             };
             pending.finished(peer, true);
             synchronized_peers.insert(peer);
-            changes.merge(applied);
-            latest = Some(revision);
+            progress.record(revision, applied);
         }
         // A peer whose Spaces were split across requests is synchronized only if all of them
         // succeeded.
         synchronized_peers.retain(|peer| !pending.failed().contains(peer));
-        if had_peers && latest.is_none() {
+        if had_peers && progress.latest.is_none() {
             return Err(ma2a_net::ControlRejection::Unavailable.into());
         }
         let incomplete = had_peers && synchronized_peers.is_empty();
-        Ok(latest.map(|revision| ControlRoundOutcome {
+        Ok(progress.latest.map(|revision| ControlRoundOutcome {
             revision,
-            dialed_peers,
+            dialed_peers: std::mem::take(&mut progress.dialed_peers),
             synchronized_peers,
-            changes,
+            changes: std::mem::take(&mut progress.changes),
             incomplete,
         }))
     }
 }
 
-async fn with_control_deadline<Output>(
+#[derive(Default)]
+struct RoundProgress {
+    dialed_peers: BTreeSet<ma2a_core::EndpointId>,
+    latest: Option<u64>,
+    changes: crate::control_sync::ControlChanges,
+}
+
+impl RoundProgress {
+    const fn record(&mut self, revision: u64, applied: crate::control_sync::ControlChanges) {
+        self.changes.merge(applied);
+        self.latest = Some(revision);
+    }
+
+    fn finish_error(
+        self,
+        failure: ControlFailure,
+    ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
+        let Some(revision) = self.latest else {
+            return Err(failure);
+        };
+        match failure {
+            ControlFailure::Rejected(_) => {}
+            ControlFailure::Runtime(error) => {
+                crate::actor::Actor::absorb_background("control completion", Err(error))?;
+            }
+        }
+        Ok(Some(ControlRoundOutcome {
+            revision,
+            dialed_peers: self.dialed_peers,
+            synchronized_peers: BTreeSet::new(),
+            changes: self.changes,
+            incomplete: true,
+        }))
+    }
+}
+
+async fn run_before_deadline<Output>(
+    deadline: &mut Pin<&mut Sleep>,
     operation: impl Future<Output = Output>,
 ) -> Result<Output, ControlFailure> {
-    timeout(CONTROL_ROUND_DEADLINE, operation)
-        .await
-        .map_err(|_| ma2a_net::ControlRejection::Unavailable.into())
+    tokio::select! {
+        biased;
+        () = deadline.as_mut() => Err(ma2a_net::ControlRejection::Unavailable.into()),
+        output = operation => Ok(output),
+    }
 }
 
 type DialOutcome<DialError> = (
@@ -161,117 +225,6 @@ fn spawn_control_dials<Dial, DialFuture, DialError>(
 #[cfg(test)]
 mod clock_tests;
 #[cfg(test)]
-mod tests {
-    use std::{
-        error::Error,
-        future::pending,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-    };
-
-    use ma2a_net::{CONTROL_DIAL_CONCURRENCY, EndpointSecret};
-    use tokio::sync::Semaphore;
-
-    use super::{DialQueue, spawn_control_dials, with_control_deadline};
-    use crate::control_sync::PreparedControlPeer;
-
-    type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
-
-    fn prepared_peer(seed: u8) -> TestResultValue<PreparedControlPeer> {
-        let peer = EndpointSecret::parse(&[seed; 32])?.endpoint_id();
-        Ok(PreparedControlPeer {
-            peer,
-            request: vec![seed],
-            spaces: Vec::new(),
-        })
-    }
-
-    type TestResultValue<T> = Result<T, Box<dyn Error + Send + Sync>>;
-
-    #[tokio::test(start_paused = true)]
-    async fn aggregate_round_deadline_cancels_hanging_dials() -> TestResult {
-        // Given
-        // When
-        let task = tokio::spawn(with_control_deadline(pending::<()>()));
-        tokio::task::yield_now().await;
-        tokio::time::advance(ma2a_net::CONTROL_ROUND_DEADLINE).await;
-        let result = task.await?;
-
-        // Then
-        assert!(result.is_err());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn dial_collection_never_exceeds_runtime_concurrency() -> TestResult {
-        // Given
-        let queue = DialQueue::new(
-            (0..=CONTROL_DIAL_CONCURRENCY)
-                .map(|offset| prepared_peer(0x50_u8.saturating_add(u8::try_from(offset)?)))
-                .collect::<TestResultValue<Vec<_>>>()?,
-        );
-        let gate = Arc::new(Semaphore::new(0));
-        let active = Arc::new(AtomicUsize::new(0));
-        let maximum = Arc::new(AtomicUsize::new(0));
-        let started = Arc::new(AtomicUsize::new(0));
-
-        // When
-        let mut queue = queue;
-        let mut dials = tokio::task::JoinSet::new();
-        spawn_control_dials(&mut queue, &mut dials, {
-            let gate = Arc::clone(&gate);
-            let active = Arc::clone(&active);
-            let maximum = Arc::clone(&maximum);
-            let started = Arc::clone(&started);
-            move |_, _| {
-                let gate = Arc::clone(&gate);
-                let active = Arc::clone(&active);
-                let maximum = Arc::clone(&maximum);
-                let started = Arc::clone(&started);
-                async move {
-                    started.fetch_add(1, Ordering::SeqCst);
-                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-                    maximum.fetch_max(current, Ordering::SeqCst);
-                    gate.acquire()
-                        .await
-                        .map_err(std::io::Error::other)?
-                        .forget();
-                    active.fetch_sub(1, Ordering::SeqCst);
-                    Ok::<Vec<u8>, std::io::Error>(Vec::new())
-                }
-            }
-        });
-        while started.load(Ordering::SeqCst) < CONTROL_DIAL_CONCURRENCY {
-            tokio::task::yield_now().await;
-        }
-
-        // Then
-        assert_eq!(started.load(Ordering::SeqCst), CONTROL_DIAL_CONCURRENCY);
-        assert_eq!(maximum.load(Ordering::SeqCst), CONTROL_DIAL_CONCURRENCY);
-        gate.add_permits(CONTROL_DIAL_CONCURRENCY + 1);
-        let mut completed = 0;
-        while let Some(joined) = dials.join_next().await {
-            let (peer, _spaces, response) = joined?;
-            response?;
-            queue.finished(peer, true);
-            completed += 1;
-            spawn_control_dials(&mut queue, &mut dials, {
-                let gate = Arc::clone(&gate);
-                move |_, _| {
-                    let gate = Arc::clone(&gate);
-                    async move {
-                        gate.acquire()
-                            .await
-                            .map_err(std::io::Error::other)?
-                            .forget();
-                        Ok::<Vec<u8>, std::io::Error>(Vec::new())
-                    }
-                }
-            });
-        }
-        assert_eq!(completed, CONTROL_DIAL_CONCURRENCY + 1);
-        Ok(())
-    }
-}
+mod deadline_tests;
+#[cfg(test)]
+mod tests;

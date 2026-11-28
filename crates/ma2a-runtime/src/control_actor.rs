@@ -120,7 +120,7 @@ impl Actor {
                 };
                 self.retain_control_completion(outcome.changes, peers.clone());
                 if outcome.incomplete {
-                    // Every dialed peer left a request unanswered; its committed part stays.
+                    // The round failed before finishing; its committed changes still stay.
                     failure = Some(ma2a_net::ControlRejection::Unavailable.into());
                 }
                 (peers, Some(outcome.dialed_peers))
