@@ -35,7 +35,7 @@ export function RelaysScreen({
                     <CoverageMatrix
                       caption="MA2A Private Relay coverage by Space"
                       rows={runtime.privateRelayCandidates.map((relay) => ({
-                        id: relay.providerEndpointId,
+                        id: `${relay.providerEndpointId}\0${relay.relayUrl}`,
                         name: relay.relayUrl,
                         detail: `provider ${shortId(relay.providerEndpointId)}`,
                         covers: runtime.spaces.map((space) =>

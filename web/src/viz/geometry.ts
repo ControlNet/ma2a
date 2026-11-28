@@ -57,3 +57,17 @@ export function dialArc(from: number, to: number, cx: number, cy: number, radius
   const sweep = to - from > 0.5 ? 1 : 0
   return `M${x0} ${y0} A${radius} ${radius} 0 ${sweep} 1 ${x1} ${y1}`
 }
+
+/** Disambiguates repeated base keys in render order without falling back to array indices. */
+export function withUniqueKeys<T>(
+  items: readonly T[],
+  baseKey: (item: T) => string,
+): readonly { readonly item: T; readonly key: string }[] {
+  const counts = new Map<string, number>()
+  return items.map((item) => {
+    const base = baseKey(item)
+    const seen = counts.get(base) ?? 0
+    counts.set(base, seen + 1)
+    return { item, key: seen === 0 ? base : `${base}#${seen}` }
+  })
+}

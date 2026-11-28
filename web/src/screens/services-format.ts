@@ -1,4 +1,5 @@
 import type { ServiceExposure } from "../api/services"
+import { withUniqueKeys } from "../viz/geometry"
 
 const UNITS = ["B", "KiB", "MiB", "GiB", "TiB"] as const
 
@@ -47,4 +48,14 @@ export function exposureScope(exposure: ServiceExposure): string {
     case "service":
       return `service ${exposure.service ?? "?"}`
   }
+}
+
+export function keyedOperations<
+  T extends {
+    readonly direction: string
+    readonly peer_endpoint_id: string
+    readonly request_id: string
+  },
+>(entries: readonly T[]): readonly { readonly item: T; readonly key: string }[] {
+  return withUniqueKeys(entries, (op) => `${op.direction}-${op.peer_endpoint_id}-${op.request_id}`)
 }

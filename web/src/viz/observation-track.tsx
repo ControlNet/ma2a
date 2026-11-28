@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 
-import { round } from "./geometry"
+import { round, withUniqueKeys } from "./geometry"
 import { type Tone, toneColor } from "./tone"
 
 export type TrackObservation = {
@@ -40,8 +40,8 @@ export function ObservationTrack({
       width="100%"
     >
       <line stroke="var(--line)" x1="14" x2={WIDTH - 26} y1="30" y2="30" />
-      {observations.map((item) => (
-        <g key={`${item.atMs}-${item.label}`}>
+      {withUniqueKeys(observations, (item) => `${item.atMs}-${item.label}`).map(({ item, key }) => (
+        <g key={key}>
           <circle cx={x(item.atMs)} cy="30" fill={toneColor(item.tone)} r="5" />
           {item.rttMs === undefined ? null : (
             <text className="chart__caption" textAnchor="middle" x={x(item.atMs)} y="52">

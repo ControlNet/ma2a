@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest"
 
 import { render, screen, within } from "@testing-library/react"
-import { expect, test } from "vitest"
+import { expect, test, vi } from "vitest"
 
 import { EMPTY_RUNTIME_FIXTURE, MANY_RUNTIME_FIXTURE } from "../test/fixtures"
 import { SERVICES_FIXTURE } from "../test/services-fixture"
@@ -163,4 +163,78 @@ test("lists hosted services with their versions, state, and call counts only", (
     "exampleDeterministic example serviceready1, 21 of 4v1: 3, v2: 5",
     "retiredstopped10 of 1none yet",
   ])
+})
+
+test("renders active and recent operations sharing direction and request_id without duplicate keys", () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  try {
+    const sharedId = "01".repeat(16)
+    render(
+      <ServicesScreen
+        runtime={MANY_RUNTIME_FIXTURE}
+        services={{
+          status: "ready",
+          data: {
+            ...SERVICES_FIXTURE,
+            operations: {
+              active_count: 2,
+              active: [
+                {
+                  request_id: sharedId,
+                  peer_endpoint_id: "44".repeat(32),
+                  service: "shell",
+                  operation: "shell",
+                  direction: "inbound",
+                  elapsed_ms: 1_000,
+                },
+                {
+                  request_id: sharedId,
+                  peer_endpoint_id: "55".repeat(32),
+                  service: "exec",
+                  operation: "exec",
+                  direction: "inbound",
+                  elapsed_ms: 2_000,
+                },
+              ],
+              recent_count: 2,
+              recent: [
+                {
+                  request_id: sharedId,
+                  peer_endpoint_id: "44".repeat(32),
+                  service: "files",
+                  operation: "read",
+                  direction: "inbound",
+                  result: "completed",
+                  error: null,
+                  bytes_in: 10,
+                  bytes_out: 20,
+                  duration_ms: 5,
+                },
+                {
+                  request_id: sharedId,
+                  peer_endpoint_id: "44".repeat(32),
+                  service: "files",
+                  operation: "read",
+                  direction: "inbound",
+                  result: "rejected",
+                  error: "unauthorized",
+                  bytes_in: 0,
+                  bytes_out: 0,
+                  duration_ms: 1,
+                },
+              ],
+            },
+          },
+        }}
+      />,
+    )
+
+    const active = screen.getByRole("table", { name: "Operations running now" })
+    expect(within(active).getAllByRole("row").slice(1)).toHaveLength(2)
+    const recent = screen.getByRole("table", { name: "Recently finished operations, newest first" })
+    expect(within(recent).getAllByRole("row").slice(1)).toHaveLength(2)
+    expect(errorSpy).not.toHaveBeenCalled()
+  } finally {
+    errorSpy.mockRestore()
+  }
 })

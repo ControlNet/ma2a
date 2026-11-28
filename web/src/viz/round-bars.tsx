@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 
-import { round } from "./geometry"
+import { round, withUniqueKeys } from "./geometry"
 import { type Tone, toneColor } from "./tone"
 
 export type ControlRound = {
@@ -21,10 +21,10 @@ export function RoundBars({ rounds }: { readonly rounds: readonly ControlRound[]
   return (
     <figure className="rounds">
       <div className="rounds__bars">
-        {rounds.map((entry) => (
+        {withUniqueKeys(rounds, (entry) => String(entry.atMs)).map(({ item: entry, key }) => (
           <span
             className="rounds__bar"
-            key={entry.atMs}
+            key={key}
             style={{
               background: toneColor(TONES[entry.outcome]),
               blockSize: `${round(Math.max((entry.peerCount / peak) * 100, 8))}%`,

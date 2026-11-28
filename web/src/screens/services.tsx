@@ -12,7 +12,7 @@ import { Card, Section } from "../components/ui"
 import type { RuntimeViewData } from "../view-model"
 import { shortId } from "./derive"
 import { AgentTable, AgentTaskTable } from "./services-agents"
-import { byteCount, duration, exposureScope } from "./services-format"
+import { byteCount, duration, exposureScope, keyedOperations } from "./services-format"
 import { HostedServicesCard } from "./services-hosted"
 import { ProcessTable } from "./services-processes"
 
@@ -79,8 +79,8 @@ function ActiveTable({ active }: { readonly active: readonly ActiveOperation[] }
         </tr>
       </thead>
       <tbody>
-        {active.map((operation) => (
-          <tr key={`${operation.direction}-${operation.request_id}`}>
+        {keyedOperations(active).map(({ item: operation, key }) => (
+          <tr key={key}>
             <th className="ops-table__id" scope="row">
               {shortId(operation.peer_endpoint_id)}
             </th>
@@ -109,8 +109,8 @@ function RecentTable({ recent }: { readonly recent: readonly OperationRecord[] }
         </tr>
       </thead>
       <tbody>
-        {recent.map((record) => (
-          <tr key={`${record.direction}-${record.request_id}`}>
+        {keyedOperations(recent).map(({ item: record, key }) => (
+          <tr key={key}>
             <th className="ops-table__id" scope="row">
               {shortId(record.peer_endpoint_id)}
             </th>

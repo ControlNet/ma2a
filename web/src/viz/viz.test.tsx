@@ -1,13 +1,17 @@
 import "@testing-library/jest-dom/vitest"
 
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, test, vi } from "vitest"
 
+import { RelaysScreen } from "../screens/relays"
+import { MANY_RUNTIME_FIXTURE } from "../test/fixtures"
 import { Donut } from "./donut"
 import { LaneMap } from "./lane-map"
 import { MeterList } from "./meter-list"
+import { ObservationTrack } from "./observation-track"
 import { Ring } from "./ring"
+import { RoundBars } from "./round-bars"
 import { StackBar } from "./stack-bar"
 import { StateMachine } from "./state-machine"
 import { TrustChain } from "./trust-chain"
@@ -150,4 +154,70 @@ test("the trust chain separates transient handling from retention", () => {
   expect(screen.getByText("handled transiently, not retained")).toBeInTheDocument()
   expect(screen.getByText("retained here")).toBeInTheDocument()
   expect(screen.getAllByText("never present here")).toHaveLength(2)
+})
+
+test("renders multiple Private Relay URLs from one provider without duplicate React keys", () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  try {
+    const provider = "11".repeat(32)
+    render(
+      <RelaysScreen
+        runtime={{
+          ...MANY_RUNTIME_FIXTURE,
+          privateRelayCandidates: [
+            {
+              providerEndpointId: provider,
+              relayUrl: "https://relay-a.internal",
+              coveredSpaceIds: ["test-space-operations"],
+              homeCompatible: false,
+            },
+            {
+              providerEndpointId: provider,
+              relayUrl: "https://relay-b.internal",
+              coveredSpaceIds: ["test-space-operations", "test-space-laboratory"],
+              homeCompatible: false,
+            },
+          ],
+        }}
+      />,
+    )
+
+    const matrix = screen.getByRole("table", { name: "MA2A Private Relay coverage by Space" })
+    expect(within(matrix).getAllByRole("row").slice(1)).toHaveLength(2)
+    expect(screen.getByText("https://relay-a.internal")).toBeVisible()
+    expect(screen.getByText("https://relay-b.internal")).toBeVisible()
+    expect(errorSpy).not.toHaveBeenCalled()
+  } finally {
+    errorSpy.mockRestore()
+  }
+})
+
+test("renders same-millisecond observations and control rounds without duplicate React keys", () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  try {
+    const atMs = 1_700_000_000_000
+    const view = render(
+      <>
+        <ObservationTrack
+          observations={[
+            { atMs, tone: "relay", label: "relay", rttMs: 21 },
+            { atMs, tone: "relay", label: "relay", rttMs: 34 },
+          ]}
+        />
+        <RoundBars
+          rounds={[
+            { atMs, peerCount: 1, outcome: "succeeded" },
+            { atMs, peerCount: 2, outcome: "failed" },
+          ]}
+        />
+      </>,
+    )
+
+    expect(screen.getByText("21")).toBeInTheDocument()
+    expect(screen.getByText("34")).toBeInTheDocument()
+    expect(view.container.querySelectorAll(".rounds__bar")).toHaveLength(2)
+    expect(errorSpy).not.toHaveBeenCalled()
+  } finally {
+    errorSpy.mockRestore()
+  }
 })
