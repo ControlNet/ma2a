@@ -19,7 +19,7 @@ async function sources(): Promise<ReadonlyArray<readonly [string, string]>> {
         continue
       }
       if (!/\.tsx?$/.test(entry.name) || entry.name.includes(".test.")) continue
-      found.push([relative(ROOT, path), await readFile(path, "utf8")])
+      found.push([relative(ROOT, path).replaceAll("\\", "/"), await readFile(path, "utf8")])
     }
   }
   await walk(ROOT)
