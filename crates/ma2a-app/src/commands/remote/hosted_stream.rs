@@ -1,10 +1,5 @@
 //! `process logs`, `attach`, and `stdin`: output to this terminal, stdin to the Process.
 
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
-
 use ma2a_core::service::{
     EndReason, LogFrom, OpenBody, ProcessId, ProcessRequest, ServiceError, Termination,
 };
@@ -18,7 +13,7 @@ use ma2a_services::client::{
 use super::hosted_logs::{MAX_RETAINED_READS, another};
 use super::{
     hosted::Target,
-    hosted_logs::{Retained, ended_code, read_retained},
+    hosted_logs::{Interrupt, Retained, ended_code, read_retained},
     hosted_view, open,
     process::interrupted,
     stdio::StdioGuard,
@@ -50,46 +45,6 @@ pub(super) async fn logs_code(
 ) -> Result<i32, AppError> {
     let stdio = StdioGuard::default();
     Ok(logs_exit(&stdio, target, (id, from, follow)).await?.0)
-}
-
-/// Sticky Ctrl-C listener kept alive across `logs --follow` phases so Tokio's signal handler
-/// never drops its only waiter between attach and retained reads, and re-polling after firing
-/// stays ready without panicking.
-struct Interrupt {
-    fired: bool,
-    wait: Pin<Box<dyn Future<Output = ()> + Send>>,
-}
-
-impl Interrupt {
-    fn new(active: bool) -> Self {
-        Self {
-            fired: false,
-            wait: if active {
-                Box::pin(interrupted())
-            } else {
-                Box::pin(std::future::pending())
-            },
-        }
-    }
-
-    const fn is_fired(&self) -> bool {
-        self.fired
-    }
-}
-
-impl Future for Interrupt {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        if self.fired {
-            return Poll::Ready(());
-        }
-        let poll = self.wait.as_mut().poll(cx);
-        if poll.is_ready() {
-            self.fired = true;
-        }
-        poll
-    }
 }
 
 async fn detach_note(stdio: &StdioGuard, cursor: Option<u64>) -> (i32, bool) {
@@ -142,10 +97,7 @@ async fn logs_exit(
     };
     let attach = (id, LogFrom::Cursor(next));
     match hosted::attach((&mut reader, &mut writer), (attach, local), &mut interrupt).await {
-        Ok(attached) => Ok((
-            report(stdio, &attached).await,
-            attached.reason == EndReason::Completed,
-        )),
+        Ok(attached) => Ok(report(stdio, &attached).await),
         // The Process ended between the read and the attach: print what it wrote last.
         Err(ClientError::Rejected(ServiceError::NotRunning)) => {
             if interrupt.is_fired() {
@@ -226,22 +178,30 @@ async fn open_attach(
 /// Reports how the attachment ended and exits directly without waiting on stuck stdio or stdin
 /// workers: with the Process's own status once it ended, and 0 after a detach.
 async fn finish(stdio: &StdioGuard, attached: &Attached) -> ! {
-    let code = report(stdio, attached).await;
-    stdio
-        .exit_code(code, attached.reason == EndReason::Completed)
-        .await
+    let (code, flush) = report(stdio, attached).await;
+    stdio.exit_code(code, flush).await
 }
 
-/// Reports how the attachment ended, and returns the exit status for it.
-async fn report(stdio: &StdioGuard, attached: &Attached) -> i32 {
+/// Effective reason for reporting and exit: interrupted local output delivery is a detach.
+const fn effective_reason(reason: EndReason, delivery_interrupted: bool) -> EndReason {
+    if delivery_interrupted {
+        EndReason::Cancelled
+    } else {
+        reason
+    }
+}
+
+/// Reports how the attachment ended, returning the exit status and whether outputs should flush.
+async fn report(stdio: &StdioGuard, attached: &Attached) -> (i32, bool) {
     gaps(stdio, attached.gaps).await;
+    let reason = effective_reason(attached.reason, attached.delivery_interrupted);
     let process = hosted_view::summary(&attached.summary);
     let state = process.get("state").cloned().unwrap_or_default();
     note(
         stdio,
         &format!(
             "{} at cursor {}; Process {state}",
-            if attached.reason == EndReason::Cancelled {
+            if reason == EndReason::Cancelled {
                 "detached"
             } else {
                 "ended"
@@ -250,7 +210,10 @@ async fn report(stdio: &StdioGuard, attached: &Attached) -> i32 {
         ),
     )
     .await;
-    exit_code(attached.reason, attached.summary.termination)
+    (
+        exit_code(reason, attached.summary.termination),
+        reason == EndReason::Completed,
+    )
 }
 
 /// The exit status for how an attachment ended: the Process's own once it ended, as for

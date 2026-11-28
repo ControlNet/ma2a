@@ -2,7 +2,26 @@
 
 use ma2a_core::service::{EndReason, Termination};
 
-use super::{MAX_RETAINED_READS, another, exit_code};
+use super::{MAX_RETAINED_READS, another, effective_reason, exit_code};
+
+#[test]
+fn interrupted_delivery_turns_completed_attachment_into_detach() {
+    assert_eq!(
+        effective_reason(EndReason::Completed, true),
+        EndReason::Cancelled
+    );
+    assert_eq!(
+        effective_reason(EndReason::Completed, false),
+        EndReason::Completed
+    );
+    assert_eq!(
+        exit_code(
+            effective_reason(EndReason::Completed, true),
+            Some(Termination::Exited(42)),
+        ),
+        0
+    );
+}
 
 #[test]
 fn an_attachment_exits_with_the_status_of_the_process_it_saw_end() {

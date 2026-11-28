@@ -18,7 +18,11 @@ use ma2a_services::client::{ClientError, process::ProcessIo, service};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
-use super::{bounded, open, open_as, process::interrupted, stdio::StdioGuard};
+use super::{
+    bounded, open, open_as,
+    process::interrupted,
+    stdio::{StdioGuard, interrupted_io},
+};
 use crate::{AppError, cli::hosted::CallArgs};
 
 fn version_value(version: &ServiceVersion) -> Value {
@@ -152,7 +156,7 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
     drop((reader, writer));
     match called {
         Ok(called) => {
-            if stdio.stdout_stuck() {
+            if stdio.stdout_stuck() || called.delivery_interrupted {
                 stdio.exit_error(interrupted_io().into()).await;
             }
             let was_cancelled = cancelled.load(Ordering::Acquire);
@@ -178,13 +182,6 @@ pub(crate) async fn call(paths: &IpcPaths, arguments: CallArgs) -> Result<(), Ap
         }
         Err(error) => stdio.exit_error(error.into()).await,
     }
-}
-
-fn interrupted_io() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::Interrupted,
-        "standard output delivery was interrupted",
-    )
 }
 
 #[cfg(test)]

@@ -16,9 +16,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ma2a_core::service::{
-    Channel, EMPTY_ACCEPT, FrameKind, LogWindow, ProcessAccept, ProcessReply, ProcessState,
-    ServiceError, encode_call_accept, encode_call_outcome,
+use ma2a_core::{
+    RequestId,
+    service::{
+        Channel, EMPTY_ACCEPT, EndReason, FrameKind, LogWindow, ProcessAccept, ProcessId,
+        ProcessReply, ProcessResult, ProcessState, ProcessSummary, ServiceError, Termination,
+        encode_call_accept, encode_call_outcome,
+    },
 };
 use ma2a_runtime::{
     api::{LOCAL_API_VERSION, MAX_LOCAL_REQUEST_BYTES},
@@ -56,6 +60,10 @@ impl Drop for Standin {
 enum Mode {
     CancelChannel(Channel, usize),
     OkStdoutOnCancel(usize),
+    OkStderrOnCancel(usize),
+    ExecCompletedOnCancel(Channel, usize),
+    AttachCompletedOnCancel(usize),
+    LogsFollowAttachCompletedOnCancel(usize),
     DropChannelOnCancel(Channel, usize),
     LogsStderrFill(usize),
     DelayedOk(&'static [u8]),
@@ -232,6 +240,65 @@ async fn write_logs_follow_fallback(
     }
 }
 
+fn accept_payload(mode: Mode) -> Option<Vec<u8>> {
+    match mode {
+        Mode::CancelChannel(..)
+        | Mode::OkStdoutOnCancel(_)
+        | Mode::OkStderrOnCancel(_)
+        | Mode::DelayedOk(_) => Some(encode_call_accept(&[]).unwrap_or_default()),
+        Mode::DropChannelOnCancel(..) | Mode::ExecCompletedOnCancel(..) => {
+            Some(EMPTY_ACCEPT.to_vec())
+        }
+        Mode::AttachCompletedOnCancel(_) | Mode::LogsFollowAttachCompletedOnCancel(_) => {
+            (ProcessAccept::Reading {
+                state: ProcessState::Running,
+                start: 0,
+                window: LogWindow::new(0, 0),
+                truncated: false,
+            })
+            .encode()
+            .ok()
+        }
+        Mode::LogsStderrFill(_) | Mode::LogsFollowNotRunningFallback(_) => None,
+    }
+}
+
+fn cancel_outcome(mode: Mode, fill: usize) -> Option<Vec<u8>> {
+    match mode {
+        Mode::CancelChannel(..) => encode_call_outcome(Err(ServiceError::Cancelled)).ok(),
+        Mode::OkStdoutOnCancel(_) | Mode::OkStderrOnCancel(_) => {
+            encode_call_outcome(Ok(b"{\"ok\":true}")).ok()
+        }
+        Mode::ExecCompletedOnCancel(ch, _) => {
+            let bytes = u64::try_from(fill).unwrap_or(u64::MAX);
+            let (out, err) = if ch == Channel::Output {
+                (bytes, 0)
+            } else {
+                (0, bytes)
+            };
+            let result = ProcessResult::new(Termination::Exited(0), EndReason::Completed, 1)
+                .with_bytes(out, err);
+            ProcessResult::encode_outcome(&Ok(result)).ok()
+        }
+        Mode::AttachCompletedOnCancel(_) | Mode::LogsFollowAttachCompletedOnCancel(_) => {
+            let cursor = u64::try_from(fill).unwrap_or(u64::MAX);
+            let request_id = RequestId::random().ok()?;
+            let summary = ProcessSummary::new(ProcessId::from_bytes([3; 16]), request_id, 1_000)
+                .with_state(ProcessState::Exited, (None, Some(Termination::Exited(42))));
+            ProcessReply::encode_outcome(&Ok(ProcessReply::Detached(
+                EndReason::Completed,
+                summary,
+                cursor,
+            )))
+            .ok()
+        }
+        Mode::DropChannelOnCancel(..)
+        | Mode::LogsStderrFill(_)
+        | Mode::DelayedOk(_)
+        | Mode::LogsFollowNotRunningFallback(_) => None,
+    }
+}
+
 async fn handle_call(
     stream: UnixStream,
     (mode, stream_index): (Mode, usize),
@@ -255,14 +322,14 @@ async fn handle_call(
             write_logs_follow_fallback(&mut writer, stream_index, fill).await;
             return;
         }
+        Mode::LogsFollowAttachCompletedOnCancel(_) if stream_index == 0 => {
+            write_logs_follow_fallback(&mut writer, 0, 0).await;
+            return;
+        }
         _ => {}
     }
-    let accept = match mode {
-        Mode::CancelChannel(..) | Mode::OkStdoutOnCancel(_) | Mode::DelayedOk(_) => {
-            encode_call_accept(&[]).unwrap_or_default()
-        }
-        Mode::DropChannelOnCancel(..) => EMPTY_ACCEPT.to_vec(),
-        Mode::LogsStderrFill(_) | Mode::LogsFollowNotRunningFallback(_) => return,
+    let Some(accept) = accept_payload(mode) else {
+        return;
     };
     if writer.frame(FrameKind::Accept, &accept).await.is_err() {
         return;
@@ -283,10 +350,13 @@ async fn handle_call(
         return;
     }
     let (channel, fill) = match mode {
-        Mode::CancelChannel(channel, cap) | Mode::DropChannelOnCancel(channel, cap) => {
-            (channel, cap.saturating_mul(2))
-        }
-        Mode::OkStdoutOnCancel(cap) => (Channel::Output, cap.saturating_mul(2)),
+        Mode::CancelChannel(channel, cap)
+        | Mode::ExecCompletedOnCancel(channel, cap)
+        | Mode::DropChannelOnCancel(channel, cap) => (channel, cap.saturating_mul(2)),
+        Mode::OkStdoutOnCancel(cap)
+        | Mode::AttachCompletedOnCancel(cap)
+        | Mode::LogsFollowAttachCompletedOnCancel(cap) => (Channel::Output, cap.saturating_mul(2)),
+        Mode::OkStderrOnCancel(cap) => (Channel::Error, cap.saturating_mul(2)),
         Mode::LogsStderrFill(_) | Mode::DelayedOk(_) | Mode::LogsFollowNotRunningFallback(_) => {
             return;
         }
@@ -305,17 +375,7 @@ async fn handle_call(
     }
     while let Ok(Some(frame)) = reader.next().await {
         if frame.kind() == FrameKind::Cancel {
-            let outcome = match mode {
-                Mode::CancelChannel(..) => encode_call_outcome(Err(ServiceError::Cancelled)),
-                Mode::OkStdoutOnCancel(_) => encode_call_outcome(Ok(b"{\"ok\":true}")),
-                Mode::DropChannelOnCancel(..)
-                | Mode::LogsStderrFill(_)
-                | Mode::DelayedOk(_)
-                | Mode::LogsFollowNotRunningFallback(_) => {
-                    return;
-                }
-            };
-            let Ok(payload) = outcome else {
+            let Some(payload) = cancel_outcome(mode, fill) else {
                 return;
             };
             let _ = writer.frame(FrameKind::Outcome, &payload).await;
@@ -422,10 +482,18 @@ fn open_probed_pipe() -> TestResult<(PipeReader, PipeWriter, usize)> {
 }
 
 fn wait_pipe_full_and_interrupt(
+    target: (&str, bool),
+    child: &mut Child,
+    blocked: (PipeReader, usize),
+) -> TestResult<std::process::ExitStatus> {
+    Ok(wait_pipe_full_and_interrupt_with_other(target, child, blocked)?.0)
+}
+
+fn wait_pipe_full_and_interrupt_with_other(
     (label, block_stdout): (&str, bool),
     child: &mut Child,
     (blocked_read, capacity): (PipeReader, usize),
-) -> TestResult<std::process::ExitStatus> {
+) -> TestResult<(std::process::ExitStatus, Vec<u8>)> {
     let other = if block_stdout {
         drain(child.stderr.take().ok_or("missing stderr")?)
     } else {
@@ -469,8 +537,8 @@ fn wait_pipe_full_and_interrupt(
         std::thread::sleep(Duration::from_millis(20));
     };
     drop(blocked_fd);
-    let _ = other.join();
-    Ok(status)
+    let captured = other.join().unwrap_or_default();
+    Ok((status, captured))
 }
 
 #[test]
@@ -765,5 +833,120 @@ fn process_logs_follow_detaches_on_sigint_during_not_running_fallback_read() -> 
         Some(0),
         "expected detach exit 0, got {status:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn exec_interrupted_delivery_exits_nonzero_on_completed_outcome() -> TestResult {
+    // `exec`: Completed(Exited(0)) after interrupted stdout or stderr must exit non-zero.
+    for (label, channel, block_stdout) in [
+        ("exec-completed-stdout", Channel::Output, true),
+        ("exec-completed-stderr", Channel::Error, false),
+    ] {
+        let (blocked_read, blocked_write, cap) = open_probed_pipe()?;
+        let standin = start_standin(label, Mode::ExecCompletedOnCancel(channel, cap))?;
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ma2a"));
+        command
+            .arg("--state-dir")
+            .arg(&standin.state_dir)
+            .args(["exec", "--endpoint", &standin.endpoint, "--", "sleep", "30"])
+            .stdin(Stdio::null());
+        if block_stdout {
+            command
+                .stdout(Stdio::from(blocked_write))
+                .stderr(Stdio::piped());
+        } else {
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::from(blocked_write));
+        }
+        let mut child = command.spawn()?;
+        let (status, _) = wait_pipe_full_and_interrupt_with_other(
+            (label, block_stdout),
+            &mut child,
+            (blocked_read, cap),
+        )?;
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "{label}: expected exit 1 on interrupted delivery, got {status:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn service_call_interrupted_stderr_exits_nonzero_on_ok_outcome() -> TestResult {
+    // `service call`: Ok(result) after interrupted stderr (stdout not stuck) must exit 1
+    // without writing the result to stdout.
+    let (stderr_read, stderr_write, cap) = open_probed_pipe()?;
+    let standin = start_standin("service-ok-stderr", Mode::OkStderrOnCancel(cap))?;
+    let mut child = spawn_service_call(&standin, false, (None, Some(stderr_write)))?;
+    let (status, stdout) = wait_pipe_full_and_interrupt_with_other(
+        ("service-ok-stderr", false),
+        &mut child,
+        (stderr_read, cap),
+    )?;
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "service-ok-stderr: expected exit 1, got {status:?}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "service-ok-stderr: expected empty stdout, got {:?}",
+        String::from_utf8_lossy(&stdout)
+    );
+    Ok(())
+}
+
+#[test]
+fn process_attach_and_logs_follow_report_detached_on_interrupted_delivery() -> TestResult {
+    // `process attach` and `process logs --follow`: Completed(Exited(42)) after interrupted
+    // delivery must report "detached at cursor" (not "ended at cursor") and exit 0.
+    for (label, mode, args) in [
+        (
+            "attach-completed",
+            Mode::AttachCompletedOnCancel as fn(usize) -> Mode,
+            vec!["process", "attach", "--endpoint"],
+        ),
+        (
+            "logs-follow-completed",
+            Mode::LogsFollowAttachCompletedOnCancel as fn(usize) -> Mode,
+            vec!["process", "logs", "--follow", "--endpoint"],
+        ),
+    ] {
+        let (stdout_read, stdout_write, cap) = open_probed_pipe()?;
+        let standin = start_standin(label, mode(cap))?;
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ma2a"));
+        command
+            .arg("--state-dir")
+            .arg(&standin.state_dir)
+            .args(&args)
+            .args([
+                standin.endpoint.as_str(),
+                "03030303030303030303030303030303",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout_write))
+            .stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        let (status, stderr) =
+            wait_pipe_full_and_interrupt_with_other((label, true), &mut child, (stdout_read, cap))?;
+        let stderr_text = String::from_utf8_lossy(&stderr);
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "{label}: expected detach exit 0, got {status:?}; stderr={stderr_text:?}"
+        );
+        assert!(
+            stderr_text.contains("ma2a: detached at cursor "),
+            "{label}: expected detached note on stderr, got {stderr_text:?}"
+        );
+        assert!(
+            !stderr_text.contains("ma2a: ended at cursor "),
+            "{label}: unexpected ended note on stderr: {stderr_text:?}"
+        );
+    }
     Ok(())
 }

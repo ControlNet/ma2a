@@ -24,6 +24,14 @@ use crate::AppError;
 /// Upper bound on writing an exit diagnostic to stderr when stderr itself may be a full pipe.
 pub(super) const DIAGNOSTIC_GRACE: Duration = Duration::from_millis(100);
 
+/// Local I/O error reported when Ctrl-C interrupts local output delivery before completion.
+pub(super) fn interrupted_io() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "local output delivery was interrupted",
+    )
+}
+
 /// Tracks whether `tokio::io::stdout()` or `tokio::io::stderr()` has a blocking worker in flight.
 #[derive(Clone, Debug, Default)]
 pub(super) struct StdioGuard {

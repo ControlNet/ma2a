@@ -13,7 +13,10 @@ use ma2a_services::client::{
     terminal,
 };
 
-use super::{duration_ms, open, stdio::StdioGuard};
+use super::{
+    duration_ms, open,
+    stdio::{StdioGuard, interrupted_io},
+};
 use crate::{
     AppError,
     cli::services::{ExecArgs, ProgramArgs, ShellArgs},
@@ -45,6 +48,9 @@ pub(crate) async fn exec(paths: IpcPaths, arguments: ExecArgs) -> Result<(), App
     };
     match client::process::run_streamed((&mut reader, &mut writer), local, control).await {
         Ok(streamed) => {
+            if streamed.delivery_interrupted && streamed.result.reason == EndReason::Completed {
+                stdio.exit_error(interrupted_io().into()).await;
+            }
             if streamed.replayed {
                 stdio
                     .note_stderr(

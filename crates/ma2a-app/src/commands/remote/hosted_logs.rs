@@ -1,5 +1,10 @@
 //! Retained `process logs` reading and post-exit status lookup.
 
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use ma2a_core::service::{
     EndReason, LogFrom, MAX_LOGS_READ, OpenBody, ProcessAccept, ProcessId, ProcessReply,
     ProcessRequest, ServiceError,
@@ -11,9 +16,50 @@ use super::{
     hosted::Target,
     hosted_stream::{exit_code, gaps, note},
     open, open_bound,
+    process::interrupted,
     stdio::StdioGuard,
 };
 use crate::AppError;
+
+/// Sticky Ctrl-C listener kept alive across `logs --follow` phases so Tokio's signal handler
+/// never drops its only waiter between attach and retained reads, and re-polling after firing
+/// stays ready without panicking.
+pub(super) struct Interrupt {
+    fired: bool,
+    wait: Pin<Box<dyn Future<Output = ()> + Send>>,
+}
+
+impl Interrupt {
+    pub(super) fn new(active: bool) -> Self {
+        Self {
+            fired: false,
+            wait: if active {
+                Box::pin(interrupted())
+            } else {
+                Box::pin(std::future::pending())
+            },
+        }
+    }
+
+    pub(super) const fn is_fired(&self) -> bool {
+        self.fired
+    }
+}
+
+impl Future for Interrupt {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.fired {
+            return Poll::Ready(());
+        }
+        let poll = self.wait.as_mut().poll(cx);
+        if poll.is_ready() {
+            self.fired = true;
+        }
+        poll
+    }
+}
 
 /// The exit status of a Process that ended before an attachment saw it, as if it had.
 pub(super) async fn ended_code(target: Target<'_>, id: ProcessId) -> Result<i32, AppError> {
