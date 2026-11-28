@@ -318,8 +318,10 @@ The supervisor appends every chunk it reads from the child's stdout (channel 1) 
   the last complete record.
 - **Retention.** When the retained segments hold more than `log_limit` bytes, record headers
   included, whole oldest segments are deleted, but never the segment being written. Retention
-  never blocks the child. Output written in many small records therefore keeps less than
-  `log_limit` content bytes, but the disk it takes stays bounded.
+  never blocks the child. If an oldest segment cannot be deleted and the retained files already
+  reach `log_limit` plus one segment, further output is discarded until retention can reclaim
+  space, then recorded as a cursor gap when writing resumes. Output written in many small records
+  therefore keeps less than `log_limit` content bytes, but the disk it takes stays bounded.
 - **Skipped.** The `control` payload `[1, cursor: uint]` means that output before `cursor` was
   dropped by retention before this reader received it. The next byte has this cursor.
 

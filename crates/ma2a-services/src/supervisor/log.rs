@@ -7,6 +7,8 @@
 
 mod read;
 
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
@@ -100,6 +102,9 @@ pub struct LogWriter {
     segments: VecDeque<Segment>,
     current: Option<File>,
     end: u64,
+    discarded: u64,
+    #[cfg(test)]
+    blocked_deletes: BTreeSet<u64>,
 }
 
 impl LogWriter {
@@ -118,6 +123,9 @@ impl LogWriter {
             segments: VecDeque::new(),
             current: None,
             end: 0,
+            discarded: 0,
+            #[cfg(test)]
+            blocked_deletes: BTreeSet::new(),
         })
     }
 
@@ -145,12 +153,25 @@ impl LogWriter {
             .ok()
             .filter(|length| (1..=MAX_RECORD_LEN).contains(length))
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        if self.current.is_none()
-            || self
-                .segments
-                .back()
-                .is_some_and(|last| last.file_bytes >= SEGMENT_BYTES)
-        {
+        let record_len = u64::try_from(HEADER + bytes.len()).unwrap_or(u64::MAX);
+        if self.discarded > 0 || self.needs_rotate() || self.retention_blocked(record_len) {
+            self.retain();
+            if self.retention_blocked(record_len) {
+                // Close the open segment before discarding so resumed output starts a new
+                // segment past the discarded cursor gap rather than appending across it.
+                if self.current.is_some() {
+                    let _synced = self.sync();
+                    self.current = None;
+                }
+                self.discarded = self.discarded.saturating_add(u64::from(length));
+                return Ok(self.end);
+            }
+            if self.discarded > 0 {
+                self.end = self.end.saturating_add(self.discarded);
+                self.discarded = 0;
+            }
+        }
+        if self.needs_rotate() {
             self.rotate()?;
         }
         let file = self
@@ -193,11 +214,38 @@ impl LogWriter {
         self.current.as_ref().map_or(Ok(()), File::sync_all)
     }
 
+    fn retained_bytes(&self) -> u64 {
+        self.segments.iter().map(|segment| segment.file_bytes).sum()
+    }
+
+    fn needs_rotate(&self) -> bool {
+        self.current.is_none()
+            || self
+                .segments
+                .back()
+                .is_some_and(|last| last.file_bytes >= SEGMENT_BYTES)
+    }
+
+    fn retention_blocked(&self, record_bytes: u64) -> bool {
+        if self.segments.len() <= 1 {
+            return false;
+        }
+        let retained = self.retained_bytes();
+        if self.discarded > 0 || self.needs_rotate() {
+            retained > self.limit
+        } else {
+            retained.saturating_add(record_bytes) > self.limit.saturating_add(SEGMENT_BYTES)
+        }
+    }
+
     fn rotate(&mut self) -> io::Result<()> {
         self.sync()?;
         // A segment still without a whole record lost its first one and could not be cut back:
         // it is this writer's own, at this cursor, and is started again empty.
-        let again = self.segments.back().is_some_and(|last| last.content == 0);
+        let again = self
+            .segments
+            .back()
+            .is_some_and(|last| last.content == 0 && last.first == self.end);
         // Written in place rather than appended: on Windows an append-only handle cannot be
         // truncated back after a failed write.
         let file = OpenOptions::new()
@@ -226,7 +274,16 @@ impl LogWriter {
             let Some(oldest) = self.segments.front().copied() else {
                 break;
             };
-            match fs::remove_file(self.directory.join(name(oldest.first))) {
+            let path = self.directory.join(name(oldest.first));
+            #[cfg(test)]
+            let removed = if self.blocked_deletes.contains(&oldest.first) {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            } else {
+                fs::remove_file(&path)
+            };
+            #[cfg(not(test))]
+            let removed = fs::remove_file(&path);
+            match removed {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(_) => break,
