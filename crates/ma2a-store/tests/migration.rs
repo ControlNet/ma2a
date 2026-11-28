@@ -355,3 +355,39 @@ fn version_nine_exposures_migrate_unchanged_and_admit_hosted_services() -> TestR
     );
     Ok(())
 }
+
+#[test]
+fn storage_doc_matches_current_schema_version_and_lists_every_migration() -> TestResult {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let doc = std::fs::read_to_string(manifest_dir.join("../../docs/storage.md"))?;
+    let expected_heading = format!("## Schema Version {SCHEMA_VERSION}");
+    assert!(
+        doc.contains(&expected_heading),
+        "docs/storage.md must contain `{expected_heading}`"
+    );
+    let expected_reject = format!("newer than schema version {SCHEMA_VERSION}");
+    assert!(
+        doc.contains(&expected_reject),
+        "docs/storage.md must contain `{expected_reject}`"
+    );
+    let expected_range = format!("1 through {SCHEMA_VERSION} in order");
+    assert!(
+        doc.contains(&expected_range),
+        "docs/storage.md must contain `{expected_range}`"
+    );
+    for entry in std::fs::read_dir(manifest_dir.join("migrations"))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            assert!(
+                doc.contains(&format!("`{name}`")),
+                "docs/storage.md must list migration `{name}`"
+            );
+        }
+    }
+    Ok(())
+}
