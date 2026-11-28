@@ -45,7 +45,7 @@ impl ProcessManager {
         id: ProcessId,
         from: LogFrom,
     ) -> Result<(ProcessRecord, Channel, Vec<u8>), ServiceError> {
-        self.open_live((None, id), SupervisorRequest::Attach(from, true))
+        self.open_live((None, id), SupervisorRequest::AttachStrict(from))
             .await
     }
 

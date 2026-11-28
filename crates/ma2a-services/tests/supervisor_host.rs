@@ -733,3 +733,86 @@ async fn a_stdin_write_waiting_on_a_pipe_a_grandchild_keeps_ends_with_the_child(
     harness.finish().await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_attach_detaches_on_closed_stdin_while_lenient_attach_keeps_reading() -> TestResult {
+    // Given: a running child that closes stdin and keeps writing output.
+    let script = "exec <&-; echo ready; sleep 0.2; echo still-alive; exec sleep 60";
+    let harness = host("sup-attach-strict-stdin", start(script, true)?)?;
+    harness.ask(SupervisorRequest::Go).await?;
+    let output = log_directory(&harness.directory());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while log::window(&output)?.end < 6 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "child never wrote ready"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // When: an operator Attach(true) writes to the closed stdin, then cancels after reading output.
+    let mut lenient = harness
+        .open(SupervisorRequest::Attach(LogFrom::Start, true))
+        .await?;
+    assert_eq!(lenient.0.expect().await?.kind(), FrameKind::Accept);
+    lenient.1.data(DataChannel::Input, b"ignored\n").await?;
+    lenient.1.flush().await?;
+    let frame = tokio::time::timeout(Duration::from_secs(3), lenient.0.expect()).await??;
+    assert_eq!(frame.kind(), FrameKind::Data, "{frame:?}");
+    lenient.1.frame(FrameKind::Cancel, &[]).await?;
+    lenient.1.flush().await?;
+    let (_, _, frames) = follow(&mut lenient).await?;
+    assert!(matches!(
+        last_status(&frames)?,
+        SupervisorStatus::Running(..)
+    ));
+    drop(lenient);
+
+    // Then: a fresh Attach(true) is now rejected as StdinClosed, and even before any prior write
+    // a strict attachment detaches on write failure and rejects the next AttachStrict.
+    let (mut rejected, _writer) = harness
+        .open(SupervisorRequest::Attach(LogFrom::Now, true))
+        .await?;
+    assert_eq!(
+        rejected.expect().await?.rejection()?,
+        ServiceError::StdinClosed
+    );
+
+    let harness_strict = host("sup-attach-strict-only", start(script, true)?)?;
+    harness_strict.ask(SupervisorRequest::Go).await?;
+    let strict_log = log_directory(&harness_strict.directory());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while log::window(&strict_log)?.end < 6 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "strict child never wrote ready"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let mut strict = harness_strict
+        .open(SupervisorRequest::AttachStrict(LogFrom::Start))
+        .await?;
+    assert_eq!(strict.0.expect().await?.kind(), FrameKind::Accept);
+    strict.1.data(DataChannel::Input, b"fail-me\n").await?;
+    strict.1.flush().await?;
+    let (_, _, strict_frames) =
+        tokio::time::timeout(Duration::from_secs(3), follow(&mut strict)).await??;
+    assert!(matches!(
+        last_status(&strict_frames)?,
+        SupervisorStatus::Running(..)
+    ));
+    drop(strict);
+    let (mut strict_rejected, _writer) = harness_strict
+        .open(SupervisorRequest::AttachStrict(LogFrom::Now))
+        .await?;
+    assert_eq!(
+        strict_rejected.expect().await?.rejection()?,
+        ServiceError::StdinClosed
+    );
+
+    harness.ask(SupervisorRequest::Terminate(0)).await?;
+    harness.finish().await?;
+    harness_strict.ask(SupervisorRequest::Terminate(0)).await?;
+    harness_strict.finish().await?;
+    Ok(())
+}

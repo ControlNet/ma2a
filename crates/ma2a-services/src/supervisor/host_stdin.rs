@@ -198,11 +198,13 @@ async fn write(shared: &Shared, bytes: &[u8]) -> Result<(), ServiceError> {
     Ok(())
 }
 
-/// Relays channel 0 until the caller detaches, or until input the child did not take stalled,
-/// which returns `true`; `end` closes the child's stdin for good.
+/// Relays channel 0 until the caller detaches, until input the child did not take stalled,
+/// or until child-side stdin closure when `strict` is set; `end` closes the child's stdin
+/// for good.
 pub(super) async fn relay_stdin<R: AsyncRead + Unpin>(
     reader: &mut FrameReader<R>,
     shared: &Shared,
+    strict: bool,
 ) -> Result<bool, ServiceError> {
     let mut daemon = Daemon::new(reader);
     loop {
@@ -214,9 +216,11 @@ pub(super) async fn relay_stdin<R: AsyncRead + Unpin>(
                 let (Channel::Input, bytes) = frame.data()? else {
                     return Err(ServiceError::InvalidInput);
                 };
-                // Once the child closed its stdin, input is dropped; output keeps flowing.
+                // Once the child closed its stdin, input is dropped unless `strict` is set;
+                // otherwise output keeps flowing.
                 match daemon.write(write(shared, bytes)).await {
-                    Ok(_) => {}
+                    Ok(Err(ServiceError::StdinClosed)) if strict => return Ok(true),
+                    Ok(Ok(()) | Err(_)) => {}
                     // The daemon detached during the write, or it stalled.
                     Err(ServiceError::Cancelled) => return Ok(false),
                     Err(ServiceError::TimedOut) => return Ok(true),
@@ -225,6 +229,9 @@ pub(super) async fn relay_stdin<R: AsyncRead + Unpin>(
             }
             FrameKind::End if frame.end()? == Channel::Input => {
                 shared.stdin.lock().await.take();
+                if strict {
+                    return Ok(true);
+                }
             }
             FrameKind::Cancel => return Ok(false),
             _ => return Err(ServiceError::InvalidInput),

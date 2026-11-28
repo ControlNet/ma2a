@@ -989,7 +989,7 @@ async fn serve_unready_connection(
     let request = reader.expect().await?;
     let ended = SupervisorStatus::Ended(Termination::Signaled(15), EndCause::Terminated, 1_031_000);
     match SupervisorRequest::from_bytes(request.payload())? {
-        SupervisorRequest::Attach(..) => {
+        SupervisorRequest::Attach(..) | SupervisorRequest::AttachStrict(..) => {
             attach_count.fetch_add(1, Ordering::SeqCst);
             let reading = encode_reading((0, 0, 0), false);
             writer.frame(FrameKind::Accept, &reading).await?;
@@ -1157,7 +1157,7 @@ async fn serve_rejecting_attach_connection(
     prove_supervisor(challenge, (&mut reader, &mut writer), &credentials).await?;
     let request = reader.expect().await?;
     match SupervisorRequest::from_bytes(request.payload())? {
-        SupervisorRequest::Attach(..) => {
+        SupervisorRequest::Attach(..) | SupervisorRequest::AttachStrict(..) => {
             attach_count.fetch_add(1, Ordering::SeqCst);
             let error = if terminated.load(Ordering::SeqCst) {
                 ma2a_core::service::ServiceError::NotRunning
@@ -1398,6 +1398,140 @@ async fn stdin_closed_running_instance_retries_terminate_and_starts_replacement(
     assert!(
         final_agent.generation > generation,
         "replacement generation did not start after StdinClosed instance ended: {final_agent:?}"
+    );
+    Ok(())
+}
+
+async fn wait_for_ready_instance(
+    config: &StoreConfig,
+    agent: &AgentId,
+) -> Result<(u64, ProcessId), Box<dyn std::error::Error + Send + Sync>> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(record) = Repository::open(config)?.agent(agent)?
+            && let Some(instance) = record.instance
+            && instance.ready
+            && let Some(pid) = instance.process_id
+        {
+            return Ok((instance.generation, pid));
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "generation 1 did not become ready"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ready_agent_closing_stdin_while_attached_is_terminated_and_replaced() -> TestResult {
+    use ma2a_core::service::AgentSubmit;
+
+    // Given: a real supervised Agent whose first generation announces ready, waits for the
+    // trigger file, closes its stdin FD while staying alive, and whose replacement stays open.
+    let env = MaintainEnv::new("ma2a-live-stdin-closed").await?;
+    let hosted_processes = ProcessManager::new(
+        (
+            env.local,
+            env.store.clone(),
+            Arc::new(crate::clock::SystemClock),
+        ),
+        (&env.dir, Some(ProcessHosting::in_process())),
+        env.shutdown.clone(),
+    );
+    let manager = AgentManager::new(
+        (
+            env.local,
+            env.store.clone(),
+            Arc::new(crate::clock::SystemClock),
+        ),
+        (&env.dir, hosted_processes.clone()),
+        env.shutdown.clone(),
+    );
+    let script = concat!(
+        "marker=\"$MA2A_AGENT_WORKSPACE/once\"; ",
+        "if [ ! -f \"$marker\" ]; then ",
+        ": > \"$marker\"; ",
+        "printf '{\"t\":\"ready\",\"protocol\":1}\\n'; ",
+        "while [ ! -f \"$MA2A_AGENT_WORKSPACE/close_stdin\" ]; do sleep 0.05; done; ",
+        "exec <&-; ",
+        ": > \"$MA2A_AGENT_WORKSPACE/stdin_closed\"; ",
+        "exec sleep 60; ",
+        "else ",
+        "printf '{\"t\":\"ready\",\"protocol\":1}\\n'; ",
+        "exec sleep 60; ",
+        "fi"
+    );
+    let agent = AgentId::new("stdin-closer")?;
+    let spec = crate::agents::operator::AgentSpec {
+        id: agent.clone(),
+        description: String::new(),
+        command: (
+            "/bin/sh".to_owned(),
+            vec!["-c".to_owned(), script.to_owned()],
+        ),
+        cwd: None,
+        env: Vec::new(),
+        tools: 0,
+        max_tasks: 1,
+    };
+    manager.define(spec).await?;
+    manager.start(&agent).await?;
+    let workspace = manager.workspace(&agent);
+
+    let runner = tokio::spawn(crate::agents::run(manager.clone()));
+    let gen1 = wait_for_ready_instance(&env.config, &agent).await?;
+
+    // When: the already-attached child closes stdin while staying alive, and a task is delivered.
+    std::fs::write(workspace.join("close_stdin"), b"1")?;
+    let closed_marker = workspace.join("stdin_closed");
+    let close_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !closed_marker.exists() {
+        assert!(
+            tokio::time::Instant::now() < close_deadline,
+            "child did not close stdin"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let submit = AgentSubmit::new(
+        agent.clone(),
+        AgentMessage::text(MessageRole::User, "hello")?,
+        None,
+    );
+    manager
+        .submit((env.local, RequestId::random()?), &submit)
+        .await?;
+
+    let replace_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut replaced = false;
+    while tokio::time::Instant::now() < replace_deadline {
+        let ended = hosted_processes
+            .local_record(gen1.1)
+            .await?
+            .is_some_and(|record| record.state == ProcessState::Terminated);
+        let next_ready = Repository::open(&env.config)?
+            .agent(&agent)?
+            .and_then(|record| record.instance)
+            .is_some_and(|instance| instance.generation > gen1.0 && instance.ready);
+        if ended && next_ready {
+            replaced = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let gen1_process = hosted_processes.local_record(gen1.1).await?;
+    let final_agent = Repository::open(&env.config)?.agent(&agent)?;
+    let _stopped = manager.stop(&agent).await;
+    drop(manager);
+    drop(hosted_processes);
+    env.finish(runner, Vec::new()).await?;
+
+    // Then: generation 1 was terminated and a replacement generation became ready within 20 s.
+    assert!(
+        replaced,
+        "child closing stdin while attached was not terminated/replaced: gen1={gen1_process:?}, agent={final_agent:?}"
     );
     Ok(())
 }

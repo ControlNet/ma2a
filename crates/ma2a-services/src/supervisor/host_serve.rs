@@ -138,7 +138,20 @@ async fn serve_request(
             terminate((reader, writer), shared, grace_ms).await
         }
         SupervisorRequest::Attach(from, stdin) => {
-            super::host_attach::attach((reader, writer), shared, (from, stdin)).await
+            let mode = if stdin {
+                super::host_attach::StdinRelay::Lenient
+            } else {
+                super::host_attach::StdinRelay::Disabled
+            };
+            super::host_attach::attach((reader, writer), shared, (from, mode)).await
+        }
+        SupervisorRequest::AttachStrict(from) => {
+            super::host_attach::attach(
+                (reader, writer),
+                shared,
+                (from, super::host_attach::StdinRelay::Strict),
+            )
+            .await
         }
         SupervisorRequest::Stdin(close) => {
             super::host_stdin::stdin((reader, writer), shared, close).await

@@ -18,19 +18,30 @@ use crate::{FrameReader, FrameWriter};
 /// Most content bytes read from the log for one batch of `data` frames.
 const BATCH: usize = 262_144;
 
+/// How an attachment handles stdin.
+#[derive(Clone, Copy)]
+pub(super) enum StdinRelay {
+    /// Read-only attachment.
+    Disabled,
+    /// Takes the writer lease; keeps streaming output if stdin closes.
+    Lenient,
+    /// Takes the writer lease; detaches if stdin closes.
+    Strict,
+}
+
 /// Follows output from `from`; with `stdin`, also relays channel 0 to the child.
 pub(super) async fn attach<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     (reader, writer): (&mut FrameReader<R>, &mut FrameWriter<W>),
     shared: &Shared,
-    (from, stdin): (LogFrom, bool),
+    (from, stdin): (LogFrom, StdinRelay),
 ) -> Result<(), ServiceError> {
-    let lease = if stdin {
+    let lease = if matches!(stdin, StdinRelay::Disabled) {
+        None
+    } else {
         match Lease::take(shared).await {
             Ok(lease) => Some(lease),
             Err(error) => return writer.reject(error).await,
         }
-    } else {
-        None
     };
     let window = *shared.output.borrow();
     let Some((start, truncated)) = window.resolve(from) else {
@@ -40,7 +51,7 @@ pub(super) async fn attach<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     writer.frame(FrameKind::Accept, &accept).await?;
     let inbound = async {
         if lease.is_some() {
-            relay_stdin(reader, shared).await
+            relay_stdin(reader, shared, matches!(stdin, StdinRelay::Strict)).await
         } else {
             detached(reader).await.map(|()| false)
         }

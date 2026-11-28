@@ -110,6 +110,7 @@ fn requests_roundtrip_and_unknown_bytes_are_refused() -> TestResult {
     for from in [LogFrom::Start, LogFrom::Now, LogFrom::Cursor(77)] {
         requests.push(SupervisorRequest::Attach(from, false));
         requests.push(SupervisorRequest::Attach(from, true));
+        requests.push(SupervisorRequest::AttachStrict(from));
     }
     requests.extend(ProcessSignal::ALL.map(SupervisorRequest::Signal));
     for request in requests {
@@ -121,7 +122,7 @@ fn requests_roundtrip_and_unknown_bytes_are_refused() -> TestResult {
             Err(ServiceError::InvalidInput)
         );
     }
-    for bad in [&[][..], &[7], &[3, 2], &[4, 7], &[2, 3, 0]] {
+    for bad in [&[][..], &[8], &[3, 2], &[4, 7], &[2, 3, 0], &[7, 3]] {
         assert!(SupervisorRequest::from_bytes(bad).is_err(), "{bad:?}");
     }
     Ok(())

@@ -129,7 +129,7 @@ async fn input_the_child_does_not_take_detaches_after_the_stall_bound() -> TestR
     let attached = super::attach(
         (&mut host_reader, &mut host_writer),
         &child.shared,
-        (LogFrom::Now, true),
+        (LogFrom::Now, super::StdinRelay::Lenient),
     );
     let daemon = async {
         assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
@@ -159,7 +159,7 @@ async fn a_child_that_ended_while_its_input_stalled_still_delivers_all_its_outpu
     let attached = super::attach(
         (&mut host_reader, &mut host_writer),
         &child.shared,
-        (LogFrom::Start, true),
+        (LogFrom::Start, super::StdinRelay::Lenient),
     );
     let daemon = async {
         assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);
@@ -215,7 +215,7 @@ async fn a_continuous_stdin_flood_never_starves_attached_output() -> TestResult 
     let attached = super::attach(
         (&mut host_reader, &mut host_writer),
         &child.shared,
-        (LogFrom::Start, true),
+        (LogFrom::Start, super::StdinRelay::Lenient),
     );
     let daemon = async {
         assert_eq!(reader.expect().await?.kind(), FrameKind::Accept);

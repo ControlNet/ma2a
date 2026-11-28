@@ -19,6 +19,8 @@ pub enum SupervisorRequest {
     Go,
     /// Follow output from a position; `true` also takes the stdin writer lease.
     Attach(LogFrom, bool),
+    /// Follow output from a position and take the stdin writer lease, detaching if stdin closes.
+    AttachStrict(LogFrom),
     /// Write stdin until `end`; `true` then closes the child's stdin for good.
     Stdin(bool),
     /// Send one signal to the child's process group.
@@ -40,6 +42,10 @@ impl SupervisorRequest {
                 bytes.push(2);
                 push_from(&mut bytes, from);
                 bytes.push(u8::from(writer));
+            }
+            Self::AttachStrict(from) => {
+                bytes.push(7);
+                push_from(&mut bytes, from);
             }
             Self::Stdin(close) => bytes.extend_from_slice(&[3, u8::from(close)]),
             Self::Signal(signal) => {
@@ -84,6 +90,13 @@ impl SupervisorRequest {
                 <[u8; 4]>::try_from(grace).map_err(|_| ServiceError::InvalidInput)?,
             )),
             [6] => Self::Abort,
+            [7, rest @ ..] => {
+                let (from, rest) = pull_from(rest)?;
+                if !rest.is_empty() {
+                    return Err(ServiceError::InvalidInput);
+                }
+                Self::AttachStrict(from)
+            }
             _ => return Err(ServiceError::InvalidInput),
         };
         Ok(request)
