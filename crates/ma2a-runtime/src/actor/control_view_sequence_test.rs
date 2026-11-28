@@ -111,7 +111,7 @@ async fn snapshot_between_round_commit_and_completion_still_advances_view_on_com
         .finish_control_round(Ok((
             scheduled,
             Ok(Some(ControlRoundOutcome {
-                revision: committed_rev,
+                revision: Some(committed_rev),
                 dialed_peers: [peer].into(),
                 synchronized_peers: [peer].into(),
                 changes: ControlChanges::default(),

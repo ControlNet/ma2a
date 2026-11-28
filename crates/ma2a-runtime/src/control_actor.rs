@@ -112,7 +112,9 @@ impl Actor {
         let mut failure = None;
         let (peers, dialed) = match outcome {
             Ok(Some(outcome)) => {
-                self.state.revision = self.state.revision.max(outcome.revision);
+                if let Some(revision) = outcome.revision {
+                    self.state.revision = self.state.revision.max(revision);
+                }
                 let peers = if current_round {
                     outcome.synchronized_peers
                 } else {

@@ -20,6 +20,8 @@ mod agent_revisions;
 mod committed_response;
 #[path = "server_tests/control_sync_peers.rs"]
 mod control_sync_peers;
+#[path = "server_tests/control_sync_waiters.rs"]
+mod control_sync_waiters;
 #[path = "server_tests/failed_replay.rs"]
 mod failed_replay;
 #[path = "server_tests/grant_refusals.rs"]

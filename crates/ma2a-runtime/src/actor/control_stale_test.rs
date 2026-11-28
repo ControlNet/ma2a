@@ -123,7 +123,7 @@ fn sorted_membership(mut members: Vec<SpaceMemberV1>) -> SpaceManifestMembership
 
 fn outcome(revision: u64, peer: EndpointId, address: bool) -> ControlRoundOutcome {
     ControlRoundOutcome {
-        revision,
+        revision: Some(revision),
         dialed_peers: [peer].into(),
         synchronized_peers: [peer].into(),
         changes: ControlChanges {

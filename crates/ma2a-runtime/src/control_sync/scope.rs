@@ -32,7 +32,7 @@ pub(crate) struct ControlRoundRequest {
 
 #[derive(Debug)]
 pub(crate) struct ControlRoundOutcome {
-    pub(crate) revision: u64,
+    pub(crate) revision: Option<u64>,
     pub(crate) dialed_peers: BTreeSet<EndpointId>,
     pub(crate) synchronized_peers: BTreeSet<EndpointId>,
     pub(crate) changes: super::ControlChanges,

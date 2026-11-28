@@ -137,7 +137,7 @@ impl ControlRoundRunner {
         }
         let incomplete = had_peers && synchronized_peers.is_empty();
         Ok(progress.latest.map(|revision| ControlRoundOutcome {
-            revision,
+            revision: Some(revision),
             dialed_peers: std::mem::take(&mut progress.dialed_peers),
             synchronized_peers,
             changes: std::mem::take(&mut progress.changes),
@@ -163,9 +163,6 @@ impl RoundProgress {
         self,
         failure: ControlFailure,
     ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
-        let Some(revision) = self.latest else {
-            return Err(failure);
-        };
         match failure {
             ControlFailure::Rejected(_) => {}
             ControlFailure::Runtime(error) => {
@@ -173,7 +170,7 @@ impl RoundProgress {
             }
         }
         Ok(Some(ControlRoundOutcome {
-            revision,
+            revision: self.latest,
             dialed_peers: self.dialed_peers,
             synchronized_peers: BTreeSet::new(),
             changes: self.changes,

@@ -88,7 +88,7 @@ async fn control_completion_failure_retains_followup_until_normal_maintenance() 
         .finish_control_round(Ok((
             scheduled,
             Ok(Some(ControlRoundOutcome {
-                revision: created.revision(),
+                revision: Some(created.revision()),
                 dialed_peers: BTreeSet::new(),
                 synchronized_peers: BTreeSet::new(),
                 changes: ControlChanges {
@@ -151,7 +151,7 @@ async fn a_round_no_dialed_peer_completed_fails_but_keeps_what_it_committed() ->
             .finish_control_round(Ok((
                 scheduled,
                 Ok(Some(ControlRoundOutcome {
-                    revision,
+                    revision: Some(revision),
                     dialed_peers: BTreeSet::new(),
                     synchronized_peers: BTreeSet::new(),
                     changes: ControlChanges::default(),
