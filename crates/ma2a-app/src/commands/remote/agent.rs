@@ -156,8 +156,7 @@ async fn submit(target: Target<'_>, arguments: SubmitArgs) -> Result<(), AppErro
             "the submit answer has no task".to_owned(),
         ));
     };
-    let existing = matches!(accept, Some(AgentAccept::Submitted(_, true)));
-    print(&json!({"task": view(&reply), "existing": existing}))?;
+    print(&submit_output(accept, &reply))?;
     if arguments.wait {
         follow(target, (agent.clone(), summary.id), None).await?;
         print(&view(
@@ -165,6 +164,11 @@ async fn submit(target: Target<'_>, arguments: SubmitArgs) -> Result<(), AppErro
         ))?;
     }
     Ok(())
+}
+
+fn submit_output(accept: Option<AgentAccept>, reply: &AgentReply) -> Value {
+    let existing = matches!(accept, None | Some(AgentAccept::Submitted(_, true)));
+    json!({"task": view(reply), "existing": existing})
 }
 
 /// Downloads one artifact into a new local file, verified against its hash.
@@ -215,4 +219,46 @@ async fn artifact(
 pub(super) fn print(value: &Value) -> Result<(), AppError> {
     writeln!(std::io::stdout().lock(), "{value}")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::{
+        EndpointId, RequestId,
+        service::{AgentAccept, AgentId, AgentReply, AgentTaskId, AgentTaskSummary},
+    };
+    use serde_json::json;
+
+    use super::submit_output;
+
+    #[test]
+    fn caller_side_replay_of_submit_reports_existing_true() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let task = AgentTaskId::from_bytes([1; 16]);
+        let mut own = [0_u8; 32];
+        own[0] = 1;
+        let summary = AgentTaskSummary::new(
+            (task, AgentId::new("worker")?),
+            (
+                EndpointId::try_from(own.as_slice())?,
+                RequestId::try_from([9; 16].as_slice())?,
+            ),
+            1_000,
+        );
+        let reply = AgentReply::Summary(summary);
+
+        assert_eq!(
+            submit_output(None, &reply).get("existing"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            submit_output(Some(AgentAccept::Submitted(task, true)), &reply).get("existing"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            submit_output(Some(AgentAccept::Submitted(task, false)), &reply).get("existing"),
+            Some(&json!(false))
+        );
+        Ok(())
+    }
 }

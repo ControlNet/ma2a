@@ -68,13 +68,16 @@ fn details(details: &ProcessDetails) -> Value {
 }
 
 /// One remote answer without a stream body.
-pub(super) fn reply(accept: Option<ProcessAccept>, reply: &ProcessReply) -> Value {
+pub(super) fn reply(is_start: bool, accept: Option<ProcessAccept>, reply: &ProcessReply) -> Value {
     match reply {
         ProcessReply::Summary(process) => {
             let mut value = summary(process);
-            if let (Some(ProcessAccept::Started(_, existing)), Some(object)) =
-                (accept, value.as_object_mut())
-            {
+            let existing = match accept {
+                Some(ProcessAccept::Started(_, existing)) => Some(existing),
+                None if is_start => Some(true),
+                _ => None,
+            };
+            if let (Some(existing), Some(object)) = (existing, value.as_object_mut()) {
                 object.insert("existing".to_owned(), json!(existing));
             }
             value
@@ -92,5 +95,71 @@ pub(super) fn reply(accept: Option<ProcessAccept>, reply: &ProcessReply) -> Valu
         }),
         ProcessReply::Written(bytes, closed) => json!({"written": bytes, "stdin_closed": closed}),
         ProcessReply::Deleted => json!({"deleted": true}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ma2a_core::{
+        RequestId,
+        service::{
+            ProcessAccept, ProcessId, ProcessReply, ProcessRequest, ProcessSignal, ProcessSpec,
+            ProcessStart, ProcessState, ProcessSummary,
+        },
+    };
+    use serde_json::json;
+
+    #[test]
+    fn caller_side_replay_of_start_reports_existing_true_without_affecting_signal_or_terminate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request_id = RequestId::try_from([9; 16].as_slice())?;
+        let id = ProcessId::from_bytes([1; 16]);
+        let summary = ProcessSummary::new(id, request_id, 1_000);
+        let start = ProcessRequest::Start(ProcessStart::new(
+            ProcessSpec::new(Some("true".to_owned()), Vec::new(), None)?,
+            false,
+            1_048_576,
+        )?);
+
+        let replayed = super::super::hosted::checked(
+            (&start, &request_id),
+            (None, ProcessReply::Summary(summary.clone())),
+        )?;
+        assert_eq!(replayed.get("existing"), Some(&json!(true)));
+
+        let target_replayed = super::super::hosted::checked(
+            (&start, &request_id),
+            (
+                Some(ProcessAccept::Started(id, true)),
+                ProcessReply::Summary(summary.clone()),
+            ),
+        )?;
+        assert_eq!(target_replayed.get("existing"), Some(&json!(true)));
+
+        let fresh = super::super::hosted::checked(
+            (&start, &request_id),
+            (
+                Some(ProcessAccept::Started(id, false)),
+                ProcessReply::Summary(summary.clone()),
+            ),
+        )?;
+        assert_eq!(fresh.get("existing"), Some(&json!(false)));
+
+        let signal = ProcessRequest::Signal(id, ProcessSignal::Terminate);
+        let signaled = super::super::hosted::checked(
+            (&signal, &request_id),
+            (None, ProcessReply::Summary(summary.clone())),
+        )?;
+        assert_eq!(signaled.get("existing"), None);
+
+        let mut ended = summary;
+        ended.state = ProcessState::Terminated;
+        let terminate = ProcessRequest::Terminate(id, 1_000);
+        let terminated = super::super::hosted::checked(
+            (&terminate, &request_id),
+            (None, ProcessReply::Summary(ended)),
+        )?;
+        assert_eq!(terminated.get("existing"), None);
+        Ok(())
     }
 }

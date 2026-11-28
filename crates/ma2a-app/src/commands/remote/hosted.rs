@@ -80,7 +80,7 @@ pub(crate) async fn run(
 
 /// The view of an answer, which must be the one `request`, opened under `opened`, asked
 /// for: never another Process's or another operation's.
-fn checked(
+pub(super) fn checked(
     request: (&ProcessRequest, &RequestId),
     (accept, reply): (Option<ProcessAccept>, ProcessReply),
 ) -> Result<Value, AppError> {
@@ -89,7 +89,11 @@ fn checked(
             "the target answered another Process or operation".to_owned(),
         ));
     }
-    Ok(hosted_view::reply(accept, &reply))
+    Ok(hosted_view::reply(
+        matches!(request.0, ProcessRequest::Start(_)),
+        accept,
+        &reply,
+    ))
 }
 
 async fn run_start(target: Target<'_>, arguments: StartArgs) -> Result<(), AppError> {
