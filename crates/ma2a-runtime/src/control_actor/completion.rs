@@ -7,12 +7,57 @@ use ma2a_core::EndpointId;
 use std::collections::BTreeSet;
 
 #[derive(Default)]
+struct LookupSignal(tokio::sync::watch::Sender<bool>);
+
+impl LookupSignal {
+    fn set_installed(&self, installed: bool) {
+        self.0.send_if_modified(|current| {
+            if *current == installed {
+                false
+            } else {
+                *current = installed;
+                true
+            }
+        });
+    }
+}
+
+impl Drop for LookupSignal {
+    fn drop(&mut self) {
+        self.set_installed(true);
+    }
+}
+
 pub(crate) struct PendingControl {
     changes: ControlChanges,
     peers: BTreeSet<EndpointId>,
     generation: u64,
     announced: bool,
     cleared: bool,
+    lookup_signal: LookupSignal,
+}
+
+impl Default for PendingControl {
+    fn default() -> Self {
+        Self {
+            changes: ControlChanges::default(),
+            peers: BTreeSet::new(),
+            generation: 0,
+            announced: false,
+            cleared: false,
+            lookup_signal: LookupSignal(tokio::sync::watch::channel(true).0),
+        }
+    }
+}
+
+impl PendingControl {
+    pub(crate) fn lookup_waiter(&self) -> Option<tokio::sync::watch::Receiver<bool>> {
+        if *self.lookup_signal.0.borrow() {
+            None
+        } else {
+            Some(self.lookup_signal.0.subscribe())
+        }
+    }
 }
 
 impl Actor {
@@ -52,6 +97,9 @@ impl Actor {
             pending.announced = false;
             pending.peers.clear();
             pending.cleared = cleared_now;
+        }
+        if changes.manifest || changes.address {
+            pending.lookup_signal.set_installed(false);
         }
         pending.peers.extend(peers);
     }
@@ -115,6 +163,9 @@ impl Actor {
         self.endpoint
             .set_control_enabled(!self.state.memberships.is_empty());
         self.refresh_control_lookup().await?;
+        if let Some(pending) = self.maintenance.control_completion.as_ref() {
+            pending.lookup_signal.set_installed(true);
+        }
         self.refresh_relay_candidates().await?;
         self.refresh_private_relay_access().await?;
         if let Err(error) = self.refresh_local_control_publications().await {

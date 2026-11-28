@@ -69,10 +69,19 @@ impl Actor {
         let clock = std::sync::Arc::clone(&self.clock);
         let endpoint_id = self.state.endpoint_id;
         let task = scheduled;
+        let lookup_ready = self
+            .maintenance
+            .control_completion
+            .as_ref()
+            .and_then(completion::PendingControl::lookup_waiter);
         #[cfg(test)]
         let gate = std::sync::Arc::clone(&self.maintenance.control_round_gate);
         self.control_rounds.spawn(async move {
-            let result = ControlRoundRunner::new(store, client, clock)
+            let mut runner = ControlRoundRunner::new(store, client, clock);
+            if let Some(lookup_ready) = lookup_ready {
+                runner = runner.with_lookup_ready(lookup_ready);
+            }
+            let result = runner
                 .run(ControlRoundRequest {
                     local_endpoint_id: endpoint_id,
                     rotation: task.rotation(),

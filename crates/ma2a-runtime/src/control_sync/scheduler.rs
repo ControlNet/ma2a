@@ -1,25 +1,31 @@
-use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
+use std::{collections::BTreeSet, future::Future, sync::Arc};
 
-use ma2a_net::{
-    CONTROL_DIAL_CONCURRENCY, CONTROL_ROUND_DEADLINE, ControlClient, exchange_control_with_retry,
-};
+use ma2a_net::{CONTROL_ROUND_DEADLINE, ControlClient, exchange_control_with_retry};
 use tokio::task::JoinSet;
-use tokio::time::Sleep;
 
 use crate::{
     RuntimeClock,
     control_sync::{
         ControlApplyOutcome, ControlExchangeInput, ControlFailure, ControlRoundOutcome,
-        ControlRoundRequest, PreparedControlPeer, dial_queue::DialQueue,
+        ControlRoundRequest, dial_queue::DialQueue,
     },
     error::{RuntimeError, RuntimeErrorKind},
     store::StoreClient,
+};
+
+mod dials;
+#[cfg(test)]
+use dials::DialOutcome;
+use dials::{
+    RoundProgress, await_store_apply_receipt, ensure_before_deadline, run_before_deadline,
+    spawn_control_dials,
 };
 
 pub(crate) struct ControlRoundRunner {
     store: StoreClient,
     client: ControlClient,
     clock: Arc<dyn RuntimeClock>,
+    lookup_ready: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl ControlRoundRunner {
@@ -32,7 +38,16 @@ impl ControlRoundRunner {
             store,
             client,
             clock,
+            lookup_ready: None,
         }
+    }
+
+    pub(crate) fn with_lookup_ready(
+        mut self,
+        lookup_ready: tokio::sync::watch::Receiver<bool>,
+    ) -> Self {
+        self.lookup_ready = Some(lookup_ready);
+        self
     }
 
     pub(crate) async fn run(
@@ -70,15 +85,20 @@ impl ControlRoundRunner {
     }
 
     async fn run_within_deadline<Dial, DialFuture, DialError>(
-        self,
+        mut self,
         (request, dial): (ControlRoundRequest, Dial),
-        (progress, mut deadline): (&mut RoundProgress, Pin<&mut Sleep>),
+        (progress, mut deadline): (&mut RoundProgress, std::pin::Pin<&mut tokio::time::Sleep>),
     ) -> Result<Option<ControlRoundOutcome>, ControlFailure>
     where
         Dial: Fn(ma2a_core::EndpointId, Vec<u8>) -> DialFuture + Clone + Send + 'static,
         DialFuture: Future<Output = Result<Vec<u8>, DialError>> + Send + 'static,
         DialError: Send + 'static,
     {
+        if let Some(mut lookup_ready) = self.lookup_ready.take() {
+            let _installed =
+                run_before_deadline(&mut deadline, lookup_ready.wait_for(|installed| *installed))
+                    .await?;
+        }
         let local_endpoint_id = request.local_endpoint_id;
         let prepared =
             run_before_deadline(&mut deadline, self.store.prepare_control_round(request)).await??;
@@ -156,104 +176,6 @@ impl ControlRoundRunner {
             changes: std::mem::take(&mut progress.changes),
             incomplete,
         }))
-    }
-}
-
-#[derive(Default)]
-struct RoundProgress {
-    dialed_peers: BTreeSet<ma2a_core::EndpointId>,
-    latest: Option<u64>,
-    changes: crate::control_sync::ControlChanges,
-}
-
-impl RoundProgress {
-    const fn record(&mut self, revision: u64, applied: crate::control_sync::ControlChanges) {
-        self.changes.merge(applied);
-        self.latest = Some(revision);
-    }
-
-    fn finish_error(
-        self,
-        failure: ControlFailure,
-    ) -> Result<Option<ControlRoundOutcome>, ControlFailure> {
-        match failure {
-            ControlFailure::Rejected(_) => {}
-            ControlFailure::Runtime(error) => {
-                crate::actor::Actor::absorb_background("control completion", Err(error))?;
-            }
-        }
-        Ok(Some(ControlRoundOutcome {
-            revision: self.latest,
-            dialed_peers: self.dialed_peers,
-            synchronized_peers: BTreeSet::new(),
-            changes: self.changes,
-            incomplete: true,
-        }))
-    }
-}
-
-async fn await_store_apply_receipt<DialError: 'static>(
-    deadline: &mut Pin<&mut Sleep>,
-    dials: &mut JoinSet<DialOutcome<DialError>>,
-    mut admitted: crate::store_client::control::AdmittedControlApply,
-) -> Result<Result<ControlApplyOutcome, ControlFailure>, RuntimeError> {
-    let applied = tokio::select! {
-        biased;
-        applied = &mut admitted.response => applied,
-        () = deadline.as_mut() => {
-            let cancelled = admitted.lease.cancel();
-            dials.shutdown().await;
-            if cancelled {
-                return Ok(Err(ma2a_net::ControlRejection::Unavailable.into()));
-            }
-            admitted.response.await
-        }
-    };
-    applied.map_err(crate::store::channel_error)
-}
-
-async fn ensure_before_deadline(deadline: &mut Pin<&mut Sleep>) -> Result<(), ControlFailure> {
-    run_before_deadline(deadline, std::future::ready(())).await
-}
-
-async fn run_before_deadline<Output>(
-    deadline: &mut Pin<&mut Sleep>,
-    operation: impl Future<Output = Output>,
-) -> Result<Output, ControlFailure> {
-    tokio::select! {
-        biased;
-        () = deadline.as_mut() => Err(ma2a_net::ControlRejection::Unavailable.into()),
-        output = operation => Ok(output),
-    }
-}
-
-type DialOutcome<DialError> = (
-    ma2a_core::EndpointId,
-    Vec<ma2a_core::SpaceId>,
-    Result<Vec<u8>, DialError>,
-);
-
-fn spawn_control_dials<Dial, DialFuture, DialError>(
-    (pending, dialed_peers): (&mut DialQueue, &mut BTreeSet<ma2a_core::EndpointId>),
-    dials: &mut JoinSet<DialOutcome<DialError>>,
-    dial: Dial,
-) where
-    Dial: Fn(ma2a_core::EndpointId, Vec<u8>) -> DialFuture + Clone + Send + 'static,
-    DialFuture: Future<Output = Result<Vec<u8>, DialError>> + Send + 'static,
-    DialError: Send + 'static,
-{
-    while dials.len() < CONTROL_DIAL_CONCURRENCY {
-        let Some(PreparedControlPeer {
-            peer,
-            request,
-            spaces,
-        }) = pending.next()
-        else {
-            break;
-        };
-        dialed_peers.insert(peer);
-        let call = dial(peer, request);
-        dials.spawn(async move { (peer, spaces, call.await) });
     }
 }
 

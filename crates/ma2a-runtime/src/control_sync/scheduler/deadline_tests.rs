@@ -1,5 +1,6 @@
 mod admitted_projection;
 mod admitted_queue;
+mod deferred_lookup;
 mod dialed_peers;
 mod fixture;
 mod no_effect_timeout;
